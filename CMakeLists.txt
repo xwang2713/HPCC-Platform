@@ -304,7 +304,7 @@ else ( PLATFORM )
     if (WIN32)
       if ( "${SIGN_DIRECTORY}" STREQUAL "" )
         set ( SIGN_DIRECTORY "${HPCC_SOURCE_DIR}/../sign" )
-      endif
+      endif ()
       set ( CPACK_NSIS_DISPLAY_NAME "Client Tools" )
       set ( CPACK_PACKAGE_INSTALL_DIRECTORY "${DIR_NAME}\\\\${version}\\\\clienttools")
       set ( CPACK_PACKAGE_INSTALL_REGISTRY_KEY "clienttools_${version}")
