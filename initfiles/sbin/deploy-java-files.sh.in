@@ -1,0 +1,249 @@
+#!/bin/bash
+################################################################################
+#    HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+################################################################################
+#
+# Usage: deploy-java-files.sh <from> <to>
+#
+# This is acomplished with a standard scp command with the use of the
+# runtime users id_rsa file.
+
+###<REPLACE>###
+
+source  ${INSTALL_DIR}/etc/init.d/hpcc_common
+
+usage() {
+    echo ""
+    echo "usage: deploy-java-files.sh -c -d  -s <source> -t <target> -n  <concurrent> -x"
+    echo "   -c:  Add target directory to classpath in environment.conf. If no -s option"
+    echo "        directory from -t will be assumed a directory to be added to classpath."
+    echo "   -d:  target is directory. This will help to clearify what is the directory"
+    echo "        to be added to classpath."
+    echo "   -n:  how many concurrent execution allowd. The default is 5"
+    echo "   -S:  section name in environment.xml. The default is DEFAULT."
+    echo "   -s:  source file or directory."
+    echo "   -t:  target file or directory. HPCC user (the default is hpcc) should be allowd "
+    echo "        to access or create the directory."
+    echo "   -x:  copy will exclude on current host."
+    echo ""
+
+    exit 1
+
+}
+
+######################################################################
+#
+# Write script head
+#
+######################################################################
+createScriptFileHead() {
+
+   cat > $SCRIPT_FILE <<SCRIPTHEAD
+#!/bin/bash
+IP=\$1
+
+if ping -c 1 -w 5 -n \$IP > /dev/null 2>&1; then
+    echo "\$IP: Host is alive."
+    CAN_SSH="\`ssh -i $home/$user/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=no $user@\$IP exit > /dev/null 2>&1; echo \$?\`"
+    if [ "\$CAN_SSH" -eq 255 ]; then
+         echo "\$IP: Cannot SSH to host.";
+         exit 1
+    else
+SCRIPTHEAD
+}
+
+######################################################################
+#
+# Write script foot
+#
+######################################################################
+createScriptFileFoot() {
+   cat >> $SCRIPT_FILE <<SCRIPTFOOT
+    fi
+else
+    echo "\$IP: Cannot Ping host? (Host Alive?)"
+    exit 1
+fi
+SCRIPTFOOT
+
+chmod +x ${SCRIPT_FILE}
+}
+
+######################################################################
+#
+# Write script copy Java files to targets
+#
+######################################################################
+createScriptFileCopy() {
+
+   cat >> $SCRIPT_FILE <<SCRIPTCOPY
+  echo "\$IP: Copying $source to $target on \$IP";
+        ssh -i $home/$user/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=no $user@\$IP  << 'SSHCMD'
+[ ! -d "$target_directory" ] && mkdir -p ${target_directory}
+SSHCMD
+  SCP=\$(scp -r -i $home/$user/.ssh/id_rsa $source $user@\$IP:$target; echo $?)
+  if [ \$SCP -eq 0 ]; then
+    echo "\$IP: Success";
+  else
+    echo "\$IP: Failure";
+                exit 1
+  fi
+SCRIPTCOPY
+
+}
+
+######################################################################
+#
+# Write script update Java Classpath
+# Following code is embeded in ssh command. Another options
+# is written to a script file and scp to remote and invoke
+# from ssh command, particularly when code is complicated.
+#
+######################################################################
+createScriptFileClasspath() {
+   [ $update_classpath -ne 1 ]  && return
+   cat >> $SCRIPT_FILE <<SCRIPTPATH
+
+      ssh -i $home/$user/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=no $user@\$IP  << 'SSHCMD'
+
+# get current classpath
+JAVA_CLASSPATH=\$(cat ${HPCC_CONFIG} | sed -n "/\[${SECTION}\]/,/\[/p" | grep "^classpath *= *" | sed -e 's/^classpath *= *//')
+dirs="$target_directory"
+OIFS=\$IFS
+IFS=:
+NEW_JAVA_CLASSPATH=
+
+# make current classpath has unique entries
+for path in \$JAVA_CLASSPATH
+do
+   [ -z "\$path" ] && continue
+   echo ":\$NEW_JAVA_CLASSPATH:" | grep -q ":\$path:"
+   [ \$? -ne 0 ] &&  NEW_JAVA_CLASSPATH="\${NEW_JAVA_CLASSPATH:+"\$NEW_JAVA_CLASSPATH:"}\$path"
+done
+
+# Add new entries in classspath
+for path in \$dirs
+do
+   [ -z "\$path" ] && continue
+   echo ":\$NEW_JAVA_CLASSPATH:" | grep -q ":\$path:"
+   [ \$? -ne 0 ] &&  NEW_JAVA_CLASSPATH="\${NEW_JAVA_CLASSPATH:+"\$NEW_JAVA_CLASSPATH:"}\$path"
+done
+
+tmp_conf=/tmp/hpcc_conf_\$\$
+IFS=\$OIFS
+echo "CLASSPATH: \$NEW_JAVA_CLASSPATH"
+
+# ecapse '/' before processed by sed
+NEW_JAVA_CLASSPATH=\$(echo \$NEW_JAVA_CLASSPATH | sed "s/\//\\\\\\\\\//g")
+echo "Ecapsed CLASSPATH: \$NEW_JAVA_CLASSPATH"
+
+# Update classpath in environment.conf
+cat ${HPCC_CONFIG} | sed "/\[${SECTION}\]/,/\[/ { s/^classpath *= *.*/classpath=\${NEW_JAVA_CLASSPATH}/ }" > \$tmp_conf
+if [ -s \$tmp_conf ]
+then
+  [ ! -e ${HPCC_CONFIG}.bk ] && cp $HPCC_CONFIG ${HPCC_CONFIG}.bk
+  mv \$tmp_conf  $HPCC_CONFIG
+  chmod 644 $HPCC_CONFIG
+else
+  echo "Failed to update $HPCC_CONFIG. Update file size is 0"
+  exit 1
+fi
+
+SSHCMD
+
+SCRIPTPATH
+}
+
+######################################################################
+#
+# MAIN
+#
+######################################################################
+concurrent=5
+source=
+target=
+target_directory=
+target_is_directory=0
+update_classpath=0
+OPTION=
+SECTION=DEFAULT
+
+TEMP=`/usr/bin/getopt -o cdn:S:s:t:hx --long help,classpath,is_directory,conrrent,section,source,target,exclude -n 'hpcc-run' -- "$@"`
+if [ $? != 0 ] ; then echo "Failure to parse commandline." >&2 ; end 1 ; fi
+eval set -- "$TEMP"
+while true ; do
+    case "$1" in
+        -c|--classpath) update_classpath=1
+            shift ;;
+        -d|--is_directory) target_is_directory=1
+            shift ;;
+        -n|--concurrent) concurrent=$2
+            shift 2 ;;
+        -S|--section) SECTION=$2
+            shift 2 ;;
+        -s|--source) source=$2
+            shift 2 ;;
+        -t|--target) target=$2
+            shift 2 ;;
+        -x|--exclude) OPTION="-x"
+                   shift ;;
+        -h|--help) usage
+                   shift ;;
+        --) shift ; break ;;
+        *) usage ;;
+    esac
+done
+
+
+if [ -z "$target" ]; then
+   echo ""
+   echo "Missing target"
+   usage
+fi
+
+if [ -z "$source" ] && [ $update_classpath -ne 1 ]; then
+   echo ""
+   echo "Missing source or update classpath flag"
+   usage
+fi
+
+set_environmentvars
+HPCC_CONFIG=${CONFIG_DIR}/${ENV_CONF_FILE}
+
+
+if [[ $target = */ ]]
+then
+   target_is_directory=1
+   [ "$target" != "/" ] && target=$(echo $target | sed 's/[\/]*$//')
+fi
+
+if [ "$target_is_directory" -eq 1 ] || [ -z "$source" ]
+then
+   target_directory=$target
+else
+   target_directory=$(dirname $target)
+fi
+
+SCRIPT_FILE=/tmp/deploy-java-files_$$.sh
+createScriptFileHead
+[ -n "$source" ] && createScriptFileCopy
+[ ${update_classpath} -eq 1 ]  && createScriptFileClasspath
+createScriptFileFoot
+
+# option -e and -s are not needed if using default values
+echo ${INSTALL_DIR}/sbin/cluster_script.py -e ${CONFIG_DIR}/${ENV_CONF} -f "${SCRIPT_FILE}" -n "$concurrent"  -l DEBUG -s $SECTION $OPTION
+${INSTALL_DIR}/sbin/cluster_script.py -e ${CONFIG_DIR}/${ENV_CONF} -f "${SCRIPT_FILE}" -n "$concurrent"  -l DEBUG -s $SECTION $OPTION
+
+rm -rf ${SCRIPT_FILE}
