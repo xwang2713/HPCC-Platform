@@ -153,10 +153,3 @@ class Host(object):
                 out_hosts_2.append(host)
 
         return out_hosts_2
-
-if __name__ == '__main__':
-    #hosts = Host.get_hosts_from_env()
-    hosts = Host.get_hosts_from_file('/Users/ming/work/python/host.lst')
-    print "There are " + str(len(hosts)) + " hpcc nodes"
-    for host in hosts:
-        print host.ip
