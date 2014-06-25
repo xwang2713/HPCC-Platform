@@ -24,8 +24,6 @@
 ## $1="<path to ini file>"
 ####
 
-###<REPLACE>###
-
 
 START_STOP_DAEMON=${INSTALL_DIR}/bin/start-stop-daemon
 
@@ -920,11 +918,20 @@ run_cluster() {
    _log_file=${LOG_DIR}/cluster/se_$(basename $_cmd)_$(date +%Y%m%d_%H%M%S).log
    [ ! -d ${LOG_DIR}/cluster ] && mkdir -p ${LOG_DIR}/cluster
    [ -e $_log_file ] && rm -rf $_log_file
-   echo ""
-   echo  -ne "Execution progress: ${_progress}%, succeed: $_num_passed, failed: $_num_failed \r"
+   if [ "$RUN_CLUSTER_DISPLAY_OUTPUT" != "TRUE" ]
+   then
+      echo ""
+      echo  -ne "Execution progress: ${_progress}%, succeed: $_num_passed, failed: $_num_failed \r"
+   fi
    for ip in $IPS
    do
-      eval $_cmd $ip >> $_log_file 2>&1
+      if [ "$RUN_CLUSTER_DISPLAY_OUTPUT" = "TRUE" ]
+      then
+          echo
+          eval $_cmd $ip | tee -a $_log_file 2>&1
+      else
+          eval $_cmd $ip >> $_log_file 2>&1
+      fi
 
       if [ $? -eq 0 ]
       then
@@ -934,8 +941,11 @@ run_cluster() {
       fi
 
       _num_processed=$(expr $_num_processed \+ 1)
-      _progress=$(expr $_num_processed \* 100  / $_num_hosts)
-      echo  -ne "Execution progress: ${_progress}%, succeed: $_num_passed, failed: $_num_failed \r"
+      if [ "$RUN_CLUSTER_DISPLAY_OUTPUT" != "TRUE" ]
+      then
+         _progress=$(expr $_num_processed \* 100  / $_num_hosts)
+         echo  -ne "Execution progress: ${_progress}%, succeed: $_num_passed, failed: $_num_failed \r"
+      fi
    done
 
    echo ""
