@@ -24,6 +24,7 @@
 ## $1="<path to ini file>"
 ####
 
+###<REPLACE>###
 
 START_STOP_DAEMON=${INSTALL_DIR}/bin/start-stop-daemon
 
@@ -933,7 +934,7 @@ run_cluster() {
           eval $_cmd $ip >> $_log_file 2>&1
       fi
 
-      if [ $? -eq 0 ]
+      if [ ${PIPESTATUS[0]} -eq 0 ]
       then
          _num_passed=$(expr $_num_passed \+ 1)
       else

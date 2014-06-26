@@ -72,15 +72,14 @@ doOneIP(){
               CMD="sudo /etc/init.d/$_action -c $_comp $_cmd"
           fi
           echo "$_ip: Running $CMD";
-          CMD="$CMD > ${hpccStatusFile}"
+          CMD="$CMD | tee ${hpccStatusFile}"
 
           ssh -i $home/$user/.ssh/id_rsa $user@$_ip $CMD;
           scp -i $home/$user/.ssh/id_rsa $user@${_ip}:${hpccStatusFile} ${reportDir}/$_ip > /dev/null 2>&1
 
           CMD="rm -rf  $hpccStatusFile"
           ssh -i $home/$user/.ssh/id_rsa $user@$_ip $CMD
-          rc=$?
-          cat ${reportDir}/$_ip | grep -v "ervice dafilesrv" | grep -v -e "^[[:space:]]*$" 
+          rc=${PIPESTATUS[0]}
           echo
           return $rc
     
@@ -116,17 +115,20 @@ if ping -c 1 -w 5 -n \$IP > /dev/null 2>&1; then
               CMD="sudo /etc/init.d/$_action -c $_comp $_cmd"
           fi
           echo "\$IP: Running \$CMD";
-          CMD="\$CMD > $hpccStatusFile"
+          if [ $run_in_seq -eq 1 ]
+          then
+              CMD="\$CMD | tee $hpccStatusFile"
+          else
+              CMD="\$CMD > $hpccStatusFile"
+          fi
           ssh -i $home/$user/.ssh/id_rsa $user@\$IP \$CMD;
+          rc=\${PIPESTATUS[0]}
 
           scp -i $home/$user/.ssh/id_rsa $user@\${IP}:${hpccStatusFile} ${reportDir}/\$IP
 
           CMD="rm -rf  $hpccStatusFile"
           ssh -i $home/$user/.ssh/id_rsa $user@\$IP \$CMD
-          if [ $run_in_seq -eq 1 ]
-          then
-             cat "${reportDir}/\$IP"
-          fi
+          exit \$rc
      fi
 else
      echo "\$IP: Cannot Ping host? (Host Alive?)"
