@@ -13,17 +13,23 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
+HPCC_ADD_SUBDIRECTORY (remote)
 HPCC_ADD_SUBDIRECTORY (deftype)
 HPCC_ADD_SUBDIRECTORY (dllserver)
 HPCC_ADD_SUBDIRECTORY (environment)
+HPCC_ADD_SUBDIRECTORY (workunit)
+HPCC_ADD_SUBDIRECTORY (roxiecommlib)
+HPCC_ADD_SUBDIRECTORY (thorhelper)
+if (DEVELOPMENT_ONLY)
+   HPCC_ADD_SUBDIRECTORY (wuwebview)
+   HPCC_ADD_SUBDIRECTORY (fileview2)
+   return()
+endif()
+
 if ("${BUILD_LEVEL}" STREQUAL "INTERNAL")
     HPCC_ADD_SUBDIRECTORY (fileview2)
 else ()
     HPCC_ADD_SUBDIRECTORY (fileview2 "PLATFORM")
 endif ()
 HPCC_ADD_SUBDIRECTORY (monitoring "PLATFORM")
-HPCC_ADD_SUBDIRECTORY (remote)
-HPCC_ADD_SUBDIRECTORY (roxiecommlib)
-HPCC_ADD_SUBDIRECTORY (thorhelper)
-HPCC_ADD_SUBDIRECTORY (workunit)
 HPCC_ADD_SUBDIRECTORY (wuwebview "PLATFORM")

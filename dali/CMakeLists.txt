@@ -14,6 +14,11 @@
 #    limitations under the License.
 ################################################################################
 HPCC_ADD_SUBDIRECTORY (base)
+HPCC_ADD_SUBDIRECTORY (ft)
+if (DEVELOPMENT_ONLY)
+   return()
+endif()
+
 HPCC_ADD_SUBDIRECTORY (dafilesrv  "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (dalidiag "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (dalistop "PLATFORM")
@@ -25,7 +30,6 @@ HPCC_ADD_SUBDIRECTORY (dfu "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (dfuplus "CLIENTTOOLS")
 HPCC_ADD_SUBDIRECTORY (dfuxref "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (dfuXRefLib "PLATFORM")
-HPCC_ADD_SUBDIRECTORY (ft)
 HPCC_ADD_SUBDIRECTORY (daliadmin "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (server "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (treeview "PLATFORM")

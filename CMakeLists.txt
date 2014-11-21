@@ -100,7 +100,43 @@ include(${HPCC_SOURCE_DIR}/cmake_modules/optionDefaults.cmake)
 
 include(${HPCC_SOURCE_DIR}/cmake_modules/commonSetup.cmake)
 
-if ( NOT MAKE_DOCS_ONLY )
+###
+## Run file configuration to set build tag along with install lines for generated
+## config files.
+###
+set( BUILD_TAG "${projname}_${version}-${stagever}")
+if (USE_GIT_DESCRIBE OR CHECK_GIT_TAG)
+    FETCH_GIT_TAG (${CMAKE_SOURCE_DIR} ${projname}_${version} GIT_BUILD_TAG)
+    message ("-- Git tag is '${GIT_BUILD_TAG}'")
+    if (NOT "${GIT_BUILD_TAG}" STREQUAL "${BUILD_TAG}")
+        if (CHECK_GIT_TAG)
+            message(FATAL_ERROR "Git tag '${GIT_BUILD_TAG}' does not match source version '${BUILD_TAG}'" )
+        else()
+            if(NOT "${GIT_BUILD_TAG}" STREQUAL "") # probably means being built from a tarball...
+                set( BUILD_TAG "${BUILD_TAG}[${GIT_BUILD_TAG}]")
+            endif()
+        endif()
+    endif()
+endif()
+message ("-- Build tag is '${BUILD_TAG}'")
+if (NOT "${BASE_BUILD_TAG}" STREQUAL "")
+    set(BASE_BUILD_TAG "${BUILD_TAG}")
+endif()
+message ("-- Base build tag is '${BASE_BUILD_TAG}'")
+configure_file(${HPCC_SOURCE_DIR}/build-config.h.cmake "build-config.h" )
+
+
+if ( DEVELOPMENT_ONLY )
+    HPCC_ADD_SUBDIRECTORY (dali)
+    HPCC_ADD_SUBDIRECTORY (tools)
+    HPCC_ADD_SUBDIRECTORY (common)
+    HPCC_ADD_SUBDIRECTORY (system)
+    HPCC_ADD_SUBDIRECTORY (esp)
+    HPCC_ADD_SUBDIRECTORY (rtl)
+    HPCC_ADD_SUBDIRECTORY (roxie)
+    HPCC_ADD_SUBDIRECTORY (ecl)
+    return()
+elseif ( NOT MAKE_DOCS_ONLY )
     HPCC_ADD_SUBDIRECTORY (initfiles)
     HPCC_ADD_SUBDIRECTORY (tools)
     HPCC_ADD_SUBDIRECTORY (common)
@@ -217,31 +253,6 @@ set( CPACK_SOURCE_IGNORE_FILES
         "^${PROJECT_SOURCE_DIR}/ecl/regress/"
     "^${PROJECT_SOURCE_DIR}/testing/"
         )
-
-###
-## Run file configuration to set build tag along with install lines for generated
-## config files.
-###
-set( BUILD_TAG "${projname}_${version}-${stagever}")
-if (USE_GIT_DESCRIBE OR CHECK_GIT_TAG)
-    FETCH_GIT_TAG (${CMAKE_SOURCE_DIR} ${projname}_${version} GIT_BUILD_TAG)
-    message ("-- Git tag is '${GIT_BUILD_TAG}'")
-    if (NOT "${GIT_BUILD_TAG}" STREQUAL "${BUILD_TAG}")
-        if (CHECK_GIT_TAG)
-            message(FATAL_ERROR "Git tag '${GIT_BUILD_TAG}' does not match source version '${BUILD_TAG}'" )
-        else()
-            if(NOT "${GIT_BUILD_TAG}" STREQUAL "") # probably means being built from a tarball...
-                set( BUILD_TAG "${BUILD_TAG}[${GIT_BUILD_TAG}]")
-            endif()
-        endif()
-    endif()
-endif()
-message ("-- Build tag is '${BUILD_TAG}'")
-if (NOT "${BASE_BUILD_TAG}" STREQUAL "")
-    set(BASE_BUILD_TAG "${BUILD_TAG}")
-endif()
-message ("-- Base build tag is '${BASE_BUILD_TAG}'")
-configure_file(${HPCC_SOURCE_DIR}/build-config.h.cmake "build-config.h" )
 
 #set( CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON )
 #set( CPACK_DEB_PACKAGE_COMPONENT ON )

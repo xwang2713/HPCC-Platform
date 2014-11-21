@@ -14,6 +14,9 @@
 #    limitations under the License.
 ################################################################################
 HPCC_ADD_SUBDIRECTORY (eclrtl)
+HPCC_ADD_SUBDIRECTORY (nbcd)
+if (DEVELOPMENT_ONLY)
+   return()
+endif()
 HPCC_ADD_SUBDIRECTORY (ecltpl)
 HPCC_ADD_SUBDIRECTORY (include)
-HPCC_ADD_SUBDIRECTORY (nbcd)

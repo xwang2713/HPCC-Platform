@@ -13,6 +13,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
+HPCC_ADD_SUBDIRECTORY (hql)
+HPCC_ADD_SUBDIRECTORY (schedulectrl)
+if (DEVELOPMENT_ONLY)
+   return()
+endif()
+
 HPCC_ADD_SUBDIRECTORY (agentexec "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (eclagent "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (eclcc)
@@ -22,9 +28,7 @@ HPCC_ADD_SUBDIRECTORY (eclscheduler "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (eclplus "CLIENTTOOLS")
 HPCC_ADD_SUBDIRECTORY (ecl-package "CLIENTTOOLS")
 HPCC_ADD_SUBDIRECTORY (ecl-bundle "CLIENTTOOLS")
-HPCC_ADD_SUBDIRECTORY (hql)
 HPCC_ADD_SUBDIRECTORY (hqlcpp)
 HPCC_ADD_SUBDIRECTORY (hthor)
 HPCC_ADD_SUBDIRECTORY (scheduleadmin "PLATFORM")
-HPCC_ADD_SUBDIRECTORY (schedulectrl)
 HPCC_ADD_SUBDIRECTORY (wutest "PLATFORM")

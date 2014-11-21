@@ -14,6 +14,12 @@
 #    limitations under the License.
 ################################################################################
 HPCC_ADD_SUBDIRECTORY (common)
+if (DEVELOPMENT_ONLY)
+    HPCC_ADD_SUBDIRECTORY (ws_topology)
+    HPCC_ADD_SUBDIRECTORY (ws_workunits)
+    return()
+endif()
+
 HPCC_ADD_SUBDIRECTORY (ecldirect "PLATFORM")
 IF (USE_OPENLDAP)
     HPCC_ADD_SUBDIRECTORY (ws_access "PLATFORM")
