@@ -113,6 +113,11 @@ IF ("${COMMONSETUP_DONE}" STREQUAL "")
       set(DEVEL OFF)
   endif()
 
+  if ( DEVEL )
+      set(PLATFORM OFF)
+      set(CLIENTTOOLS OFF)
+  endif()
+
   option(PORTALURL "Set url to hpccsystems portal download page")
 
   if ( NOT PORTALURL )
