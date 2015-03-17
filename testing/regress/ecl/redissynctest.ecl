@@ -15,16 +15,18 @@
     limitations under the License.
 ############################################################################## */
 
-IMPORT sync FROM lib_redis;
+//nothor
+
+IMPORT redis FROM lib_redis;
 IMPORT Std;
 
 STRING server := '--SERVER=127.0.0.1:6379';
 STRING password := 'foobared';
-sync.FlushDB(server, /*database*/, password);
+redis.FlushDB(server, /*database*/, password);
 
 SEQUENTIAL(
-    sync.SetBoolean('b', TRUE, server, /*database*/, /*expire*/, password);
-    sync.GetBoolean('b', server, /*database*/, password);
+    redis.SetBoolean('b', TRUE, server, /*database*/, /*expire*/, password);
+    redis.GetBoolean('b', server, /*database*/, password);
     );
 
 IMPORT redisServer FROM lib_redis;
@@ -64,6 +66,12 @@ UNSIGNED u := 7;
 SEQUENTIAL(
     myRedis.SetUnsigned('u', u);
     myRedis.GetUnsigned('u');
+    );
+
+myRedis3 := RedisServer('--SERVER=127.0.0.1:6381', password);
+SEQUENTIAL(
+    myRedis3.SetUnsigned('u3', u);
+    myRedis3.GetUnsigned('u3');
     );
 
 STRING str  := 'supercalifragilisticexpialidocious';
@@ -147,7 +155,30 @@ s2 := DATASET(N, TRANSFORM({ integer a }, SELF.a := myRedis.GetInteger('transfor
 SEQUENTIAL(
     myRedis.SetInteger('transformTest', x),
     OUTPUT(SUM(NOFOLD(s1 + s2), a))//answer = (x+x/2)*N, in this case 300.
-);
+    );
+
+//Test some authentication exceptions
+myRedis4 := RedisServer(server);
+STRING noauth := 'Redis Plugin: server authentication failed - NOAUTH Authentication required.';
+STRING opNotPerm :=  'Redis Plugin: server authentication failed - ERR operation not permitted';
+ds1 := DATASET(NOFOLD(1), TRANSFORM({string value}, SELF.value := myRedis4.GetString('authTest' + (string)COUNTER)));
+SEQUENTIAL(
+    myRedis.FlushDB();
+    OUTPUT(CATCH(ds1, ONFAIL(TRANSFORM({ STRING value }, SELF.value := IF(FAILMESSAGE = noauth OR FAILMESSAGE = opNotPerm, 'Auth Failed', 'Unexpected Error')))));
+    );
+
+ds2 := DATASET(NOFOLD(1), TRANSFORM({string value}, SELF.value := myRedis.GetString('authTest' + (string)COUNTER)));
+SEQUENTIAL(
+    myRedis.FlushDB();
+    OUTPUT(CATCH(ds2, ONFAIL(TRANSFORM({ STRING value }, SELF.value := FAILMESSAGE))));
+    );
+
+myRedis5 := RedisServer('--SERVER=127.0.0.1:9999');
+ds3 := DATASET(NOFOLD(1), TRANSFORM({string value}, SELF.value := myRedis5.GetString('connectTest' + (string)COUNTER)));
+SEQUENTIAL(
+    myRedis.FlushDB();
+    OUTPUT(CATCH(ds3, ONFAIL(TRANSFORM({ STRING value }, SELF.value := FAILMESSAGE))));
+    );
 
 myRedis.FlushDB();
 myRedis2.FlushDB();
