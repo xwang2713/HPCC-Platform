@@ -66,16 +66,14 @@ add_subdirectory(InstantCloud)
 add_subdirectory(Installing_and_RunningTheHPCCPlatform)
 add_subdirectory(RDDERef)
 add_subdirectory(RunningHPCCinaVirtualMachine)
-add_subdirectory(UsingConfigManager)
+if (DOCS_AUTO)
+  add_subdirectory(XMLGeneration)
+  add_subdirectory(UsingConfigManager)
+endif()
 add_subdirectory(ECLPlayground)
 add_subdirectory(ECLPluginForEclipse)
 add_subdirectory(ECLScheduler)
 add_subdirectory(ECLWatch)
-
-# Docs automation
-if (DOCS_AUTO)
-   add_subdirectory(Automation)
-endif()
 
 
 #WIP -  Docs

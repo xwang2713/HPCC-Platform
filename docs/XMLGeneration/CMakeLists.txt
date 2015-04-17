@@ -14,8 +14,8 @@
 #    limitations under the License.
 ################################################################################
 SET(XSD_SOURCE_DIR ${HPCC_SOURCE_DIR}/initfiles/componentfiles/configxml)
-SET(XSD_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/xsd )
-SET(XML_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/xml )
+SET(XSD_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/XSD )
+SET(XML_TARGET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/CM_Mods )
 
 FILE(MAKE_DIRECTORY ${XSD_TARGET_DIR})
 
