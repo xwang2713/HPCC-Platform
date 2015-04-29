@@ -22,6 +22,11 @@
 #    Cmake Input File for ecl
 #####################################################
 
+set( WS_WORKUNITS_DEP )
+if( NOT CLIENTTOOLS_ONLY )
+   set( WS_WORKUNITS_DEP  "ws_workunits" )
+endif()
+
 add_subdirectory (queries)
 add_subdirectory (roxie)
 
@@ -67,8 +72,9 @@ include_directories (
 
 ADD_DEFINITIONS( -D_CONSOLE )
 
+
 HPCC_ADD_EXECUTABLE ( ecl ${SRCS} )
-add_dependencies ( ecl espscm workunit ws_workunits )
+add_dependencies ( ecl espscm workunit ${WS_WORKUNITS_DEP} )
 install ( TARGETS ecl RUNTIME DESTINATION ${EXEC_DIR} )
 target_link_libraries ( ecl
         jlib

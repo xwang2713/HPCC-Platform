@@ -56,7 +56,12 @@ include_directories (
 ADD_DEFINITIONS( -D_CONSOLE )
 
 HPCC_ADD_EXECUTABLE ( ecl-packagemap ${SRCS} )
-add_dependencies ( ecl-packagemap espscm ws_packageprocess )
+
+set( WS_PACKAGEPROCESS_DEP )
+if( NOT CLIENTTOOLS_ONLY )
+   set( WS_PACKAGEPROCESS_DEP "ws_packageprocess" )
+endif()
+add_dependencies ( ecl-packagemap espscm ${WS_PACKAGEPROCESS_DEP} )
 install ( TARGETS ecl-packagemap RUNTIME DESTINATION ${EXEC_DIR} )
 target_link_libraries ( ecl-packagemap
         jlib
