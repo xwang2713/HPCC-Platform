@@ -300,3 +300,8 @@ fi
 if [ -d ${CONFIG_DIR} ]; then
     date > ${CONFIG_DIR}/installed
 fi
+
+if [ ! -d ${LOG_DIR} ]; then
+   mkdir -p ${LOG_DIR}
+   chown ${user}:${user} ${LOG_DIR}
+fi

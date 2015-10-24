@@ -90,10 +90,6 @@ source  ${INSTALL_DIR}/etc/init.d/hpcc_common
 source  ${INSTALL_DIR}/etc/init.d/init-functions
 source  ${INSTALL_DIR}/etc/init.d/export-path
 
-# Only root user can write following logfile
-is_root
-
-[ ! -e ${LOG_DIR} ] && mkdir -p ${LOG_DIR}
 export logfile=${LOG_DIR}/hpcc-init.log
 
 [ ! -e ${logfile}  ] && touch $logfile
