@@ -131,6 +131,20 @@ endif (APPLE OR WIN32)
 ## CPack install and packaging setup.
 ###
 INCLUDE(InstallRequiredSystemLibraries)
+if(WIN32)
+    set ( CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE )
+    foreach ( CMAKE_INSTALL_SYSTEM_RUNTIME_LIB ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} )
+        ##  Skip non unicode version of MFC libs (big)  ##
+        string(REGEX MATCH ".*mfc.*0\\.dll" SKIP_FILE "${CMAKE_INSTALL_SYSTEM_RUNTIME_LIB}" )
+        if ( SKIP_FILE )
+            message("Skipping non unicode MFC install:  ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIB}")
+        else ( SKIP_FILE )
+            install ( PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIB} DESTINATION bin )
+        endif ( SKIP_FILE)
+    endforeach ( CMAKE_INSTALL_SYSTEM_RUNTIME_LIB )
+endif(WIN32)
+
+
 if ( PLATFORM )
     set(CPACK_PACKAGE_NAME "hpccsystems-platform")
     set(PACKAGE_FILE_NAME_PREFIX "hpccsystems-platform-${projname}")
