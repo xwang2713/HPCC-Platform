@@ -159,6 +159,12 @@ endif(APPLE OR WIN32)
 ###
 ## CPack install and packaging setup.
 ###
+if(WIN32)
+   if (MSVC14)
+       STRING(REGEX REPLACE "\\\\" "/" API_MS_DLL "$ENV{VS140COMNTOOLS}../IDE/Remote Debugger/x86/api-ms-win-crt-runtime-l1-1-0.dll")
+       set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} "${API_MS_DLL}")
+   endif(MSVC14)
+endif(WIN32)
 include(InstallRequiredSystemLibraries)
 
 set(VER_SEPARATOR "-")
