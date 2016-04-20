@@ -23,6 +23,10 @@ if (APPLE)
     list(APPEND DYLIBS ${XALAN_LIBRARIES})
     list(APPEND DYLIBS ${XERCES_LIBRARIES})
     list(APPEND DYLIBS ${BINUTILS_LIBRARIES})
+    list(APPEND DYLIBS ${OPENSSL_LIBRARIES})
+    list(APPEND DYLIBS ${ZLIB_LIBRARIES})
+    list(APPEND DYLIBS ${LIBXML2_LIBRARIES})
+
 elseif (WIN32)
     #TODO:  Should find these dlls not assume them.
     if (NOT USE_NATIVE_LIBRARIES)
@@ -94,10 +98,16 @@ foreach(dylib ${DYLIBS})
             set(fixupCommand "${fixupCommand}\r\nexecute_process(COMMAND install_name_tool -change \"${dylib_110_path}\" \"@loader_path/../lib2/${dylib_name_ext}\" \${file})")
         endif ()
 
-        string(REPLACE ".51.2.dylib" ".51.dylib" dylib_51_path "${dylib_path}")
-        if (NOT "${dylib_51_path}" STREQUAL "${dylib_path}")
-            set(fixupCommand "${fixupCommand}\r\nexecute_process(COMMAND install_name_tool -change \"${dylib_51_path}\" \"@loader_path/../lib2/${dylib_name_ext}\" \${file})")
+        string(REPLACE ".55.1.dylib" ".55.dylib" dylib_55_path "${dylib_path}")
+        if (NOT "${dylib_55_path}" STREQUAL "${dylib_path}")
+            set(fixupCommand "${fixupCommand}\r\nexecute_process(COMMAND install_name_tool -change \"${dylib_55_path}\" \"@loader_path/../lib2/${dylib_name_ext}\" \${file})")
         endif ()
+
+        string(REPLACE ".1.2.8.dylib" ".1.dylib" dylib_1_path "${dylib_path}")
+        if (NOT "${dylib_1_path}" STREQUAL "${dylib_path}")
+            set(fixupCommand "${fixupCommand}\r\nexecute_process(COMMAND install_name_tool -change \"${dylib_1_path}\" \"@loader_path/../lib2/${dylib_name_ext}\" \${file})")
+        endif ()
+
 
         install(CODE "
             file(GLOB files \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${EXEC_DIR}/*\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${LIB_DIR}/*.dylib\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/plugins/*.dylib\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib2/*.dylib\")
