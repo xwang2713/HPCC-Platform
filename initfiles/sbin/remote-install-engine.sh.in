@@ -34,7 +34,7 @@
 
 ###<REPLACE>###
 
-REMOTE_INSTALL="/tmp/remote_install"
+REMOTE_INSTALL="/remote_install"
 CURR="${REMOTE_INSTALL}/curr_keys"
 NEW="${REMOTE_INSTALL}/new_keys"
 MD5="${REMOTE_INSTALL}/md5"
