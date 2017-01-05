@@ -72,6 +72,7 @@ add_subdirectory(ECLWatch)
 
 # Docs automation
 if (DOCS_AUTO)
+   add_custom_target("xsd_to_xml" DEPENDS  "${CMAKE_BINARY_DIR}/${MAKE_BUILD_TYPE}/bin/configurator")
    add_subdirectory(XMLGeneration)
    add_subdirectory(UsingConfigManager)
 endif()

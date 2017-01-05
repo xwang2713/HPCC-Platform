@@ -150,7 +150,7 @@ MACRO(XSD_TO_XML _xsd_files _in_dir _out_dir)
         foreach(_xsd_file ${_xsd_files})
             STRING(REGEX REPLACE "(.*).xsd" "\\1.xml" _xml_file "${_xsd_file}")
 	    ADD_CUSTOM_COMMAND(
-		COMMAND ./configurator -doc -use ${_xsd_file} -b ${_in_dir} -t ${_out_dir}
+        COMMAND ./configurator --doc --use ${_xsd_file} -b ${_in_dir} -t ${_out_dir}
 		OUTPUT ${_out_dir}/${_xml_file}
                 WORKING_DIRECTORY ${CONFIGURATOR_DIRECTORY}
 		DEPENDS ${_out_dir} ${_in_dir}/${_xsd_file} ${_in_dir}/environment.xsd

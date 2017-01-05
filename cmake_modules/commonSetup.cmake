@@ -668,7 +668,7 @@ IF ("${COMMONSETUP_DONE}" STREQUAL "")
 
     if (DOCS_AUTO)
        if ("${CONFIGURATOR_DIRECTORY}" STREQUAL "")
-         set(CONFIGURATOR_DIRECTORY ${HPCC_SOURCE_DIR}/../configurator)
+         set(CONFIGURATOR_DIRECTORY "${CMAKE_BINARY_DIR}/${MAKE_BUILD_TYPE}/bin")
        endif()
     endif()
   ENDIF(MAKE_DOCS)
