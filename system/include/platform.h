@@ -44,7 +44,7 @@
 #endif
 
 // Identify all possible flags that mean x86_64
-#if defined(__amd64__) || defined(__x86_64__) \
+#if defined(__amd64__) || defined(__x86_64__) || defined(_WIN64) \
  || defined(_M_X64) || defined(_M_AMD64)
  #define _ARCH_X86_64_
 #else
