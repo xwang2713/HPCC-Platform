@@ -1107,9 +1107,9 @@ void clearNodeCache()
 
 inline CKeyStore *queryKeyStore()
 {
-    if (keyStore) return keyStore; // avoid crit
+    if (keyStore != nullptr) return keyStore; // avoid crit
     CriticalBlock b(*initCrit);
-    if (!keyStore) keyStore = new CKeyStore;
+    if (keyStore == nullptr ) keyStore = new CKeyStore;
     return keyStore;
 }
 
