@@ -162,11 +162,13 @@ MACRO(XSD_TO_XML _xsd_files _in_dir _out_dir)
                 OUTPUT ${_out_dir}
                 )
         foreach(_xsd_file ${_xsd_files})
-            STRING(REGEX REPLACE "(.*).xsd" "\\1.xml" _xml_file "${_xsd_file}")
+            #STRING(REGEX REPLACE "(.*).xsd" "\\1.mod.xml" _xml_file "${_xsd_file}")
+            set (_xml_file "${_xsd_file}.mod.xml")
             ADD_CUSTOM_COMMAND(
-                COMMAND ./configurator --doc --use ${_xsd_file} -b ${_in_dir} -t ${_out_dir}
+                #COMMAND xsltproc  -o ${_out_dir}/${_xml_file}  ${HPCC_SOURCE_DIR}/docs/BuildTools/xsd2xml.xsl ${_in_dir}/${_xsd_file}
+                COMMAND saxonb-xslt   -o:${_out_dir}/${_xml_file}  -xsl:${HPCC_SOURCE_DIR}/docs/BuildTools/xsdattr2htmltable.xsl2 -s:${_in_dir}/${_xsd_file}
                 OUTPUT ${_out_dir}/${_xml_file}
-                WORKING_DIRECTORY ${CONFIGURATOR_DIRECTORY}
+                WORKING_DIRECTORY ${_out_dir}
                 DEPENDS ${_out_dir} ${_in_dir}/${_xsd_file} ${_in_dir}/environment.xsd
                 )
             list(APPEND _xml_files ${_out_dir}/${_xml_file})
