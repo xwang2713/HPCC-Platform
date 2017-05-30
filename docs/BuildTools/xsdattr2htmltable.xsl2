@@ -25,7 +25,7 @@
      <xsl:param name = "parent" />
      <xsl:choose>
        <xsl:when test = "count($parent/xs:attribute) gt
-          count($parent/xs:attribute/xs:annotation/xs:appinfo/viewType/text()='hidden')">
+          count($parent/xs:attribute/xs:annotation/xs:appinfo/viewType/'hidden')">
           true
         </xsl:when>
         <xsl:otherwise>
