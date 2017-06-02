@@ -111,6 +111,7 @@ void usage()
   puts("          Example: \"-set_xpath_attrib_value  Software/Topology/Cluster[@name=\"thor\"]/ThorCluster @process thor123\"");
   puts("   -assign_ips <BuildSet> <IP or IP Range>:  assign IPs to specific buildset components");
   puts("          Example: \" -assign_ips dali 10.0.0.1-10");
+  puts("   -json_file  input paramters in json file");
   puts("   -help: print out this usage.");
 }
 
@@ -130,6 +131,8 @@ int main(int argc, char** argv)
   StringBufferArray arrValues;
   StringArray arrAssignIPRanges;
   StringArray arrBuildSetWithAssignedIPs;
+  StringBuffer jsonFileName;
+  StringBuffer jsonInput;
 
   int i = 1;
   bool writeToFiles = false;
@@ -260,6 +263,11 @@ int main(int argc, char** argv)
       arrBuildSetWithAssignedIPs.append(argv[i++]);
       arrAssignIPRanges.append(argv[i++]);
     }
+    else if(stricmp(argv[i], "-json_file") == 0)
+    {
+      i++;
+      jsonFileName.append(argv[i++]);
+    }
     else
     {
       fprintf(stderr, "Error: unknown command line parameter: %s\n", argv[i]);
@@ -287,6 +295,43 @@ int main(int argc, char** argv)
 
   try
   {
+
+
+    jsonInput.loadFile(jsonFileName);
+    //fprintf(stdout, "\n%s\n", jsonInput.str());
+    Owned<IPropertyTree> inputParams = createPTreeFromJSONString(jsonInput.str());
+    //should print ptree
+    //get values from xpath
+    //get values from attributes (IPropertyTree -> attributeTree)
+    //get values from array, esp, roxie, thor,etc
+
+    //no getIterator()
+    //Owned<IPropertyIterator> iterator = inputParams->getIterator();
+
+    //line 1253 common/environment/environment.cpp
+    //line 2510 common/workunit/workunit.cpp
+    //Owned<IPropertyTreeIterator> iter = querySetTree->getElements(xpath.str());
+
+    Owned<IPropertyTreeIterator> iter = inputParams->getElements("ip");
+
+    IPropertyTree &ipAttr = iter->query();
+    //if (! ipAttr) {
+    //   fprintf(stdout, "\nip tree is null\n");
+    //   exit(1);
+    //}
+    //StringBuffer out;
+
+    //fprintf(stdout, "\n%s\n", ipAttr.queryName());
+
+
+    StringBuffer out;
+    toJSON(inputParams, out);
+    fprintf(stdout, "\nDump PTree:\n%s\n", out.str());
+
+    exit(0);
+
+
+
     validateIPS(ipAddrs.str());
 
     for (int nIdx = 0; nIdx < arrAssignIPRanges.length(); nIdx++)
