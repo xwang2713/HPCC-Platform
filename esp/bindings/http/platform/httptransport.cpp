@@ -798,9 +798,10 @@ int CHttpMessage::send()
     int retcode = 0;
 
     // If m_content is empty but m_content_stream is set, the stream will not be logged here.
-    if (getEspLogResponses() || getEspLogLevel(queryContext())>LogNormal)
+//@@    if (getEspLogResponses() || getEspLogLevel(queryContext())>LogNormal)
     {
         logMessage(headers.str(), "Sending out HTTP headers:\n", "Authorization:[~\r\n]*", "Authorization: (hidden)");
+        DBGLOG("@@CHttpMessage::send() m_content_length>0 %s, m_content.length()=%d",m_content_length > 0 ? "Y" : "N",m_content.length());
         if(m_content_length > 0 && m_content.length() > 0)
             logMessage(LOGCONTENT, "Sending out HTTP content:\n");
     }
@@ -2238,7 +2239,8 @@ void CHttpResponse::sendBasicChallenge(const char* realm, bool includeContent)
             "</html>"
         );
     }
-
+    StringBuffer foo;//@@
+    DBGLOG("@@sendBasicChallenge sending \n%s\n", getContent(foo).str());
     setStatus(HTTP_STATUS_UNAUTHORIZED);
     send();
 }

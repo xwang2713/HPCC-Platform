@@ -127,7 +127,7 @@ bool CEspHttpServer::rootAuth(IEspContext* ctx)
             }
             else
             {
-                DBGLOG("User authentication required");
+                DBGLOG("@@02User authentication required");
                 m_response->sendBasicChallenge(thebinding->getChallengeRealm(), true);
             }
         }
@@ -271,7 +271,7 @@ int CEspHttpServer::processRequest()
             StringBuffer peerStr, pathStr;
             const char *userid=ctx->queryUserId();
             DBGLOG("%s %s, from %s@%s", method.str(), m_request->getPath(pathStr).str(), (userid) ? userid : "unknown", m_request->getPeer(peerStr).str());
-
+            DBGLOG("@@rootAuthRequired=%s,queryUserId=%s",m_apport->rootAuthRequired() ? "True" : "False",  ctx->queryUserId() ? ctx->queryUserId() : "NULL");
             if (m_apport->rootAuthRequired() && (!ctx->queryUserId() || !*ctx->queryUserId()))
             {
                 thebinding = dynamic_cast<EspHttpBinding*>(m_defaultBinding.get());
@@ -279,42 +279,50 @@ int CEspHttpServer::processRequest()
                 if(thebinding)
                 {   
                     realmbuf.append(thebinding->getChallengeRealm());
+                    DBGLOG("@@realm %s",realmbuf.str());
                 }
 
                 if(realmbuf.length() == 0)
                     realmbuf.append("ESP");
-                DBGLOG("User authentication required");
+                DBGLOG("@@0xUser authentication required, calling sendBasicChallenge");
                 m_response->sendBasicChallenge(realmbuf.str(), true);
+                DBGLOG("@@Done calling sendBasicChallenge");
                 return 0;
             }
         }
 
         if (!stricmp(method.str(), GET_METHOD))
         {
+        	DBGLOG("@@HERE01");
             if (stype==sub_serv_root)
             {
+            	DBGLOG("@@HERE02");
                 if (!rootAuth(ctx))
                     return 0;
+                DBGLOG("@@HERE03");
                 if (ctx->queryUser() && (ctx->queryUser()->getAuthenticateStatus() == AS_PASSWORD_VALID_BUT_EXPIRED))
                     return 0;//allow user to change password
+                DBGLOG("@@HERE04");
                 // authenticate optional groups
                 if (authenticateOptionalFailed(*ctx,NULL))
                     throw createEspHttpException(401,"Unauthorized Access","Unauthorized Access");
-
+                DBGLOG("@@HERE05");
                 return onGetApplicationFrame(m_request.get(), m_response.get(), ctx);
             }
-
+            DBGLOG("@@HERE06");
             if (!stricmp(serviceName.str(), "esp"))
             {
+            	DBGLOG("@@HERE07");
                 if (!methodName.length())
                     return 0;
 #ifdef _USE_OPENLDAP
                 if (strieq(methodName.str(), "updatepasswordinput"))//process before authentication check
                     return onUpdatePasswordInput(m_request.get(), m_response.get());
 #endif
+                DBGLOG("@@HERE08");
                 if (!rootAuth(ctx) )
                     return 0;
-
+                DBGLOG("@@HERE09");
                 checkSetCORSAllowOrigin(m_request, m_response);
                 if (methodName.charAt(methodName.length()-1)=='_')
                     methodName.setCharAt(methodName.length()-1, 0);
@@ -428,7 +436,7 @@ int CEspHttpServer::processRequest()
                 }
                 else
                 {
-                    DBGLOG("User authentication required");
+                    DBGLOG("@@01User authentication required");
                     StringBuffer realmbuf;
                     if(thebinding)
                         realmbuf.append(thebinding->getChallengeRealm());

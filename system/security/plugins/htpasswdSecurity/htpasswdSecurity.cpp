@@ -27,6 +27,7 @@ class CHtpasswdSecurityManager : public CBaseSecurityManager
 public:
     CHtpasswdSecurityManager(const char *serviceName, IPropertyTree *secMgrCfg, IPropertyTree *bindConfig) : CBaseSecurityManager(serviceName, (IPropertyTree *)NULL)
 	{
+    	DBGLOG("@@CHtpasswdSecurityManager");
         if (secMgrCfg)
             pwFile.set(secMgrCfg->queryProp("@htpasswdFile"));
         if(pwFile.isEmpty())
@@ -117,6 +118,7 @@ protected:
     //ISecManager
 	bool IsPasswordValid(ISecUser& sec_user)
 	{
+		DBGLOG("@@CHtpasswdSecurityManager IsPasswordValid");
 		StringBuffer user;
 		user.append(sec_user.getName());
 		if (0 == user.length())
@@ -125,13 +127,16 @@ protected:
 		CriticalBlock block(crit);
 		if (!apr_initialized)
 			initAPR();
+		DBGLOG("@@CHtpasswdSecurityManager IsPasswordValid01");
 		loadPwds();//reload password file if modified
+		DBGLOG("@@CHtpasswdSecurityManager IsPasswordValid02");
 		StringBuffer *encPW = userMap.getValue(user.str());
 		if (encPW && encPW->length())
 		{
 			apr_status_t rc = apr_password_validate(sec_user.credentials().getPassword(), encPW->str());
 			if (rc != APR_SUCCESS)
 				DBGLOG("htpasswd authentication for user %s failed - APR RC %d", user.str(), rc );
+			DBGLOG("@@CHtpasswdSecurityManager IsPasswordValid03");
 			return rc == APR_SUCCESS;
 		}
 		DBGLOG("User %s not in htpasswd file", user.str());
@@ -145,6 +150,7 @@ protected:
 
     bool authorize(ISecUser & user, ISecResourceList * resources, IEspSecureContext* secureContext) override
     {
+    	DBGLOG("@@CHtpasswdSecurityManager authorize()");
         return IsPasswordValid(user);
     }
 
@@ -194,6 +200,7 @@ private:
 	{
 		try
 		{
+			DBGLOG("@@CHtpasswdSecurityManager initAPR()");
 			apr_status_t rc = apr_md5_init(&md5_ctx);
 			if (rc != APR_SUCCESS)
 				throw MakeStringException(-1, "htpasswd apr_md5_init returns error %d", rc );
@@ -209,6 +216,7 @@ private:
 	{
 		try
 		{
+			DBGLOG("@@CHtpasswdSecurityManager loadPwds");
 			if (!pwFile.length())
 				throw MakeStringException(-1, "htpasswd Password file not specified");
 
