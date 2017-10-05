@@ -1,0 +1,515 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<toc label="ECL Language Reference" topic="index.html">
+   <topic label="Introduction" href="ECLR_Intro.html">
+      <topic label="Documentation Structure" href="Documentation_Structure.html"/>
+      <topic label="Documentation Conventions" href="Documentation_Conventions.html">
+         <topic label="ECL Syntax Case" href="ECL_Syntax_Case.html"/>
+         <topic label="Optional Items" href="Optional_Items.html"/>
+         <topic label="Example Code" href="Example_Code.html"/>
+      </topic>
+   </topic>
+   <topic label="ECL Basics" href="ECL_Basics.html">
+      <topic label="Overview" href="Overview.html">
+         <topic label="Definitions versus Actions" href="Attributes_versus_Actions.html"/>
+         <topic label="Syntax Issues" href="Syntax_Issues.html"/>
+      </topic>
+      <topic label="Constants" href="Constants.html">
+         <topic label="String" href="Const_String.html"/>
+         <topic label="Numeric" href="Numeric.html"/>
+      </topic>
+      <topic label="Definitions" href="Attribute_Definition.html">
+         <topic label="Definition Name Rules" href="Attribute_Name_Rules.html"/>
+         <topic label="Reserved Words" href="Reserved_Words.html"/>
+         <topic label="Definition Naming" href="Attribute_Naming.html"/>
+      </topic>
+      <topic label="Basic Definition Types" href="Basic_Attribute_Types.html">
+         <topic label="Boolean Definitions" href="Boolean_Attributes.html"/>
+         <topic label="Value Definitions" href="Value_Attributes.html"/>
+         <topic label="Set Definitions" href="Set_Attributes.html"/>
+         <topic label="Set Ordering and Indexing" href="Set_Ordering_and_Indexing.html"/>
+         <topic label="Record Set Definitions" href="Record_Set_Attributes.html"/>
+         <topic label="Record Set Ordering and Indexing" href="Record_Set_Ordering_and_Indexing.html"/>
+         <topic label="TypeDef Definitions" href="TypeDef_Attributes.html"/>
+      </topic>
+      <topic label="Recordset Filtering" href="Recordset_Filtering.html"/>
+      <topic label="Function Definitions (Parameter Passing)" href="Function_Attributes__Parameter_Passing.html">
+         <topic label="Simple Value Type Parameters" href="Simple_Value_Type_Parameters.html"/>
+         <topic label="SET Parameters" href="SET_Parameters.html"/>
+         <topic label="Passing DATASET Parameters" href="Passing_DATASET_Parameters.html"/>
+         <topic label="Passing DICTIONARY Parameters" href="Passing_DICTIONARY_Parameters.html"/>
+         <topic label="Passing Typeless Parameters" href="Passing_Typeless_Parameters.html"/>
+         <topic label="Passing Function Parameters" href="Passing_Function_Parameters.html"/>
+         <topic label="Passing NAMED Parameters" href="Passing_NAMED_Parameters.html"/>
+      </topic>
+      <topic label="Definition Visibility" href="Attribute_Visibility.html">
+         <topic label="&#34;Global&#34;" href="Global_attribute_visibility.html"/>
+         <topic label="Module" href="Module.html"/>
+         <topic label="Local" href="Local.html"/>
+      </topic>
+      <topic label="Field and Definition Qualification" href="Field_and_Attribute_Qualification.html">
+         <topic label="Imported Definitions" href="Imported_Attributes.html"/>
+         <topic label="Fields in Datasets" href="Fields_in_Datasets.html"/>
+         <topic label="Scope Resolution Operator" href="Scope_Resolution_Operator.html"/>
+      </topic>
+      <topic label="Actions and Definitions" href="Actions_and_Attributes.html">
+         <topic label="Expressions as Actions" href="Functions_as_ActionsFunctions_as_Actions.html"/>
+         <topic label="Definitions as Actions" href="Attributes_as_ActionsAttributes_as_Actions.html"/>
+         <topic label="Actions as Definitions" href="Actions_as_Attributes.html"/>
+         <topic label="Debugging Uses" href="Debugging_Uses.html"/>
+      </topic>
+   </topic>
+   <topic label="Expressions and Operators" href="Expressions_and_Operators_Chapter.html">
+      <topic label="Expressions and Operators" href="Expressions_and_Operators.html">
+         <topic label="Arithmetic Operators" href="Arithmetic_Operators.html"/>
+         <topic label="Bitwise Operators" href="Bitwise_Operators.html"/>
+         <topic label="Bitshift Operators" href="Bitshift_Operators.html"/>
+         <topic label="Comparison Operators" href="Comparison_Operators.html"/>
+      </topic>
+      <topic label="Logical Operators" href="Logical_Operators.html">
+         <topic label="Logical Expression Grouping" href="Logical_Expression_Grouping.html"/>
+         <topic label="An XOR Operator" href="An_XOR_Operator.html"/>
+      </topic>
+      <topic label="Record Set Operators" href="Record_SetRecord_Set_Operators.html">
+         <topic label="Prefix Append Operator" href="Prefix_Append_Operator.html"/>
+      </topic>
+      <topic label="Set Operators" href="Set_Operators.html"/>
+      <topic label="String Operators" href="String_Operators.html"/>
+      <topic label="IN Operator" href="IN_Operator.html"/>
+      <topic label="BETWEEN Operator" href="BETWEEN_Operator.html"/>
+   </topic>
+   <topic label="Value Types" href="Value_Types_Chapter.html">
+      <topic label="BOOLEAN" href="BOOLEAN.html"/>
+      <topic label="INTEGER" href="INTEGER.html">
+         <topic label="INTEGER Value Ranges" href="Integer_Value_Ranges.html"/>
+      </topic>
+      <topic label="REAL" href="REAL.html">
+         <topic label="REAL Value Ranges" href="Real_Value_Ranges.html"/>
+      </topic>
+      <topic label="DECIMAL" href="DECIMAL.html"/>
+      <topic label="STRING" href="STRING.html"/>
+      <topic label="QSTRING" href="QSTRING.html"/>
+      <topic label="UNICODE" href="UNICODE.html"/>
+      <topic label="UTF8" href="UTF8.html"/>
+      <topic label="DATA" href="DATA.html"/>
+      <topic label="VARSTRING" href="VARSTRING.html"/>
+      <topic label="VARUNICODE" href="VARUNICODE.html"/>
+      <topic label="SET OF" href="SET_OF.html"/>
+      <topic label="TYPEOF" href="TYPEOF.html"/>
+      <topic label="RECORDOF" href="RECORDOF.html"/>
+      <topic label="ENUM" href="ENUM.html"/>
+      <topic label="Type Casting" href="Type_Casting.html">
+         <topic label="Explicit Casting" href="Explicit_Casting.html"/>
+         <topic label="Implicit Casting" href="Implicit_Casting.html"/>
+         <topic label="Type Transfer" href="Type_Transfer.html"/>
+         <topic label="Casting Rules" href="Casting_Rules.html"/>
+      </topic>
+   </topic>
+   <topic label="Record Structures and Files" href="Record_Structures_and_Files.html">
+      <topic label="RECORD Structure" href="RECORD_Structure.html">
+         <topic label="In-line Record Definitions" href="In-line_Record_Definitions.html"/>
+         <topic label="Field Definitions" href="Field_Definitions.html"/>
+         <topic label="Field Inheritance" href="Field_Inheritance.html"/>
+         <topic label="Field Modifiers" href="Field_Modifiers.html"/>
+         <topic label="XPATH Support" href="XPATH_Support.html"/>
+      </topic>
+      <topic label="DATASET" href="DATASET.html">
+         <topic label="THOR/FLAT Files" href="THOR-FLAT_Files.html"/>
+         <topic label="CSV Files" href="CSV_Files.html"/>
+         <topic label="XML Files" href="XML_Files.html"/>
+         <topic label="JSON Files" href="JSON_Files.html"/>
+         <topic label="PIPE Files" href="PIPE_Files.html"/>
+         <topic label="Named Output DATASETs" href="Named_Output_DATASETs.html"/>
+         <topic label="In-line DATASETs" href="In-line_DATASETs.html"/>
+         <topic label="Single-row DATASET Expressions" href="Single-row_DATASET_Expressions.html"/>
+         <topic label="Child DATASETs" href="Child_DATASETs.html"/>
+         <topic label="DATASET as a Parameter Type" href="DATASET_as_a_Parameter_Type.html"/>
+         <topic label="DATASET from DICTIONARY" href="DATASET_from_DICTIONARY.html"/>
+         <topic label="DATASET from TRANSFORM" href="DATASET_from_TRANSFORM.html"/>
+      </topic>
+      <topic label="DICTIONARY" href="DICTIONARY.html">
+         <topic label="DICTIONARY Definition" href="DICTIONARY_Definition.html"/>
+         <topic label="DICTIONARY as a Value Type" href="Child_DICTIONARY.html"/>
+      </topic>
+      <topic label="INDEX" href="INDEX_record_structure.html">
+         <topic label="Keyed Access INDEX" href="Keyed_Access_INDEX.html"/>
+         <topic label="Payload INDEX" href="Payload_INDEX.html"/>
+         <topic label="Duplicate INDEX" href="Duplicate_INDEX.html"/>
+      </topic>
+      <topic label="Scope and Logical Filenames" href="Scope_and_Logical_Filenames.html">
+         <topic label="File Scope" href="File_Scope.html"/>
+         <topic label="Foreign Files" href="Foreign_Files.html"/>
+         <topic label="Landing Zone Files" href="Landing_Zone_Files.html"/>
+         <topic label="Dynamic Files" href="Dynamic_Files.html"/>
+         <topic label="Temporary SuperFiles" href="Temporary_SuperFiles.html"/>
+      </topic>
+      <topic label="Implicit Dataset Relationality" href="Implicit_Dataset_Relationality.html"/>
+   </topic>
+   <topic label="Alien Data Types" href="Alien_Data_Types.html">
+      <topic label="TYPE Structure" href="TYPE_Structure.html"/>
+      <topic label="TYPE Structure Special Functions" href="Type_Sturcture_Special_Functions.html">
+         <topic label="LOAD" href="LOAD_Type.html"/>
+         <topic label="STORE" href="store.html"/>
+         <topic label="PHYSICALLENGTH" href="physicallegnth.html"/>
+         <topic label="MAXLENGTH" href="maxlength.html"/>
+         <topic label="GETISVALID" href="getisvalid.html"/>
+      </topic>
+   </topic>
+   <topic label="Parsing Support" href="Parsing_Support_Chapter.html">
+      <topic label="Parsing Support" href="Parsing_Support.html"/>
+      <topic label="PARSE Pattern Value Types" href="PARSE_Pattern_Value_Types.html">
+         <topic label="ParsePattern Definitions" href="ParsePattern_Definitions.html"/>
+      </topic>
+      <topic label="NLP RECORD and TRANSFORM Functions" href="NLP_RECORD_and_TRANSFORM_Functions.html">
+         <topic label="Pattern References" href="Pattern_References.html"/>
+      </topic>
+      <topic label="XML Parsing RECORD and TRANSFORM Functions" href="XML_Parsing_RECORD_and_TRANSFORM_Functions.html"/>
+   </topic>
+   <topic label="Reserved Keywords" href="Reserved_Keywords.html">
+      <topic label="ALL" href="ALL.html"/>
+      <topic label="EXCEPT" href="EXCEPT.html"/>
+      <topic label="EXPORT" href="EXPORT.html"/>
+      <topic label="GROUP keyword" href="GROUP.html"/>
+      <topic label="IMPORT" href="IMPORT.html"/>
+      <topic label="KEYED and WILD" href="KEYED-WILD.html"/>
+      <topic label="LEFT and RIGHT" href="LEFT-RIGHT.html"/>
+      <topic label="LIKELY and UNLIKELY" href="likely.html"/>
+      <topic label="ROWS(LEFT) and ROWS(RIGHT)" href="ROWS-LEFT-RIGHT.html"/>
+      <topic label="SELF" href="SELF.html"/>
+      <topic label="SHARED" href="SHARED.html"/>
+      <topic label="SKIP" href="SKIP.html"/>
+      <topic label="TRUE and FALSE" href="TRUE_FALSE.html"/>
+   </topic>
+   <topic label="Special Structures" href="Special_Structures.html">
+      <topic label="BEGINC++ Structure" href="BEGINCplus_Structure.html">
+         <topic label="ECL to C++ Mapping" href="ECL_to_Cplus_Mapping.html"/>
+         <topic label="Available Options" href="BeginCPP_Available_Options.html"/>
+      </topic>
+      <topic label="EMBED Structure" href="EMBED_Structure.html"/>
+      <topic label="FUNCTION Structure" href="FUNCTION_Structure.html"/>
+      <topic label="FUNCTIONMACRO Structure" href="FUNCTIONMACRO_Structure.html"/>
+      <topic label="INTERFACE Structure" href="INTERFACE_Structure.html"/>
+      <topic label="MACRO Structure" href="MACRO_Structure.html"/>
+      <topic label="MODULE Structure" href="MODULE_Structure.html">
+         <topic label="Definition Visibility Rules" href="Attribute_Visibility_Rules.html"/>
+         <topic label="MODULE Side-Effect Actions" href="Side-Effect_Actions.html"/>
+         <topic label="Concrete vs. Abstract (VIRTUAL) Modules" href="Concrete_vs_Abstract_Modules.html"/>
+         <topic label="LIBRARY Modules" href="LIBRARY_Modules.html"/>
+      </topic>
+      <topic label="TRANSFORM Structure" href="TRANSFORM_Structure.html">
+         <topic label="Transformation Attribute Definitions" href="Transformation_Attribute_Definitions.html"/>
+         <topic label="TRANSFORM Functions" href="TRANSFORM_Functions.html"/>
+         <topic label="Inline TRANSFORMs" href="Inline_TRANSFORMs.html"/>
+         <topic label="Shorthand Inline TRANSFORMs" href="Shorthand_Inline_TRANSFORMs.html"/>
+      </topic>
+   </topic>
+   <topic label="Built-in Functions and Actions" href="Built-in_Functions_and_Actions.html">
+      <topic label="ABS" href="ABS.html"/>
+      <topic label="ACOS" href="ACOS.html"/>
+      <topic label="AGGREGATE" href="AGGREGATE.html">
+         <topic label="TRANSFORM Function Requirements - AGGREGATE" href="TRANSFORM_Function_Requirements_Aggregate.html"/>
+         <topic label="How AGGREGATE Works" href="How_Aggregate_Works.html"/>
+      </topic>
+      <topic label="ALLNODES" href="ALLNODES.html"/>
+      <topic label="APPLY" href="APPLY.html"/>
+      <topic label="ASCII" href="ASCII.html"/>
+      <topic label="ASIN" href="ASIN.html"/>
+      <topic label="ASSERT" href="ASSERT.html"/>
+      <topic label="ASSTRING" href="ASSTRING.html"/>
+      <topic label="ATAN" href="ATAN.html"/>
+      <topic label="ATAN2" href="ATAN2.html"/>
+      <topic label="AVE" href="AVE.html"/>
+      <topic label="BUILD" href="BUILD.html">
+         <topic label="Index BUILD Options" href="Index_BUILD_Options.html"/>
+         <topic label="BUILD an Access Index" href="BUILD_an_Access_Index.html"/>
+         <topic label="BUILD a Payload Index" href="BUILD_a_Payload_Index.html"/>
+         <topic label="BUILD from an INDEX Definition" href="BUILD_from_an_INDEX_Definition.html"/>
+         <topic label="BUILD a Query Library" href="BUILD_a_Query_Library.html"/>
+      </topic>
+      <topic label="CASE" href="CASE.html"/>
+      <topic label="CATCH" href="CATCH.html"/>
+      <topic label="CHOOSE" href="CHOOSE.html"/>
+      <topic label="CHOOSEN" href="CHOOSEN.html"/>
+      <topic label="CHOOSESETS" href="CHOOSESETS.html"/>
+      <topic label="CLUSTERSIZE" href="CLUSTERSIZE.html"/>
+      <topic label="COMBINE" href="COMBINE.html">
+         <topic label="COMBINE TRANSFORM Function Requirements" href="TRANSFORM_Function_Requirements.html"/>
+         <topic label="COMBINE Form 1" href="COMBINE_Form_1.html"/>
+         <topic label="COMBINE Form 2" href="COMBINE_Form_2.html"/>
+      </topic>
+      <topic label="CORRELATION" href="CORRELATION.html"/>
+      <topic label="COS" href="COS.html"/>
+      <topic label="COSH" href="COSH.html"/>
+      <topic label="COUNT" href="COUNT.html"/>
+      <topic label="COVARIANCE" href="COVARIANCE.html"/>
+      <topic label="CRON" href="CRON.html"/>
+      <topic label="DEDUP" href="DEDUP.html">
+         <topic label="Complex Record Set Conditions" href="Complex_Record_Set_Conditions.html"/>
+      </topic>
+      <topic label="DEFINE" href="DEFINE.html"/>
+      <topic label="DENORMALIZE" href="DENORMALIZE.html">
+         <topic label="DENORMALIZE TRANSFORM Function Requirements" href="TRANSFORM_Function_Requirements_Denormalize.html"/>
+      </topic>
+      <topic label="DISTRIBUTE" href="DISTRIBUTE.html">
+         <topic label="“Random” DISTRIBUTE" href="Random_DISTRIBUTE.html"/>
+         <topic label="Expression DISTRIBUTE" href="Expression_DISTRIBUTE.html"/>
+         <topic label="Index-based DISTRIBUTE" href="Index-based_DISTRIBUTE.html"/>
+         <topic label="Skew-based DISTRIBUTE" href="Skew-based_DISTRIBUTE.html"/>
+      </topic>
+      <topic label="DISTRIBUTED" href="DISTRIBUTED.html"/>
+      <topic label="DISTRIBUTION" href="DISTRIBUTION.html"/>
+      <topic label="EBCDIC" href="EBCDIC.html"/>
+      <topic label="ENTH" href="ENTH.html"/>
+      <topic label="ERROR" href="ERROR.html"/>
+      <topic label="EVALUATE" href="EVALUATE.html">
+         <topic label="EVALUATE action" href="EVALUATE_action.html"/>
+         <topic label="EVALUATE function" href="EVALUATE_function.html"/>
+         <topic label="Accessing Field-level Data in a Specific Record" href="Accessing_Field-level_Data_in_a_Specific_Record.html"/>
+      </topic>
+      <topic label="EVENT" href="EVENT.html"/>
+      <topic label="EVENTNAME" href="EVENTNAME.html"/>
+      <topic label="EVENTEXTRA" href="EVENTEXTRA.html"/>
+      <topic label="EXISTS" href="EXISTS.html"/>
+      <topic label="EXP" href="EXP.html"/>
+      <topic label="FAIL" href="FAIL.html"/>
+      <topic label="FAILCODE" href="FAILCODE.html"/>
+      <topic label="FAILMESSAGE" href="FAILMESSAGE.html"/>
+      <topic label="FETCH" href="FETCH.html">
+         <topic label="FETCH TRANSFORM Function Requirements" href="TRANSFORM_Function_Requirements_Fetch.html"/>
+      </topic>
+      <topic label="FROMJSON" href="FROMJSON.html"/>
+      <topic label="FROMUNICODE" href="FROMUNICODE.html"/>
+      <topic label="FROMXML" href="FROMXML.html"/>
+      <topic label="GETENV" href="GETENV.html"/>
+      <topic label="GLOBAL" href="GLOBAL.html"/>
+      <topic label="GRAPH" href="GRAPH.html"/>
+      <topic label="GROUP" href="GROUP_function.html"/>
+      <topic label="HASH" href="HASH.html"/>
+      <topic label="HASH32" href="HASH32.html"/>
+      <topic label="HASH64" href="HASH64.html"/>
+      <topic label="HASHCRC" href="HASHCRC.html"/>
+      <topic label="HASHMD5" href="HASHMD5.html"/>
+      <topic label="HAVING" href="HAVING.html"/>
+      <topic label="HTTPCALL" href="HTTPCALL.html"/>
+      <topic label="IF" href="IF.html"/>
+      <topic label="IFF" href="IFF.html"/>
+      <topic label="IMPORT" href="IMPORT_function.html"/>
+      <topic label="INTFORMAT" href="INTFORMAT.html"/>
+      <topic label="ISVALID" href="ISVALID.html"/>
+      <topic label="ITERATE" href="ITERATE.html">
+         <topic label="TRANSFORM Function Requirements - ITERATE" href="TRANSFORM_Function_Requirements_Iterate.html"/>
+      </topic>
+      <topic label="JOIN" href="JOIN.html">
+         <topic label="JOIN Two Datasets" href="JOIN_Two_Datasets.html"/>
+         <topic label="Matching Logic - JOIN" href="Matching_Logic.html"/>
+         <topic label="Options" href="Options.html"/>
+         <topic label="Keyed Joins" href="Keyed_Joins.html"/>
+         <topic label="Join Logic" href="Join_Logic.html"/>
+         <topic label="TRANSFORM Function Requirements - JOIN" href="TRANSFORM_Function_Requirements_Join.html"/>
+         <topic label="Join Types: Two Datasets" href="Join_Types.html"/>
+         <topic label="JOIN Set of Datasets" href="JOIN_Set_of_Datasets.html"/>
+         <topic label="Record Matching Logic" href="Matching_Logic_joincondition.html"/>
+         <topic label="TRANSFORM Function Requirements - JOIN setofdatasets" href="TRANSFORM_Function_Requirements_parameters.html"/>
+         <topic label="Join Types: setofdatasets" href="Join_Types_joincondition.html"/>
+      </topic>
+      <topic label="KEYDIFF" href="KEYDIFF.html"/>
+      <topic label="KEYPATCH" href="KEYPATCH.html"/>
+      <topic label="KEYUNICODE" href="KEYUNICODE.html"/>
+      <topic label="LENGTH" href="LENGTH.html"/>
+      <topic label="LIBRARY" href="LIBRARY.html"/>
+      <topic label="LIMIT" href="LIMIT.html"/>
+      <topic label="LN" href="LN.html"/>
+      <topic label="LOADXML" href="LOADXML.html"/>
+      <topic label="LOCAL" href="LOCAL.html"/>
+      <topic label="LOG" href="LOG.html"/>
+      <topic label="LOOP" href="LOOP.html">
+         <topic label="The PARALLEL Option" href="The_PARALLEL_Option.html"/>
+      </topic>
+      <topic label="MAP" href="MAP.html"/>
+      <topic label="MAX" href="MAX.html"/>
+      <topic label="MERGE" href="MERGE.html"/>
+      <topic label="MERGEJOIN" href="MERGEJOIN.html">
+         <topic label="Matching Logic" href="Matching_Logic_mergejoin.html"/>
+         <topic label="Join Types:" href="Join_Types_Mergejoin.html"/>
+      </topic>
+      <topic label="MIN" href="MIN.html"/>
+      <topic label="NOLOCAL" href="NOLOCAL.html"/>
+      <topic label="NONEMPTY" href="NONEMPTY.html"/>
+      <topic label="NORMALIZE" href="NORMALIZE.html">
+         <topic label="NORMALIZE Form 1" href="NORMALIZE_Form_1.html"/>
+         <topic label="TRANSFORM Function Requirements for Form 1" href="TRANSFORM_Function_Requirements_for_Form_1.html"/>
+         <topic label="NORMALIZE Form 2" href="NORMALIZE_Form_2.html"/>
+         <topic label="TRANSFORM Function Requirements for Form 2" href="TRANSFORM_Function_Requirements_for_Form_2.html"/>
+      </topic>
+      <topic label="NOFOLD" href="NOFOLD.html"/>
+      <topic label="NOTHOR" href="NOTHOR.html"/>
+      <topic label="NOTIFY" href="NOTIFY.html"/>
+      <topic label="ORDERED" href="ORDERED.html"/>
+      <topic label="OUTPUT" href="OUTPUT.html">
+         <topic label="OUTPUT Field Names" href="OUTPUT_Field_Names.html"/>
+         <topic label="OUTPUT Thor/Flat Files" href="OUTPUT_Thor-Flat_Files.html"/>
+         <topic label="OUTPUT CSV Files" href="OUTPUT_CSV_Files.html"/>
+         <topic label="OUTPUT XML Files" href="OUTPUT_XML_Files.html"/>
+         <topic label="OUTPUT JSON Files" href="OUTPUT_JSON_Files.html"/>
+         <topic label="OUTPUT PIPE Files" href="OUTPUT_PIPE_Files.html"/>
+         <topic label="Named OUTPUT" href="Named_OUTPUT.html"/>
+         <topic label="OUTPUT Scalar Values" href="OUTPUT_Scalar_Values.html"/>
+         <topic label="OUTPUT Workunit Files" href="OUTPUT_Workunit_Files.html"/>
+      </topic>
+      <topic label="PARALLEL" href="PARALLEL_function.html"/>
+      <topic label="PARSE" href="PARSE.html">
+         <topic label="PARSE Text Data" href="PARSE_Text_Data.html"/>
+         <topic label="PARSE XML Data" href="PARSE_XML_Data.html"/>
+         <topic label="Extended PARSE Examples" href="Extended_PARSE_Examples.html"/>
+      </topic>
+      <topic label="PIPE" href="PIPE.html"/>
+      <topic label="POWER" href="POWER.html"/>
+      <topic label="PRELOAD" href="PRELOAD.html"/>
+      <topic label="PROCESS" href="PROCESS.html">
+         <topic label="TRANSFORM Function Requirements - PROCESS" href="TRANSFORM_Function_Requirements_Process.html"/>
+      </topic>
+      <topic label="PROJECT" href="PROJECT.html">
+         <topic label="TRANSFORM Function Requirements - PROJECT" href="TRANSFORM_Function_Requirements_Project.html"/>
+         <topic label="PROJECT - Module" href="BuiltinFunction_PROJECT.html"/>
+      </topic>
+      <topic label="PULL" href="PULL.html"/>
+      <topic label="RANDOM" href="RANDOM.html"/>
+      <topic label="RANGE" href="RANGE.html"/>
+      <topic label="RANK" href="RANK.html"/>
+      <topic label="RANKED" href="RANKED.html"/>
+      <topic label="REALFORMAT" href="REALFORMAT.html"/>
+      <topic label="REGEXFIND" href="REGEXFIND.html"/>
+      <topic label="REGEXFINDSET" href="REGEXFINDSET.html"/>
+      <topic label="REGEXREPLACE" href="REGEXREPLACE.html"/>
+      <topic label="REGROUP" href="REGROUP.html"/>
+      <topic label="REJECTED" href="REJECTED.html"/>
+      <topic label="ROLLUP" href="ROLLUP.html">
+         <topic label="TRANSFORM Function Requirements - ROLLUP" href="TRANSFORM_Function_Requirements_Rollup.html"/>
+         <topic label="ROLLUP Form 1" href="ROLLUP_Form_1.html"/>
+         <topic label="ROLLUP Form 2" href="ROLLUP_Form_2.html"/>
+         <topic label="ROLLUP Form 3" href="ROLLUP_Form_3.html"/>
+      </topic>
+      <topic label="ROUND" href="ROUND.html"/>
+      <topic label="ROUNDUP" href="ROUNDUP.html"/>
+      <topic label="ROW" href="ROW.html">
+         <topic label="ROW Form 1" href="ROW_Form_1.html"/>
+         <topic label="ROW Form 2" href="ROW_Form_2.html"/>
+         <topic label="ROW Form 3" href="ROW_Form_3.html"/>
+      </topic>
+      <topic label="ROWDIFF" href="ROWDIER.html"/>
+      <topic label="SAMPLE" href="SAMPLE.html"/>
+      <topic label="SEQUENTIAL" href="SEQUENTIAL.html"/>
+      <topic label="SET" href="SET.html"/>
+      <topic label="SIN" href="SIN.html"/>
+      <topic label="SINH" href="SINH.html"/>
+      <topic label="SIZEOF" href="SIZEOF.html"/>
+      <topic label="SOAPCALL" href="SOAPCALL.html">
+         <topic label="SOAPCALL Function" href="SOAPCALL_Function.html"/>
+         <topic label="SOAPCALL Action" href="SOAPCALL_Action.html"/>
+      </topic>
+      <topic label="SORT" href="SORT.html">
+         <topic label="Sorting Algorithms" href="Sorting_Algorithms.html"/>
+         <topic label="Quick Sort" href="Quick_Sort.html"/>
+         <topic label="Insertion Sort" href="Insertion_Sort.html"/>
+         <topic label="Heap Sort" href="Heap_Sort.html"/>
+         <topic label="Stable vs. Unstable" href="Stable_vs_Unstable.html"/>
+         <topic label="Performance Considerations" href="Performance_Considerations.html">
+            <topic label="CPU time vs. Total time" href="CPU_time_vs_Total_time.html"/>
+            <topic label="Spilling to disk" href="Spilling_to_disk.html"/>
+            <topic label="How sorting affects JOINs" href="How_sorting_affects_JOINs.html"/>
+         </topic>
+      </topic>
+      <topic label="SORTED" href="SORTED.html"/>
+      <topic label="SQRT" href="SQRT.html"/>
+      <topic label="STEPPED" href="STEPPED.html"/>
+      <topic label="STORED" href="STORED.html"/>
+      <topic label="SUM" href="SUM.html"/>
+      <topic label="TABLE" href="TABLE.html"/>
+      <topic label="TAN" href="TAN.html"/>
+      <topic label="TANH" href="TANH.html"/>
+      <topic label="THISNODE" href="THISNODE.html"/>
+      <topic label="TOJSON" href="TOJSON.html"/>
+      <topic label="TOPN" href="TOPN.html"/>
+      <topic label="TOUNICODE" href="TOUNICODE.html"/>
+      <topic label="TOXML" href="TOXML.html"/>
+      <topic label="TRANSFER" href="TRANSFER.html"/>
+      <topic label="TRIM" href="TRIM.html"/>
+      <topic label="TRUNCATE" href="TRUNCATE.html"/>
+      <topic label="UNGROUP" href="UNGROUP.html"/>
+      <topic label="UNICODEORDER" href="UNICODEORDER.html"/>
+      <topic label="UNORDERED" href="UNORDERED.html"/>
+      <topic label="VARIANCE" href="VARIANCE.html"/>
+      <topic label="WAIT" href="WAIT.html"/>
+      <topic label="WHEN" href="WHEN_Function.html"/>
+      <topic label="WHICH" href="WHICH.html"/>
+      <topic label="WORKUNIT" href="WORKUNIT.html"/>
+      <topic label="XMLDECODE" href="XMLDECODE.html"/>
+      <topic label="XMLENCODE" href="XMLENCODE.html"/>
+   </topic>
+   <topic label="Workflow Services" href="Workflow_Services.html">
+      <topic label="Workflow Overview" href="Workflow_Overview.html"/>
+      <topic label="CHECKPOINT" href="CHECKPOINT.html"/>
+      <topic label="DEPRECATED" href="DEPRECATED.html"/>
+      <topic label="FAILURE" href="FAILURE.html"/>
+      <topic label="GLOBAL - Service" href="GLOBAL_workflow_service.html"/>
+      <topic label="INDEPENDENT" href="INDEPENDENT.html"/>
+      <topic label="ONWARNING" href="ONWARNING.html"/>
+      <topic label="PERSIST" href="PERSIST.html"/>
+      <topic label="PRIORITY" href="PRIORITY.html"/>
+      <topic label="RECOVERY" href="RECOVERY.html"/>
+      <topic label="STORED - Workflow Service" href="STORED_workflow_service.html"/>
+      <topic label="SUCCESS" href="SUCCESS.html"/>
+      <topic label="WHEN" href="WHEN.html"/>
+   </topic>
+   <topic label="Template Language" href="Templates.html">
+      <topic label="Template Language Overview" href="Template_Language_Overview.html">
+         <topic label="Template Language Statements" href="Template_Language_Statements.html"/>
+         <topic label="Template Symbols" href="Template_Symbols.html"/>
+      </topic>
+      <topic label="#APPEND" href="_APPEND.html"/>
+      <topic label="#CONSTANT" href="_CONSTANT.html"/>
+      <topic label="#DECLARE" href="_DECLARE.html"/>
+      <topic label="#DEMANGLE" href="_DEMANGLE.html"/>
+      <topic label="#ERROR" href="_ERROR.html"/>
+      <topic label="#EXPAND" href="_EXPAND.html"/>
+      <topic label="#EXPORT" href="_EXPORT.html"/>
+      <topic label="#EXPORTXML" href="_EXPORTXML.html"/>
+      <topic label="#FOR" href="_FOR.html"/>
+      <topic label="#GETDATATYPE" href="_GETDATATYPE.html"/>
+      <topic label="#IF" href="_IF.html"/>
+      <topic label="#INMODULE" href="_INMODULE.html"/>
+      <topic label="#LOOP / #BREAK" href="_LOOP-_BREAK.html"/>
+      <topic label="#MANGLE" href="_MANGLE.html"/>
+      <topic label="#ONWARNING" href="_ONWARNING.html"/>
+      <topic label="#OPTION" href="_OPTION.html">
+         <topic label="Definition of Terms" href="Definition_of_Terms.html"/>
+         <topic label="Available options" href="OPTION_Available_Options.html"/>
+      </topic>
+      <topic label="#SET" href="_SET.html"/>
+      <topic label="#STORED" href="_STORED.html"/>
+      <topic label="#TEXT" href="_TEXT.html"/>
+      <topic label="#UNIQUENAME" href="_UNIQUENAME.html"/>
+      <topic label="#WARNING" href="_WARNING.html"/>
+      <topic label="#WEBSERVICE" href="_WEBSERVICE.html"/>
+      <topic label="#WORKUNIT" href="_WORKUNIT.html"/>
+   </topic>
+   <topic label="External Services" href="External_Services.html">
+      <topic label="SERVICE Structure" href="SERVICE_Structure.html"/>
+      <topic label="CONST" href="CONST.html"/>
+      <topic label="External Service Implementation" href="External_Service_Implementation.html">
+         <topic label=".SO Initialization" href="DLL_Initialization.html"/>
+         <topic label="Entry Points" href="Entry_Points.html"/>
+         <topic label="SERVICE Structure - external" href="SERVICE_Structure_external.html"/>
+         <topic label="Keywords" href="Keywords.html"/>
+         <topic label="Data Types" href="Data_Types.html"/>
+         <topic label="Passing Set Parameters to a Service" href="Passing_Set_Parameters_to_a_Service.html"/>
+         <topic label="Plug-In Requirements" href="Plug-In_Requirements.html"/>
+         <topic label="Deployment" href="Deployment.html"/>
+         <topic label="Constraints" href="Constraints.html"/>
+         <topic label="An Example Service" href="An_Example_Service.html"/>
+         <topic label="ECL definitions" href="ECL_definitions.html"/>
+         <topic label=".SO code module:" href="DLL_code_module.html"/>
+      </topic>
+   </topic>
+   <topic label="Creative Commons License" href="appendixA.html"/>
+   <topic label="Index" href="ix01.html"/>
+</toc>

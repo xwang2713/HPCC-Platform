@@ -1,0 +1,24 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>FROMJSON</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Built-in_Functions_and_Actions.html" title="Built-in Functions and Actions"><link rel="prev" href="TRANSFORM_Function_Requirements_Fetch.html" title="FETCH TRANSFORM Function Requirements"><link rel="next" href="FROMUNICODE.html" title="FROMUNICODE"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">FROMJSON</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="TRANSFORM_Function_Requirements_Fetch.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Built-in Functions and Actions</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="FROMUNICODE.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="FROMJSON"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="FROMJSON"></a>FROMJSON</h2></div></div></div><p><span class="bold"><strong>FROMJSON<a class="indexterm" name="d0e17333"></a><a class="indexterm" name="d0e17336"></a>(</strong></span><span class="emphasis"><em> record, jsonstring </em></span>,<span class="bold"><strong>[ONFAIL(</strong></span><span class="emphasis"><em>transform</em></span> <span class="bold"><strong>)])</strong></span></p><div class="informaltable"><table border="1"><colgroup><col width="13%"><col width="87%"></colgroup><tbody><tr><td><span class="emphasis"><em>record</em></span></td><td>The RECORD structure to produce. Each field should specify the XPATH to the data in the json<span class="emphasis"><em>string</em></span> that it should hold. If omitted, the lower-cased field names are used.</td></tr><tr><td><span class="emphasis"><em>jsonstring</em></span></td><td>A string containing the JSON to convert.</td></tr><tr><td>ONFAIL</td><td>Optional. Specifies a transform to handle errors in the JSON.</td></tr><tr><td><span class="emphasis"><em>transform</em></span></td><td>A TRANSFORM structure matching the record structure of the first parameter.</td></tr><tr><td>Return:</td><td>FROMJSON returns a single row (record).</td></tr></tbody></table></div><p>The <span class="bold"><strong>FROMJSON </strong></span>function returns a single row (record) in the <span class="emphasis"><em>record</em></span> format from the specified json<span class="emphasis"><em>string</em></span>. This may be used anywhere a single row can be used (similar to the ROW function).</p><p>Example:</p><pre class="programlisting">namesRec := RECORD  
+  UNSIGNED2 EmployeeID{xpath('EmpID')};  
+  STRING10 Firstname{xpath('FName')};  
+  STRING10 Lastname{xpath('LName')}; 
+END; 
+x := '{"FName": "George" , "LName": "Jetson", "EmpID": 42}'; 
+rec := FROMJSON(namesRec,x); 
+OUTPUT(rec);
+</pre><p>Example with Error handling and bad JSON:</p><pre class="programlisting">namesRec := RECORD  
+  UNSIGNED2 EmployeeID{xpath('EmpID')};  
+  STRING20 Firstname{xpath('FName')};  
+  STRING20 Lastname{xpath('LName')}; 
+END; 
+x := '{"FName": "malformedJSON""George" , "LName": "Jetson", "EmpID": 42}'; 
+
+namesRec createFailure() := 
+  TRANSFORM
+    SELF.FirstName := FAILMESSAGE;
+    SELF := [];
+  END;
+rec := FROMJSON(namesRec,x,ONFAIL(createFailure())); 	
+OUTPUT(rec);</pre><p>See Also: <a class="link" href="ROW.html" title="ROW">ROW</a>, <a class="link" href="TOJSON.html" title="TOJSON">TOJSON</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="TRANSFORM_Function_Requirements_Fetch.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Built-in_Functions_and_Actions.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="FROMUNICODE.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">FETCH TRANSFORM Function Requirements&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;FROMUNICODE</td></tr></table></div></body></html>

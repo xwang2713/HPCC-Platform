@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<toc label="Six Degrees of Kevin Bacon" topic="index.html">
+   <topic label="Working with Data" href="Working_with_Data.html">
+      <topic label="Introduction" href="Working_with_data_Intro.html"/>
+      <topic label="Processing the Data" href="Processing_the_data.html">
+         <topic label="We get a data file" href="Get_a_data_file.html"/>
+         <topic label="Analyze the data file to understand its format and its contents" href="Analyze_the_data.html"/>
+         <topic label="Load the Incoming Data File to your Landing Zone" href="Load_the_Incoming_Data.html"/>
+         <topic label="Spray the Data File to your Data Refinery (Thor) Cluster" href="Spray_the_Data_to_THOR.html"/>
+         <topic label="Working With the Data" href="Working_with_the_Data.html">
+            <topic label="Examine the Data" href="Examine_The_Data.html"/>
+         </topic>
+         <topic label="Processing the Data : Extract, Transform, and Load" href="Processing_the_Data_E-T-L.html"/>
+      </topic>
+      <topic label="Getting Useful Information from Data" href="Getting_Useful_Info_from_Data.html">
+         <topic label="Links and Degrees of Separation" href="Links_and_Degrees_of_Separation.html"/>
+      </topic>
+   </topic>
+   <topic label="Next Steps" href="Next_Steps.html"/>
+</toc>

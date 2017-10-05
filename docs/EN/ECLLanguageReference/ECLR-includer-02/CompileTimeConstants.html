@@ -1,0 +1,23 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Compile Time Constants</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Constants.html" title="Constants"><link rel="prev" href="Numeric.html" title="Numeric"><link rel="next" href="Attribute_Definition.html" title="Definitions"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">Compile Time Constants</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="Numeric.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">Constants</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="Attribute_Definition.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect2" title="Compile Time Constants"><div class="titlepage"><div><div><h3 class="title"><a name="CompileTimeConstants"></a>Compile Time Constants</h3></div></div></div><p>The following system constants <a class="indexterm" name="d0e419"></a><a class="indexterm" name="d0e422"></a>are available at compile time. These can be useful in creating conditional code.</p><div class="informaltable"><table border="1"><colgroup><col width="26%"><col width="74%"></colgroup><tbody><tr><td><span class="emphasis"><em>__ECL_VERSION__<a class="indexterm" name="d0e436"></a></em></span></td><td>A STRING containing the value of the platform version. For example, '6.4.0'</td></tr><tr><td><span class="emphasis"><em>__ECL_VERSION_MAJOR__ <a class="indexterm" name="d0e445"></a></em></span></td><td>An INTEGER containing the value of the major portion of the platform version. For example, '6'</td></tr><tr><td><span class="emphasis"><em>__ECL_VERSION_MINOR__<a class="indexterm" name="d0e454"></a></em></span></td><td>An INTEGER containing the value of the minor portion of the platform version. For example, '4'</td></tr><tr><td><span class="emphasis"><em>__ECL_LEGACY_MODE__<a class="indexterm" name="d0e463"></a></em></span></td><td>A BOOLEAN value indicating if it is being compiled with legacy IMPORT semantics.</td></tr><tr><td><span class="emphasis"><em>__OS__<a class="indexterm" name="d0e472"></a></em></span></td><td>A STRING indicating the operating system to which it is being compiled. (Available values are: 'windows' or 'linux')</td></tr><tr><td><span class="emphasis"><em>__STAND_ALONE__<a class="indexterm" name="d0e481"></a></em></span></td><td>A BOOLEAN value indicating if it is being compiled to a stand-alone executable.</td></tr></tbody></table></div><p>Example:</p><pre class="programlisting">IMPORT STD;
+  STRING14 fGetDateTimeString() :=
+  #IF(__ECL_VERSION_MAJOR__ &gt; 5) or ((__ECL_VERSION_MAJOR__ = 5) AND (__ECL_VERSION_MINOR__ &gt;= 2))
+    STD.Date.SecondsToString(STD.Date.CurrentSeconds(true), '%Y%m%d%H%M%S');
+  #ELSE
+    FUNCTION
+      string14 fGetDimeTime():= // 14 characters returned
+      BEGINC++
+      #option action
+      struct tm localt;         // localtime in "tm" structure
+      time_t timeinsecs;        // variable to store time in secs
+      time(&amp;timeinsecs);  
+      localtime_r(&amp;timeinsecs,&amp;localt);
+      char temp[15];
+      strftime(temp , 15, "%Y%m%d%H%M%S",&nbsp;&amp;amp;localt); // Formats the localtime to YYYYMMDDhhmmss 
+      strncpy(__result, temp, 14);
+      ENDC++;
+      RETURN fGetDimeTime();
+    END;
+  #END;
+</pre></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="Numeric.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Constants.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="Attribute_Definition.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">Numeric&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;Definitions</td></tr></table></div></body></html>

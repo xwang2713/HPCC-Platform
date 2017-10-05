@@ -1,0 +1,21 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Scope Resolution Operator</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Field_and_Attribute_Qualification.html" title="Field and Definition Qualification"><link rel="prev" href="Fields_in_Datasets.html" title="Fields in Datasets"><link rel="next" href="Actions_and_Attributes.html" title="Actions and Definitions"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">Scope Resolution Operator</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="Fields_in_Datasets.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">Field and Definition Qualification</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="Actions_and_Attributes.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect2" title="Scope Resolution Operator"><div class="titlepage"><div><div><h3 class="title"><a name="Scope_Resolution_Operator"></a>Scope Resolution Operator</h3></div></div></div><p>Identifiers are looked up in the following order:</p><p>1. The currently active dataset, if any</p><p>2. The current definition being defined, and any parameters it is based on</p><p>3. Any definitions or parameters of any MODULE or FUNCTION structure that contains the current definition</p><p>This might mean that the definition or parameter you want to access isn't picked because it is hidden as in a parameter or private definition name clashing with the name of a dataset field.</p><p>It would be better to rename the parameter or private definition so the name clash cannot occur, but sometimes this is not possible.</p><p>You may direct access to a different match by qualifying the field name with the scope resolution operator (the carat (^) character), using it once for each step in the order listed above that you need to skip.</p><p>This example shows the qualification order necessary to reach a specific definition/parameter:</p><pre class="programlisting">ds := DATASET([1], { INTEGER SomeValue });
+
+INTEGER SomeValue := 10; //local definition
+
+myModule(INTEGER SomeValue) := MODULE
+
+  EXPORT anotherFunction(INTEGER SomeValue) := FUNCTION
+    tbl := TABLE(ds,{SUM(GROUP, someValue), // 1 - DATASET field
+                     SUM(GROUP, ^.someValue), // 84 - FUNCTION parameter
+                     SUM(GROUP, ^^.someValue), // 42 - MODULE parameter
+                     SUM(GROUP, ^^^.someValue), // 10 - local definition
+                 0});
+     RETURN<a class="indexterm" name="d0e1336"></a> tbl;
+   END;
+
+   EXPORT result := anotherFunction(84);
+   END;
+
+OUTPUT(myModule(42).result);</pre><p>In this example there are four instances of the name "SomeValue":</p><p>a field in a DATASET.</p><p>a local definition</p><p>a parameter to a MODULE structure</p><p>a parameter to a FUNCTION structure</p><p>The code in the TABLE function<a class="indexterm" name="d0e1352"></a> shows how to reference each separate instance.</p><p>While this syntax allows exceptions where you need it, creating another definition with a different name is the preferred solution.</p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="Fields_in_Datasets.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Field_and_Attribute_Qualification.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="Actions_and_Attributes.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">Fields in Datasets&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;Actions and Definitions</td></tr></table></div></body></html>

@@ -1,0 +1,49 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Run the query on Thor</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="Running HPCC in a Virtual Machine"><link rel="up" href="VM_RoxieExampleAnagram2.html" title="Roxie Example: Anagram2"><link rel="prev" href="VM_Spray_the_Data_to_THOR.html" title="Spray the Data File to your Data Refinery (Thor) Cluster"><link rel="next" href="VM_Compile-Publish2Roxie.html" title="Compile and Publish the query to Roxie"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">Run the query on Thor<em class="parameter"><code></code></em></th></tr><tr><td width="20%" align="left"><a accesskey="p" href="VM_Spray_the_Data_to_THOR.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">Roxie Example: Anagram2</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="VM_Compile-Publish2Roxie.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect3" title="Run the query on Thor"><div class="titlepage"><div><div><h4 class="title"><a name="VM_RunTheQueryOnThor"></a>Run the query on Thor<em class="parameter"><code></code></em></h4></div></div></div><div class="orderedlist"><ol class="orderedlist" type="1"><li class="listitem"><p>Open a new <span class="bold"><strong>Builder Window</strong></span> (CTRL+N) and write the following code:</p><pre class="programlisting">IMPORT Std;
+layout_word_list := record
+  string word;
+end;
+File_Word_List := dataset('~thor::word_list_csv', layout_word_list,
+                          CSV(heading(1),separator(','),quote('')));
+STRING Word := 'teacher' :STORED('Word');
+STRING SortString(STRING input) := FUNCTION
+  OneChar := RECORD
+    STRING c;
+  END;
+  OneChar MakeSingle(OneChar L, unsigned pos) := TRANSFORM
+    SELF.c := L.c[pos];
+  END;
+  Split := NORMALIZE(DATASET([input],OneChar), LENGTH(input),
+  MakeSingle(LEFT,COUNTER));
+  SortedSplit := SORT(Split, c);
+  OneChar Recombine(OneChar L, OneChar R) := TRANSFORM
+    SELF.c := L.c+R.c;
+  END;
+  Recombined := ROLLUP(SortedSplit, Recombine(LEFT, RIGHT),ALL);
+  RETURN Recombined[1].c;
+END;
+
+STRING CleanedWord := SortString(TRIM(Std.Str.ToUpperCase(Word)));
+
+R := RECORD
+  STRING SoFar {MAXLENGTH(200)};
+  STRING Rest {MAXLENGTH(200)};
+END;
+Init := DATASET([{'',CleanedWord}],R);
+R Pluck1(DATASET(R) infile) := FUNCTION
+  R TakeOne(R le, UNSIGNED1 c) := TRANSFORM
+    SELF.SoFar := le.SoFar + le.Rest[c];
+    SELF.Rest := le.Rest[..c-1]+le.Rest[c+1..];
+    // Boundary Conditions
+    // handled automatically
+  END;
+  RETURN DEDUP(NORMALIZE(infile,LENGTH(LEFT.Rest),TakeOne(LEFT,COUNTER)));
+END;
+L := LOOP(Init,LENGTH(CleanedWord),Pluck1(ROWS(LEFT)));
+ValidWords := JOIN(L,File_Word_List,
+LEFT.SoFar=Std.Str.ToUpperCase(RIGHT.Word),TRANSFORM(LEFT));
+OUTPUT(CleanedWord);
+COUNT(ValidWords);
+OUTPUT(ValidWords)
+</pre></li><li class="listitem"><p>Select <span class="bold"><strong>thor</strong></span> as your target cluster.</p></li><li class="listitem"><p>Press the syntax check button on the main toolbar (or press F7)</p></li><li class="listitem"><p>Press the <span class="bold"><strong>Submit</strong></span><span class="bold"><strong> </strong></span>button.</p></li><li class="listitem"><p>When it completes, select the Workunit<span class="bold"><strong> </strong></span>tab, then select the Result tab.</p></li><li class="listitem"><p>Examine the result.</p></li></ol></div></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="VM_Spray_the_Data_to_THOR.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="VM_RoxieExampleAnagram2.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="VM_Compile-Publish2Roxie.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">Spray the Data File to your <span class="emphasis"><em>Data Refinery (Thor) Cluster</em></span>&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;Compile and Publish the query to Roxie<em class="parameter"><code></code></em></td></tr></table></div></body></html>

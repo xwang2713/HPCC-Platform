@@ -1,0 +1,32 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Double</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="Standard Library Reference"><link rel="up" href="MetaphoneSupport.html" title="Metaphone Support"><link rel="prev" href="Secondary.html" title="Secondary"><link rel="next" href="Date_Handling.html" title="Date and Time Handling"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center"><span class="bold"><strong>Double</strong></span></th></tr><tr><td width="20%" align="left"><a accesskey="p" href="Secondary.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">Metaphone Support</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="Date_Handling.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="Double"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="Double"></a><span class="bold"><strong>Double</strong></span></h2></div></div></div><p><span class="bold"><strong>STD.Metaphone.Double<a class="indexterm" name="d0e8651"></a><a class="indexterm" name="d0e8654"></a><a class="indexterm" name="d0e8657"></a>( </strong></span>source <span class="bold"><strong>)</strong></span></p><p><span class="bold"><strong>STD.Metaphone3.Double<a class="indexterm" name="d0e8667"></a>( </strong></span>source <span class="bold"><strong>)</strong></span></p><div class="informaltable"><table border="1"><colgroup><col width="13%"><col width="87%"></colgroup><tbody><tr><td><span class="emphasis"><em>source</em></span></td><td>The string to process.</td></tr><tr><td>Return:<span class="emphasis"><em> </em></span></td><td>Double returns a STRING value.</td></tr></tbody></table></div><p>The <span class="bold"><strong>Double</strong></span> function returns a textual representation of the <span class="emphasis"><em>source</em></span> data, similar to a Soundex code. This function returns both return values from the Double Metaphone algorithm, concatenating the two into a single result string.</p><p>The <span class="bold"><strong>Metaphone3.Double</strong></span> function uses the newer Metaphone 3 libraries which improve phonetic encoding of English words, non-English words familiar to Americans, and first and last names commonly found in the United States (Enterprise Edition only).</p><p>Example:</p><pre class="programlisting">r := RECORD 
+  STRING source; 
+  STRING M1; 
+  STRING M2; 
+  STRING Mboth;
+END;
+
+r XF(ProgGuide.Person.File L) := TRANSFORM 
+  SELF.source := L.LastName;
+  SELF.M1     := STD.Metaphone.Primary( L.LastName ); 
+  SELF.M2     := STD.Metaphone.Secondary( L.LastName ); 
+  SELF.Mboth  := STD.Metaphone.Double( L.LastName );
+END;
+
+// Example using Metaphone 3 (available in Enterprise Edition)
+/* 
+r XF(ProgGuide.Person.File L) := TRANSFORM 
+     SELF.source := L.LastName;
+     SELF.M1     := STD.Metaphone3.Primary( L.LastName ); 
+     SELF.M2     := STD.Metaphone3.Secondary( L.LastName ); 
+     SELF.Mboth  := STD.Metaphone3.Double( L.LastName );
+   END;
+*/
+
+ds := PROJECT(ProgGuide.Person.File,XF(LEFT)); 
+
+COUNT(ds);
+COUNT(ds(M1 &lt;&gt; M2)); 
+OUTPUT(ds); 
+OUTPUT(ds(M1 &lt;&gt; M2));</pre></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="Secondary.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="MetaphoneSupport.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="Date_Handling.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top"><span class="bold"><strong>Secondary</strong></span>&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;<span class="emphasis"><em>Date and Time Handling</em></span></td></tr></table></div></body></html>

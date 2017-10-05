@@ -1,0 +1,119 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>.SO code module:</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="External_Service_Implementation.html" title="External Service Implementation"><link rel="prev" href="ECL_definitions.html" title="ECL definitions"><link rel="next" href="appendixA.html" title="Appendix&nbsp;A.&nbsp;Creative Commons License"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">.SO code module:</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="ECL_definitions.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">External Service Implementation</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="appendixA.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect2" title=".SO code module:"><div class="titlepage"><div><div><h3 class="title"><a name="DLL_code_module"></a>.SO code module:</h3></div></div></div><pre class="programlisting">//******************************************************
+  // hqlplugins.hpp : Defines standard values included
+              in
+  // the plugin header file.
+  //******************************************************
+  #ifndef __HQLPLUGIN_INCL
+  #define __HQLPLUGIN_INCL
+  
+  #define PLUGIN_VERSION 1
+  
+  #define PLUGIN_IMPLICIT_MODULE 1
+  #define PLUGIN_MODEL_MODULE 2
+  #define PLUGIN_.SO_MODULE 4
+  
+  struct ECLPluginDefinitionBlock
+  {
+    size_t size;
+    unsigned magicVersion;
+    const char *moduleName;
+    const char *ECL;
+    const char *Hole;
+    unsigned flags;
+    const char *version;
+    const char *description;
+  };
+  
+  typedef bool (*EclPluginDefinition) (ECLPluginDefinitionBlock *);
+  
+  #endif //__HQLPLUGIN_INCL</pre><pre class="programlisting">//******************************************************
+  // examplelib.hpp : Defines standard values included in
+  // the plugin code file.
+  //******************************************************
+  #ifndef EXAMPLELIB_INCL
+  #define EXAMPLELIB_INCL
+  
+  #ifdef _WIN32
+    #define EXAMPLELIB_CALL __cdecl
+    #ifdef EXAMPLELIB_EXPORTS
+       #define EXAMPLELIB_API __declspec(dllexport)
+    #else
+       #define EXAMPLELIB_API __declspec(dllimport)
+    #endif
+  #else
+    #define EXAMPLELIB_CALL
+    #define EXAMPLELIB_API
+  #endif
+  
+  #include "hqlplugins.hpp"
+  
+  extern "C" {
+  EXAMPLELIB_API bool getECLPluginDefinition(ECLPluginDefinitionBlock *pb);
+  EXAMPLELIB_API void setPluginContext(IPluginContext * _ctx);
+  EXAMPLELIB_API unsigned EXAMPLELIB_CALL elStringFind(unsigned srcLen,
+       const char * src, unsigned hitLen, const char * hit,
+       unsigned instance);
+  }
+  
+  #endif //EXAMPLELIB_INCL
+  </pre><p></p><pre class="programlisting">//******************************************************
+// examplelib.cpp : Defines the plugin code.
+//******************************************************
+#include &lt;time.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;ctype.h&gt;
+#include "examplelib.hpp"
+
+#define EXAMPLELIB_VERSION "EXAMPLELIB 1.0.00"
+
+static const char * HoleDefinition = NULL;
+
+static const char * EclDefinition =
+"export ExampleLib := SERVICE\n"
+"  string EchoString(const string src) : c, pure,fold,entrypoint='elEchoString'; \n"
+"END;";
+
+EXAMPLELIB_API bool getECLPluginDefinition(ECLPluginDefinitionBlock *pb) 
+{
+    //  Warning:    This function may be called without the plugin being loaded fully.  
+    //              It should not make any library calls or assume that dependent modules
+    //              have been loaded or that it has been initialised.
+    //
+    //              Specifically:  "The system does not call DllMain for process and thread 
+    //              initialization and termination.  Also, the system does not load 
+    //              additional executable modules that are referenced by the specified module."
+
+    if (pb-&gt;size != sizeof(ECLPluginDefinitionBlock))
+        return false;
+
+    pb-&gt;magicVersion = PLUGIN_VERSION;
+    pb-&gt;version = EXAMPLELIB_VERSION " $Revision: 62376 $";
+    pb-&gt;moduleName = "lib_examplelib";
+    pb-&gt;ECL = EclDefinition;
+    pb-&gt;Hole = HoleDefinition;
+    pb-&gt;flags = PLUGIN_IMPLICIT_MODULE;
+    pb-&gt;description = "ExampleLib example services library";
+    return true;
+}
+
+namespace nsExamplelib {
+    IPluginContext * parentCtx = NULL;
+}
+using namespace nsExamplelib;
+
+EXAMPLELIB_API void setPluginContext(IPluginContext * _ctx) { parentCtx = _ctx; }
+
+//-------------------------------------------------------------------------------------------------------------------------------------------
+
+EXAMPLELIB_API unsigned EXAMPLELIB_CALL elStringFind(unsigned srcLen,
+ const char * src, unsigned hitLen, const char * hit,
+ unsigned instance)
+{
+    tgt = (char *)CTXMALLOC(parentCtx, srcLen);
+    memcpy(tgt,src,srcLen);
+    tgtLen = srcLen;
+}
+</pre></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="ECL_definitions.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="External_Service_Implementation.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="appendixA.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">ECL definitions&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;Appendix&nbsp;A.&nbsp;Creative Commons License</td></tr></table></div></body></html>

@@ -1,0 +1,23 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Workflow Overview</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Workflow_Services.html" title="Workflow Services"><link rel="prev" href="Workflow_Services.html" title="Workflow Services"><link rel="next" href="CHECKPOINT.html" title="CHECKPOINT"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">Workflow Overview</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="Workflow_Services.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Workflow Services</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="CHECKPOINT.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="Workflow Overview"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="Workflow_Overview"></a>Workflow Overview</h2></div></div></div><p>Workflow control within ECL is generally handled automatically by the system. It spots which processes can happen in parallel, when synchronization is required, and when processes must happen in series. These workflow services allow exceptions to the normal flow of execution to be specified by the programmer to give extra control (such as the FAILURE clause).</p><p>Workflow operations are implicitly evaluated in a separate global scope from the code to which it is attached. Therefore, any values from the code to which it is attached (such as loop counters) are unavailable to the workflow service.</p><p>It should also be noted that when a workflow operation is present within multiple SEQUENTIAL statements only the first instance will be evaluated.</p><p>Example:</p><pre class="programlisting">
+Chesney := OUTPUT('"I am the one and only!" said Chesney')
+        : SUCCESS(OUTPUT('"Oh yeah, prove it?"'));
+
+SEQUENTIAL(
+              OUTPUT('"I am Spartacus" said one from the mob'),
+              Chesney
+          );
+
+SEQUENTIAL(
+              OUTPUT('"No, I am Spartacus" confessed another'),
+              Chesney,
+              OUTPUT('"Ok, so you are!"')
+          );
+  </pre><p>yields:</p><pre class="programlisting">
+"I am Spartacus" said one from the mob
+"I am the one and only!" said Chesney
+"Oh yeah, prove it?"
+"No, I am Spartacus" confessed another
+"Ok, so you are!"
+  </pre><p>See Also: <a class="link" href="SEQUENTIAL.html" title="SEQUENTIAL">SEQUENTIAL</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="Workflow_Services.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Workflow_Services.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="CHECKPOINT.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top"><span class="bold"><strong>Workflow Services</strong></span>&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;CHECKPOINT</td></tr></table></div></body></html>

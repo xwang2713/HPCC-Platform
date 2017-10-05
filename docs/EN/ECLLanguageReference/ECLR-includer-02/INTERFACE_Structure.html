@@ -1,0 +1,89 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>INTERFACE Structure</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Special_Structures.html" title="Special Structures"><link rel="prev" href="FUNCTIONMACRO_Structure.html" title="FUNCTIONMACRO Structure"><link rel="next" href="MACRO_Structure.html" title="MACRO Structure"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">INTERFACE Structure</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="FUNCTIONMACRO_Structure.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Special Structures</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="MACRO_Structure.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="INTERFACE Structure"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="INTERFACE_Structure"></a>INTERFACE Structure<a class="indexterm" name="d0e9426"></a></h2></div></div></div><p><span class="emphasis"><em>interfacename </em></span><span class="bold"><strong>[ (</strong></span><span class="emphasis"><em> parameters </em></span><span class="bold"><strong>) ] := INTERFACE<a class="indexterm" name="d0e9438"></a> [ (</strong></span><span class="emphasis"><em> inherit </em></span><span class="bold"><strong>) ]</strong></span><span class="bold"><strong> </strong></span></p><p><span class="emphasis"><em>members;</em></span></p><p><span class="bold"><strong>END;</strong></span></p><div class="informaltable"><table border="1"><colgroup><col width="21%" align="left"><col width="79%"></colgroup><tbody><tr><td align="left"><span class="emphasis"><em>interfacename</em></span></td><td>The ECL definition name of the interface.</td></tr><tr><td align="left"><span class="emphasis"><em>parameters</em></span></td><td><p>Optional. The input parameters to the interface.</p></td></tr><tr><td align="left"><span class="emphasis"><em>inherit</em></span></td><td>Optional. A comma-delimited list of INTERFACE structures whose <span class="emphasis"><em>members</em></span> to inherit. This may not be a passed parameter. Multiple <span class="emphasis"><em>inherited</em></span> interfaces may contain attributes with the same name if they are the same type and receive the same parameters, but if those <span class="emphasis"><em>inherited</em></span> <span class="emphasis"><em>members</em></span> have different values defined for them, the conflict must be resolved by overriding that <span class="emphasis"><em>member</em></span> in the current instance.</td></tr><tr><td align="left"><span class="emphasis"><em>members</em></span></td><td>Definitions, which may be EXPORTed or SHARED. These may be similar to fields defined in a RECORD structure where only the type and name are defined&#8212;the expression that defines the value may be left off (except in some cases where the expression itself defines the type of definition, like TRANSFORM structures). If no default value is defined for a <span class="emphasis"><em>member</em></span>, any MODULE derived from the INTERFACE must define a value for that <span class="emphasis"><em>member</em></span> before that MODULE can be used. These may not include other INTERFACE or abstract MODULE structures.</td></tr></tbody></table></div><p>The <span class="bold"><strong>INTERFACE </strong></span>structure defines a structured block of related <span class="emphasis"><em>members</em></span> that may be passed as a single parameter to complex queries, instead of passing each attribute individually. It is similar to a MODULE structure with the VIRTUAL option, except errors are given for private (not SHARED or EXPORTed) <span class="emphasis"><em>member</em></span> definitions.</p><p>An INTERFACE is an abstract structure&#8212;a concrete instance must be defined before it can be used in a query. A MODULE structure that inherits the INTERFACE and defines the values for the <span class="emphasis"><em>members</em></span> creates the concrete instance for use by the query.</p><p>Example:</p><pre class="programlisting">HeaderRec := RECORD
+  UNSIGNED4 RecID;
+  STRING20  company;
+  STRING25  address;
+  STRING25  city;
+  STRING2   state;
+  STRING5   zip;
+END;
+HeaderFile := DATASET([{1,'ABC Co','123 Main','Boca Raton','FL','33487'},
+                       {2,'XYZ Co','456 High','Jackson','MI','49202'},
+                       {3,'ABC Co','619 Eaton','Jackson','MI','49202'},
+                       {4,'XYZ Co','999 Yamato','Boca Raton','FL','33487'},
+                       {5,'Joes Eats','666 Slippery Lane','Nether','SC','12345'}
+                      ],HeaderRec);
+
+//define an interface
+IHeaderFileSearch := INTERFACE
+  EXPORT STRING20 company_val;
+  EXPORT STRING2   state_val;
+  EXPORT STRING25  city_val := '';
+END;
+
+//define a function that uses that interface
+FetchAddress(IHeaderFileSearch opts) := FUNCTION
+        
+  //define passed values tests
+  CompanyPassed := opts.company_val &lt;&gt; '';
+  StatePassed := opts.state_val &lt;&gt; '';
+  CityPassed := opts.city_val &lt;&gt; '';
+
+   //define passed value filters
+   NFilter := HeaderFile.Company = opts.company_val;
+   SFilter := HeaderFile.State = opts.state_val;
+   CFilter := HeaderFile.City = opts.city_val;
+
+   //define the actual filter to use based on the passed values
+   filter := MAP(CompanyPassed AND StatePassed AND CityPassed
+                    =&gt; NFilter AND SFilter AND CFilter,
+            CompanyPassed AND StatePassed
+                    =&gt; NFilter AND SFilter ,
+            CompanyPassed AND CityPassed
+                    =&gt; NFilter AND CFilter,
+            StatePassed AND CityPassed
+                    =&gt; SFilter AND CFilter,
+            CompanyPassed =&gt; NFilter ,
+            StatePassed =&gt; SFilter ,
+            CityPassed =&gt; CFilter,
+            TRUE);
+   RETURN HeaderFile(filter);
+END;
+        
+//*****************************************************************
+//then you can use the interface
+
+InRec  := {HeaderRec AND NOT [RecID,Address,Zip]};
+
+//this MODULE creates a concrete instance
+BatchHeaderSearch(InRec l) := MODULE(IHeaderFileSearch)
+  EXPORT STRING120 company_val := l.company;
+  EXPORT STRING2 state_val := l.state;
+  EXPORT STRING25 city_val := l.city;
+END;
+
+//that can be used like this       
+FetchAddress(BatchHeaderSearch(ROW({'ABC Co','',''},InRec))); 
+ 
+//or we can define an input dataset
+InFile := DATASET([{'ABC Co','Boca Raton','FL'},
+                   {'XYZ Co','Jackson','MI'},
+                   {'ABC Co','',''},
+                   {'XYZ Co','',''},
+                   {'Joes Eats','',''}
+                  ],InRec);
+
+//and an output nested child structure
+HeaderRecs := RECORD
+  UNSIGNED4 Pass;
+  DATASET(HeaderRec) Headers;
+END;
+
+//and allow PROJECT to run the query once for each record in InFile
+HeaderRecs XF(InRec L, INTEGER C) :=  TRANSFORM
+  SELF.Pass := C;
+  SELF.Headers := FetchAddress(BatchHeaderSearch(L));
+END;
+batchHeaderLookup := PROJECT(InFile,XF(LEFT,COUNTER));
+batchHeaderLookup;</pre><p>See Also: <a class="link" href="MODULE_Structure.html" title="MODULE Structure">MODULE Structure</a>, <a class="link" href="LIBRARY.html" title="LIBRARY">LIBRARY</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="FUNCTIONMACRO_Structure.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Special_Structures.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="MACRO_Structure.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">FUNCTIONMACRO Structure&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;MACRO Structure</td></tr></table></div></body></html>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<toc label="Running HPCC in a Virtual Machine" topic="index.html">
+   <topic label="Introduction" href="VM_Intro.html">
+      <topic label="System Requirements" href="VM_Requirements.html"/>
+   </topic>
+   <topic label="Getting the Tools and the VM Image" href="VM_GettingTheTools.html">
+      <topic label="VM VirtualBox" href="VM_VirtualBox.html">
+         <topic label="Download and Install the VM VirtualBox" href="Install_VM_VirtualBox.html"/>
+         <topic label="Import the HPCC Virtual Image File" href="VM_ImportVirtualImage.html">
+            <topic label="Guest Additions" href="VM_GuestAdditions.html"/>
+         </topic>
+      </topic>
+   </topic>
+   <topic label="Running the HPCC VM" href="VM_RunningHPCC_VM.html">
+      <topic label="Running the ECL IDE for the first time" href="VM_RunningTheIDE.html"/>
+      <topic label="Running the HPCC ECL IDE when you had a previous version installed" href="VM_RunningtheIDE_wPreviousVersion.html"/>
+      <topic label="Write some ECL" href="VM_WriteSomeECL.html"/>
+      <topic label="Working with ECL" href="VM_WorkingWithECL.html">
+         <topic label="ECL Example: Anagram1" href="VM_ECL_exampleAnagram1.html"/>
+         <topic label="Roxie Example: Anagram2" href="VM_RoxieExampleAnagram2.html">
+            <topic label="Download the word list" href="VM_DownloadTheWordList.html"/>
+            <topic label="Load the Dictionary File to your Landing Zone" href="VM_Load_the_Incoming_Data.html"/>
+            <topic label="Spray the Data File to your Data Refinery (Thor) Cluster" href="VM_Spray_the_Data_to_THOR.html"/>
+            <topic label="Run the query on Thor" href="VM_RunTheQueryOnThor.html"/>
+            <topic label="Compile and Publish the query to Roxie" href="VM_Compile-Publish2Roxie.html"/>
+            <topic label="Publish the Roxie query" href="VM_Deploy_the_Query_to_Roxie.html"/>
+            <topic label="Run the Roxie Query in WsECL" href="VM_Run_the_Roxie_Query.html"/>
+         </topic>
+      </topic>
+      <topic label="Working with data files" href="VM_Working_with_a_data_file.html">
+         <topic label="Before you begin" href="VM_Cautions_and_Warnings.html"/>
+         <topic label="Uploading a file" href="VM_Uploading_a_file.html"/>
+         <topic label="Uploading files with a Secure Copy Client" href="VM_Uploading_files_w_secure_client.html"/>
+      </topic>
+      <topic label="Next Steps" href="VM_NextSteps.html"/>
+   </topic>
+   <topic label="Frequently Asked Questions" href="VM_FAQ_Chap.html"/>
+</toc>

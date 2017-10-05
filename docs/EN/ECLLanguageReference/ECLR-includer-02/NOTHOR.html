@@ -1,0 +1,25 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>NOTHOR</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Built-in_Functions_and_Actions.html" title="Built-in Functions and Actions"><link rel="prev" href="NOFOLD.html" title="NOFOLD"><link rel="next" href="NOTIFY.html" title="NOTIFY"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">NOTHOR</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="NOFOLD.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Built-in Functions and Actions</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="NOTIFY.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="NOTHOR"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="NOTHOR"></a>NOTHOR<a class="indexterm" name="d0e23416"></a></h2></div></div></div><p><span class="bold"><strong>[</strong></span><span class="emphasis"><em>name</em></span> :=<span class="bold"><strong> ] NOTHOR<a class="indexterm" name="d0e23427"></a>(</strong></span><span class="emphasis"><em> action </em></span><span class="bold"><strong>)</strong></span></p><div class="informaltable"><table border="1"><colgroup><col width="14%"><col width="86%"></colgroup><tbody><tr><td><span class="emphasis"><em>name</em></span></td><td>Optional. The identifier for this action.</td></tr><tr><td>action</td><td>The action to execute.</td></tr></tbody></table></div><p>The <span class="bold"><strong>NOTHOR </strong></span>compiler directive indicates the <span class="emphasis"><em>action</em></span> should not execute on thor, but inline instead, in a global context. You can only do very simple dataset operations within a NOTHOR, like filtering records or a simple PROJECT.</p><p>NOTHOR needs to be used around operations that use the superfile transactions, (such as the example below) where the compiler does not spot the appropriate context.</p><p>Example:</p><pre class="programlisting">IMPORT STD;
+rec := RECORD
+  STRING10 S;
+END;
+
+srcnode := '10.239.219.2'; 
+srcdir := '/var/lib/HPCCSystems/mydropzone/';
+
+dir := STD.File.RemoteDirectory(srcnode,srcdir,'*.txt',TRUE);
+
+  //without NOTHOR this code gets this error:
+  // "Cannot call function AddSuperFile in a non-global context"
+NOTHOR(SEQUENTIAL(
+  STD.File.DeleteSuperFile('MultiSuper1'),
+  STD.File.CreateSuperFile('MultiSuper1'),
+  STD.File.StartSuperFileTransaction(),
+  APPLY(dir,STD.File.AddSuperFile('MultiSuper1',
+        STD.File.ExternalLogicalFileName(srcnode,srcdir+name))),
+  STD.File.FinishSuperFileTransaction()));
+
+F1 := DATASET('MultiSuper1', rec, THOR);
+OUTPUT(F1,,'testmulti1',OVERWRITE);
+</pre><p>See Also: <a class="link" href="SEQUENTIAL.html" title="SEQUENTIAL">SEQUENTIAL</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="NOFOLD.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Built-in_Functions_and_Actions.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="NOTIFY.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">NOFOLD&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;NOTIFY</td></tr></table></div></body></html>

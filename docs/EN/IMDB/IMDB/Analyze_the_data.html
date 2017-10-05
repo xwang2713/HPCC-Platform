@@ -1,0 +1,16 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Analyze the data file to understand its format and its contents</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="Six Degrees of Kevin Bacon"><link rel="up" href="Processing_the_data.html" title="Processing the Data"><link rel="prev" href="Get_a_data_file.html" title="We get a data file"><link rel="next" href="Load_the_Incoming_Data.html" title="Load the Incoming Data File to your Landing Zone"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center"><span class="emphasis"><em>Analyze the data file to understand its format and its contents</em></span></th></tr><tr><td width="20%" align="left"><a accesskey="p" href="Get_a_data_file.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">Processing the Data</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="Load_the_Incoming_Data.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect2" title="Analyze the data file to understand its format and its contents"><div class="titlepage"><div><div><h3 class="title"><a name="Analyze_the_data"></a><span class="emphasis"><em>Analyze the data file to understand its format and its contents</em></span></h3></div></div></div><p>Here is the sample of the data in the Actors.list file from IMDB</p><pre class="programlisting">Koolout' Starks, Johnny Nothing Like the Holidays (2008) [Alexis' Thug] &lt;35&gt;
+Subtle Seduction (2008) [Officer Ward]
+The Godfather of Green Bay (2005) (as Johnny Starks) [Marcus] &lt;18&gt;
+
+La Chispa', Tony Caceria de judiciales (1997) &lt;11&gt;
+Violencia en la sierra (1995) [Victoriano] &lt;4&gt;</pre><p>Notice the actors text file is structured as follows</p><pre class="programlisting">Blankline
+Actorname_i Moviename (year) [role] &lt;listing position&gt;
+            Moviename (year) [role] &lt;listing position&gt;
+            Moviename (year) [role] &lt;listing position&gt;
+              :
+Blankline
+Actorname_j \t Moviename (year) [role] &lt;listing position&gt;
+              :
+Blankline</pre></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="Get_a_data_file.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Processing_the_data.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="Load_the_Incoming_Data.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top"><span class="emphasis"><em>We get a data file</em></span>&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;<span class="emphasis"><em>Load the Incoming Data File to your Landing Zone</em></span></td></tr></table></div></body></html>

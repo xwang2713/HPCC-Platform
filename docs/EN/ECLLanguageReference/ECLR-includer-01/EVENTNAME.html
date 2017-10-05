@@ -1,0 +1,18 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>EVENTNAME</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Built-in_Functions_and_Actions.html" title="Built-in Functions and Actions"><link rel="prev" href="EVENT.html" title="EVENT"><link rel="next" href="EVENTEXTRA.html" title="EVENTEXTRA"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">EVENTNAME</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="EVENT.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Built-in Functions and Actions</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="EVENTEXTRA.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="EVENTNAME"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="EVENTNAME"></a>EVENTNAME<a class="indexterm" name="d0e16355"></a></h2></div></div></div><p><span class="bold"><strong>EVENTNAME</strong></span></p><div class="informaltable"><table border="1"><colgroup><col width="78"><col width="310"></colgroup><tbody><tr><td>Return:</td><td>EVENTNAME returns a single string value.</td></tr></tbody></table></div><p><span class="bold"><strong>EVENTNAME</strong></span> returns the name of the trigger event.</p><p>Example:</p><pre class="programlisting">doMyService := FUNCTION
+  OUTPUT('Did a Service for: ' + 'EVENTNAME=' + EVENTNAME);
+  NOTIFY(EVENT('MyServiceComplete',
+               '&lt;Event&gt;&lt;returnTo&gt;FRED&lt;/returnTo&gt;&lt;/Event&gt;'),
+    EVENTEXTRA('returnTo'));
+  RETURN EVENTEXTRA('returnTo');
+END;
+
+doMyService : WHEN('MyService');
+
+// and a call
+NOTIFY('MyService',
+       '&lt;Event&gt;&lt;returnTo&gt;'+WORKUNIT+'&lt;/returnTo&gt;&lt;/Event&gt;');
+WAIT('MyServiceComplete');
+OUTPUT('WORKUNIT DONE')
+</pre><p>See Also: <a class="link" href="EVENT.html" title="EVENT">EVENT</a>, <a class="link" href="EVENTEXTRA.html" title="EVENTEXTRA">EVENTEXTRA</a>, <a class="link" href="CRON.html" title="CRON">CRON</a>, <a class="link" href="WHEN.html" title="WHEN">WHEN</a>, <a class="link" href="WAIT.html" title="WAIT">WAIT</a>, <a class="link" href="NOTIFY.html" title="NOTIFY">NOTIFY</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="EVENT.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Built-in_Functions_and_Actions.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="EVENTEXTRA.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">EVENT&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;EVENTEXTRA</td></tr></table></div></body></html>

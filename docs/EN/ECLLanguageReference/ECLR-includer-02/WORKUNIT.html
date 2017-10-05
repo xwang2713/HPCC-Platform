@@ -1,0 +1,21 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>WORKUNIT</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Built-in_Functions_and_Actions.html" title="Built-in Functions and Actions"><link rel="prev" href="WHICH.html" title="WHICH"><link rel="next" href="XMLDECODE.html" title="XMLDECODE"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">WORKUNIT</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="WHICH.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Built-in Functions and Actions</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="XMLDECODE.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="WORKUNIT"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="WORKUNIT"></a>WORKUNIT</h2></div></div></div><p><span class="bold"><strong>WORKUNIT<a class="indexterm" name="d0e32860"></a></strong></span></p><p><span class="bold"><strong></strong></span><span class="bold"><strong>WORKUNIT<a class="indexterm" name="d0e32867"></a>( </strong></span><span class="emphasis"><em>named </em></span><span class="bold"><strong>[</strong></span><span class="emphasis"><em>, type </em></span><span class="bold"><strong>] )</strong></span></p><div class="informaltable"><table border="1"><colgroup><col width="13%"><col width="87%"></colgroup><tbody><tr><td><span class="emphasis"><em>named</em></span></td><td>A string constant containing the NAMED option scalar value to return.</td></tr><tr><td><span class="emphasis"><em>type</em></span></td><td>Optional. The value type of the named scalar value result to return.</td></tr><tr><td>Return:</td><td>WORKUNIT returns a single value.</td></tr></tbody></table></div><p>The <span class="bold"><strong>WORKUNIT </strong></span>function returns values stored in the workunit. Given no parameters, it returns the unique workunit identifier (WUID)<a class="indexterm" name="d0e32907"></a> for the currently executing workunit, otherwise it returns the NAMED option result from the OUTPUT or DISTRIBUTION action<a class="indexterm" name="d0e32911"></a>.</p><p>Example:</p><pre class="programlisting">  wuid := WORKUNIT //get WUID
+  
+  namesRecord := RECORD
+  STRING20 surname;
+  STRING10 forename;
+  INTEGER2 age;
+  END;
+  
+  namesTable := DATASET([
+  {'Halligan','Kevin',31},
+  {'Halligan','Liz',30},
+  {'Salter','Abi',10},
+  {'X','Z'}], namesRecord);
+  
+  DISTRIBUTION(namesTable, surname, forename,
+          NAMED('Stats'));
+  x := DATASET(ROW(TRANSFORM({STRING line},
+  SELF.line := WORKUNIT('Stats', STRING))));
+</pre><p>See Also: <a class="link" href="_WORKUNIT.html" title="#WORKUNIT">#WORKUNIT</a>, <a class="link" href="OUTPUT.html" title="OUTPUT">OUTPUT</a>, <a class="link" href="DISTRIBUTION.html" title="DISTRIBUTION">DISTRIBUTION</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="WHICH.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Built-in_Functions_and_Actions.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="XMLDECODE.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">WHICH&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;XMLDECODE</td></tr></table></div></body></html>

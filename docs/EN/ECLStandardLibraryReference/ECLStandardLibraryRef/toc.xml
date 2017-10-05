@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<toc label="Standard Library Reference" topic="index.html">
+   <topic label="Logical Files" href="Logical_Files.html">
+      <topic label="CompareFiles" href="CompareFiles.html"/>
+      <topic label="DeleteLogicalFile" href="DeleteLogicalFile.html"/>
+      <topic label="LogicalFileList" href="LogicalFileList.html"/>
+      <topic label="FileExists" href="FileExists.html"/>
+      <topic label="ForeignLogicalFileName" href="ForeignLogicalFileName.html"/>
+      <topic label="GetFileDescription" href="GetFileDescription.html"/>
+      <topic label="GetLogicalFileAttribute" href="GetLogicalFileAttribute.html"/>
+      <topic label="ProtectLogicalFile" href="ProtectLogicalFile.html"/>
+      <topic label="RenameLogicalFile" href="RenameLogicalFile.html"/>
+      <topic label="SetFileDescription" href="SetFileDescription.html"/>
+      <topic label="SetReadOnly" href="SetReadOnly.html"/>
+      <topic label="VerifyFile" href="VerifyFile.html"/>
+   </topic>
+   <topic label="SuperFiles" href="SuperFile_Management.html">
+      <topic label="CreateSuperFile" href="CreateSuperFile.html"/>
+      <topic label="SuperFileExists" href="SuperFileExists.html"/>
+      <topic label="DeleteSuperFile" href="DeleteSuperFile.html"/>
+      <topic label="GetSuperFileSubCount" href="GetSuperFileSubCount.html"/>
+      <topic label="GetSuperFileSubName" href="GetSuperFileSubName.html"/>
+      <topic label="LogicalFileSuperOwners" href="LogicalFileSuperOwners.html"/>
+      <topic label="LogicalFileSuperSubList" href="LogicalFileSuperSubList.html"/>
+      <topic label="SuperFileContents" href="SuperFileContents.html"/>
+      <topic label="FindSuperFileSubName" href="FindSuperFileSubName.html"/>
+      <topic label="StartSuperFileTransaction" href="StartSuperFileTransaction.html"/>
+      <topic label="AddSuperFile" href="AddSuperFile.html"/>
+      <topic label="RemoveSuperFile" href="RemoveSuperFile.html"/>
+      <topic label="ClearSuperFile" href="ClearSuperFile.html"/>
+      <topic label="RemoveOwnedSubFiles" href="RemoveOwnedSubFiles.html"/>
+      <topic label="SwapSuperFile" href="SwapSuperFile.html"/>
+      <topic label="ReplaceSuperFile" href="ReplaceSuperFile.html"/>
+      <topic label="PromoteSuperFileList" href="PromoteSuperFileList.html"/>
+      <topic label="FinishSuperFileTransaction" href="FinishSuperFileTransaction.html"/>
+   </topic>
+   <topic label="External Files" href="External_File_Support.html">
+      <topic label="ExternalLogicalFileName" href="ExternalLogicalFileName.html"/>
+      <topic label="MoveExternalFile" href="MoveExternalFile.html"/>
+      <topic label="DeleteExternalFile" href="DeleteExternalFile.html"/>
+      <topic label="CreateExternalDirectory" href="CreateExternalDirectory.html"/>
+      <topic label="RemoteDirectory" href="RemoteDirectory.html"/>
+   </topic>
+   <topic label="File Browsing" href="File_Browsing_Support.html">
+      <topic label="SetColumnMapping" href="SetColumnMapping.html"/>
+      <topic label="GetColumnMapping" href="GetColumnMapping.html"/>
+      <topic label="AddFileRelationship" href="AddFileRelationship.html"/>
+      <topic label="FileRelationshipList" href="FileRelationshipList.html"/>
+      <topic label="RemoveFileRelationship" href="RemoveFileRelationship.html"/>
+   </topic>
+   <topic label="File Movement" href="File_Movement.html">
+      <topic label="DfuPlusExec" href="DfuPlusExec.html"/>
+      <topic label="AbortDfuWorkunit" href="AbortDfuWorkunit.html"/>
+      <topic label="Copy" href="Copy.html"/>
+      <topic label="DeSpray" href="DeSpray.html"/>
+      <topic label="RemotePull" href="RemotePull.html"/>
+      <topic label="Replicate" href="Replicate.html"/>
+      <topic label="SprayFixed" href="SprayFixed.html"/>
+      <topic label="SprayVariable" href="SprayVariable.html"/>
+      <topic label="SprayXML" href="SprayXML.html"/>
+      <topic label="WaitDfuWorkunit" href="WaitDfuWorkunit.html"/>
+   </topic>
+   <topic label="String Handling" href="String_Handling.html">
+      <topic label="CleanAccents" href="CleanAccents.html"/>
+      <topic label="CleanSpaces" href="CleanSpaces.html"/>
+      <topic label="CompareAtStrength" href="CompareAtStrength.html"/>
+      <topic label="CompareIgnoreCase" href="CompareIgnoreCase.html"/>
+      <topic label="Contains" href="Contains.html"/>
+      <topic label="CountWords" href="CountWords.html"/>
+      <topic label="EditDistance" href="EditDistance.html"/>
+      <topic label="EditDistanceWithinRadius" href="EditDistanceWithinRadius.html"/>
+      <topic label="EndsWith" href="EndsWith.html"/>
+      <topic label="EqualIgnoreCase" href="EqualIgnoreCase.html"/>
+      <topic label="ExcludeFirstWord" href="ExcludeFirstWord.html"/>
+      <topic label="ExcludeLastWord" href="ExcludeLastWord.html"/>
+      <topic label="ExcludeNthWord" href="ExcludeNthWord.html"/>
+      <topic label="Extract" href="ExtractMultiple.html"/>
+      <topic label="Filter" href="Filter.html"/>
+      <topic label="FilterOut" href="FilterOut.html"/>
+      <topic label="Find" href="Find.html"/>
+      <topic label="FindCount" href="FindCount.html"/>
+      <topic label="FindAtStrength" href="FindAtStrength.html"/>
+      <topic label="FindAtStrengthReplace" href="FindAtStrengthReplace.html"/>
+      <topic label="FindReplace" href="FindReplace.html"/>
+      <topic label="FromHexPairs" href="FromHexPairs.html"/>
+      <topic label="GetNthWord" href="GetNthWord.html"/>
+      <topic label="RemoveSuffix" href="RemoveSuffix.html"/>
+      <topic label="Repeat" href="Repeat.html"/>
+      <topic label="Reverse" href="Reverse.html"/>
+      <topic label="SplitWords" href="SplitWords.html"/>
+      <topic label="SubstituteExcluded" href="SubstituteExcluded.html"/>
+      <topic label="SubstituteIncluded" href="SubstituteIncluded.html"/>
+      <topic label="StartsWith" href="StartsWith.html"/>
+      <topic label="ToHexPairs" href="ToHexPairs.html"/>
+      <topic label="ToLowerCase" href="ToLowerCase.html"/>
+      <topic label="ToTitleCase" href="ToProperCase.html"/>
+      <topic label="ToUpperCase" href="ToUpperCase.html"/>
+      <topic label="Translate" href="Translate.html"/>
+      <topic label="WildMatch" href="WildMatch.html"/>
+      <topic label="WordCount" href="WordCount.html"/>
+   </topic>
+   <topic label="Metaphone Support" href="MetaphoneSupport.html">
+      <topic label="Primary" href="Primary.html"/>
+      <topic label="Secondary" href="Secondary.html"/>
+      <topic label="Double" href="Double.html"/>
+   </topic>
+   <topic label="Date and Time Handling" href="Date_Handling.html">
+      <topic label="Date Data Types" href="Date_Data_Types.html"/>
+      <topic label="Time Data Types" href="Time_Data_Types.html"/>
+      <topic label="Year" href="Year.html"/>
+      <topic label="Month" href="Month.html"/>
+      <topic label="Day" href="Day.html"/>
+      <topic label="Hour" href="Hour.html"/>
+      <topic label="Minute" href="Minute.html"/>
+      <topic label="Second" href="Second.html"/>
+      <topic label="DateFromParts" href="DateFromParts.html"/>
+      <topic label="TimeFromParts" href="TimeFromParts.html"/>
+      <topic label="IsLeapYear" href="IsLeapYear.html"/>
+      <topic label="IsDateLeapYear" href="IsDateLeapYear.html"/>
+      <topic label="IsValidDate" href="IsValidDate.html"/>
+      <topic label="IsValidTime" href="IsValidTime.html"/>
+      <topic label="IsValidGregorianDate" href="IsValidGregorianDate.html"/>
+      <topic label="FromGregorianYMD" href="FromGregorianYMD.html"/>
+      <topic label="ToGregorianYMD" href="ToGregorianYMD.html"/>
+      <topic label="FromStringToDate" href="FromStringToDate.html"/>
+      <topic label="Today" href="Today.html"/>
+      <topic label="CurrentDate" href="CurrentDate.html"/>
+      <topic label="CurrentTime" href="CurrentTime.html"/>
+      <topic label="DayOfYear" href="DayOfYear.html"/>
+      <topic label="DaysBetween" href="DaysBetween.html"/>
+      <topic label="MonthsBetween" href="MonthsBetween.html"/>
+      <topic label="AdjustDate" href="AdjustDate.html"/>
+      <topic label="AdjustCalendar" href="AdjustCalendar.html"/>
+   </topic>
+   <topic label="Cluster Handling" href="Cluster_Handling.html">
+      <topic label="Node" href="Node.html"/>
+      <topic label="Nodes" href="Nodes.html"/>
+      <topic label="LogicalToPhysical" href="LogicalToPhysical.html"/>
+      <topic label="DaliServer" href="DaliServer.html"/>
+      <topic label="Group" href="Group.html"/>
+      <topic label="GetExpandLogicalFileName" href="GetExpandLogicalFileName.html"/>
+   </topic>
+   <topic label="Job Handling" href="Job_Handling.html">
+      <topic label="WUID" href="WUID.html"/>
+      <topic label="Target" href="Target.html"/>
+      <topic label="Name" href="Name.html"/>
+      <topic label="User" href="User.html"/>
+      <topic label="OS" href="OS.html"/>
+      <topic label="Platform" href="Platform.html"/>
+      <topic label="LogString" href="LogString.html"/>
+   </topic>
+   <topic label="File Monitoring" href="File_Monitoring.html">
+      <topic label="MonitorFile" href="MonitorFile.html"/>
+      <topic label="MonitorLogicalFileName" href="MonitorLogicalFileName.html"/>
+   </topic>
+   <topic label="Logging" href="Logging.html">
+      <topic label="dbglog" href="dbglog.html"/>
+      <topic label="addWorkunitInformation" href="addWorkunitInformation.html"/>
+      <topic label="addWorkunitWarning" href="addWorkunitWarning.html"/>
+      <topic label="addWorkunitError" href="addWorkunitError.html"/>
+   </topic>
+   <topic label="Auditing" href="Auditing.html">
+      <topic label="Audit" href="Audit.html"/>
+   </topic>
+   <topic label="Utilities" href="Utilities.html">
+      <topic label="GetHostName" href="GetHostName.html"/>
+      <topic label="ResolveHostName" href="ResolveHostName.html"/>
+      <topic label="CmdProcess" href="CmdProcess.html"/>
+      <topic label="GetUniqueInteger" href="GetUniqueInteger.html"/>
+   </topic>
+   <topic label="Debugging" href="Debugging.html">
+      <topic label="GetParseTree" href="GetParseTree.html"/>
+      <topic label="GetXMLParseTree" href="GetXMLParseTree.html"/>
+      <topic label="Sleep" href="Sleep.html"/>
+      <topic label="msTick" href="msTick.html"/>
+   </topic>
+   <topic label="Email" href="Email.html">
+      <topic label="SendEmail" href="SendEmail.html"/>
+      <topic label="SendEmailAttachData" href="SendEmailAttachData.html"/>
+      <topic label="SendEmailAttachText" href="SendEmailAttachText.html"/>
+   </topic>
+   <topic label="Workunit Services" href="Workunit_Services.html">
+      <topic label="WorkunitExists" href="WorkunitExists.html"/>
+      <topic label="WorkunitList" href="WorkunitList.html"/>
+      <topic label="SetWorkunitAppValue" href="SetWorkunitAppValue.html"/>
+      <topic label="WUIDonDate" href="WUIDonDate.html"/>
+      <topic label="WUIDdaysAgo" href="WUIDdaysAgo.html"/>
+      <topic label="WorkunitTimeStamps" href="WorkunitTimeStamps.html"/>
+      <topic label="WorkunitMessages" href="WorkunitMessages.html"/>
+      <topic label="WorkunitFilesRead" href="WorkunitFilesRead.html"/>
+      <topic label="WorkunitFilesWritten" href="WorkunitFilesWritten.html"/>
+      <topic label="WorkunitTimings" href="WorkunitTimings.html"/>
+   </topic>
+   <topic label="BLAS Support" href="BLAS.html">
+      <topic label="Types" href="BLASTypes.html"/>
+      <topic label="ICellFunc" href="ICellFunc.html"/>
+      <topic label="Apply2Cells" href="Apply2Cells.html"/>
+      <topic label="dasum" href="dasum.html"/>
+      <topic label="daxpy" href="daxpy.html"/>
+      <topic label="dgemm" href="dgemm.html"/>
+      <topic label="dgetf2" href="dgetf2.html"/>
+      <topic label="dpotf2" href="dpotf2.html"/>
+      <topic label="dscal" href="dscal.html"/>
+      <topic label="dsyrk" href="dsyrk.html"/>
+      <topic label="dtrsm" href="dtrsm.html"/>
+      <topic label="extract_diag" href="extract_diag.html"/>
+      <topic label="extract_tri" href="extract_tri.html"/>
+      <topic label="make_diag" href="make_diag.html"/>
+      <topic label="make_vector" href="make_vector.html"/>
+      <topic label="trace" href="BLASTrace.html"/>
+   </topic>
+</toc>

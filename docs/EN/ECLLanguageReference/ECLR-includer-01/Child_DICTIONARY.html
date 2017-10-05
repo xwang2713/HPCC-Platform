@@ -1,0 +1,64 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>DICTIONARY as a Value Type</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="DICTIONARY.html" title="DICTIONARY"><link rel="prev" href="DICTIONARY_Definition.html" title="DICTIONARY Definition"><link rel="next" href="INDEX_record_structure.html" title="INDEX"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">DICTIONARY as a Value Type</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="DICTIONARY_Definition.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">DICTIONARY</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="INDEX_record_structure.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect2" title="DICTIONARY as a Value Type"><div class="titlepage"><div><div><h3 class="title"><a name="Child_DICTIONARY"></a>DICTIONARY as a Value Type</h3></div></div></div><p>The second form of DICTIONARY is a value type with the <span class="emphasis"><em>structure</em></span> parameter specifying the RECORD structure of the data. This data type usage allows you to specify a DICTIONARY as a child dataset, similar to the way DATASET may be used to define a child dataset. This may also be used to pass a DICTIONARY as a parameter.</p><p>Example:</p><pre class="programlisting">ColorCodes := DATASET([{'Black' ,0 },
+                       {'Brown' ,1 },
+                       {'Red'   ,2 },
+                       {'Orange',3 },
+                       {'Yellow',4 },
+                       {'Green' ,5 },
+                       {'Blue'  ,6 },
+                       {'Violet',7 },
+                       {'Grey'  ,8 },
+                       {'White' ,9 }], {STRING color,UNSIGNED1 code});
+
+ColorCodesDCT := DICTIONARY(ColorCodes,{Color,Code});    //multi-field key
+ColorCodeDCT  := DICTIONARY(ColorCodes,{Color =&gt; Code}); //payload field
+CodeColorDCT  := DICTIONARY(ColorCodes,{Code =&gt; Color});
+
+//mapping examples
+MapCode2Color(UNSIGNED1 code) := CodeColorDCT[code].color;
+MapColor2Code(STRING color)   := ColorCodeDCT[color].code;
+
+OUTPUT(MapColor2Code('Red'));     //2
+OUTPUT(MapCode2Color(4));         //'Yellow'
+
+//Search term examples
+OUTPUT('Green' IN ColorCodeDCT);  //true
+OUTPUT(6 IN CodeColorDCT);        //true
+OUTPUT(ROW({'Red',2},RECORDOF(ColorCodes)) IN ColorCodesDCT); //multi-field key, true 
+
+//multi-field payload examples
+rec := RECORD
+  STRING10  color;
+  UNSIGNED1 code; 
+  STRING10  name;
+END;
+Ds := DATASET([{'Black' ,0 , 'Fred'},
+               {'Brown' ,1 , 'Seth'},
+               {'Red'   ,2 , 'Sue'},
+               {'White' ,3 , 'Jo'}], rec);
+
+DsDCT := DICTIONARY(DS,{color =&gt; DS});
+
+OUTPUT('Red' IN DsDCT); //true
+DsDCT['Red'].code;      //2
+DsDCT['Red'].name;      //Sue
+
+//inline DCT examples
+InlineDCT := DICTIONARY([{'Black' =&gt; 0 , 'Fred'},
+                         {'Brown' =&gt; 1 , 'Sam'},
+                         {'Red'   =&gt; 2 , 'Sue'},
+                         {'White' =&gt; 3 , 'Jo'} ], 
+                        {STRING10 color =&gt; UNSIGNED1 code,STRING10 name});
+
+OUTPUT('Red' IN InlineDCT); //true
+InlineDCT['Red'].code;      //2
+InlineDCT['Red'].name;      //Sue
+InlineDCT['Red'];           //Red   2   Sue
+
+//Form 2 examples -- parameter passing
+MyDCTfunc(DICTIONARY({STRING10 color =&gt; UNSIGNED1 code,STRING10 name}) DCT,
+          STRING10 key) := DCT[key].name;
+MyDCTfunc(InlineDCT,'White');  //Jo
+MyDCTfunc(DsDCT,'Brown');      //Seth
+</pre><p>See Also: <a class="link" href="DATASET.html" title="DATASET">DATASET</a>, <a class="link" href="RECORD_Structure.html" title="RECORD Structure">RECORD Structure</a>, <a class="link" href="INDEX_record_structure.html" title="INDEX">INDEX</a>, <a class="link" href="IN_Operator.html" title="IN Operator">IN Operator</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="DICTIONARY_Definition.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="DICTIONARY.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="INDEX_record_structure.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">DICTIONARY Definition&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;INDEX</td></tr></table></div></body></html>

@@ -1,0 +1,38 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>Processing the Data : Extract, Transform, and Load</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="Six Degrees of Kevin Bacon"><link rel="up" href="Processing_the_data.html" title="Processing the Data"><link rel="prev" href="Examine_The_Data.html" title="Examine the Data"><link rel="next" href="Getting_Useful_Info_from_Data.html" title="Getting Useful Information from Data"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center"><span class="bold"><strong>Processing the Data : Extract, </strong></span><span class="emphasis"><em>Transform, and Load</em></span></th></tr><tr><td width="20%" align="left"><a accesskey="p" href="Examine_The_Data.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center">Processing the Data</th><td width="20%" align="right">&nbsp;<a accesskey="n" href="Getting_Useful_Info_from_Data.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect2" title="Processing the Data : Extract, Transform, and Load"><div class="titlepage"><div><div><h3 class="title"><a name="Processing_the_Data_E-T-L"></a><span class="bold"><strong>Processing the Data : Extract, </strong></span><span class="emphasis"><em>Transform, and Load</em></span></h3></div></div></div><p><span class="emphasis"><em>In this section, we will write code to transform the original actor data as follows:</em></span></p><div class="itemizedlist"><ul class="itemizedlist" type="bullet"><li class="listitem" style="list-style-type: disc"><p>From the raw actors data, we will do an ETL operation (Extract, Transform, Load) to build an <span class="bold"><strong>actor_movie </strong></span>relation set.</p></li><li class="listitem" style="list-style-type: disc"><p>We will also construct a Kevin Bacon degrees of separation lookup set. This is the structure we will query to answer the question:</p></li></ul></div><p><span class="emphasis"><em>H</em></span><span class="emphasis"><em>ow many degrees of separation exist between Actor X and Kevin Bacon?</em></span></p><p></p><p></p><p></p><p><span class="bold"><strong>For example: </strong></span>Using Jon Lovitz as the actor, we want information as follows:</p><p>Jon Lovitz ( (was in) Movie X ( (with) Actor2 ((who was in) Movie Y ( (with) Kevin Bacon</p><p>We will then write this new file to our Thor cluster so it can be used in parameterized queries.</p><p></p><p></p><div class="itemizedlist"><ul class="itemizedlist" type="bullet"><li class="listitem" style="list-style-type: disc"><p>In the ECL IDE , go to the Repository panel and expand the IMDB folder.</p></li><li class="listitem" style="list-style-type: disc"><p>Open the ECL File ActorsInMovies.</p><p>The code in this ECL file looks like this:</p></li></ul></div><pre class="programlisting">/* ******************************************************************************
+## Copyright 2011 HPCC Systems&reg;.  All rights reserved.
+******************************************************************************* */
+
+/**
+  * Produce a slimmed down version of the IMDB actor AND actress files to 
+  * permit more efficient join operations.
+  * Filter out the movie records we do not want in building our KBacon Number sets.
+  *
+  */
+
+IMPORT $ AS IMDB;
+IMPORT Std;
+
+// Filter out TV movies, Videos AND some documentary type collections
+ds_IMDB := IMDB.FileActors(actorname!='' AND moviename != '' AND
+                           Std.Str.Find(moviename,'Boffo',1) = 0 AND
+                           Std.Str.Find(moviename,'Slasher Film',1) = 0 AND
+                           movie_type != 'Video' AND isTVseries = 'N' AND
+                           movie_type != 'For TV');
+
+//Slim the records down to bare essentials for searching AND joining
+slim_IMDB_rec := RECORD
+  STRING50  actor;
+  STRING150 movie;
+END;
+
+slim_IMDB_rec slim_it(ds_IMDB L):= TRANSFORM
+  SELF.actor := Std.Str.FindReplace(L.actorname,'(I)','');
+  SELF.movie := L.moviename;;
+END;
+
+IMDB_names := PROJECT(ds_IMDB, slim_it(LEFT));
+
+export ActorsInMovies := IMDB_Names : persist('~temp::IMDB::ActorsInMovies');;
+</pre><p>This defines a relational data set:-- actor:movie. We will use this definition later.</p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="Examine_The_Data.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Processing_the_data.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="Getting_Useful_Info_from_Data.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">Examine the Data&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;Getting Useful Information from Data</td></tr></table></div></body></html>

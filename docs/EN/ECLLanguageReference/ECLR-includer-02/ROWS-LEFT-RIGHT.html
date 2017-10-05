@@ -1,0 +1,31 @@
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+   <title>ROWS(LEFT) and ROWS(RIGHT)</title><link rel="stylesheet" href="LN-html.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.75.1"><link rel="home" href="index.html" title="ECL Language Reference"><link rel="up" href="Reserved_Keywords.html" title="Reserved Keywords"><link rel="prev" href="likely.html" title="LIKELY and UNLIKELY"><link rel="next" href="SELF.html" title="SELF"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">ROWS(LEFT) and ROWS(RIGHT)</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="likely.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><th width="60%" align="center"><span class="bold"><strong>Reserved Keywords</strong></span></th><td width="20%" align="right">&nbsp;<a accesskey="n" href="SELF.html"><img src="images/next.gif" alt="Next"></a></td></tr></table><hr></div><div class="sect1" title="ROWS(LEFT) and ROWS(RIGHT)"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="ROWS-LEFT-RIGHT"></a>ROWS(LEFT)<a class="indexterm" name="d0e8618"></a> and ROWS(RIGHT)<a class="indexterm" name="d0e8622"></a></h2></div></div></div><p><span class="bold"><strong>ROWS(LEFT)</strong></span></p><p><span class="bold"><strong>ROWS(RIGHT)</strong></span></p><p>The <span class="bold"><strong>ROWS(LEFT)</strong></span> and <span class="bold"><strong>ROWS(RIGHT)</strong></span> keywords indicate the parameter being passed to the TRANSFORM function is a record set. These are used in functions where a dataset is being passed, such as COMBINE, ROLLUP, JOIN, DENORMALIZE, and LOOP.</p><p>Example:</p><pre class="programlisting">NormRec := RECORD
+  STRING20 thename;
+  STRING20 addr;
+END;
+NamesRec := RECORD
+  UNSIGNED1 numRows;
+  STRING20 thename;
+  DATASET(NormRec) addresses;
+END;
+NamesTable := DATASET([ {0,'Kevin',[]},{0,'Liz',[]},
+                        {0,'Mr Nobody',[]},{0,'Anywhere',[]}],
+                      NamesRec);
+NormAddrs := DATASET([{'Kevin','10 Malt Lane'},
+                      {'Liz','10 Malt Lane'},
+                      {'Liz','3 The cottages'},
+                      {'Anywhere','Here'},
+                      {'Anywhere','There'},
+                      {'Anywhere','Near'},
+                      {'Anywhere','Far'}],NormRec);
+NamesRec DeNormThem(NamesRec L, DATASET(NormRec) R) := TRANSFORM
+  SELF.NumRows := COUNT(R);
+  SELF.addresses := R;
+  SELF := L;
+END;
+DeNormedRecs := DENORMALIZE(NamesTable, NormAddrs,
+                            LEFT.thename = RIGHT.thename,
+                            GROUP,
+                            DeNormThem(LEFT,ROWS(RIGHT)));
+OUTPUT(DeNormedRecs);</pre><p>See Also: <a class="link" href="TRANSFORM_Structure.html" title="TRANSFORM Structure">TRANSFORM Structure</a>, <a class="link" href="COMBINE.html" title="COMBINE">COMBINE</a>, <a class="link" href="ROLLUP.html" title="ROLLUP">ROLLUP</a> , <a class="link" href="JOIN.html" title="JOIN">JOIN</a>, <a class="link" href="DENORMALIZE.html" title="DENORMALIZE">DENORMALIZE</a>, <a class="link" href="LOOP.html" title="LOOP">LOOP</a></p></div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="likely.html"><img src="images/prev.gif" alt="Prev"></a>&nbsp;</td><td width="20%" align="center"><a accesskey="u" href="Reserved_Keywords.html"><img src="images/up.gif" alt="Up"></a></td><td width="40%" align="right">&nbsp;<a accesskey="n" href="SELF.html"><img src="images/next.gif" alt="Next"></a></td></tr><tr><td width="40%" align="left" valign="top">LIKELY and UNLIKELY&nbsp;</td><td width="20%" align="center"><a accesskey="h" href="index.html"><img src="images/home.gif" alt="Home"></a></td><td width="40%" align="right" valign="top">&nbsp;SELF</td></tr></table></div></body></html>

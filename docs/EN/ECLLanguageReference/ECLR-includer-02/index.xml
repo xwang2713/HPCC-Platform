@@ -1,0 +1,3534 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<index>
+   <entry keyword="#APPEND">
+      <topic href="_APPEND.html#d0e34342"/>
+   </entry>
+   <entry keyword="#BREAK">
+      <topic href="_LOOP-_BREAK.html#d0e35070"/>
+   </entry>
+   <entry keyword="#CONSTANT">
+      <topic href="_CONSTANT.html#d0e34396"/>
+   </entry>
+   <entry keyword="#DECLARE">
+      <topic href="_DECLARE.html#d0e34447"/>
+   </entry>
+   <entry keyword="#DEMANGLE">
+      <topic href="_DEMANGLE.html#d0e34495"/>
+   </entry>
+   <entry keyword="#ELSE">
+      <topic href="_IF.html#d0e34921"/>
+   </entry>
+   <entry keyword="#ELSEIF">
+      <topic href="_IF.html#d0e34900"/>
+   </entry>
+   <entry keyword="#END">
+      <topic href="_LOOP-_BREAK.html#d0e35086"/>
+   </entry>
+   <entry keyword="#ERROR">
+      <topic href="_ERROR.html#d0e34540"/>
+   </entry>
+   <entry keyword="#EXPAND">
+      <topic href="_EXPAND.html#d0e34583"/>
+   </entry>
+   <entry keyword="#EXPORT">
+      <topic href="_EXPORT.html#d0e34653"/>
+   </entry>
+   <entry keyword="#EXPORTXML">
+      <topic href="_EXPORTXML.html#d0e34692"/>
+   </entry>
+   <entry keyword="#FOR">
+      <topic href="_FOR.html#d0e34750"/>
+   </entry>
+   <entry keyword="#GETDATATYPE">
+      <topic href="_GETDATATYPE.html#d0e34840"/>
+   </entry>
+   <entry keyword="#IF">
+      <topic href="_IF.html#d0e34882"/>
+   </entry>
+   <entry keyword="#INMODULE">
+      <topic href="_INMODULE.html#d0e35006"/>
+   </entry>
+   <entry keyword="#LOOP">
+      <topic href="_LOOP-_BREAK.html#d0e35053"/>
+   </entry>
+   <entry keyword="#MANGLE">
+      <topic href="_MANGLE.html#d0e35141"/>
+   </entry>
+   <entry keyword="#ONWARNING">
+      <topic href="_ONWARNING.html#d0e35186"/>
+   </entry>
+   <entry keyword="#OPTION">
+      <topic href="_OPTION.html#d0e35233"/>
+   </entry>
+   <entry keyword="#SET">
+      <topic href="_SET.html#d0e36511"/>
+   </entry>
+   <entry keyword="#STORED">
+      <topic href="_STORED.html#d0e36565"/>
+   </entry>
+   <entry keyword="#TEXT">
+      <topic href="_TEXT.html#d0e36619"/>
+   </entry>
+   <entry keyword="#UNIQUENAME">
+      <topic href="_UNIQUENAME.html#d0e36661"/>
+   </entry>
+   <entry keyword="#WARNING">
+      <topic href="_WARNING.html#d0e36710"/>
+   </entry>
+   <entry keyword="#WEBSERVICE">
+      <topic href="_WEBSERVICE.html#d0e36753"/>
+   </entry>
+   <entry keyword="#WORKUNIT">
+      <topic href="BUILD_a_Query_Library.html#d0e12703"/>
+   </entry>
+   <entry keyword="#WORKUNIT">
+      <topic href="_WORKUNIT.html#d0e36851"/>
+   </entry>
+   <entry keyword=".ECL files">
+      <topic href="Attribute_Visibility.html#d0e1239"/>
+   </entry>
+   <entry keyword=".SO">
+      <topic href="External_Service_Implementation.html#d0e37053"/>
+   </entry>
+   <entry keyword="__COMPRESSED__">
+      <topic href="THOR-FLAT_Files.html#d0e4904"/>
+   </entry>
+   <entry keyword="__ECL_LEGACY_MODE__">
+      <topic href="CompileTimeConstants.html#d0e464"/>
+   </entry>
+   <entry keyword="__ECL_VERSION__">
+      <topic href="CompileTimeConstants.html#d0e437"/>
+   </entry>
+   <entry keyword="__ECL_VERSION_MAJOR__">
+      <topic href="CompileTimeConstants.html#d0e446"/>
+   </entry>
+   <entry keyword="__ECL_VERSION_MINOR__">
+      <topic href="CompileTimeConstants.html#d0e455"/>
+   </entry>
+   <entry keyword="__OS__">
+      <topic href="CompileTimeConstants.html#d0e473"/>
+   </entry>
+   <entry keyword="__STAND_ALONE__">
+      <topic href="CompileTimeConstants.html#d0e482"/>
+   </entry>
+   <entry keyword="ABS">
+      <topic href="ABS.html#d0e10338"/>
+   </entry>
+   <entry keyword="ABS function">
+      <topic href="ABS.html#d0e10341"/>
+   </entry>
+   <entry keyword="ACOS">
+      <topic href="ACOS.html#d0e10384"/>
+   </entry>
+   <entry keyword="ACOS function">
+      <topic href="ACOS.html#d0e10387"/>
+   </entry>
+   <entry keyword="Actions as Definitions">
+      <topic href="Actions_as_Attributes.html#d0e1469"/>
+   </entry>
+   <entry keyword="Addition">
+      <topic href="Arithmetic_Operators.html#d0e1557"/>
+   </entry>
+   <entry keyword="AFTER">
+      <topic href="APPLY.html#d0e10844"/>
+   </entry>
+   <entry keyword="AGGREGATE">
+      <topic href="AGGREGATE.html#d0e10455"/>
+   </entry>
+   <entry keyword="AGGREGATE function">
+      <topic href="AGGREGATE.html#d0e10458"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="ALL.html#d0e8024"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="DEDUP.html#d0e14617"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="GROUP_function.html#d0e17906"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="JoinOptions.html#d0e19587"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="OUTPUT.html#d0e23972"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="Named_OUTPUT.html#d0e25531"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="PARSE_Text_Data.html#d0e25979"/>
+   </entry>
+   <entry keyword="ALL">
+      <topic href="XMLENCODE.html#d0e32998"/>
+   </entry>
+   <entry keyword="ALL keyword">
+      <topic href="ALL.html#d0e8035"/>
+   </entry>
+   <entry keyword="ALLNODES">
+      <topic href="ALLNODES.html#d0e10768"/>
+   </entry>
+   <entry keyword="ALLNODES function">
+      <topic href="ALLNODES.html#d0e10771"/>
+   </entry>
+   <entry keyword="AND">
+      <topic href="BETWEEN_Operator.html#d0e2169"/>
+   </entry>
+   <entry keyword="AND">
+      <topic href="Field_Inheritance.html#d0e3924"/>
+   </entry>
+   <entry keyword="AND NOT">
+      <topic href="Field_Inheritance.html#d0e3968"/>
+   </entry>
+   <entry keyword="ANY">
+      <topic href="Passing_Typeless_Parameters.html#d0e1102"/>
+   </entry>
+   <entry keyword="APPLY">
+      <topic href="APPLY.html#d0e10823"/>
+   </entry>
+   <entry keyword="APPLY function">
+      <topic href="APPLY.html#d0e10826"/>
+   </entry>
+   <entry keyword="arguments">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e898"/>
+   </entry>
+   <entry keyword="arithmetic operators">
+      <topic href="Arithmetic_Operators.html#d0e1513"/>
+   </entry>
+   <entry keyword="AS">
+      <topic href="IMPORT.html#d0e8263"/>
+   </entry>
+   <entry keyword="ASCII">
+      <topic href="CSV_Files.html#d0e5145"/>
+   </entry>
+   <entry keyword="ASCII">
+      <topic href="ASCII.html#d0e11006"/>
+   </entry>
+   <entry keyword="ASCII">
+      <topic href="OUTPUT_CSV_Files.html#d0e24744"/>
+   </entry>
+   <entry keyword="ASCII function">
+      <topic href="ASCII.html#d0e11009"/>
+   </entry>
+   <entry keyword="ASIN">
+      <topic href="ASIN.html#d0e11133"/>
+   </entry>
+   <entry keyword="ASIN function">
+      <topic href="ASIN.html#d0e11136"/>
+   </entry>
+   <entry keyword="ASSERT">
+      <topic href="ASSERT.html#d0e11205"/>
+   </entry>
+   <entry keyword="ASSERT function">
+      <topic href="ASSERT.html#d0e11265"/>
+   </entry>
+   <entry keyword="ASSTRING">
+      <topic href="ASSTRING.html#d0e11436"/>
+   </entry>
+   <entry keyword="ASSTRING function">
+      <topic href="ASSTRING.html#d0e11466"/>
+   </entry>
+   <entry keyword="ATAN">
+      <topic href="ATAN.html#d0e11502"/>
+   </entry>
+   <entry keyword="ATAN function">
+      <topic href="ATAN.html#d0e11505"/>
+   </entry>
+   <entry keyword="ATAN function">
+      <topic href="ATAN2.html#d0e11615"/>
+   </entry>
+   <entry keyword="ATAN2">
+      <topic href="ATAN2.html#d0e11576"/>
+   </entry>
+   <entry keyword="ATAN2 function">
+      <topic href="ATAN2.html#d0e11579"/>
+   </entry>
+   <entry keyword="ATMOST">
+      <topic href="JoinOptions.html#d0e19640"/>
+   </entry>
+   <entry keyword="ATMOST">
+      <topic href="PARSE_Text_Data.html#d0e26071"/>
+   </entry>
+   <entry keyword="AVE">
+      <topic href="AVE.html#d0e11663"/>
+   </entry>
+   <entry keyword="AVE function">
+      <topic href="AVE.html#d0e11666"/>
+   </entry>
+   <entry keyword="BEFORE">
+      <topic href="APPLY.html#d0e10834"/>
+   </entry>
+   <entry keyword="BEGINC++">
+      <topic href="BEGINCplus_Structure.html#d0e8867"/>
+   </entry>
+   <entry keyword="BEGINC++ Structure">
+      <topic href="BEGINCplus_Structure.html#d0e8855"/>
+   </entry>
+   <entry keyword="BEST">
+      <topic href="PARSE_Text_Data.html#d0e26151"/>
+   </entry>
+   <entry keyword="BEST">
+      <topic href="TOPN.html#d0e31581"/>
+   </entry>
+   <entry keyword="BETWEEN">
+      <topic href="BETWEEN_Operator.html#d0e2161"/>
+   </entry>
+   <entry keyword="Between Operator">
+      <topic href="BETWEEN_Operator.html#d0e2153"/>
+   </entry>
+   <entry keyword="BIG_ENDIAN">
+      <topic href="INTEGER.html#d0e2323"/>
+   </entry>
+   <entry keyword="Binary values">
+      <topic href="Numeric.html#d0e409"/>
+   </entry>
+   <entry keyword="Bitshift Left">
+      <topic href="Bitshift_Operators.html#d0e1672"/>
+   </entry>
+   <entry keyword="Bitshift operators">
+      <topic href="Bitshift_Operators.html#d0e1652"/>
+   </entry>
+   <entry keyword="Bitshift Right">
+      <topic href="Bitshift_Operators.html#d0e1664"/>
+   </entry>
+   <entry keyword="Bitwise AND">
+      <topic href="Bitwise_Operators.html#d0e1617"/>
+   </entry>
+   <entry keyword="Bitwise Exclusive OR">
+      <topic href="Bitwise_Operators.html#d0e1633"/>
+   </entry>
+   <entry keyword="Bitwise NOT">
+      <topic href="Bitwise_Operators.html#d0e1641"/>
+   </entry>
+   <entry keyword="Bitwise operators">
+      <topic href="Bitwise_Operators.html#d0e1605"/>
+   </entry>
+   <entry keyword="Bitwise OR">
+      <topic href="Bitwise_Operators.html#d0e1625"/>
+   </entry>
+   <entry keyword="BLOB in INDEX">
+      <topic href="Field_Modifiers.html#d0e4167"/>
+   </entry>
+   <entry keyword="BOOLEAN">
+      <topic href="BOOLEAN.html#d0e2242"/>
+   </entry>
+   <entry keyword="BOOLEAN">
+      <topic href="getisvalid.html#d0e6990"/>
+   </entry>
+   <entry keyword="Boolean">
+      <topic href="Basic_Attribute_Types.html#d0e641"/>
+   </entry>
+   <entry keyword="Boolean AND">
+      <topic href="Logical_Operators.html#d0e1816"/>
+   </entry>
+   <entry keyword="Boolean Definition">
+      <topic href="Boolean_Attributes.html#d0e672"/>
+   </entry>
+   <entry keyword="Boolean Definition">
+      <topic href="Recordset_Filtering.html#d0e859"/>
+   </entry>
+   <entry keyword="Boolean NOT">
+      <topic href="Logical_Operators.html#d0e1798"/>
+   </entry>
+   <entry keyword="Boolean NOT">
+      <topic href="Logical_Operators.html#d0e1807"/>
+   </entry>
+   <entry keyword="Boolean OR">
+      <topic href="Logical_Operators.html#d0e1825"/>
+   </entry>
+   <entry keyword="BOOLEAN value type">
+      <topic href="BOOLEAN.html#d0e2245"/>
+   </entry>
+   <entry keyword="BUILD">
+      <topic href="BUILD.html#d0e11844"/>
+   </entry>
+   <entry keyword="BUILD action">
+      <topic href="INDEX_record_structure.html#d0e6325"/>
+   </entry>
+   <entry keyword="BUILD action">
+      <topic href="Payload_INDEX.html#d0e6435"/>
+   </entry>
+   <entry keyword="CASE">
+      <topic href="CASE.html#d0e12755"/>
+   </entry>
+   <entry keyword="CASE">
+      <topic href="PARSE_Text_Data.html#d0e26033"/>
+   </entry>
+   <entry keyword="CASE function">
+      <topic href="CASE.html#d0e12758"/>
+   </entry>
+   <entry keyword="casting operator">
+      <topic href="Explicit_Casting.html#d0e3116"/>
+   </entry>
+   <entry keyword="Casting Rules">
+      <topic href="Casting_Rules.html#d0e3169"/>
+   </entry>
+   <entry keyword="CATCH">
+      <topic href="CATCH.html#d0e12883"/>
+   </entry>
+   <entry keyword="CATCH Function">
+      <topic href="CATCH.html#d0e12886"/>
+   </entry>
+   <entry keyword="Character Sets">
+      <topic href="Set_Ordering_and_Indexing.html#d0e761"/>
+   </entry>
+   <entry keyword="CHECKPOINT">
+      <topic href="CHECKPOINT.html#d0e33074"/>
+   </entry>
+   <entry keyword="CHECKPOINT workflow service">
+      <topic href="CHECKPOINT.html#d0e33082"/>
+   </entry>
+   <entry keyword="Child Dataset">
+      <topic href="Child_DATASETs.html#d0e5759"/>
+   </entry>
+   <entry keyword="child dataset records">
+      <topic href="Child_DATASETs.html#d0e5806"/>
+   </entry>
+   <entry keyword="CHOOSE">
+      <topic href="CHOOSE.html#d0e13088"/>
+   </entry>
+   <entry keyword="CHOOSE function">
+      <topic href="CHOOSE.html#d0e13091"/>
+   </entry>
+   <entry keyword="CHOOSEN">
+      <topic href="DATASET.html#d0e4564"/>
+   </entry>
+   <entry keyword="CHOOSEN">
+      <topic href="Child_DATASETs.html#d0e5796"/>
+   </entry>
+   <entry keyword="CHOOSEN">
+      <topic href="CHOOSEN.html#d0e13174"/>
+   </entry>
+   <entry keyword="CHOOSEN function">
+      <topic href="CHOOSEN.html#d0e13177"/>
+   </entry>
+   <entry keyword="CHOOSESETS">
+      <topic href="CHOOSESETS.html#d0e13334"/>
+   </entry>
+   <entry keyword="CHOOSESETS function">
+      <topic href="CHOOSESETS.html#d0e13337"/>
+   </entry>
+   <entry keyword="CLUSTER">
+      <topic href="Index_BUILD_Options.html#d0e12055"/>
+   </entry>
+   <entry keyword="CLUSTER">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24360"/>
+   </entry>
+   <entry keyword="CLUSTER">
+      <topic href="OUTPUT_CSV_Files.html#d0e24548"/>
+   </entry>
+   <entry keyword="CLUSTER">
+      <topic href="OUTPUT_XML_Files.html#d0e24928"/>
+   </entry>
+   <entry keyword="CLUSTER">
+      <topic href="OUTPUT_JSON_Files.html#d0e25179"/>
+   </entry>
+   <entry keyword="CLUSTER">
+      <topic href="PERSIST.html#d0e33513"/>
+   </entry>
+   <entry keyword="CLUSTERSIZE">
+      <topic href="CLUSTERSIZE.html#d0e13548"/>
+   </entry>
+   <entry keyword="COMBINE">
+      <topic href="COMBINE.html#d0e13598"/>
+   </entry>
+   <entry keyword="COMBINE function">
+      <topic href="COMBINE.html#d0e13580"/>
+   </entry>
+   <entry keyword="comparison operator">
+      <topic href="Comparison_Operators.html#d0e1684"/>
+   </entry>
+   <entry keyword="comparison operator">
+      <topic href="UNICODEORDER.html#d0e32393"/>
+   </entry>
+   <entry keyword="COMPRESSED">
+      <topic href="THOR-FLAT_Files.html#d0e4901"/>
+   </entry>
+   <entry keyword="COMPRESSED">
+      <topic href="INDEX_record_structure.html#d0e6124"/>
+   </entry>
+   <entry keyword="COMPRESSED">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24385"/>
+   </entry>
+   <entry keyword="COMPRESSION">
+      <topic href="Index_BUILD_Options.html#d0e12139"/>
+   </entry>
+   <entry keyword="Concatenation">
+      <topic href="String_Operators.html#d0e2065"/>
+   </entry>
+   <entry keyword="Concatenation">
+      <topic href="Child_DATASETs.html#d0e5856"/>
+   </entry>
+   <entry keyword="CONST">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e945"/>
+   </entry>
+   <entry keyword="CONST">
+      <topic href="ASSERT.html#d0e11227"/>
+   </entry>
+   <entry keyword="CONST">
+      <topic href="CONST.html#d0e37019"/>
+   </entry>
+   <entry keyword="CONST Function">
+      <topic href="CONST.html#d0e37022"/>
+   </entry>
+   <entry keyword="Constant set">
+      <topic href="Set_Attributes.html#d0e704"/>
+   </entry>
+   <entry keyword="constant values">
+      <topic href="Set_Attributes.html#d0e708"/>
+   </entry>
+   <entry keyword="constant values">
+      <topic href="In-line_DATASETs.html#d0e5714"/>
+   </entry>
+   <entry keyword="constants">
+      <topic href="Const_String.html#d0e346"/>
+   </entry>
+   <entry keyword="constants">
+      <topic href="CompileTimeConstants.html#d0e420"/>
+   </entry>
+   <entry keyword="CORRELATION">
+      <topic href="CORRELATION.html#d0e13844"/>
+   </entry>
+   <entry keyword="CORRELATION function">
+      <topic href="CORRELATION.html#d0e13847"/>
+   </entry>
+   <entry keyword="COS">
+      <topic href="COS.html#d0e14009"/>
+   </entry>
+   <entry keyword="COS function">
+      <topic href="COS.html#d0e14012"/>
+   </entry>
+   <entry keyword="COSH">
+      <topic href="COSH.html#d0e14080"/>
+   </entry>
+   <entry keyword="COSH function">
+      <topic href="COSH.html#d0e14083"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="DATASET.html#d0e4542"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="Child_DATASETs.html#d0e5774"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="COUNT.html#d0e14187"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="LIMIT.html#d0e21245"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="LIMIT.html#d0e21315"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="ROWDIER.html#d0e28900"/>
+   </entry>
+   <entry keyword="COUNT">
+      <topic href="WHEN.html#d0e34191"/>
+   </entry>
+   <entry keyword="COUNT function">
+      <topic href="COUNT.html#d0e14151"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="Child_DATASETs.html#d0e5877"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="SKIP.html#d0e8796"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="TRANSFORM_Functions.html#d0e10248"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="TRANSFORM_Function_Requirements_Denormalize.html#d0e15215"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="GRAPH.html#d0e17787"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="Join_Types.html#d0e20375"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="LOOP.html#d0e21997"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="TRANSFORM_Function_Requirements_for_Form_2.html#d0e23346"/>
+   </entry>
+   <entry keyword="COUNTER">
+      <topic href="TRANSFORM_Function_Requirements_Project.html#d0e27168"/>
+   </entry>
+   <entry keyword="COVARIANCE">
+      <topic href="COVARIANCE.html#d0e14327"/>
+   </entry>
+   <entry keyword="COVARIANCE function">
+      <topic href="COVARIANCE.html#d0e14330"/>
+   </entry>
+   <entry keyword="CPU pinning">
+      <topic href="OPTION_Available_Options.html#d0e35751"/>
+   </entry>
+   <entry keyword="CRON">
+      <topic href="CRON.html#d0e14490"/>
+   </entry>
+   <entry keyword="CRON function">
+      <topic href="CRON.html#d0e14493"/>
+   </entry>
+   <entry keyword="CSV">
+      <topic href="CSV_Files.html#d0e5083"/>
+   </entry>
+   <entry keyword="CSV">
+      <topic href="PIPE_Files.html#d0e5576"/>
+   </entry>
+   <entry keyword="CSV">
+      <topic href="OUTPUT.html#d0e23724"/>
+   </entry>
+   <entry keyword="CSV">
+      <topic href="OUTPUT_CSV_Files.html#d0e24536"/>
+   </entry>
+   <entry keyword="CSV">
+      <topic href="OUTPUT_PIPE_Files.html#d0e25412"/>
+   </entry>
+   <entry keyword="CSV">
+      <topic href="PIPE.html#d0e26309"/>
+   </entry>
+   <entry keyword="CSV Files">
+      <topic href="CSV_Files.html#d0e5067"/>
+   </entry>
+   <entry keyword="CSV Files">
+      <topic href="OUTPUT_CSV_Files.html#d0e24504"/>
+   </entry>
+   <entry keyword="DATA">
+      <topic href="DATA.html#d0e2733"/>
+   </entry>
+   <entry keyword="Data string">
+      <topic href="Const_String.html#d0e342"/>
+   </entry>
+   <entry keyword="DATA value type">
+      <topic href="DATA.html#d0e2736"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="DATASET.html#d0e4463"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="DATASET.html#d0e4587"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="CSV_Files.html#d0e5075"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="DATASET_as_a_Parameter_Type.html#d0e5899"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="Temporary_SuperFiles.html#d0e6639"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="Index_BUILD_Options.html#d0e12081"/>
+   </entry>
+   <entry keyword="DATASET">
+      <topic href="SOAPCALL.html#d0e29539"/>
+   </entry>
+   <entry keyword="Dataset">
+      <topic href="Record_Set_Attributes.html#d0e784"/>
+   </entry>
+   <entry keyword="DATASET declaration">
+      <topic href="File_Scope.html#d0e6510"/>
+   </entry>
+   <entry keyword="DATASET declaration">
+      <topic href="Temporary_SuperFiles.html#d0e6632"/>
+   </entry>
+   <entry keyword="DATASET parameter">
+      <topic href="Passing_DATASET_Parameters.html#d0e1020"/>
+   </entry>
+   <entry keyword="DATASET parameters">
+      <topic href="DATASET.html#d0e4864"/>
+   </entry>
+   <entry keyword="DECIMAL">
+      <topic href="DECIMAL.html#d0e2484"/>
+   </entry>
+   <entry keyword="DECIMAL value type">
+      <topic href="DECIMAL.html#d0e2503"/>
+   </entry>
+   <entry keyword="DEDUP">
+      <topic href="Index_BUILD_Options.html#d0e12163"/>
+   </entry>
+   <entry keyword="DEDUP">
+      <topic href="DEDUP.html#d0e14599"/>
+   </entry>
+   <entry keyword="DEDUP">
+      <topic href="MERGE.html#d0e22341"/>
+   </entry>
+   <entry keyword="DEDUP">
+      <topic href="MERGEJOIN.html#d0e22569"/>
+   </entry>
+   <entry keyword="DEDUP function">
+      <topic href="DEDUP.html#d0e14605"/>
+   </entry>
+   <entry keyword="DEDUP function">
+      <topic href="Complex_Record_Set_Conditions.html#d0e14866"/>
+   </entry>
+   <entry keyword="DEDUP function">
+      <topic href="ROLLUP.html#d0e28472"/>
+   </entry>
+   <entry keyword="DEFAULT">
+      <topic href="Field_Modifiers.html#d0e4117"/>
+   </entry>
+   <entry keyword="DEFINE">
+      <topic href="DEFINE.html#d0e14890"/>
+   </entry>
+   <entry keyword="DEFINE function">
+      <topic href="DEFINE.html#d0e14896"/>
+   </entry>
+   <entry keyword="Definition Name">
+      <topic href="Attribute_Name_Rules.html#d0e587"/>
+   </entry>
+   <entry keyword="Definition Operator">
+      <topic href="Attribute_Definition.html#d0e539"/>
+   </entry>
+   <entry keyword="Definition Types">
+      <topic href="Basic_Attribute_Types.html#d0e634"/>
+   </entry>
+   <entry keyword="Definition Visibility">
+      <topic href="Attribute_Visibility.html#d0e1234"/>
+   </entry>
+   <entry keyword="Definition Visibility">
+      <topic href="Attribute_Visibility_Rules.html#d0e9805"/>
+   </entry>
+   <entry keyword="Definitions as Actions">
+      <topic href="Attributes_as_ActionsAttributes_as_Actions.html#d0e1459"/>
+   </entry>
+   <entry keyword="DENORMALIZE">
+      <topic href="DENORMALIZE.html#d0e14956"/>
+   </entry>
+   <entry keyword="DENORMALIZE function">
+      <topic href="DENORMALIZE.html#d0e14962"/>
+   </entry>
+   <entry keyword="DEPRECATED">
+      <topic href="DEPRECATED.html#d0e33145"/>
+   </entry>
+   <entry keyword="DEPRECATED workflow service">
+      <topic href="DEPRECATED.html#d0e33153"/>
+   </entry>
+   <entry keyword="DESCEND">
+      <topic href="RANK.html#d0e27523"/>
+   </entry>
+   <entry keyword="DESCEND">
+      <topic href="RANKED.html#d0e27608"/>
+   </entry>
+   <entry keyword="DICTIONARY">
+      <topic href="DICTIONARY.html#d0e6002"/>
+   </entry>
+   <entry keyword="DICTIONARY parameter">
+      <topic href="Passing_DICTIONARY_Parameters.html#d0e1065"/>
+   </entry>
+   <entry keyword="DISTINCT statement in SQL">
+      <topic href="DEDUP.html#d0e14797"/>
+   </entry>
+   <entry keyword="DISTRIBUTE">
+      <topic href="Index_BUILD_Options.html#d0e12067"/>
+   </entry>
+   <entry keyword="DISTRIBUTE">
+      <topic href="DISTRIBUTE.html#d0e15276"/>
+   </entry>
+   <entry keyword="DISTRIBUTE function">
+      <topic href="DISTRIBUTE.html#d0e15282"/>
+   </entry>
+   <entry keyword="DISTRIBUTED">
+      <topic href="INDEX_record_structure.html#d0e6142"/>
+   </entry>
+   <entry keyword="DISTRIBUTED">
+      <topic href="Index_BUILD_Options.html#d0e12133"/>
+   </entry>
+   <entry keyword="DISTRIBUTED">
+      <topic href="DISTRIBUTED.html#d0e15670"/>
+   </entry>
+   <entry keyword="DISTRIBUTED function">
+      <topic href="DISTRIBUTED.html#d0e15676"/>
+   </entry>
+   <entry keyword="DISTRIBUTION">
+      <topic href="DISTRIBUTION.html#d0e15747"/>
+   </entry>
+   <entry keyword="DISTRIBUTION action">
+      <topic href="WORKUNIT.html#d0e32912"/>
+   </entry>
+   <entry keyword="DISTRIBUTION function">
+      <topic href="DISTRIBUTION.html#d0e15753"/>
+   </entry>
+   <entry keyword="Division">
+      <topic href="Arithmetic_Operators.html#d0e1525"/>
+   </entry>
+   <entry keyword="Division by zero">
+      <topic href="Arithmetic_Operators.html#d0e1572"/>
+   </entry>
+   <entry keyword="dot syntax">
+      <topic href="Imported_Attributes.html#d0e1350"/>
+   </entry>
+   <entry keyword="Dynamic Files">
+      <topic href="Dynamic_Files.html#d0e6597"/>
+   </entry>
+   <entry keyword="EBCDIC">
+      <topic href="CSV_Files.html#d0e5149"/>
+   </entry>
+   <entry keyword="EBCDIC">
+      <topic href="EBCDIC.html#d0e15906"/>
+   </entry>
+   <entry keyword="EBCDIC">
+      <topic href="OUTPUT_CSV_Files.html#d0e24748"/>
+   </entry>
+   <entry keyword="EBCDIC function">
+      <topic href="EBCDIC.html#d0e15912"/>
+   </entry>
+   <entry keyword="ECL">
+      <topic href="Overview.html#d0e198"/>
+   </entry>
+   <entry keyword="ECL definition">
+      <topic href="Attribute_Definition.html#d0e496"/>
+   </entry>
+   <entry keyword="ECL IDE">
+      <topic href="Const_String.html#d0e277"/>
+   </entry>
+   <entry keyword="ECL keywords">
+      <topic href="Reserved_Words.html#d0e603"/>
+   </entry>
+   <entry keyword="EMBED">
+      <topic href="EMBED_Structure.html#d0e9046"/>
+   </entry>
+   <entry keyword="EMBED Structure">
+      <topic href="EMBED_Structure.html#d0e9031"/>
+   </entry>
+   <entry keyword="ENCODING">
+      <topic href="SOAPCALL.html#d0e30015"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="THOR-FLAT_Files.html#d0e4928"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="CSV_Files.html#d0e5165"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="XML_Files.html#d0e5353"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="JSON_Files.html#d0e5465"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24370"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="OUTPUT_CSV_Files.html#d0e24558"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="OUTPUT_XML_Files.html#d0e24920"/>
+   </entry>
+   <entry keyword="ENCRYPT">
+      <topic href="OUTPUT_JSON_Files.html#d0e25171"/>
+   </entry>
+   <entry keyword="ENDC++">
+      <topic href="BEGINCplus_Structure.html#d0e8881"/>
+   </entry>
+   <entry keyword="ENDEMBED">
+      <topic href="EMBED_Structure.html#d0e9061"/>
+   </entry>
+   <entry keyword="ENDMACRO">
+      <topic href="MACRO_Structure.html#d0e9568"/>
+   </entry>
+   <entry keyword="ENTH">
+      <topic href="CHOOSESETS.html#d0e13375"/>
+   </entry>
+   <entry keyword="ENTH">
+      <topic href="ENTH.html#d0e16036"/>
+   </entry>
+   <entry keyword="ENTH function">
+      <topic href="ENTH.html#d0e16030"/>
+   </entry>
+   <entry keyword="ENUM">
+      <topic href="ENUM.html#d0e3025"/>
+   </entry>
+   <entry keyword="ENUM datatype">
+      <topic href="ENUM.html#d0e3028"/>
+   </entry>
+   <entry keyword="Equivalence">
+      <topic href="Comparison_Operators.html#d0e1698"/>
+   </entry>
+   <entry keyword="Equivalence">
+      <topic href="ParsePattern_Definitions.html#d0e7697"/>
+   </entry>
+   <entry keyword="Equivalence Comparison">
+      <topic href="Comparison_Operators.html#d0e1765"/>
+   </entry>
+   <entry keyword="ERROR">
+      <topic href="ERROR.html#d0e16205"/>
+   </entry>
+   <entry keyword="ERROR function">
+      <topic href="ERROR.html#d0e16211"/>
+   </entry>
+   <entry keyword="ERROR function">
+      <topic href="FAIL.html#d0e17000"/>
+   </entry>
+   <entry keyword="ESCAPE">
+      <topic href="CSV_Files.html#d0e5126"/>
+   </entry>
+   <entry keyword="EVALUATE">
+      <topic href="EVALUATE_action.html#d0e16312"/>
+   </entry>
+   <entry keyword="EVALUATE action">
+      <topic href="EVALUATE_action.html#d0e16324"/>
+   </entry>
+   <entry keyword="EVALUATE function">
+      <topic href="EVALUATE_function.html#d0e16430"/>
+   </entry>
+   <entry keyword="EVENT">
+      <topic href="EVENT.html#d0e16493"/>
+   </entry>
+   <entry keyword="EVENT function">
+      <topic href="EVENT.html#d0e16500"/>
+   </entry>
+   <entry keyword="EVENTEXTRA">
+      <topic href="EVENTEXTRA.html#d0e16616"/>
+   </entry>
+   <entry keyword="EVENTEXTRA function">
+      <topic href="EVENTEXTRA.html#d0e16640"/>
+   </entry>
+   <entry keyword="EVENTNAME">
+      <topic href="EVENTNAME.html#d0e16566"/>
+   </entry>
+   <entry keyword="EXCEPT">
+      <topic href="EXCEPT.html#d0e8057"/>
+   </entry>
+   <entry keyword="EXCEPT keyword">
+      <topic href="EXCEPT.html#d0e8072"/>
+   </entry>
+   <entry keyword="EXCLUSIVE">
+      <topic href="CHOOSESETS.html#d0e13354"/>
+   </entry>
+   <entry keyword="EXISTS">
+      <topic href="EXISTS.html#d0e16673"/>
+   </entry>
+   <entry keyword="EXISTS function">
+      <topic href="EXISTS.html#d0e16679"/>
+   </entry>
+   <entry keyword="EXP">
+      <topic href="EXP.html#d0e16834"/>
+   </entry>
+   <entry keyword="EXP function">
+      <topic href="EXP.html#d0e16840"/>
+   </entry>
+   <entry keyword="EXP function">
+      <topic href="LN.html#d0e21509"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="Index_BUILD_Options.html#d0e12105"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="KEYDIFF.html#d0e20628"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="KEYPATCH.html#d0e20826"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24409"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="OUTPUT_CSV_Files.html#d0e24590"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="OUTPUT_XML_Files.html#d0e24956"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="OUTPUT_JSON_Files.html#d0e25207"/>
+   </entry>
+   <entry keyword="EXPIRE">
+      <topic href="PERSIST.html#d0e33521"/>
+   </entry>
+   <entry keyword="Explicit Casting">
+      <topic href="Explicit_Casting.html#d0e3111"/>
+   </entry>
+   <entry keyword="EXPORT">
+      <topic href="Global_attribute_visibility.html#d0e1263"/>
+   </entry>
+   <entry keyword="EXPORT">
+      <topic href="LOAD_Type.html#d0e6805"/>
+   </entry>
+   <entry keyword="EXPORT">
+      <topic href="EXPORT.html#d0e8108"/>
+   </entry>
+   <entry keyword="EXPORTed">
+      <topic href="Imported_Attributes.html#d0e1332"/>
+   </entry>
+   <entry keyword="EXPORTed Definitions">
+      <topic href="Imported_Attributes.html#d0e1336"/>
+   </entry>
+   <entry keyword="Expression">
+      <topic href="Attribute_Definition.html#d0e529"/>
+   </entry>
+   <entry keyword="Expressions">
+      <topic href="Expressions_and_Operators.html#d0e1504"/>
+   </entry>
+   <entry keyword="Expressions and Operators">
+      <topic href="Expressions_and_Operators.html#d0e1499"/>
+   </entry>
+   <entry keyword="Expressions as Actions">
+      <topic href="Functions_as_ActionsFunctions_as_Actions.html#d0e1443"/>
+   </entry>
+   <entry keyword="EXTEND">
+      <topic href="OUTPUT.html#d0e23964"/>
+   </entry>
+   <entry keyword="EXTEND">
+      <topic href="Named_OUTPUT.html#d0e25523"/>
+   </entry>
+   <entry keyword="Extended PARSE">
+      <topic href="Extended_PARSE_Examples.html#d0e26274"/>
+   </entry>
+   <entry keyword="Extended PARSE Examples">
+      <topic href="Extended_PARSE_Examples.html#d0e26281"/>
+   </entry>
+   <entry keyword="External Service">
+      <topic href="External_Service_Implementation.html#d0e37049"/>
+   </entry>
+   <entry keyword="external system services">
+      <topic href="External_Service_Implementation.html#d0e37046"/>
+   </entry>
+   <entry keyword="FAIL">
+      <topic href="ASSERT.html#d0e11220"/>
+   </entry>
+   <entry keyword="FAIL">
+      <topic href="CATCH.html#d0e13060"/>
+   </entry>
+   <entry keyword="FAIL">
+      <topic href="FAIL.html#d0e16890"/>
+   </entry>
+   <entry keyword="FAIL action">
+      <topic href="ERROR.html#d0e16291"/>
+   </entry>
+   <entry keyword="FAIL action">
+      <topic href="FAIL.html#d0e16901"/>
+   </entry>
+   <entry keyword="FAILCODE">
+      <topic href="FAILCODE.html#d0e17024"/>
+   </entry>
+   <entry keyword="FAILCODE function">
+      <topic href="FAILCODE.html#d0e17018"/>
+   </entry>
+   <entry keyword="FAILMESSAGE">
+      <topic href="CATCH.html#d0e13049"/>
+   </entry>
+   <entry keyword="FAILMESSAGE">
+      <topic href="FAILMESSAGE.html#d0e17057"/>
+   </entry>
+   <entry keyword="FAILMESSAGE">
+      <topic href="HTTPCALL.html#d0e18683"/>
+   </entry>
+   <entry keyword="FAILMESSAGE">
+      <topic href="SOAPCALL.html#d0e29907"/>
+   </entry>
+   <entry keyword="FAILMESSAGE function">
+      <topic href="FAILMESSAGE.html#d0e17063"/>
+   </entry>
+   <entry keyword="FAILURE">
+      <topic href="FAILURE.html#d0e33206"/>
+   </entry>
+   <entry keyword="FAILURE workflow service">
+      <topic href="FAILCODE.html#d0e17032"/>
+   </entry>
+   <entry keyword="FAILURE workflow service">
+      <topic href="FAILURE.html#d0e33214"/>
+   </entry>
+   <entry keyword="FALSE">
+      <topic href="BOOLEAN.html#d0e2258"/>
+   </entry>
+   <entry keyword="FALSE">
+      <topic href="TRUE_FALSE.html#d0e8815"/>
+   </entry>
+   <entry keyword="FALSE keyword">
+      <topic href="TRUE_FALSE.html#d0e8835"/>
+   </entry>
+   <entry keyword="FETCH">
+      <topic href="FETCH.html#d0e17112"/>
+   </entry>
+   <entry keyword="FETCH function">
+      <topic href="FETCH.html#d0e17115"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="AGGREGATE.html#d0e10492"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="Index_BUILD_Options.html#d0e12114"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="CHOOSEN.html#d0e13189"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="GLOBAL.html#d0e17638"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="JoinOptions.html#d0e19579"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="SORT.html#d0e30148"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="TABLE.html#d0e31033"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="GLOBAL_workflow_service.html#d0e33286"/>
+   </entry>
+   <entry keyword="FEW">
+      <topic href="STORED_workflow_service.html#d0e33910"/>
+   </entry>
+   <entry keyword="field sequence">
+      <topic href="_WEBSERVICE.html#d0e36798"/>
+   </entry>
+   <entry keyword="File Scope">
+      <topic href="File_Scope.html#d0e6490"/>
+   </entry>
+   <entry keyword="FILEPOSITION">
+      <topic href="Index_BUILD_Options.html#d0e12121"/>
+   </entry>
+   <entry keyword="Filters">
+      <topic href="Recordset_Filtering.html#d0e844"/>
+   </entry>
+   <entry keyword="FIRST">
+      <topic href="INDEX_record_structure.html#d0e6136"/>
+   </entry>
+   <entry keyword="FIRST">
+      <topic href="Index_BUILD_Options.html#d0e12151"/>
+   </entry>
+   <entry keyword="FIRST">
+      <topic href="PARSE_Text_Data.html#d0e25970"/>
+   </entry>
+   <entry keyword="FLAT">
+      <topic href="THOR-FLAT_Files.html#d0e4977"/>
+   </entry>
+   <entry keyword="Flat Files">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24330"/>
+   </entry>
+   <entry keyword="floating point">
+      <topic href="REAL.html#d0e2440"/>
+   </entry>
+   <entry keyword="FOLD">
+      <topic href="Keywords.html#d0e37172"/>
+   </entry>
+   <entry keyword="Foreign files">
+      <topic href="Foreign_Files.html#d0e6527"/>
+   </entry>
+   <entry keyword="FORMAT">
+      <topic href="OUTPUT_CSV_Files.html#d0e24695"/>
+   </entry>
+   <entry keyword="FORWARD">
+      <topic href="MODULE_Structure.html#d0e9690"/>
+   </entry>
+   <entry keyword="forward reference">
+      <topic href="Attributes_versus_Actions.html#d0e239"/>
+   </entry>
+   <entry keyword="forward reference">
+      <topic href="ParsePattern_Definitions.html#d0e7726"/>
+   </entry>
+   <entry keyword="forward reference">
+      <topic href="DEFINE.html#d0e14938"/>
+   </entry>
+   <entry keyword="FROM">
+      <topic href="IMPORT.html#d0e8278"/>
+   </entry>
+   <entry keyword="FROMJSON">
+      <topic href="FROMJSON.html#d0e17334"/>
+   </entry>
+   <entry keyword="FROMJSON function">
+      <topic href="FROMJSON.html#d0e17337"/>
+   </entry>
+   <entry keyword="FROMUNICODE">
+      <topic href="FROMUNICODE.html#d0e17419"/>
+   </entry>
+   <entry keyword="FROMUNICODE function">
+      <topic href="FROMUNICODE.html#d0e17422"/>
+   </entry>
+   <entry keyword="FROMXML">
+      <topic href="FROMXML.html#d0e17481"/>
+   </entry>
+   <entry keyword="FROMXML function">
+      <topic href="FROMXML.html#d0e17484"/>
+   </entry>
+   <entry keyword="FULL ONLY">
+      <topic href="Join_Types.html#d0e20360"/>
+   </entry>
+   <entry keyword="FULL OUTER">
+      <topic href="Join_Types.html#d0e20318"/>
+   </entry>
+   <entry keyword="FUNCTION">
+      <topic href="FUNCTION_Structure.html#d0e9189"/>
+   </entry>
+   <entry keyword="FUNCTION Structure">
+      <topic href="FUNCTION_Structure.html#d0e9171"/>
+   </entry>
+   <entry keyword="FUNCTIONMACRO">
+      <topic href="FUNCTIONMACRO_Structure.html#d0e9312"/>
+   </entry>
+   <entry keyword="FUNCTIONMACRO Structure">
+      <topic href="FUNCTIONMACRO_Structure.html#d0e9294"/>
+   </entry>
+   <entry keyword="Functions">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e887"/>
+   </entry>
+   <entry keyword="GETENV">
+      <topic href="GETENV.html#d0e17566"/>
+   </entry>
+   <entry keyword="GETENV function">
+      <topic href="GETENV.html#d0e17569"/>
+   </entry>
+   <entry keyword="GETISVALID">
+      <topic href="getisvalid.html#d0e6995"/>
+   </entry>
+   <entry keyword="GLOBAL">
+      <topic href="GLOBAL.html#d0e17624"/>
+   </entry>
+   <entry keyword="GLOBAL">
+      <topic href="GLOBAL_workflow_service.html#d0e33278"/>
+   </entry>
+   <entry keyword="GLOBAL function">
+      <topic href="GLOBAL.html#d0e17627"/>
+   </entry>
+   <entry keyword="GLOBAL workflow service">
+      <topic href="GLOBAL.html#d0e17690"/>
+   </entry>
+   <entry keyword="GLOBAL workflow service">
+      <topic href="GLOBAL_workflow_service.html#d0e33290"/>
+   </entry>
+   <entry keyword="GRAPH">
+      <topic href="GRAPH.html#d0e17708"/>
+   </entry>
+   <entry keyword="GRAPH function">
+      <topic href="GRAPH.html#d0e17711"/>
+   </entry>
+   <entry keyword="Greater or Equal">
+      <topic href="Comparison_Operators.html#d0e1755"/>
+   </entry>
+   <entry keyword="Greater Than">
+      <topic href="Comparison_Operators.html#d0e1735"/>
+   </entry>
+   <entry keyword="GROUP">
+      <topic href="GROUP.html#d0e8186"/>
+   </entry>
+   <entry keyword="GROUP">
+      <topic href="COMBINE.html#d0e13606"/>
+   </entry>
+   <entry keyword="GROUP">
+      <topic href="DENORMALIZE.html#d0e15003"/>
+   </entry>
+   <entry keyword="GROUP">
+      <topic href="PIPE.html#d0e26348"/>
+   </entry>
+   <entry keyword="GROUP">
+      <topic href="ROLLUP.html#d0e28333"/>
+   </entry>
+   <entry keyword="Group">
+      <topic href="GROUP_function.html#d0e17888"/>
+   </entry>
+   <entry keyword="GROUP function">
+      <topic href="GROUP_function.html#d0e17891"/>
+   </entry>
+   <entry keyword="GROUP function">
+      <topic href="UNGROUP.html#d0e32319"/>
+   </entry>
+   <entry keyword="GROUP keyword">
+      <topic href="GROUP.html#d0e8180"/>
+   </entry>
+   <entry keyword="GROUP keyword">
+      <topic href="VARIANCE.html#d0e32521"/>
+   </entry>
+   <entry keyword="GROUPED">
+      <topic href="DATASET.html#d0e4575"/>
+   </entry>
+   <entry keyword="GROUPED">
+      <topic href="DATASET_as_a_Parameter_Type.html#d0e5887"/>
+   </entry>
+   <entry keyword="GROUPED">
+      <topic href="JoinOptions.html#d0e19583"/>
+   </entry>
+   <entry keyword="HASH">
+      <topic href="DEDUP.html#d0e14621"/>
+   </entry>
+   <entry keyword="HASH">
+      <topic href="HASH.html#d0e18084"/>
+   </entry>
+   <entry keyword="HASH">
+      <topic href="JoinOptions.html#d0e19617"/>
+   </entry>
+   <entry keyword="HASH function">
+      <topic href="HASH.html#d0e18087"/>
+   </entry>
+   <entry keyword="HASH32 function">
+      <topic href="HASH32.html#d0e18149"/>
+   </entry>
+   <entry keyword="HASH64">
+      <topic href="HASH32.html#d0e18146"/>
+   </entry>
+   <entry keyword="HASH64">
+      <topic href="HASH64.html#d0e18208"/>
+   </entry>
+   <entry keyword="HASH64 function">
+      <topic href="HASH64.html#d0e18211"/>
+   </entry>
+   <entry keyword="HASHCRC">
+      <topic href="HASHCRC.html#d0e18270"/>
+   </entry>
+   <entry keyword="HASHCRC function">
+      <topic href="HASHCRC.html#d0e18273"/>
+   </entry>
+   <entry keyword="HASHMD5">
+      <topic href="HASHMD5.html#d0e18332"/>
+   </entry>
+   <entry keyword="HASHMD5 function">
+      <topic href="HASHMD5.html#d0e18335"/>
+   </entry>
+   <entry keyword="HAVING">
+      <topic href="HAVING.html#d0e18394"/>
+   </entry>
+   <entry keyword="HAVING function">
+      <topic href="HAVING.html#d0e18397"/>
+   </entry>
+   <entry keyword="HEADING">
+      <topic href="CSV_Files.html#d0e5087"/>
+   </entry>
+   <entry keyword="HEADING">
+      <topic href="OUTPUT_CSV_Files.html#d0e24675"/>
+   </entry>
+   <entry keyword="HEADING">
+      <topic href="OUTPUT_XML_Files.html#d0e25042"/>
+   </entry>
+   <entry keyword="HEADING">
+      <topic href="OUTPUT_JSON_Files.html#d0e25293"/>
+   </entry>
+   <entry keyword="HEADING">
+      <topic href="SOAPCALL.html#d0e29837"/>
+   </entry>
+   <entry keyword="heapsort">
+      <topic href="Sorting_Algorithms.html#d0e30372"/>
+   </entry>
+   <entry keyword="Hexadecimal">
+      <topic href="Const_String.html#d0e328"/>
+   </entry>
+   <entry keyword="Hexadecimal">
+      <topic href="Numeric.html#d0e405"/>
+   </entry>
+   <entry keyword="HPCC">
+      <topic href="Overview.html#d0e203"/>
+   </entry>
+   <entry keyword="hthor">
+      <topic href="Sorting_Algorithms.html#d0e30398"/>
+   </entry>
+   <entry keyword="HTTPCALL">
+      <topic href="HTTPCALL.html#d0e18521"/>
+   </entry>
+   <entry keyword="HTTPCALL Function">
+      <topic href="HTTPCALL.html#d0e18529"/>
+   </entry>
+   <entry keyword="HTTPCALL Options">
+      <topic href="HTTPCALL.html#d0e18590"/>
+   </entry>
+   <entry keyword="HTTPHEADER">
+      <topic href="HTTPCALL.html#d0e18700"/>
+   </entry>
+   <entry keyword="HTTPHEADER">
+      <topic href="SOAPCALL.html#d0e30024"/>
+   </entry>
+   <entry keyword="IF">
+      <topic href="IF.html#d0e18712"/>
+   </entry>
+   <entry keyword="IF function">
+      <topic href="IF.html#d0e18718"/>
+   </entry>
+   <entry keyword="IFBLOCK">
+      <topic href="RECORD_Structure.html#d0e3493"/>
+   </entry>
+   <entry keyword="IFF">
+      <topic href="IFF.html#d0e18814"/>
+   </entry>
+   <entry keyword="IFF function">
+      <topic href="IFF.html#d0e18820"/>
+   </entry>
+   <entry keyword="Implicit Casting">
+      <topic href="Implicit_Casting.html#d0e3130"/>
+   </entry>
+   <entry keyword="Implicit Dataset">
+      <topic href="Implicit_Dataset_Relationality.html#d0e6661"/>
+   </entry>
+   <entry keyword="Implicit Dataset Relationality">
+      <topic href="Implicit_Dataset_Relationality.html#d0e6668"/>
+   </entry>
+   <entry keyword="IMPORT">
+      <topic href="IMPORT.html#d0e8249"/>
+   </entry>
+   <entry keyword="IMPORT AS">
+      <topic href="IMPORT.html#d0e8312"/>
+   </entry>
+   <entry keyword="IMPORT FROM">
+      <topic href="IMPORT.html#d0e8348"/>
+   </entry>
+   <entry keyword="IMPORT function">
+      <topic href="IMPORT_function.html#d0e18903"/>
+   </entry>
+   <entry keyword="IMPORTed">
+      <topic href="Imported_Attributes.html#d0e1340"/>
+   </entry>
+   <entry keyword="IN">
+      <topic href="IN_Operator.html#d0e2071"/>
+   </entry>
+   <entry keyword="In Line Dataset">
+      <topic href="In-line_DATASETs.html#d0e5693"/>
+   </entry>
+   <entry keyword="IN Operator">
+      <topic href="IN_Operator.html#d0e2074"/>
+   </entry>
+   <entry keyword="in-line a set of data">
+      <topic href="In-line_DATASETs.html#d0e5710"/>
+   </entry>
+   <entry keyword="In-Line Dataset">
+      <topic href="In-line_DATASETs.html#d0e5690"/>
+   </entry>
+   <entry keyword="INCLUDE">
+      <topic href="Keywords.html#d0e37139"/>
+   </entry>
+   <entry keyword="INDEPENDENT">
+      <topic href="INDEPENDENT.html#d0e33361"/>
+   </entry>
+   <entry keyword="INDEPENDENT workflow service">
+      <topic href="INDEPENDENT.html#d0e33364"/>
+   </entry>
+   <entry keyword="INDEX">
+      <topic href="INDEX_record_structure.html#d0e6104"/>
+   </entry>
+   <entry keyword="INDEX declaration">
+      <topic href="INDEX_record_structure.html#d0e6329"/>
+   </entry>
+   <entry keyword="Indexing">
+      <topic href="Set_Ordering_and_Indexing.html#d0e748"/>
+   </entry>
+   <entry keyword="Inline TRANSFORMs">
+      <topic href="Inline_TRANSFORMs.html#d0e10255"/>
+   </entry>
+   <entry keyword="Inline TRANSFORMs">
+      <topic href="Shorthand_Inline_TRANSFORMs.html#d0e10276"/>
+   </entry>
+   <entry keyword="INNER">
+      <topic href="Join_Types_Mergejoin.html#d0e22788"/>
+   </entry>
+   <entry keyword="insertionsort">
+      <topic href="Sorting_Algorithms.html#d0e30368"/>
+   </entry>
+   <entry keyword="INTEGER">
+      <topic href="Numeric.html#d0e398"/>
+   </entry>
+   <entry keyword="INTEGER">
+      <topic href="INTEGER.html#d0e2273"/>
+   </entry>
+   <entry keyword="INTEGER">
+      <topic href="physicallegnth.html#d0e6915"/>
+   </entry>
+   <entry keyword="INTEGER">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37237"/>
+   </entry>
+   <entry keyword="Integer Division">
+      <topic href="Arithmetic_Operators.html#d0e1533"/>
+   </entry>
+   <entry keyword="INTEGER value type">
+      <topic href="INTEGER.html#d0e2301"/>
+   </entry>
+   <entry keyword="INTERFACE">
+      <topic href="INTERFACE_Structure.html#d0e9439"/>
+   </entry>
+   <entry keyword="interface">
+      <topic href="STORED.html#d0e30802"/>
+   </entry>
+   <entry keyword="INTERFACE Structure">
+      <topic href="INTERFACE_Structure.html#d0e9427"/>
+   </entry>
+   <entry keyword="INTERNAL">
+      <topic href="LIBRARY.html#d0e21116"/>
+   </entry>
+   <entry keyword="INTFORMAT">
+      <topic href="INTFORMAT.html#d0e18983"/>
+   </entry>
+   <entry keyword="INTFORMAT function">
+      <topic href="INTFORMAT.html#d0e18986"/>
+   </entry>
+   <entry keyword="ISVALID">
+      <topic href="ISVALID.html#d0e19048"/>
+   </entry>
+   <entry keyword="ISVALID function">
+      <topic href="ISVALID.html#d0e19051"/>
+   </entry>
+   <entry keyword="ITERATE">
+      <topic href="ITERATE.html#d0e19104"/>
+   </entry>
+   <entry keyword="ITERATE function">
+      <topic href="ITERATE.html#d0e19110"/>
+   </entry>
+   <entry keyword="JOIN">
+      <topic href="JOIN.html#d0e19291"/>
+   </entry>
+   <entry keyword="JOIN">
+      <topic href="JOIN_Set_of_Datasets.html#d0e20385"/>
+   </entry>
+   <entry keyword="JOIN function">
+      <topic href="JOIN.html#d0e19294"/>
+   </entry>
+   <entry keyword="JOIN function">
+      <topic href="JOIN_Set_of_Datasets.html#d0e20433"/>
+   </entry>
+   <entry keyword="JOIN Set">
+      <topic href="JOIN_Set_of_Datasets.html#d0e20388"/>
+   </entry>
+   <entry keyword="JOIN setofdatasets">
+      <topic href="TRANSFORM_Function_Requirements_parameters.html#d0e20477"/>
+   </entry>
+   <entry keyword="Join Types">
+      <topic href="Join_Types_Mergejoin.html#d0e22767"/>
+   </entry>
+   <entry keyword="joincondition">
+      <topic href="KEYED-WILD.html#d0e8467"/>
+   </entry>
+   <entry keyword="joincondition">
+      <topic href="Matching_Logic.html#d0e19542"/>
+   </entry>
+   <entry keyword="JOINED">
+      <topic href="SORT.html#d0e30092"/>
+   </entry>
+   <entry keyword="joinflags">
+      <topic href="JoinOptions.html#d0e19553"/>
+   </entry>
+   <entry keyword="JOINS FULL OUTER">
+      <topic href="Join_Logic.html#d0e20238"/>
+   </entry>
+   <entry keyword="JSON">
+      <topic href="JSON_Files.html#d0e5453"/>
+   </entry>
+   <entry keyword="JSON">
+      <topic href="OUTPUT.html#d0e23848"/>
+   </entry>
+   <entry keyword="JSON">
+      <topic href="OUTPUT_JSON_Files.html#d0e25161"/>
+   </entry>
+   <entry keyword="JSON Files">
+      <topic href="OUTPUT_JSON_Files.html#d0e25127"/>
+   </entry>
+   <entry keyword="KEEP">
+      <topic href="DEDUP.html#d0e14625"/>
+   </entry>
+   <entry keyword="KEEP">
+      <topic href="JoinOptions.html#d0e19628"/>
+   </entry>
+   <entry keyword="KEEP">
+      <topic href="PARSE_Text_Data.html#d0e26055"/>
+   </entry>
+   <entry keyword="KEYDIFF">
+      <topic href="KEYDIFF.html#d0e20609"/>
+   </entry>
+   <entry keyword="KEYDIFF function">
+      <topic href="KEYDIFF.html#d0e20612"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="KEYED-WILD.html#d0e8397"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="AVE.html#d0e11678"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="CORRELATION.html#d0e13859"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="COUNT.html#d0e14163"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="COVARIANCE.html#d0e14342"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="EXISTS.html#d0e16687"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="JoinOptions.html#d0e19601"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="LIMIT.html#d0e21234"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="LIMIT.html#d0e21304"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="MIN.html#d0e22870"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="PROJECT.html#d0e26919"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="SUM.html#d0e30849"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="TABLE.html#d0e31055"/>
+   </entry>
+   <entry keyword="KEYED">
+      <topic href="VARIANCE.html#d0e32488"/>
+   </entry>
+   <entry keyword="Keyed JOIN">
+      <topic href="Keyed_Joins.html#d0e20138"/>
+   </entry>
+   <entry keyword="KEYED Keyword">
+      <topic href="KEYED-WILD.html#d0e8455"/>
+   </entry>
+   <entry keyword="KEYPATCH">
+      <topic href="KEYPATCH.html#d0e20807"/>
+   </entry>
+   <entry keyword="KEYPATCH action">
+      <topic href="KEYDIFF.html#d0e20780"/>
+   </entry>
+   <entry keyword="KEYPATCH function">
+      <topic href="KEYPATCH.html#d0e20810"/>
+   </entry>
+   <entry keyword="KEYUNICODE">
+      <topic href="KEYUNICODE.html#d0e20995"/>
+   </entry>
+   <entry keyword="KEYUNICODE function">
+      <topic href="KEYUNICODE.html#d0e20998"/>
+   </entry>
+   <entry keyword="Landing Zone files">
+      <topic href="Landing_Zone_Files.html#d0e6560"/>
+   </entry>
+   <entry keyword="LAST">
+      <topic href="CHOOSESETS.html#d0e13364"/>
+   </entry>
+   <entry keyword="LEFT">
+      <topic href="LEFT-RIGHT.html#d0e8511"/>
+   </entry>
+   <entry keyword="LEFT">
+      <topic href="TRANSFORM_Function_Requirements_Denormalize.html#d0e15198"/>
+   </entry>
+   <entry keyword="LEFT">
+      <topic href="NORMALIZE.html#d0e23165"/>
+   </entry>
+   <entry keyword="LEFT ONLY">
+      <topic href="Join_Types.html#d0e20332"/>
+   </entry>
+   <entry keyword="LEFT ONLY">
+      <topic href="Join_Types_Mergejoin.html#d0e22812"/>
+   </entry>
+   <entry keyword="LEFT OUTER">
+      <topic href="Join_Types.html#d0e20296"/>
+   </entry>
+   <entry keyword="LEFT OUTER">
+      <topic href="Join_Types_Mergejoin.html#d0e22800"/>
+   </entry>
+   <entry keyword="LENGTH">
+      <topic href="DATASET.html#d0e4550"/>
+   </entry>
+   <entry keyword="LENGTH">
+      <topic href="Child_DATASETs.html#d0e5782"/>
+   </entry>
+   <entry keyword="LENGTH">
+      <topic href="LENGTH.html#d0e21050"/>
+   </entry>
+   <entry keyword="LENGTH function">
+      <topic href="LENGTH.html#d0e21053"/>
+   </entry>
+   <entry keyword="Less or Equal">
+      <topic href="Comparison_Operators.html#d0e1745"/>
+   </entry>
+   <entry keyword="Less Than">
+      <topic href="Comparison_Operators.html#d0e1725"/>
+   </entry>
+   <entry keyword="LIBRARY">
+      <topic href="MODULE_Structure.html#d0e9678"/>
+   </entry>
+   <entry keyword="LIBRARY">
+      <topic href="LIBRARY.html#d0e21105"/>
+   </entry>
+   <entry keyword="LIBRARY function">
+      <topic href="BUILD_a_Query_Library.html#d0e12707"/>
+   </entry>
+   <entry keyword="LIBRARY function">
+      <topic href="LIBRARY.html#d0e21108"/>
+   </entry>
+   <entry keyword="LIKELY">
+      <topic href="likely.html#d0e8554"/>
+   </entry>
+   <entry keyword="LIMIT">
+      <topic href="JoinOptions.html#d0e19660"/>
+   </entry>
+   <entry keyword="LIMIT">
+      <topic href="LIMIT.html#d0e21215"/>
+   </entry>
+   <entry keyword="LIMIT function">
+      <topic href="LIMIT.html#d0e21218"/>
+   </entry>
+   <entry keyword="LINKCOUNTED">
+      <topic href="DATASET.html#d0e4579"/>
+   </entry>
+   <entry keyword="LINKCOUNTED">
+      <topic href="DATASET_as_a_Parameter_Type.html#d0e5891"/>
+   </entry>
+   <entry keyword="LITERAL">
+      <topic href="SOAPCALL.html#d0e29954"/>
+   </entry>
+   <entry keyword="LITTLE_ENDIAN">
+      <topic href="INTEGER.html#d0e2327"/>
+   </entry>
+   <entry keyword="LN">
+      <topic href="LN.html#d0e21478"/>
+   </entry>
+   <entry keyword="LN function">
+      <topic href="EXP.html#d0e16869"/>
+   </entry>
+   <entry keyword="LN function">
+      <topic href="LN.html#d0e21481"/>
+   </entry>
+   <entry keyword="LOAD">
+      <topic href="LOAD_Type.html#d0e6813"/>
+   </entry>
+   <entry keyword="LOADXML">
+      <topic href="LOADXML.html#d0e21541"/>
+   </entry>
+   <entry keyword="LOADXML function">
+      <topic href="LOADXML.html#d0e21544"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="Local.html#d0e1302"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="AGGREGATE.html#d0e10488"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="Index_BUILD_Options.html#d0e12125"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="COMBINE.html#d0e13615"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="DEDUP.html#d0e14642"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="DENORMALIZE.html#d0e14970"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="ENTH.html#d0e16055"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="FETCH.html#d0e17131"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="GROUP_function.html#d0e17914"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="ITERATE.html#d0e19118"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="JoinOptions.html#d0e19613"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="LOCAL.html#d0e21614"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="MERGE.html#d0e22349"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="PROCESS.html#d0e26669"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="PROJECT.html#d0e26923"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="ROLLUP.html#d0e28282"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="SORT.html#d0e30140"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="TABLE.html#d0e31051"/>
+   </entry>
+   <entry keyword="LOCAL">
+      <topic href="TOPN.html#d0e31593"/>
+   </entry>
+   <entry keyword="LOCAL function">
+      <topic href="INDEX_record_structure.html#d0e6333"/>
+   </entry>
+   <entry keyword="LOCAL function">
+      <topic href="LOCAL.html#d0e21617"/>
+   </entry>
+   <entry keyword="LOCALE">
+      <topic href="RECORD_Structure.html#d0e3471"/>
+   </entry>
+   <entry keyword="LOG">
+      <topic href="LOG.html#d0e21675"/>
+   </entry>
+   <entry keyword="LOG">
+      <topic href="SOAPCALL.html#d0e29986"/>
+   </entry>
+   <entry keyword="LOG function">
+      <topic href="LOG.html#d0e21678"/>
+   </entry>
+   <entry keyword="LOGICAL Filenames">
+      <topic href="Scope_and_Logical_Filenames.html#d0e6484"/>
+   </entry>
+   <entry keyword="Logical graphs">
+      <topic href="OPTION_Available_Options.html#d0e35776"/>
+   </entry>
+   <entry keyword="logical operators">
+      <topic href="Logical_Operators.html#d0e1784"/>
+   </entry>
+   <entry keyword="logical operators">
+      <topic href="Field_Inheritance.html#d0e3908"/>
+   </entry>
+   <entry keyword="LOOKUP">
+      <topic href="JoinOptions.html#d0e19575"/>
+   </entry>
+   <entry keyword="LOOP">
+      <topic href="LOOP.html#d0e21729"/>
+   </entry>
+   <entry keyword="LOOP function">
+      <topic href="GRAPH.html#d0e17861"/>
+   </entry>
+   <entry keyword="LOOP function">
+      <topic href="LOOP.html#d0e21732"/>
+   </entry>
+   <entry keyword="loopbody">
+      <topic href="LOOP.html#d0e21883"/>
+   </entry>
+   <entry keyword="loopcondition">
+      <topic href="LOOP.html#d0e21904"/>
+   </entry>
+   <entry keyword="loopcount">
+      <topic href="LOOP.html#d0e21874"/>
+   </entry>
+   <entry keyword="loopfilter">
+      <topic href="LOOP.html#d0e21892"/>
+   </entry>
+   <entry keyword="LZW">
+      <topic href="INDEX_record_structure.html#d0e6128"/>
+   </entry>
+   <entry keyword="LZW">
+      <topic href="Index_BUILD_Options.html#d0e12143"/>
+   </entry>
+   <entry keyword="MACRO">
+      <topic href="MACRO_Structure.html#d0e9555"/>
+   </entry>
+   <entry keyword="MACRO Structure">
+      <topic href="MACRO_Structure.html#d0e9536"/>
+   </entry>
+   <entry keyword="MANY">
+      <topic href="AGGREGATE.html#d0e10496"/>
+   </entry>
+   <entry keyword="MANY">
+      <topic href="GLOBAL.html#d0e17646"/>
+   </entry>
+   <entry keyword="MANY">
+      <topic href="JoinOptions.html#d0e19571"/>
+   </entry>
+   <entry keyword="MANY">
+      <topic href="PARSE_Text_Data.html#d0e26160"/>
+   </entry>
+   <entry keyword="MANY">
+      <topic href="TABLE.html#d0e31037"/>
+   </entry>
+   <entry keyword="MAP">
+      <topic href="MAP.html#d0e22021"/>
+   </entry>
+   <entry keyword="MAP function">
+      <topic href="MAP.html#d0e22024"/>
+   </entry>
+   <entry keyword="MATCHED">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7770"/>
+   </entry>
+   <entry keyword="MATCHED">
+      <topic href="PARSE_Text_Data.html#d0e26105"/>
+   </entry>
+   <entry keyword="MATCHED ALL">
+      <topic href="PARSE_Text_Data.html#d0e26121"/>
+   </entry>
+   <entry keyword="MATCHLENGTH">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7835"/>
+   </entry>
+   <entry keyword="MATCHPOSITION">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7852"/>
+   </entry>
+   <entry keyword="MATCHROW">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7869"/>
+   </entry>
+   <entry keyword="MATCHTEXT">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7795"/>
+   </entry>
+   <entry keyword="MATCHUNICODE">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7818"/>
+   </entry>
+   <entry keyword="MAX">
+      <topic href="PARSE_Text_Data.html#d0e26087"/>
+   </entry>
+   <entry keyword="MAX">
+      <topic href="SIZEOF.html#d0e29465"/>
+   </entry>
+   <entry keyword="MAX function">
+      <topic href="MAX.html#d0e22155"/>
+   </entry>
+   <entry keyword="MAXCOUNT">
+      <topic href="Field_Modifiers.html#d0e4069"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="RECORD_Structure.html#d0e3463"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="Field_Modifiers.html#d0e4054"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="CSV_Files.html#d0e5134"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="INDEX_record_structure.html#d0e6150"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="INDEX_record_structure.html#d0e6177"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="INDEX_record_structure.html#d0e6197"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="maxlength.html#d0e6963"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="Index_BUILD_Options.html#d0e12194"/>
+   </entry>
+   <entry keyword="MAXLENGTH">
+      <topic href="PARSE.html#d0e25739"/>
+   </entry>
+   <entry keyword="memory exhausted">
+      <topic href="JoinOptions.html#d0e20123"/>
+   </entry>
+   <entry keyword="MERGE">
+      <topic href="Index_BUILD_Options.html#d0e12075"/>
+   </entry>
+   <entry keyword="MERGE">
+      <topic href="MERGE.html#d0e22312"/>
+   </entry>
+   <entry keyword="MERGE">
+      <topic href="SOAPCALL.html#d0e29863"/>
+   </entry>
+   <entry keyword="MERGE">
+      <topic href="TABLE.html#d0e31059"/>
+   </entry>
+   <entry keyword="MERGE function">
+      <topic href="MERGE.html#d0e22315"/>
+   </entry>
+   <entry keyword="MERGEJOIN">
+      <topic href="MERGEJOIN.html#d0e22543"/>
+   </entry>
+   <entry keyword="MERGEJOIN function">
+      <topic href="JOIN_Set_of_Datasets.html#d0e20430"/>
+   </entry>
+   <entry keyword="MERGEJOIN function">
+      <topic href="MERGEJOIN.html#d0e22549"/>
+   </entry>
+   <entry keyword="MIN">
+      <topic href="MIN.html#d0e22859"/>
+   </entry>
+   <entry keyword="MIN">
+      <topic href="PARSE_Text_Data.html#d0e26096"/>
+   </entry>
+   <entry keyword="MIN function">
+      <topic href="MIN.html#d0e22862"/>
+   </entry>
+   <entry keyword="MODULE">
+      <topic href="MODULE_Structure.html#d0e9664"/>
+   </entry>
+   <entry keyword="MODULE Structure">
+      <topic href="MODULE_Structure.html#d0e9652"/>
+   </entry>
+   <entry keyword="Modulus Division">
+      <topic href="Arithmetic_Operators.html#d0e1541"/>
+   </entry>
+   <entry keyword="MOFN">
+      <topic href="Join_Types_Mergejoin.html#d0e22824"/>
+   </entry>
+   <entry keyword="MULTIPLE">
+      <topic href="PERSIST.html#d0e33543"/>
+   </entry>
+   <entry keyword="Multiplication">
+      <topic href="Arithmetic_Operators.html#d0e1549"/>
+   </entry>
+   <entry keyword="N-ary merge/join">
+      <topic href="GRAPH.html#d0e17781"/>
+   </entry>
+   <entry keyword="Name">
+      <topic href="Attribute_Definition.html#d0e519"/>
+   </entry>
+   <entry keyword="NAMED">
+      <topic href="Passing_NAMED_Parameters.html#d0e1186"/>
+   </entry>
+   <entry keyword="NAMED">
+      <topic href="DISTRIBUTION.html#d0e15769"/>
+   </entry>
+   <entry keyword="NAMED">
+      <topic href="OUTPUT.html#d0e23956"/>
+   </entry>
+   <entry keyword="NAMED">
+      <topic href="Named_OUTPUT.html#d0e25515"/>
+   </entry>
+   <entry keyword="NAMED">
+      <topic href="OUTPUT_Scalar_Values.html#d0e25579"/>
+   </entry>
+   <entry keyword="NAMED OUTPUT">
+      <topic href="Named_OUTPUT.html#d0e25485"/>
+   </entry>
+   <entry keyword="Named Output Dataset">
+      <topic href="Named_Output_DATASETs.html#d0e5648"/>
+   </entry>
+   <entry keyword="NAMESPACE">
+      <topic href="SOAPCALL.html#d0e29937"/>
+   </entry>
+   <entry keyword="Natural Language Parsing">
+      <topic href="Parsing_Support.html#d0e7049"/>
+   </entry>
+   <entry keyword="Nested child datasets">
+      <topic href="Implicit_Dataset_Relationality.html#d0e6673"/>
+   </entry>
+   <entry keyword="NOCASE">
+      <topic href="PARSE_Text_Data.html#d0e26024"/>
+   </entry>
+   <entry keyword="NOCASE">
+      <topic href="REGEXFIND.html#d0e27761"/>
+   </entry>
+   <entry keyword="NOCASE">
+      <topic href="REGEXFINDSET.html#d0e27873"/>
+   </entry>
+   <entry keyword="NOCASE">
+      <topic href="REGEXREPLACE.html#d0e27973"/>
+   </entry>
+   <entry keyword="NOFOLD">
+      <topic href="NOFOLD.html#d0e23374"/>
+   </entry>
+   <entry keyword="NOFOLD">
+      <topic href="Keywords.html#d0e37181"/>
+   </entry>
+   <entry keyword="NOFOLD function">
+      <topic href="NOFOLD.html#d0e23363"/>
+   </entry>
+   <entry keyword="NOLOCAL">
+      <topic href="NOLOCAL.html#d0e23023"/>
+   </entry>
+   <entry keyword="NOLOCAL function">
+      <topic href="NOLOCAL.html#d0e23026"/>
+   </entry>
+   <entry keyword="non-procedural language">
+      <topic href="Attributes_versus_Actions.html#d0e235"/>
+   </entry>
+   <entry keyword="NONEMPTY">
+      <topic href="NONEMPTY.html#d0e23078"/>
+   </entry>
+   <entry keyword="NONEMPTY function">
+      <topic href="NONEMPTY.html#d0e23084"/>
+   </entry>
+   <entry keyword="NORMALIZE">
+      <topic href="NORMALIZE.html#d0e23131"/>
+   </entry>
+   <entry keyword="NORMALIZE function">
+      <topic href="NORMALIZE.html#d0e23134"/>
+   </entry>
+   <entry keyword="NOROOT">
+      <topic href="XML_Files.html#d0e5349"/>
+   </entry>
+   <entry keyword="NOROOT">
+      <topic href="JSON_Files.html#d0e5461"/>
+   </entry>
+   <entry keyword="NOROOT">
+      <topic href="Index_BUILD_Options.html#d0e12129"/>
+   </entry>
+   <entry keyword="NOSCAN">
+      <topic href="PARSE_Text_Data.html#d0e25997"/>
+   </entry>
+   <entry keyword="NOSORT">
+      <topic href="DENORMALIZE.html#d0e14974"/>
+   </entry>
+   <entry keyword="NOSORT">
+      <topic href="JoinOptions.html#d0e19593"/>
+   </entry>
+   <entry keyword="Not Equal">
+      <topic href="Comparison_Operators.html#d0e1708"/>
+   </entry>
+   <entry keyword="NOT MATCHED">
+      <topic href="PARSE_Text_Data.html#d0e26130"/>
+   </entry>
+   <entry keyword="NOT MATCHED ONLY">
+      <topic href="PARSE_Text_Data.html#d0e26142"/>
+   </entry>
+   <entry keyword="NOTHOR">
+      <topic href="NOTHOR.html#d0e23428"/>
+   </entry>
+   <entry keyword="NOTHOR action">
+      <topic href="NOTHOR.html#d0e23417"/>
+   </entry>
+   <entry keyword="NOTIFY">
+      <topic href="NOTIFY.html#d0e23487"/>
+   </entry>
+   <entry keyword="NOTIFY function">
+      <topic href="NOTIFY.html#d0e23483"/>
+   </entry>
+   <entry keyword="NOTRIM">
+      <topic href="CSV_Files.html#d0e5159"/>
+   </entry>
+   <entry keyword="NOTRIM">
+      <topic href="SOAPCALL.html#d0e29928"/>
+   </entry>
+   <entry keyword="NOXPATH">
+      <topic href="OUTPUT.html#d0e23681"/>
+   </entry>
+   <entry keyword="ONCE">
+      <topic href="Keywords.html#d0e37163"/>
+   </entry>
+   <entry keyword="ONFAIL">
+      <topic href="CATCH.html#d0e13037"/>
+   </entry>
+   <entry keyword="ONFAIL">
+      <topic href="HTTPCALL.html#d0e18668"/>
+   </entry>
+   <entry keyword="ONFAIL">
+      <topic href="LIMIT.html#d0e21288"/>
+   </entry>
+   <entry keyword="ONFAIL">
+      <topic href="SOAPCALL.html#d0e29892"/>
+   </entry>
+   <entry keyword="ONWARNING">
+      <topic href="ONWARNING.html#d0e33430"/>
+   </entry>
+   <entry keyword="ONWARNING workflow service">
+      <topic href="ONWARNING.html#d0e33438"/>
+   </entry>
+   <entry keyword="Operators">
+      <topic href="Expressions_and_Operators.html#d0e1496"/>
+   </entry>
+   <entry keyword="OPT">
+      <topic href="THOR-FLAT_Files.html#d0e4908"/>
+   </entry>
+   <entry keyword="OPT">
+      <topic href="INDEX_record_structure.html#d0e6120"/>
+   </entry>
+   <entry keyword="OPT">
+      <topic href="KEYED-WILD.html#d0e8411"/>
+   </entry>
+   <entry keyword="OPT">
+      <topic href="OUTPUT_XML_Files.html#d0e25065"/>
+   </entry>
+   <entry keyword="OPT">
+      <topic href="OUTPUT_JSON_Files.html#d0e25316"/>
+   </entry>
+   <entry keyword="OPT">
+      <topic href="BuiltinFunction_PROJECT.html#d0e27199"/>
+   </entry>
+   <entry keyword="OR">
+      <topic href="Field_Inheritance.html#d0e3946"/>
+   </entry>
+   <entry keyword="ORDERED">
+      <topic href="ORDERED.html#d0e23583"/>
+   </entry>
+   <entry keyword="ORDERED action">
+      <topic href="ORDERED.html#d0e23586"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="OUTPUT.html#d0e23655"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24344"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="OUTPUT_CSV_Files.html#d0e24518"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="OUTPUT_XML_Files.html#d0e24890"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="OUTPUT_JSON_Files.html#d0e25141"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="Named_OUTPUT.html#d0e25499"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="OUTPUT_Scalar_Values.html#d0e25567"/>
+   </entry>
+   <entry keyword="OUTPUT">
+      <topic href="PIPE.html#d0e26341"/>
+   </entry>
+   <entry keyword="OUTPUT - CSV Files">
+      <topic href="OUTPUT_CSV_Files.html#d0e24507"/>
+   </entry>
+   <entry keyword="OUTPUT - JSON Files">
+      <topic href="OUTPUT_JSON_Files.html#d0e25130"/>
+   </entry>
+   <entry keyword="OUTPUT - NAMED Files">
+      <topic href="Named_OUTPUT.html#d0e25488"/>
+   </entry>
+   <entry keyword="OUTPUT - XML Files">
+      <topic href="OUTPUT_XML_Files.html#d0e24879"/>
+   </entry>
+   <entry keyword="OUTPUT action">
+      <topic href="OUTPUT.html#d0e23652"/>
+   </entry>
+   <entry keyword="OUTPUT Pipe Files">
+      <topic href="OUTPUT_PIPE_Files.html#d0e25378"/>
+   </entry>
+   <entry keyword="OUTPUT Scalar Values">
+      <topic href="OUTPUT_Scalar_Values.html#d0e25553"/>
+   </entry>
+   <entry keyword="OUTPUT Thor/Flat Files">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24333"/>
+   </entry>
+   <entry keyword="OUTPUT Workunit Files">
+      <topic href="OUTPUT_Workunit_Files.html#d0e25603"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="Index_BUILD_Options.html#d0e12089"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="KEYDIFF.html#d0e20620"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="KEYPATCH.html#d0e20818"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24393"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="OUTPUT_CSV_Files.html#d0e24574"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="OUTPUT_XML_Files.html#d0e24940"/>
+   </entry>
+   <entry keyword="OVERWRITE">
+      <topic href="OUTPUT_JSON_Files.html#d0e25191"/>
+   </entry>
+   <entry keyword="PACKED">
+      <topic href="RECORD_Structure.html#d0e3481"/>
+   </entry>
+   <entry keyword="packed decimal">
+      <topic href="DECIMAL.html#d0e2523"/>
+   </entry>
+   <entry keyword="packed decimal">
+      <topic href="DECIMAL.html#d0e2550"/>
+   </entry>
+   <entry keyword="packed decimal">
+      <topic href="DECIMAL.html#d0e2554"/>
+   </entry>
+   <entry keyword="packed hexadecimal">
+      <topic href="DATA.html#d0e2748"/>
+   </entry>
+   <entry keyword="PARALLEL">
+      <topic href="PARALLEL_function.html#d0e25670"/>
+   </entry>
+   <entry keyword="PARALLEL">
+      <topic href="PROJECT.html#d0e26913"/>
+   </entry>
+   <entry keyword="PARALLEL">
+      <topic href="SOAPCALL.html#d0e29879"/>
+   </entry>
+   <entry keyword="PARALLEL action">
+      <topic href="OUTPUT_Scalar_Values.html#d0e25592"/>
+   </entry>
+   <entry keyword="PARALLEL function">
+      <topic href="PARALLEL_function.html#d0e25659"/>
+   </entry>
+   <entry keyword="Parameter Passing">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e891"/>
+   </entry>
+   <entry keyword="parameters">
+      <topic href="Attribute_Definition.html#d0e564"/>
+   </entry>
+   <entry keyword="PARSE">
+      <topic href="PARSE.html#d0e25721"/>
+   </entry>
+   <entry keyword="PARSE">
+      <topic href="PARSE_Text_Data.html#d0e26169"/>
+   </entry>
+   <entry keyword="PARSE Examples">
+      <topic href="Extended_PARSE_Examples.html#d0e26278"/>
+   </entry>
+   <entry keyword="PARSE function">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7763"/>
+   </entry>
+   <entry keyword="PARSE function">
+      <topic href="PARSE.html#d0e25724"/>
+   </entry>
+   <entry keyword="PARSE Text">
+      <topic href="PARSE_Text_Data.html#d0e25915"/>
+   </entry>
+   <entry keyword="PARSE XML">
+      <topic href="PARSE_XML_Data.html#d0e26212"/>
+   </entry>
+   <entry keyword="PARTITION LEFT">
+      <topic href="JoinOptions.html#d0e19563"/>
+   </entry>
+   <entry keyword="PARTITION RIGHT">
+      <topic href="JoinOptions.html#d0e19567"/>
+   </entry>
+   <entry keyword="Passing a DATASET parameter">
+      <topic href="DATASET_as_a_Parameter_Type.html#d0e5909"/>
+   </entry>
+   <entry keyword="Passing Set Parameters">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37222"/>
+   </entry>
+   <entry keyword="PATTERN">
+      <topic href="PARSE_Pattern_Value_Types.html#d0e7068"/>
+   </entry>
+   <entry keyword="Perl regular expression">
+      <topic href="REGEXFIND.html#d0e27823"/>
+   </entry>
+   <entry keyword="Perl regular expression">
+      <topic href="REGEXFINDSET.html#d0e27923"/>
+   </entry>
+   <entry keyword="Perl regular expression">
+      <topic href="REGEXREPLACE.html#d0e28035"/>
+   </entry>
+   <entry keyword="PERSIST">
+      <topic href="PERSIST.html#d0e33498"/>
+   </entry>
+   <entry keyword="PERSIST workflow service">
+      <topic href="PERSIST.html#d0e33551"/>
+   </entry>
+   <entry keyword="PHYSICALLENGTH">
+      <topic href="physicallegnth.html#d0e6920"/>
+   </entry>
+   <entry keyword="PIPE">
+      <topic href="OUTPUT.html#d0e23907"/>
+   </entry>
+   <entry keyword="PIPE">
+      <topic href="OUTPUT_PIPE_Files.html#d0e25401"/>
+   </entry>
+   <entry keyword="PIPE">
+      <topic href="PIPE.html#d0e26298"/>
+   </entry>
+   <entry keyword="Pipe">
+      <topic href="PIPE_Files.html#d0e5568"/>
+   </entry>
+   <entry keyword="PIPE Files">
+      <topic href="PIPE_Files.html#d0e5556"/>
+   </entry>
+   <entry keyword="PIPE function">
+      <topic href="PIPE_Files.html#d0e5636"/>
+   </entry>
+   <entry keyword="PIPE function">
+      <topic href="PIPE.html#d0e26301"/>
+   </entry>
+   <entry keyword="Pool memory exhausted">
+      <topic href="JoinOptions.html#d0e20126"/>
+   </entry>
+   <entry keyword="POWER">
+      <topic href="POWER.html#d0e26529"/>
+   </entry>
+   <entry keyword="POWER function">
+      <topic href="POWER.html#d0e26532"/>
+   </entry>
+   <entry keyword="PREFETCH">
+      <topic href="PROJECT.html#d0e26905"/>
+   </entry>
+   <entry keyword="PREFETCH">
+      <topic href="PROJECT.html#d0e26951"/>
+   </entry>
+   <entry keyword="PRELOAD">
+      <topic href="THOR-FLAT_Files.html#d0e4918"/>
+   </entry>
+   <entry keyword="PRELOAD">
+      <topic href="PRELOAD.html#d0e26594"/>
+   </entry>
+   <entry keyword="PRELOAD function">
+      <topic href="PRELOAD.html#d0e26597"/>
+   </entry>
+   <entry keyword="PRIORITY">
+      <topic href="PRIORITY.html#d0e33735"/>
+   </entry>
+   <entry keyword="PRIORITY workflow service">
+      <topic href="PRIORITY.html#d0e33743"/>
+   </entry>
+   <entry keyword="PROCESS">
+      <topic href="PROCESS.html#d0e26654"/>
+   </entry>
+   <entry keyword="PROCESS function">
+      <topic href="PROCESS.html#d0e26657"/>
+   </entry>
+   <entry keyword="processor affinity">
+      <topic href="OPTION_Available_Options.html#d0e35754"/>
+   </entry>
+   <entry keyword="PROJECT">
+      <topic href="PROJECT.html#d0e26894"/>
+   </entry>
+   <entry keyword="PROJECT">
+      <topic href="BuiltinFunction_PROJECT.html#d0e27191"/>
+   </entry>
+   <entry keyword="PROJECT function">
+      <topic href="PROJECT.html#d0e26897"/>
+   </entry>
+   <entry keyword="PULL">
+      <topic href="PULL.html#d0e27288"/>
+   </entry>
+   <entry keyword="PULL function">
+      <topic href="PULL.html#d0e27291"/>
+   </entry>
+   <entry keyword="PURE">
+      <topic href="Keywords.html#d0e37154"/>
+   </entry>
+   <entry keyword="QSTRING">
+      <topic href="QSTRING.html#d0e2618"/>
+   </entry>
+   <entry keyword="QSTRING string constants">
+      <topic href="Const_String.html#d0e386"/>
+   </entry>
+   <entry keyword="QSTRING value type">
+      <topic href="QSTRING.html#d0e2628"/>
+   </entry>
+   <entry keyword="query library">
+      <topic href="MODULE_Structure.html#d0e9770"/>
+   </entry>
+   <entry keyword="query library">
+      <topic href="BUILD.html#d0e12040"/>
+   </entry>
+   <entry keyword="quicksort">
+      <topic href="Sorting_Algorithms.html#d0e30364"/>
+   </entry>
+   <entry keyword="QUOTE">
+      <topic href="CSV_Files.html#d0e5116"/>
+   </entry>
+   <entry keyword="QUOTE">
+      <topic href="OUTPUT_CSV_Files.html#d0e24731"/>
+   </entry>
+   <entry keyword="RANDOM">
+      <topic href="RANDOM.html#d0e27336"/>
+   </entry>
+   <entry keyword="RANDOM function">
+      <topic href="RANDOM.html#d0e27339"/>
+   </entry>
+   <entry keyword="RANGE">
+      <topic href="RANGE.html#d0e27373"/>
+   </entry>
+   <entry keyword="RANGE function">
+      <topic href="RANGE.html#d0e27376"/>
+   </entry>
+   <entry keyword="RANK">
+      <topic href="RANK.html#d0e27508"/>
+   </entry>
+   <entry keyword="RANK function">
+      <topic href="RANK.html#d0e27511"/>
+   </entry>
+   <entry keyword="RANKED">
+      <topic href="RANKED.html#d0e27593"/>
+   </entry>
+   <entry keyword="RANKED function">
+      <topic href="RANKED.html#d0e27596"/>
+   </entry>
+   <entry keyword="REAL">
+      <topic href="REAL.html#d0e2421"/>
+   </entry>
+   <entry keyword="REAL">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37262"/>
+   </entry>
+   <entry keyword="REAL data type">
+      <topic href="REAL.html#d0e2427"/>
+   </entry>
+   <entry keyword="REALFORMAT">
+      <topic href="REALFORMAT.html#d0e27675"/>
+   </entry>
+   <entry keyword="REALFORMAT Function">
+      <topic href="REALFORMAT.html#d0e27681"/>
+   </entry>
+   <entry keyword="realvalue">
+      <topic href="ROUNDUP.html#d0e28699"/>
+   </entry>
+   <entry keyword="RECORD">
+      <topic href="RECORD_Structure.html#d0e3455"/>
+   </entry>
+   <entry keyword="record matching">
+      <topic href="Matching_Logic_mergejoin.html#d0e22728"/>
+   </entry>
+   <entry keyword="Record Matching Logic">
+      <topic href="Matching_Logic_mergejoin.html#d0e22723"/>
+   </entry>
+   <entry keyword="Record Set">
+      <topic href="Basic_Attribute_Types.html#d0e659"/>
+   </entry>
+   <entry keyword="Record Set">
+      <topic href="Record_Set_Attributes.html#d0e788"/>
+   </entry>
+   <entry keyword="Record Set">
+      <topic href="Recordset_Filtering.html#d0e848"/>
+   </entry>
+   <entry keyword="Record Set">
+      <topic href="Record_SetRecord_Set_Operators.html#d0e1858"/>
+   </entry>
+   <entry keyword="Record Set Definition">
+      <topic href="Record_Set_Attributes.html#d0e794"/>
+   </entry>
+   <entry keyword="Record Set Operators">
+      <topic href="Record_SetRecord_Set_Operators.html#d0e1862"/>
+   </entry>
+   <entry keyword="RECORD Structure">
+      <topic href="RECORD_Structure.html#d0e3447"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="Record_SetRecord_Set_Operators.html#d0e1867"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="RECORD_Structure.html#d0e3517"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="XML_Files.html#d0e5422"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="JSON_Files.html#d0e5534"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="In-line_DATASETs.html#d0e5720"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="TYPE_Structure.html#d0e6770"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="NLP_RECORD_and_TRANSFORM_Functions.html#d0e7759"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="XML_Parsing_RECORD_and_TRANSFORM_Functions.html#d0e7919"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="SELF.html#d0e8679"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="Transformation_Attribute_Definitions.html#d0e10211"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="PARSE_Text_Data.html#d0e26194"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="PARSE_Text_Data.html#d0e26201"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="PROJECT.html#d0e27032"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="TABLE.html#d0e31118"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="TABLE.html#d0e31285"/>
+   </entry>
+   <entry keyword="RECORD structure">
+      <topic href="VARIANCE.html#d0e32525"/>
+   </entry>
+   <entry keyword="RECORDOF">
+      <topic href="RECORDOF.html#d0e2964"/>
+   </entry>
+   <entry keyword="RECORDOF datatype">
+      <topic href="RECORDOF.html#d0e2967"/>
+   </entry>
+   <entry keyword="RECOVERY">
+      <topic href="RECOVERY.html#d0e33807"/>
+   </entry>
+   <entry keyword="RECOVERY workflow service">
+      <topic href="RECOVERY.html#d0e33819"/>
+   </entry>
+   <entry keyword="recstruct">
+      <topic href="ROW_Form_1.html#d0e28827"/>
+   </entry>
+   <entry keyword="REFRESH">
+      <topic href="PERSIST.html#d0e33530"/>
+   </entry>
+   <entry keyword="regex">
+      <topic href="REGEXFIND.html#d0e27813"/>
+   </entry>
+   <entry keyword="regex">
+      <topic href="REGEXFINDSET.html#d0e27913"/>
+   </entry>
+   <entry keyword="regex">
+      <topic href="REGEXREPLACE.html#d0e28022"/>
+   </entry>
+   <entry keyword="REGEXFIND">
+      <topic href="REGEXFIND.html#d0e27746"/>
+   </entry>
+   <entry keyword="REGEXFIND function">
+      <topic href="REGEXFIND.html#d0e27749"/>
+   </entry>
+   <entry keyword="REGEXFINDSET">
+      <topic href="REGEXFINDSET.html#d0e27862"/>
+   </entry>
+   <entry keyword="REGEXFINDSET function">
+      <topic href="REGEXFINDSET.html#d0e27865"/>
+   </entry>
+   <entry keyword="REGEXREPLACE">
+      <topic href="REGEXREPLACE.html#d0e27962"/>
+   </entry>
+   <entry keyword="REGEXREPLACE function">
+      <topic href="REGEXREPLACE.html#d0e27965"/>
+   </entry>
+   <entry keyword="REGROUP">
+      <topic href="REGROUP.html#d0e28071"/>
+   </entry>
+   <entry keyword="REGROUP function">
+      <topic href="REGROUP.html#d0e28074"/>
+   </entry>
+   <entry keyword="regular expression">
+      <topic href="PARSE_Pattern_Value_Types.html#d0e7104"/>
+   </entry>
+   <entry keyword="REJECTED">
+      <topic href="REJECTED.html#d0e28202"/>
+   </entry>
+   <entry keyword="REJECTED function">
+      <topic href="REJECTED.html#d0e28205"/>
+   </entry>
+   <entry keyword="REJECTED function">
+      <topic href="WHICH.html#d0e32831"/>
+   </entry>
+   <entry keyword="Relationality">
+      <topic href="Implicit_Dataset_Relationality.html#d0e6665"/>
+   </entry>
+   <entry keyword="REPEAT">
+      <topic href="OUTPUT_PIPE_Files.html#d0e25427"/>
+   </entry>
+   <entry keyword="REPEAT">
+      <topic href="PIPE.html#d0e26331"/>
+   </entry>
+   <entry keyword="Reserved Words">
+      <topic href="Reserved_Words.html#d0e607"/>
+   </entry>
+   <entry keyword="resultrec">
+      <topic href="ROW_Form_2.html#d0e28849"/>
+   </entry>
+   <entry keyword="RETRY">
+      <topic href="HTTPCALL.html#d0e18610"/>
+   </entry>
+   <entry keyword="RETRY">
+      <topic href="SOAPCALL.html#d0e29792"/>
+   </entry>
+   <entry keyword="RETURN">
+      <topic href="Scope_Resolution_Operator.html#d0e1413"/>
+   </entry>
+   <entry keyword="RETURN">
+      <topic href="FUNCTION_Structure.html#d0e9253"/>
+   </entry>
+   <entry keyword="RETURN">
+      <topic href="FUNCTIONMACRO_Structure.html#d0e9376"/>
+   </entry>
+   <entry keyword="RIGHT">
+      <topic href="LEFT-RIGHT.html#d0e8515"/>
+   </entry>
+   <entry keyword="RIGHT">
+      <topic href="TRANSFORM_Function_Requirements_Denormalize.html#d0e15208"/>
+   </entry>
+   <entry keyword="RIGHT ONLY">
+      <topic href="Join_Types.html#d0e20346"/>
+   </entry>
+   <entry keyword="RIGHT OUTER">
+      <topic href="Join_Types.html#d0e20307"/>
+   </entry>
+   <entry keyword="RIGHT1">
+      <topic href="AGGREGATE.html#d0e10474"/>
+   </entry>
+   <entry keyword="RIGHT2">
+      <topic href="AGGREGATE.html#d0e10478"/>
+   </entry>
+   <entry keyword="ROLLUP">
+      <topic href="ROLLUP.html#d0e28271"/>
+   </entry>
+   <entry keyword="ROLLUP function">
+      <topic href="ROLLUP.html#d0e28274"/>
+   </entry>
+   <entry keyword="ROLLUP function">
+      <topic href="SORT.html#d0e30351"/>
+   </entry>
+   <entry keyword="ROUND">
+      <topic href="ROUND.html#d0e28601"/>
+   </entry>
+   <entry keyword="ROUND function">
+      <topic href="ROUND.html#d0e28604"/>
+   </entry>
+   <entry keyword="ROUNDUP">
+      <topic href="ROUNDUP.html#d0e28664"/>
+   </entry>
+   <entry keyword="ROUNDUP function">
+      <topic href="ROUNDUP.html#d0e28667"/>
+   </entry>
+   <entry keyword="ROW">
+      <topic href="INDEX_record_structure.html#d0e6132"/>
+   </entry>
+   <entry keyword="ROW">
+      <topic href="Index_BUILD_Options.html#d0e12147"/>
+   </entry>
+   <entry keyword="ROW">
+      <topic href="ROW.html#d0e28720"/>
+   </entry>
+   <entry keyword="ROW function">
+      <topic href="LIBRARY_Modules.html#d0e9940"/>
+   </entry>
+   <entry keyword="ROW function">
+      <topic href="ROW.html#d0e28723"/>
+   </entry>
+   <entry keyword="ROWDIFF">
+      <topic href="ROWDIER.html#d0e28889"/>
+   </entry>
+   <entry keyword="ROWDIFF function">
+      <topic href="ROWDIER.html#d0e28892"/>
+   </entry>
+   <entry keyword="ROWS(LEFT)">
+      <topic href="ROWS-LEFT-RIGHT.html#d0e8619"/>
+   </entry>
+   <entry keyword="ROWS(RIGHT)">
+      <topic href="ROWS-LEFT-RIGHT.html#d0e8623"/>
+   </entry>
+   <entry keyword="ROWSET">
+      <topic href="GRAPH.html#d0e17769"/>
+   </entry>
+   <entry keyword="ROWSET(LEFT)">
+      <topic href="GRAPH.html#d0e17773"/>
+   </entry>
+   <entry keyword="Roxie">
+      <topic href="LOCAL.html#d0e21651"/>
+   </entry>
+   <entry keyword="Roxie">
+      <topic href="Sorting_Algorithms.html#d0e30414"/>
+   </entry>
+   <entry keyword="Roxie CPU pinning">
+      <topic href="OPTION_Available_Options.html#d0e35748"/>
+   </entry>
+   <entry keyword="Roxie processor affinity">
+      <topic href="OPTION_Available_Options.html#d0e35745"/>
+   </entry>
+   <entry keyword="RULE">
+      <topic href="PARSE_Pattern_Value_Types.html#d0e7150"/>
+   </entry>
+   <entry keyword="SAMPLE">
+      <topic href="SAMPLE.html#d0e28955"/>
+   </entry>
+   <entry keyword="SAMPLE function">
+      <topic href="SAMPLE.html#d0e28958"/>
+   </entry>
+   <entry keyword="Scalar OUTPUT">
+      <topic href="OUTPUT_Scalar_Values.html#d0e25556"/>
+   </entry>
+   <entry keyword="SCAN">
+      <topic href="PARSE_Text_Data.html#d0e26006"/>
+   </entry>
+   <entry keyword="SCAN ALL">
+      <topic href="PARSE_Text_Data.html#d0e26015"/>
+   </entry>
+   <entry keyword="SCOPE">
+      <topic href="Scope_and_Logical_Filenames.html#d0e6480"/>
+   </entry>
+   <entry keyword="Scope">
+      <topic href="Attribute_Definition.html#d0e548"/>
+   </entry>
+   <entry keyword="SELF">
+      <topic href="SELF.html#d0e8669"/>
+   </entry>
+   <entry keyword="SELF">
+      <topic href="TRANSFORM_Structure.html#d0e10023"/>
+   </entry>
+   <entry keyword="SELF keyword">
+      <topic href="SELF.html#d0e8692"/>
+   </entry>
+   <entry keyword="SEPARATOR">
+      <topic href="CSV_Files.html#d0e5095"/>
+   </entry>
+   <entry keyword="SEPARATOR">
+      <topic href="OUTPUT_CSV_Files.html#d0e24705"/>
+   </entry>
+   <entry keyword="SEQUENTIAL">
+      <topic href="SEQUENTIAL.html#d0e29103"/>
+   </entry>
+   <entry keyword="SEQUENTIAL function">
+      <topic href="SEQUENTIAL.html#d0e29106"/>
+   </entry>
+   <entry keyword="Service Function Keywords">
+      <topic href="Keywords.html#d0e37106"/>
+   </entry>
+   <entry keyword="SERVICE Structure">
+      <topic href="APPLY.html#d0e10896"/>
+   </entry>
+   <entry keyword="SERVICE Structure">
+      <topic href="SERVICE_Structure.html#d0e36940"/>
+   </entry>
+   <entry keyword="SERVICE Structure">
+      <topic href="SERVICE_Structure_external.html#d0e37093"/>
+   </entry>
+   <entry keyword="SERVICE structure">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37269"/>
+   </entry>
+   <entry keyword="SERVICE structure">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37301"/>
+   </entry>
+   <entry keyword="SET">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e966"/>
+   </entry>
+   <entry keyword="SET">
+      <topic href="SET.html#d0e29163"/>
+   </entry>
+   <entry keyword="Set">
+      <topic href="Basic_Attribute_Types.html#d0e653"/>
+   </entry>
+   <entry keyword="Set Definition">
+      <topic href="Set_Attributes.html#d0e696"/>
+   </entry>
+   <entry keyword="Set Definition">
+      <topic href="Set_Attributes.html#d0e728"/>
+   </entry>
+   <entry keyword="SET function">
+      <topic href="Set_Attributes.html#d0e732"/>
+   </entry>
+   <entry keyword="SET function">
+      <topic href="SET.html#d0e29166"/>
+   </entry>
+   <entry keyword="SET OF">
+      <topic href="SET_OF.html#d0e2858"/>
+   </entry>
+   <entry keyword="SET OF value type">
+      <topic href="SET_OF.html#d0e2888"/>
+   </entry>
+   <entry keyword="Set Operators">
+      <topic href="Set_Operators.html#d0e2032"/>
+   </entry>
+   <entry keyword="Set Ordering">
+      <topic href="Set_Ordering_and_Indexing.html#d0e745"/>
+   </entry>
+   <entry keyword="SET parameters">
+      <topic href="SET_Parameters.html#d0e1004"/>
+   </entry>
+   <entry keyword="Set Parameters">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37225"/>
+   </entry>
+   <entry keyword="Sets can contain definitions and expressions">
+      <topic href="Set_Attributes.html#d0e720"/>
+   </entry>
+   <entry keyword="SHARED">
+      <topic href="Module.html#d0e1282"/>
+   </entry>
+   <entry keyword="SHARED">
+      <topic href="SHARED.html#d0e8710"/>
+   </entry>
+   <entry keyword="Shared Object">
+      <topic href="External_Service_Implementation.html#d0e37056"/>
+   </entry>
+   <entry keyword="SIN">
+      <topic href="SIN.html#d0e29308"/>
+   </entry>
+   <entry keyword="SIN function">
+      <topic href="SIN.html#d0e29311"/>
+   </entry>
+   <entry keyword="SINGLE">
+      <topic href="OUTPUT_CSV_Files.html#d0e24691"/>
+   </entry>
+   <entry keyword="SINGLE">
+      <topic href="PERSIST.html#d0e33539"/>
+   </entry>
+   <entry keyword="Single Row Dataset">
+      <topic href="Single-row_DATASET_Expressions.html#d0e5738"/>
+   </entry>
+   <entry keyword="Single-Row Dataset">
+      <topic href="Single-row_DATASET_Expressions.html#d0e5735"/>
+   </entry>
+   <entry keyword="SINH">
+      <topic href="SINH.html#d0e29379"/>
+   </entry>
+   <entry keyword="SINH function">
+      <topic href="SINH.html#d0e29382"/>
+   </entry>
+   <entry keyword="SIZEOF">
+      <topic href="SIZEOF.html#d0e29450"/>
+   </entry>
+   <entry keyword="SIZEOF function">
+      <topic href="SIZEOF.html#d0e29453"/>
+   </entry>
+   <entry keyword="SKEW">
+      <topic href="Index_BUILD_Options.html#d0e12172"/>
+   </entry>
+   <entry keyword="SKEW">
+      <topic href="DISTRIBUTE.html#d0e15372"/>
+   </entry>
+   <entry keyword="SKEW">
+      <topic href="JoinOptions.html#d0e19682"/>
+   </entry>
+   <entry keyword="SKEW">
+      <topic href="SORT.html#d0e30104"/>
+   </entry>
+   <entry keyword="SKEW">
+      <topic href="TABLE.html#d0e31063"/>
+   </entry>
+   <entry keyword="SKIP">
+      <topic href="SKIP.html#d0e8785"/>
+   </entry>
+   <entry keyword="SKIP">
+      <topic href="TRANSFORM_Structure.html#d0e10001"/>
+   </entry>
+   <entry keyword="SKIP">
+      <topic href="CATCH.html#d0e13028"/>
+   </entry>
+   <entry keyword="SKIP">
+      <topic href="JoinOptions.html#d0e19668"/>
+   </entry>
+   <entry keyword="SKIP">
+      <topic href="LIMIT.html#d0e21256"/>
+   </entry>
+   <entry keyword="SKIP">
+      <topic href="PARSE_Text_Data.html#d0e26042"/>
+   </entry>
+   <entry keyword="SMART">
+      <topic href="JoinOptions.html#d0e19702"/>
+   </entry>
+   <entry keyword="SOAPACTION">
+      <topic href="SOAPCALL.html#d0e29963"/>
+   </entry>
+   <entry keyword="SOAPCALL">
+      <topic href="XPATH_Support.html#d0e4345"/>
+   </entry>
+   <entry keyword="SOAPCALL">
+      <topic href="SOAPCALL.html#d0e29513"/>
+   </entry>
+   <entry keyword="SOAPCALL">
+      <topic href="SOAPCALL_Function.html#d0e30038"/>
+   </entry>
+   <entry keyword="SOAPCALL Action">
+      <topic href="SOAPCALL_Action.html#d0e30054"/>
+   </entry>
+   <entry keyword="SOAPCALL Function">
+      <topic href="SOAPCALL.html#d0e29521"/>
+   </entry>
+   <entry keyword="SOAPCALL Function">
+      <topic href="SOAPCALL_Function.html#d0e30032"/>
+   </entry>
+   <entry keyword="SOAPCALL Options">
+      <topic href="SOAPCALL.html#d0e29772"/>
+   </entry>
+   <entry keyword="SORT">
+      <topic href="SORT.html#d0e30077"/>
+   </entry>
+   <entry keyword="sort algorithms">
+      <topic href="Sorting_Algorithms.html#d0e30360"/>
+   </entry>
+   <entry keyword="SORT function">
+      <topic href="SORT.html#d0e30080"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="INDEX_record_structure.html#d0e6116"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="Index_BUILD_Options.html#d0e12063"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="JOIN.html#d0e19322"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="JOIN_Set_of_Datasets.html#d0e20397"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="MERGE.html#d0e22329"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="MERGEJOIN.html#d0e22557"/>
+   </entry>
+   <entry keyword="SORTED">
+      <topic href="SORTED.html#d0e30511"/>
+   </entry>
+   <entry keyword="SORTED function">
+      <topic href="SORTED.html#d0e30499"/>
+   </entry>
+   <entry keyword="SQRT">
+      <topic href="SQRT.html#d0e30591"/>
+   </entry>
+   <entry keyword="SQRT function">
+      <topic href="SQRT.html#d0e30594"/>
+   </entry>
+   <entry keyword="square brackets">
+      <topic href="Optional_Items.html#d0e154"/>
+   </entry>
+   <entry keyword="square brackets">
+      <topic href="Set_Attributes.html#d0e700"/>
+   </entry>
+   <entry keyword="square brackets">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e970"/>
+   </entry>
+   <entry keyword="square brackets">
+      <topic href="SET_OF.html#d0e2897"/>
+   </entry>
+   <entry keyword="STABLE">
+      <topic href="SORT.html#d0e30154"/>
+   </entry>
+   <entry keyword="STEPPED">
+      <topic href="STEPPED.html#d0e30646"/>
+   </entry>
+   <entry keyword="STEPPED function">
+      <topic href="STEPPED.html#d0e30649"/>
+   </entry>
+   <entry keyword="STORE">
+      <topic href="store.html#d0e6866"/>
+   </entry>
+   <entry keyword="STORED">
+      <topic href="STORED.html#d0e30788"/>
+   </entry>
+   <entry keyword="STORED">
+      <topic href="STORED_workflow_service.html#d0e33902"/>
+   </entry>
+   <entry keyword="STORED function">
+      <topic href="STORED.html#d0e30791"/>
+   </entry>
+   <entry keyword="STORED workflow service">
+      <topic href="STORED_workflow_service.html#d0e33957"/>
+   </entry>
+   <entry keyword="STREAMED">
+      <topic href="DATASET.html#d0e4583"/>
+   </entry>
+   <entry keyword="STREAMED">
+      <topic href="DATASET_as_a_Parameter_Type.html#d0e5895"/>
+   </entry>
+   <entry keyword="STRING">
+      <topic href="STRING.html#d0e2568"/>
+   </entry>
+   <entry keyword="String">
+      <topic href="Set_Ordering_and_Indexing.html#d0e757"/>
+   </entry>
+   <entry keyword="string constants">
+      <topic href="Const_String.html#d0e332"/>
+   </entry>
+   <entry keyword="string operator">
+      <topic href="String_Operators.html#d0e2051"/>
+   </entry>
+   <entry keyword="string slice">
+      <topic href="Set_Ordering_and_Indexing.html#d0e773"/>
+   </entry>
+   <entry keyword="STRING value type">
+      <topic href="STRING.html#d0e2584"/>
+   </entry>
+   <entry keyword="STRINGn">
+      <topic href="Passing_Set_Parameters_to_a_Service.html#d0e37294"/>
+   </entry>
+   <entry keyword="substring">
+      <topic href="Set_Ordering_and_Indexing.html#d0e769"/>
+   </entry>
+   <entry keyword="Subtraction">
+      <topic href="Arithmetic_Operators.html#d0e1565"/>
+   </entry>
+   <entry keyword="SUCCESS">
+      <topic href="SUCCESS.html#d0e34110"/>
+   </entry>
+   <entry keyword="SUCCESS workflow service">
+      <topic href="SUCCESS.html#d0e34118"/>
+   </entry>
+   <entry keyword="SUM">
+      <topic href="SUM.html#d0e30834"/>
+   </entry>
+   <entry keyword="SUM function">
+      <topic href="SUM.html#d0e30837"/>
+   </entry>
+   <entry keyword="SuperFile">
+      <topic href="Temporary_SuperFiles.html#d0e6622"/>
+   </entry>
+   <entry keyword="system constants">
+      <topic href="CompileTimeConstants.html#d0e423"/>
+   </entry>
+   <entry keyword="TABLE">
+      <topic href="Fields_in_Datasets.html#d0e1361"/>
+   </entry>
+   <entry keyword="TABLE">
+      <topic href="TABLE.html#d0e31015"/>
+   </entry>
+   <entry keyword="TABLE Function">
+      <topic href="TABLE.html#d0e31018"/>
+   </entry>
+   <entry keyword="TABLE function">
+      <topic href="Scope_Resolution_Operator.html#d0e1429"/>
+   </entry>
+   <entry keyword="TAN">
+      <topic href="TAN.html#d0e31315"/>
+   </entry>
+   <entry keyword="TAN Function">
+      <topic href="TAN.html#d0e31318"/>
+   </entry>
+   <entry keyword="TANH">
+      <topic href="TANH.html#d0e31386"/>
+   </entry>
+   <entry keyword="TANH Function">
+      <topic href="TANH.html#d0e31389"/>
+   </entry>
+   <entry keyword="Template Language">
+      <topic href="Template_Language_Overview.html#d0e34268"/>
+   </entry>
+   <entry keyword="Temporary SuperFile">
+      <topic href="Temporary_SuperFiles.html#d0e6616"/>
+   </entry>
+   <entry keyword="TERMINATOR">
+      <topic href="CSV_Files.html#d0e5108"/>
+   </entry>
+   <entry keyword="TERMINATOR">
+      <topic href="OUTPUT_CSV_Files.html#d0e24718"/>
+   </entry>
+   <entry keyword="THISNODE">
+      <topic href="THISNODE.html#d0e31457"/>
+   </entry>
+   <entry keyword="THISNODE Function">
+      <topic href="THISNODE.html#d0e31460"/>
+   </entry>
+   <entry keyword="THOR">
+      <topic href="THOR-FLAT_Files.html#d0e4893"/>
+   </entry>
+   <entry keyword="THOR">
+      <topic href="OUTPUT.html#d0e24054"/>
+   </entry>
+   <entry keyword="THOR">
+      <topic href="OUTPUT_Workunit_Files.html#d0e25621"/>
+   </entry>
+   <entry keyword="Thor">
+      <topic href="Sorting_Algorithms.html#d0e30386"/>
+   </entry>
+   <entry keyword="THRESHOLD">
+      <topic href="Index_BUILD_Options.html#d0e12184"/>
+   </entry>
+   <entry keyword="THRESHOLD">
+      <topic href="JoinOptions.html#d0e19694"/>
+   </entry>
+   <entry keyword="THRESHOLD">
+      <topic href="SORT.html#d0e30126"/>
+   </entry>
+   <entry keyword="THRESHOLD">
+      <topic href="TABLE.html#d0e31075"/>
+   </entry>
+   <entry keyword="TIMELIMIT">
+      <topic href="HTTPCALL.html#d0e18639"/>
+   </entry>
+   <entry keyword="TIMELIMIT">
+      <topic href="SOAPCALL.html#d0e29821"/>
+   </entry>
+   <entry keyword="TIMEOUT">
+      <topic href="HTTPCALL.html#d0e18623"/>
+   </entry>
+   <entry keyword="TIMEOUT">
+      <topic href="SOAPCALL.html#d0e29805"/>
+   </entry>
+   <entry keyword="TOJSON">
+      <topic href="TOJSON.html#d0e31515"/>
+   </entry>
+   <entry keyword="TOJSON function">
+      <topic href="TOJSON.html#d0e31518"/>
+   </entry>
+   <entry keyword="TOKEN">
+      <topic href="PARSE_Pattern_Value_Types.html#d0e7111"/>
+   </entry>
+   <entry keyword="Tomita parsing">
+      <topic href="PARSE_Text_Data.html#d0e26174"/>
+   </entry>
+   <entry keyword="TOPN">
+      <topic href="TOPN.html#d0e31570"/>
+   </entry>
+   <entry keyword="TOPN Function">
+      <topic href="TOPN.html#d0e31573"/>
+   </entry>
+   <entry keyword="TOUNICODE">
+      <topic href="TOUNICODE.html#d0e31767"/>
+   </entry>
+   <entry keyword="TOUNICODE Function">
+      <topic href="TOUNICODE.html#d0e31770"/>
+   </entry>
+   <entry keyword="TOXML">
+      <topic href="TOXML.html#d0e31829"/>
+   </entry>
+   <entry keyword="TOXML function">
+      <topic href="TOXML.html#d0e31832"/>
+   </entry>
+   <entry keyword="TRACE">
+      <topic href="TRACE.html#d0e31889"/>
+   </entry>
+   <entry keyword="traceEnabled">
+      <topic href="TRACE.html#d0e31946"/>
+   </entry>
+   <entry keyword="traceLimit">
+      <topic href="TRACE.html#d0e31955"/>
+   </entry>
+   <entry keyword="TRANSFER">
+      <topic href="TRANSFER.html#d0e32037"/>
+   </entry>
+   <entry keyword="TRANSFER Function">
+      <topic href="TRANSFER.html#d0e32040"/>
+   </entry>
+   <entry keyword="TRANSFORM">
+      <topic href="TRANSFORM_Structure.html#d0e9997"/>
+   </entry>
+   <entry keyword="TRANSFORM Function">
+      <topic href="TRANSFORM_Function_Requirements_Process.html#d0e26823"/>
+   </entry>
+   <entry keyword="TRANSFORM Function">
+      <topic href="TRANSFORM_Function_Requirements_Project.html#d0e27133"/>
+   </entry>
+   <entry keyword="transform function">
+      <topic href="TRANSFORM_Function_Requirements_Fetch.html#d0e17298"/>
+   </entry>
+   <entry keyword="transform function">
+      <topic href="TRANSFORM_Function_Requirements_Iterate.html#d0e19252"/>
+   </entry>
+   <entry keyword="transform function">
+      <topic href="TRANSFORM_Function_Requirements_Join.html#d0e20256"/>
+   </entry>
+   <entry keyword="TRANSFORM Function Requirements">
+      <topic href="TRANSFORM_Function_Requirements_Process.html#d0e26827"/>
+   </entry>
+   <entry keyword="TRANSFORM Function Requirements">
+      <topic href="TRANSFORM_Function_Requirements_Project.html#d0e27137"/>
+   </entry>
+   <entry keyword="Transform Requirement Process">
+      <topic href="TRANSFORM_Function_Requirements_Process.html#d0e26833"/>
+   </entry>
+   <entry keyword="Transform Requirement Project">
+      <topic href="TRANSFORM_Function_Requirements_Project.html#d0e27144"/>
+   </entry>
+   <entry keyword="Transform Requirements">
+      <topic href="TRANSFORM_Function_Requirements_Process.html#d0e26830"/>
+   </entry>
+   <entry keyword="Transform Requirements">
+      <topic href="TRANSFORM_Function_Requirements_Project.html#d0e27140"/>
+   </entry>
+   <entry keyword="TRANSFORM structure">
+      <topic href="SELF.html#d0e8683"/>
+   </entry>
+   <entry keyword="TRANSFORM structure">
+      <topic href="SKIP.html#d0e8792"/>
+   </entry>
+   <entry keyword="TRANSFORM structure">
+      <topic href="TRANSFORM_Structure.html#d0e9985"/>
+   </entry>
+   <entry keyword="TRANSFORM structure">
+      <topic href="FAILCODE.html#d0e17036"/>
+   </entry>
+   <entry keyword="TRANSFORM structure">
+      <topic href="FAILMESSAGE.html#d0e17088"/>
+   </entry>
+   <entry keyword="TRANSFORM structure">
+      <topic href="ROW_Form_1.html#d0e28831"/>
+   </entry>
+   <entry keyword="Treating DICTIONARY as a DATASET">
+      <topic href="DATASET_from_DICTIONARY.html#d0e5933"/>
+   </entry>
+   <entry keyword="TRIM">
+      <topic href="HTTPCALL.html#d0e18691"/>
+   </entry>
+   <entry keyword="TRIM">
+      <topic href="OUTPUT_XML_Files.html#d0e25057"/>
+   </entry>
+   <entry keyword="TRIM">
+      <topic href="OUTPUT_JSON_Files.html#d0e25308"/>
+   </entry>
+   <entry keyword="TRIM">
+      <topic href="SOAPCALL.html#d0e29915"/>
+   </entry>
+   <entry keyword="TRIM">
+      <topic href="TRIM.html#d0e32096"/>
+   </entry>
+   <entry keyword="TRIM Function">
+      <topic href="TRIM.html#d0e32099"/>
+   </entry>
+   <entry keyword="TRIM OPT">
+      <topic href="OUTPUT_XML_Files.html#d0e25068"/>
+   </entry>
+   <entry keyword="TRIM OPT">
+      <topic href="OUTPUT_JSON_Files.html#d0e25319"/>
+   </entry>
+   <entry keyword="TRUE">
+      <topic href="BOOLEAN.html#d0e2252"/>
+   </entry>
+   <entry keyword="TRUE">
+      <topic href="TRUE_FALSE.html#d0e8811"/>
+   </entry>
+   <entry keyword="TRUE keyword">
+      <topic href="TRUE_FALSE.html#d0e8828"/>
+   </entry>
+   <entry keyword="TRUNCATE">
+      <topic href="TRUNCATE.html#d0e32159"/>
+   </entry>
+   <entry keyword="TRUNCATE Function">
+      <topic href="TRUNCATE.html#d0e32189"/>
+   </entry>
+   <entry keyword="TYPE">
+      <topic href="TYPE_Structure.html#d0e6721"/>
+   </entry>
+   <entry keyword="Type Casting">
+      <topic href="Type_Casting.html#d0e3105"/>
+   </entry>
+   <entry keyword="TYPE structure">
+      <topic href="RECORD_Structure.html#d0e3552"/>
+   </entry>
+   <entry keyword="TYPE structure">
+      <topic href="TYPE_Structure.html#d0e6746"/>
+   </entry>
+   <entry keyword="Type Transfer">
+      <topic href="Type_Transfer.html#d0e3153"/>
+   </entry>
+   <entry keyword="TypeDef">
+      <topic href="Basic_Attribute_Types.html#d0e665"/>
+   </entry>
+   <entry keyword="TypeDef Definition">
+      <topic href="TypeDef_Attributes.html#d0e833"/>
+   </entry>
+   <entry keyword="TYPEOF">
+      <topic href="TYPEOF.html#d0e2918"/>
+   </entry>
+   <entry keyword="TYPEOF data type">
+      <topic href="TYPEOF.html#d0e2921"/>
+   </entry>
+   <entry keyword="UDECIMALn">
+      <topic href="DECIMAL.html#d0e2511"/>
+   </entry>
+   <entry keyword="UNGROUP">
+      <topic href="UNGROUP.html#d0e32213"/>
+   </entry>
+   <entry keyword="UNGROUP Function">
+      <topic href="UNGROUP.html#d0e32315"/>
+   </entry>
+   <entry keyword="UNICODE">
+      <topic href="UNICODE.html#d0e2666"/>
+   </entry>
+   <entry keyword="UNICODE">
+      <topic href="CSV_Files.html#d0e5153"/>
+   </entry>
+   <entry keyword="UNICODE">
+      <topic href="OUTPUT_CSV_Files.html#d0e24752"/>
+   </entry>
+   <entry keyword="Unicode string">
+      <topic href="Const_String.html#d0e356"/>
+   </entry>
+   <entry keyword="UNICODE value type">
+      <topic href="UNICODE.html#d0e2678"/>
+   </entry>
+   <entry keyword="UNICODEORDER">
+      <topic href="UNICODEORDER.html#d0e32337"/>
+   </entry>
+   <entry keyword="UNICODEORDER function">
+      <topic href="UNICODEORDER.html#d0e32383"/>
+   </entry>
+   <entry keyword="UNLIKELY">
+      <topic href="likely.html#d0e8576"/>
+   </entry>
+   <entry keyword="UNORDERED">
+      <topic href="JoinOptions.html#d0e19609"/>
+   </entry>
+   <entry keyword="UNORDERED">
+      <topic href="UNORDERED.html#d0e32435"/>
+   </entry>
+   <entry keyword="UNORDERED function">
+      <topic href="UNORDERED.html#d0e32438"/>
+   </entry>
+   <entry keyword="UNSIGNED">
+      <topic href="INTEGER.html#d0e2295"/>
+   </entry>
+   <entry keyword="UNSIGNED">
+      <topic href="DECIMAL.html#d0e2490"/>
+   </entry>
+   <entry keyword="UNSIGNED value type">
+      <topic href="INTEGER.html#d0e2298"/>
+   </entry>
+   <entry keyword="UNSORTED">
+      <topic href="THOR-FLAT_Files.html#d0e4914"/>
+   </entry>
+   <entry keyword="UNSORTED">
+      <topic href="TABLE.html#d0e31044"/>
+   </entry>
+   <entry keyword="UNSTABLE">
+      <topic href="SORT.html#d0e30162"/>
+   </entry>
+   <entry keyword="UPDATE">
+      <topic href="Index_BUILD_Options.html#d0e12095"/>
+   </entry>
+   <entry keyword="UPDATE">
+      <topic href="OUTPUT_Thor-Flat_Files.html#d0e24399"/>
+   </entry>
+   <entry keyword="UPDATE">
+      <topic href="OUTPUT_CSV_Files.html#d0e24581"/>
+   </entry>
+   <entry keyword="UPDATE">
+      <topic href="OUTPUT_XML_Files.html#d0e24947"/>
+   </entry>
+   <entry keyword="UPDATE">
+      <topic href="OUTPUT_JSON_Files.html#d0e25198"/>
+   </entry>
+   <entry keyword="USE">
+      <topic href="PARSE_Text_Data.html#d0e26182"/>
+   </entry>
+   <entry keyword="UTF-8">
+      <topic href="Const_String.html#d0e273"/>
+   </entry>
+   <entry keyword="UTF8">
+      <topic href="UTF8.html#d0e2706"/>
+   </entry>
+   <entry keyword="UTF8 string">
+      <topic href="Const_String.html#d0e366"/>
+   </entry>
+   <entry keyword="UTF8 value type">
+      <topic href="UTF8.html#d0e2714"/>
+   </entry>
+   <entry keyword="Value">
+      <topic href="Basic_Attribute_Types.html#d0e647"/>
+   </entry>
+   <entry keyword="Value Definition">
+      <topic href="Value_Attributes.html#d0e683"/>
+   </entry>
+   <entry keyword="Value Type">
+      <topic href="Attribute_Definition.html#d0e557"/>
+   </entry>
+   <entry keyword="Value Types">
+      <topic href="Function_Attributes__Parameter_Passing.html#d0e938"/>
+   </entry>
+   <entry keyword="Value Types">
+      <topic href="Value_Types_Chapter.html#d0e2232"/>
+   </entry>
+   <entry keyword="VARIANCE">
+      <topic href="VARIANCE.html#d0e32476"/>
+   </entry>
+   <entry keyword="VARSTRING">
+      <topic href="VARSTRING.html#d0e2777"/>
+   </entry>
+   <entry keyword="VARSTRING string constants">
+      <topic href="Const_String.html#d0e376"/>
+   </entry>
+   <entry keyword="VARSTRING value type">
+      <topic href="VARSTRING.html#d0e2780"/>
+   </entry>
+   <entry keyword="VARUNICODE">
+      <topic href="VARUNICODE.html#d0e2818"/>
+   </entry>
+   <entry keyword="VARUNICODE value type">
+      <topic href="VARUNICODE.html#d0e2821"/>
+   </entry>
+   <entry keyword="VIRTUAL">
+      <topic href="MODULE_Structure.html#d0e9672"/>
+   </entry>
+   <entry keyword="Virtual">
+      <topic href="Field_Modifiers.html#d0e4131"/>
+   </entry>
+   <entry keyword="VIRTUAL EXPORT">
+      <topic href="EXPORT.html#d0e8128"/>
+   </entry>
+   <entry keyword="Virtual fileposition">
+      <topic href="Field_Modifiers.html#d0e4134"/>
+   </entry>
+   <entry keyword="Virtual localfileposition">
+      <topic href="Field_Modifiers.html#d0e4149"/>
+   </entry>
+   <entry keyword="Virtual logicalfilename">
+      <topic href="Field_Modifiers.html#d0e4158"/>
+   </entry>
+   <entry keyword="VIRTUAL SHARED">
+      <topic href="SHARED.html#d0e8730"/>
+   </entry>
+   <entry keyword="WAIT">
+      <topic href="WAIT.html#d0e32638"/>
+   </entry>
+   <entry keyword="WAIT Function">
+      <topic href="WAIT.html#d0e32641"/>
+   </entry>
+   <entry keyword="WHEN">
+      <topic href="WHEN_Function.html#d0e32690"/>
+   </entry>
+   <entry keyword="WHEN">
+      <topic href="WHEN.html#d0e34179"/>
+   </entry>
+   <entry keyword="WHEN Function">
+      <topic href="WHEN_Function.html#d0e32693"/>
+   </entry>
+   <entry keyword="WHEN workflow service">
+      <topic href="CRON.html#d0e14523"/>
+   </entry>
+   <entry keyword="WHEN workflow service">
+      <topic href="EVENT.html#d0e16536"/>
+   </entry>
+   <entry keyword="WHEN workflow service">
+      <topic href="WHEN.html#d0e34199"/>
+   </entry>
+   <entry keyword="WHICH">
+      <topic href="WHICH.html#d0e32792"/>
+   </entry>
+   <entry keyword="WHICH Function">
+      <topic href="WHICH.html#d0e32795"/>
+   </entry>
+   <entry keyword="WHICH function">
+      <topic href="REJECTED.html#d0e28241"/>
+   </entry>
+   <entry keyword="WHOLE">
+      <topic href="PARSE_Text_Data.html#d0e25988"/>
+   </entry>
+   <entry keyword="WIDTH">
+      <topic href="Index_BUILD_Options.html#d0e12155"/>
+   </entry>
+   <entry keyword="WILD">
+      <topic href="KEYED-WILD.html#d0e8420"/>
+   </entry>
+   <entry keyword="WILD index filter">
+      <topic href="KEYED-WILD.html#d0e8401"/>
+   </entry>
+   <entry keyword="WILD Keyword">
+      <topic href="KEYED-WILD.html#d0e8461"/>
+   </entry>
+   <entry keyword="WORKUNIT">
+      <topic href="DATASET.html#d0e4493"/>
+   </entry>
+   <entry keyword="WORKUNIT">
+      <topic href="WORKUNIT.html#d0e32861"/>
+   </entry>
+   <entry keyword="Workunit">
+      <topic href="Named_Output_DATASETs.html#d0e5661"/>
+   </entry>
+   <entry keyword="WORKUNIT Function">
+      <topic href="WORKUNIT.html#d0e32868"/>
+   </entry>
+   <entry keyword="Workunit OUTPUT">
+      <topic href="OUTPUT_Workunit_Files.html#d0e25606"/>
+   </entry>
+   <entry keyword="WUID">
+      <topic href="WORKUNIT.html#d0e32908"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="XML_Files.html#d0e5341"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="PIPE_Files.html#d0e5580"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="OUTPUT.html#d0e23785"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="OUTPUT_XML_Files.html#d0e24910"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="OUTPUT_PIPE_Files.html#d0e25416"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="PARSE.html#d0e25759"/>
+   </entry>
+   <entry keyword="XML">
+      <topic href="PIPE.html#d0e26313"/>
+   </entry>
+   <entry keyword="XML Files">
+      <topic href="OUTPUT_XML_Files.html#d0e24876"/>
+   </entry>
+   <entry keyword="XMLDECODE">
+      <topic href="XMLDECODE.html#d0e32936"/>
+   </entry>
+   <entry keyword="XMLDECODE Function">
+      <topic href="XMLDECODE.html#d0e32939"/>
+   </entry>
+   <entry keyword="XMLDEFAULT">
+      <topic href="Field_Modifiers.html#d0e4101"/>
+   </entry>
+   <entry keyword="XMLENCODE">
+      <topic href="XMLENCODE.html#d0e32983"/>
+   </entry>
+   <entry keyword="XMLENCODE Function">
+      <topic href="XMLENCODE.html#d0e32986"/>
+   </entry>
+   <entry keyword="XMLPROJECT">
+      <topic href="XML_Parsing_RECORD_and_TRANSFORM_Functions.html#d0e7962"/>
+   </entry>
+   <entry keyword="XMLTEXT">
+      <topic href="XML_Parsing_RECORD_and_TRANSFORM_Functions.html#d0e7926"/>
+   </entry>
+   <entry keyword="XMLUNICODE">
+      <topic href="XML_Parsing_RECORD_and_TRANSFORM_Functions.html#d0e7944"/>
+   </entry>
+   <entry keyword="XOR Operator">
+      <topic href="An_XOR_Operator.html#d0e1848"/>
+   </entry>
+   <entry keyword="XPATH">
+      <topic href="Field_Modifiers.html#d0e4082"/>
+   </entry>
+   <entry keyword="XPATH">
+      <topic href="HTTPCALL.html#d0e18655"/>
+   </entry>
+   <entry keyword="XPATH">
+      <topic href="SOAPCALL.html#d0e29850"/>
+   </entry>
+   <entry keyword="XPATH support">
+      <topic href="XPATH_Support.html#d0e4301"/>
+   </entry>
+</index>

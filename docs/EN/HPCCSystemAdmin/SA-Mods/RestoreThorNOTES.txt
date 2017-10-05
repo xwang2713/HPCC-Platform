@@ -1,0 +1,99 @@
+*restoring the environment by standing up a new master node and bringing it up as part of the environment. 
+-If they are bringing it up with the same IP (recommended). No action needed, it should just come up upon issuing the **start** command to the thor.
+
+*a full failure (disk is unrecoverable). We don't have any backups of the Thor Master
+-thor master node doesn’t store any data on it, in this case you need to do a fresh installation of the HPCC package and update the environment.xml
+OK, we did this, However, we cant see any of the files/superfiles in the cluster?  Do we have to rebuild the Dali index?
+  **only reinstalled the software on the thormaster?
+It's able to connect to all the slaves but can't see the data. The data is physically present on the disks on the slaves.:
+  ***The Dali component serves up the metadata about where the files are located.
+  ***The ESP component with eclwatch service allows you to view the metadata information.
+These components should be agnostic -- to the condition of the thor components
+   unless they were running on the same node as the Thormaster node.
+ ---Yes. The Thor Master machine had all the other services (Dali and ESP).  (cue dramatic music)
+*IMPORTANT NOTE: The Dali would have to be backed up! (to be able to recover from this sort of failure) 
+ --Attempt to restore workunits: XREF (ECLWatch >> logical Files >> XRef - Generate) {OH YEAH A DOC Ref. to ECL Watch p.80}
+A: THIS WORKED!!
+=========================
+
+Next item: the procedure for creating a Active-Passive Thor Master configuration? In the administration guide there is a mention of such a configuration but does not describe HOW to do the actual configuration. 
+
+????  
+
+++++++++++++++++++++++++++++++
+
+We are facing the following issues with the data:
+1.      A large number of files were stored as compressed. How can we update the metadata so that Dali is aware that these were compressed before and should uncompress them before reading them? (we have added a lzw extension to files that were compressed)
+
+2.      The record structure of the files is missing as well and hence it is unable to display the content in ECL watch. How can we reattach the record structure to the file so that it can read it. (the original files that was sprayed has the header in the first row and were sprayed with the RecordStructure present option)
+
+++++++++++++Fernando+++++++++++++
+_COMPRESSED__
+Optional. Specifies that the THOR 
+file
+on another supercomputer cluster is compressed
+because it is a result of the PERSIST Workflow Service.
+ 
+ 
+Pg 66 from http://cdn.hpccsystems.com/releases/CE-Candidate-6.2.0/docs/ECLLanguageReference-6.2.0-1.pdf
++++++++++++++++++++++++++++++++++
+
+
+$$$$$$$$$RKC$REPLY$$$$$$$$$$$$$$$$$$
+(If no SEPARATE Sasha)
+In for painful daliadmin work… Spotting compressed files and marking them as such is probably something that can be automated (and you could argue xref should have done that) but there’s NO WAY in general of deducing the record layouts that they want to attach – the information is not stored anywhere else.
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+DaliAdmin :
+
+to mark logical files compressed in Dali you will need to use daliadmin to manipulate the meta info.
+I've attached an example piece of ECL which writes a compressed and a non-compressed file and I have exported the XML (using daliadmin) from both varieties and attached also.
+
+<img="DaliAdminMetaData_Compress.png">
+So these XML exports were produced using daliadmin like this:
+  daliadmin <daliip> dfsfile test::subscope::testout_compressed > testout_compressed.xml
+  daliadmin <daliip> dfsfile test::subscope::testout_uncompressed > testout_uncompressed.xml
+
+Compressed meta data
+--------------------
+The key difference is the 'blockCompressed' flag.
+NB: compressedSize is for info. only and is not required by the engines when reading the files.
+
+So to mark a logical file compressed, which XREF has spotted and re-created meta data for, you can use daliadmin set to set the blockCompressed flag, like this:
+  daliadmin <daliip> set '<xpath-to-logical-file>/Attr/@blockCompressed' 1
+
+NB: you will need to manually convert the logical name to an xpath.
+e.g. test::subscope::testout_uncompressed, becomes /Files/Scope[@name="test"]/Scope[@name="subscope"]/File[@name="testout_uncompressed"]
+
+So the daliadmin command line for marking an xref retrieved file named 'myscope::mysubscope::myfile' to compressed would look like this:
+  daliadmin <daliip> set '/Files/Scope[@name="myscope"]/Scope[@name="mysubscope"]/File[@name="myfile"]/Attr/@blockCompressed' 1
+
+ECL Record definition
+---------------------
+You can also see the record definition in the exported XML/screenshot above, stored in Attr/ECL.
+If you have the relevant ECL structure for the recovered file, you could import in a similar way as above.
+You would first need to save it away in a file, e.g. see rec.xml attached. NB: can use RECORD/END or { }
+
+Then a daliadmin syntax like this would import it to the ECL attribute:
+  daliadmin <daliip> import '<xpath-to-logical-file>/Attr/ECL' rec.xml
+
+e.g. to make the ECL record structure of myscope::mysubscope::myfile equal the contents of rec.xml, the daliadmin syntax would be:
+  daliadmin <daliip> import '/Files/Scope[@name="myscope"]/Scope[@name="mysubscope"]/File[@name="myfile"]/Attr/ECL' rec.xml
+
+
+++++++++
+Tried /\/\/\, only getting "Could Not connect" 
+
+The above method Can Fail to add a Attr node:
+add a Attr node. Then you will have to add that before setting @blockCompressed under it.
+
+Try:
+daliadmin 10.5.239.196 set '/Files/Scope[@name="scorecards"]/File[@name="td_fnl_20160331.csv.lzw"]/Attr' ''
+
+Then the original set :
+daliadmin 10.5.239.196 set '/Files/Scope[@name="scorecards"]/File[@name="td_fnl_20160331.csv.lzw"]/Attr/@blockCompressed' 1
+
+
+
+
+
