@@ -17,20 +17,20 @@
 cmake_minimum_required(VERSION 2.8)
 PROJECT(docs)
 
-define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs" FULL_DOCS "docs")
-mark_as_advanced(DOC_TARGETS)
+#define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs" FULL_DOCS "docs")
+#mark_as_advanced(DOC_TARGETS)
 
-include(${CMAKE_MODULE_PATH}/docMacros.cmake)
+#include(${CMAKE_MODULE_PATH}/docMacros.cmake)
 
 set (DOCBOOK_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/resources)
 set (DOCBOOK_XSL ${CMAKE_CURRENT_BINARY_DIR}/resources/docbook-xsl)
-set (DOC_IMAGES ${CMAKE_CURRENT_SOURCE_DIR}/)
+#set (DOC_IMAGES ${CMAKE_CURRENT_SOURCE_DIR}/)
 set (XML_CATALOG ${CMAKE_CURRENT_BINARY_DIR}/BuildTools/catalog.xml)
 set (DOC_VERSION "${HPCC_MAJOR}.${HPCC_MINOR}.${HPCC_POINT}")
 set (FO_XSL ${CMAKE_CURRENT_BINARY_DIR}/BuildTools/fo.xsl)
 set (VERSION_DIR ${CMAKE_CURRENT_BINARY_DIR}/)
 set (ECLIPSE_HTML_XSL ${CMAKE_CURRENT_BINARY_DIR}/BuildTools/EclipseHelp.xsl)
-set (ECL_REFERENCE_XML ${CMAKE_CURRENT_BINARY_DIR}/ECLReference/ECLReference.xml)
+#set (ECL_REFERENCE_XML ${CMAKE_CURRENT_BINARY_DIR}/ECLReference/ECLReference.xml)
 set (HTML_HELP_XSL ${CMAKE_CURRENT_BINARY_DIR}/resources/docbook-xsl/htmlhelp/htmlhelp.xsl)
 
 
@@ -41,10 +41,14 @@ else()
 	set (DOC_VERSION "${DOC_VERSION}-${HPCC_MATURITY}${HPCC_SEQUENCE}")
 endif()
 
-set (PORTAL_HTML_DIR "${CMAKE_CURRENT_BINARY_DIR}/PortalHTML")
+#set (PORTAL_HTML_DIR "${CMAKE_CURRENT_BINARY_DIR}/EN/PortalHTML")
 
 # Build image file list to add to source watch.
-file(GLOB_RECURSE DOC_IMAGES_LIST images/*)
+#file(GLOB_RECURSE DOC_IMAGES_LIST images/*)
+
+# GHacked up to test for Int'l.
+#
+add_subdirectory(EN_US)
 
 # Required directories to add.
 add_subdirectory(common)
@@ -52,42 +56,43 @@ add_subdirectory(BuildTools)
 add_subdirectory(resources)
 
 # Doc dirs to include.
-add_subdirectory(DynamicESDL)
-add_subdirectory(ECLLanguageReference)
-add_subdirectory(ECLProgrammersGuide)
-add_subdirectory(ECLStandardLibraryReference)
-add_subdirectory(ECLReference)
-add_subdirectory(EclipseHelp)
-add_subdirectory(HTMLHelp)
-add_subdirectory(HPCCClientTools)
-add_subdirectory(HPCCCertify)
-add_subdirectory(HPCCDataHandling)
-add_subdirectory(HPCCDataTutorial)
-add_subdirectory(HPCCMonitoring)
-add_subdirectory(HPCCSystemAdmin)
-add_subdirectory(IMDB)
-add_subdirectory(InstantCloud)
-add_subdirectory(Installing_and_RunningTheHPCCPlatform)
-add_subdirectory(RoxieReference)
-add_subdirectory(RunningHPCCinaVirtualMachine)
-add_subdirectory(ECLPlayground)
-add_subdirectory(ECLPluginForEclipse)
-add_subdirectory(ECLScheduler)
-add_subdirectory(ECLWatch)
-add_subdirectory(VisualizingECL)
+# commented out
+##add_subdirectory(DynamicESDL)
+#add_subdirectory(ECLLanguageReference)
+#add_subdirectory(ECLProgrammersGuide)
+#add_subdirectory(ECLStandardLibraryReference)
+#add_subdirectory(ECLReference)
+#add_subdirectory(EclipseHelp)
+#add_subdirectory(HTMLHelp)
+#add_subdirectory(HPCCClientTools)
+#add_subdirectory(HPCCCertify)
+#add_subdirectory(HPCCDataHandling)
+#add_subdirectory(HPCCDataTutorial)
+#add_subdirectory(HPCCMonitoring)
+#add_subdirectory(HPCCSystemAdmin)
+#add_subdirectory(IMDB)
+#add_subdirectory(InstantCloud)
+#add_subdirectory(Installing_and_RunningTheHPCCPlatform)
+#add_subdirectory(RoxieReference)
+#add_subdirectory(RunningHPCCinaVirtualMachine)
+#add_subdirectory(ECLPlayground)
+#add_subdirectory(ECLPluginForEclipse)
+#add_subdirectory(ECLScheduler)
+#add_subdirectory(ECLWatch)
+#add_subdirectory(VisualizingECL)
 
-
+#moving to subdir
 # Docs automation
 if (DOCS_AUTO)
    add_subdirectory(XMLGeneration)
-   add_subdirectory(UsingConfigManager)
+#   add_subdirectory(UsingConfigManager)
 endif()
 
 
 #WIP -  Docs
 #add_subdirectory(RuningHPCCinAmazonWebServicesEC2)
 
-add_subdirectory(PortalHTML)
+#add_subdirectory(PortalHTML)
 
-GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
-add_custom_target(docs ALL DEPENDS ${_targets})
+#GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
+#add_custom_target(docs ALL DEPENDS ${_targets})
