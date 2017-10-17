@@ -19,11 +19,11 @@ IF(MAKE_DOCS)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   SET(HELP_DEPENDENCIES)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*ECLReference.*")
+    IF("${T}" MATCHES ".*ECLReference_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
     ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} ${ECL_REFERENCE_XML} ${ECLIPSE_HTML_DIR} "eclipse_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "doc_generate_html_zip")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} ${ECL_REFERENCE_XML} ${ECLIPSE_HTML_DIR} "eclipse_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "doc_generate_html_${DOC_LANG}_zip")
 
 ENDIF(MAKE_DOCS)

@@ -18,12 +18,12 @@ GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
 
 SET(XSLTPROC_DEPENDENCIES)
 FOREACH(T ${Current_Targets})
-   IF("${T}" MATCHES ".*ECLLanguageReference.*" OR
-      "${T}" MATCHES ".*ECLProgrammersGuide.*" OR
-      "${T}" MATCHES ".*ECLStandardLibraryReference.*" OR
-      "${T}" MATCHES ".*ESDL_LangRef.*")
+   IF("${T}" MATCHES ".*ECLLanguageReference_${DOC_LANG}.*" OR
+      "${T}" MATCHES ".*ECLProgrammersGuide_${DOC_LANG}.*" OR
+      "${T}" MATCHES ".*ECLStandardLibraryReference_${DOC_LANG}.*" OR
+      "${T}" MATCHES ".*ESDL_LangRef_${DOC_LANG}.*")
       LIST(APPEND XSLTPROC_DEPENDENCIES  ${T})
    ENDIF()
 ENDFOREACH()
 SET(DISABLE_PDF ON)
-DOCBOOK_TO_PDF( ${FO_XSL} ECLReference.xml "ECLReference")
+DOCBOOK_TO_PDF( ${FO_XSL} ECLReference.xml "ECLReference_${DOC_LANG}")

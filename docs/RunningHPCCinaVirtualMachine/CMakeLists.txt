@@ -14,16 +14,16 @@
 #    limitations under the License.
 ################################################################################
 
-DOCBOOK_TO_PDF( ${FO_XSL} RunningHPCCinaVirtualMachine.xml "RunningHPCCinaVirtualMachine")
+DOCBOOK_TO_PDF( ${FO_XSL} RunningHPCCinaVirtualMachine.xml "RunningHPCCinaVirtualMachine_${DOC_LANG}")
 
 IF(MAKE_DOCS)
   SET(HELP_DEPENDENCIES)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*RunningHPCCinaVirtualMachine.*")
+    IF("${T}" MATCHES ".*RunningHPCCinaVirtualMachine_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
      ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/RunningHPCCinaVirtualMachine.xml" ${PORTAL_HTML_DIR}/VirtualMachine  "virtual_machine_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/RunningHPCCinaVirtualMachine.xml" ${PORTAL_HTML_DIR}/VirtualMachine_${DOC_LANG}  "virtual_machine_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
 ENDIF(MAKE_DOCS)

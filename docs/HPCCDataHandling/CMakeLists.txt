@@ -14,16 +14,16 @@
 #    limitations under the License.
 ################################################################################
 
-DOCBOOK_TO_PDF( ${FO_XSL} DataHandling.xml "HPCCDataHandling" "DH-Mods")
+DOCBOOK_TO_PDF( ${FO_XSL} DataHandling.xml "HPCCDataHandling_${DOC_LANG}" "DH-Mods")
 
 IF(MAKE_DOCS)
   SET(HELP_DEPENDENCIES)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*HPCCDataHandling.*")
+    IF("${T}" MATCHES ".*HPCCDataHandling_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
      ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/DataHandling.xml" ${PORTAL_HTML_DIR}/DataHandling "datahandling_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/DataHandling.xml" ${PORTAL_HTML_DIR}/DataHandling_${DOC_LANG} "datahandling_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
 ENDIF(MAKE_DOCS)

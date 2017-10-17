@@ -16,4 +16,4 @@
 
 
 
-DOCBOOK_TO_PDF( ${FO_XSL} Visualizing_Includer.xml "VisualizingECL" "VizMods")
+DOCBOOK_TO_PDF( ${FO_XSL} Visualizing_Includer.xml "VisualizingECL_${DOC_LANG}" "VizMods")

@@ -25,11 +25,12 @@
 cmake_minimum_required(VERSION 2.8)
 PROJECT(docs_en_us)
 
-define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs_en_us" FULL_DOCS "docs_en_us")
-mark_as_advanced(DOC_TARGETS)
+#define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs_en_us" FULL_DOCS "docs_en_us")
+#mark_as_advanced(DOC_TARGETS)
 
 include(${CMAKE_MODULE_PATH}/docMacros.cmake)
 
+set (DOC_LANG EN_US)
 #set (DOCBOOK_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/../resources)
 #set (DOCBOOK_XSL ${CMAKE_CURRENT_BINARY_DIR}/../resources/docbook-xsl)
 set (DOC_IMAGES ${CMAKE_CURRENT_SOURCE_DIR}/)
@@ -41,7 +42,7 @@ set (DOC_IMAGES ${CMAKE_CURRENT_SOURCE_DIR}/)
 set (ECL_REFERENCE_XML ${CMAKE_CURRENT_BINARY_DIR}/ECLReference/ECLReference.xml)
 #set (HTML_HELP_XSL ${CMAKE_CURRENT_BINARY_DIR}/../resources/docbook-xsl/htmlhelp/htmlhelp.xsl)
 
-set (PORTAL_HTML_DIR "${CMAKE_CURRENT_BINARY_DIR}/en_us/PortalHTML")
+set (PORTAL_HTML_DIR "${CMAKE_CURRENT_BINARY_DIR}/EN_US/PortalHTML")
 
 # Build image file list to add to source watch.
 file(GLOB_RECURSE DOC_IMAGES_LIST images/*)
@@ -57,6 +58,7 @@ add_subdirectory(ECLLanguageReference)
 add_subdirectory(ECLProgrammersGuide)
 add_subdirectory(ECLStandardLibraryReference)
 add_subdirectory(ECLReference)
+
 add_subdirectory(EclipseHelp)
 add_subdirectory(HTMLHelp)
 add_subdirectory(ECLPlayground)
@@ -93,5 +95,5 @@ add_subdirectory(PortalHTML)
 #add_subdirectory(RuningHPCCinAmazonWebServicesEC2)
 
 
-GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
-add_custom_target(docs_en_us ALL DEPENDS ${_targets})
+#GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
+#add_custom_target(docs_en_us ALL DEPENDS ${_targets})

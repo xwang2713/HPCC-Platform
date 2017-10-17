@@ -14,17 +14,17 @@
 #    limitations under the License.
 ################################################################################
 
-DOCBOOK_TO_PDF( ${FO_XSL} DynamicESDL_Includer.xml "DynamicESDL" "DESDL-Mods")
-DOCBOOK_TO_PDF( ${FO_XSL} ESDL_LangRef_Includer.xml "ESDL_LangRef" "DESDL-Mods")
+DOCBOOK_TO_PDF( ${FO_XSL} DynamicESDL_Includer.xml "DynamicESDL_${DOC_LANG}" "DESDL-Mods")
+DOCBOOK_TO_PDF( ${FO_XSL} ESDL_LangRef_Includer.xml "ESDL_LangRef_${DOC_LANG}" "DESDL-Mods")
 
 IF(MAKE_DOCS)
   SET(HELP_DEPENDENCIES)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*ESDL_LangRef.*")
+    IF("${T}" MATCHES ".*ESDL_LangRef_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
     ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/ESDL_LangRef_Includer.xml" ${PORTAL_HTML_DIR}/ESDL_LangRef  "esdl_langref_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/ESDL_LangRef_Includer.xml" ${PORTAL_HTML_DIR}/ESDL_LangRef_${DOC_LANG}  "esdl_langref_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
 ENDIF(MAKE_DOCS)

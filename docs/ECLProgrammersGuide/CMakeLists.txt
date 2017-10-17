@@ -15,29 +15,30 @@
 ################################################################################
 
 
-DOCBOOK_TO_PDF( ${FO_XSL} PrGd-Includer.xml "ECLProgrammersGuide" "PRG_Mods")
+DOCBOOK_TO_PDF( ${FO_XSL} PrGd-Includer.xml "ECLProgrammersGuide_${DOC_LANG}" "PRG_Mods")
 
 IF(MAKE_DOCS)
-  set(zip_out_dir ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs)
+  set(zip_out_dir ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${DOC_LANG})
+  set(ecl_code_name ECL_Code_Files_${DOC_LANG})
+
   ADD_CUSTOM_COMMAND(
 	COMMAND mkdir -p ${zip_out_dir}
-	COMMAND mkdir -p ECL_Code_Files
-	COMMAND rm -rf ECL_Code_Files/*
-        #COMMAND cp ${HPCC_SOURCE_DIR}/docs/ECLProgrammersGuide/PRG_Mods/"\"ECL Code Files\""/*.ecl ECL_Code_Files/
-        COMMAND cp ${CMAKE_CURRENT_SOURCE_DIR}/PRG_Mods/"\"ECL Code Files\""/*.ecl ECL_Code_Files/
-        COMMAND zip -r  ${zip_out_dir}/ECL_Code_Files.zip ECL_Code_Files
-        OUTPUT ${zip_out_dir}/ECL_Code_Files.zip
+	COMMAND mkdir -p ${ecl_code_name}
+	COMMAND rm -rf ${ecl_code_name}/*
+        COMMAND cp ${CMAKE_CURRENT_SOURCE_DIR}/PRG_Mods/"\"ECL Code Files\""/*.ecl ${ecl_code_name}/
+        COMMAND zip -r  ${zip_out_dir}/${ecl_code_name}.zip ${ecl_code_name}
+        OUTPUT ${zip_out_dir}/${ecl_code_name}.zip
 	)
 
-  ADD_CUSTOM_TARGET(ECL_Code_Files ALL DEPENDS  ${zip_out_dir}/ECL_Code_Files.zip)
+  ADD_CUSTOM_TARGET(${ecl_code_name} ALL DEPENDS  ${zip_out_dir}/${ecl_code_name}.zip)
 
   SET(HELP_DEPENDENCIES)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*ECLProgrammersGuide.*")
+    IF("${T}" MATCHES ".*ECLProgrammersGuide_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
      ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/PrGd-Includer.xml" ${PORTAL_HTML_DIR}/ProgrammersGuide  "programmers_guide_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/PrGd-Includer.xml" ${PORTAL_HTML_DIR}/ProgrammersGuide_${DOC_LANG}  "programmers_guide_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
 ENDIF(MAKE_DOCS)

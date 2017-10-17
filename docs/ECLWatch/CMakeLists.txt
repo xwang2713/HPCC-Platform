@@ -14,18 +14,18 @@
 #    limitations under the License.
 ################################################################################
 
-#DOCBOOK_TO_PDF( ${FO_XSL} ECLWTechPrev.xml "ECLWatch" "ECLWa_mods")
+#DOCBOOK_TO_PDF( ${FO_XSL} ECLWTechPrev.xml "ECLWatch_${DOC_LANG}" "ECLWa_mods")
 
-DOCBOOK_TO_PDF( ${FO_XSL} TheECLWatchMan.xml "The_ECL_Watch_Manual" "ECLWa_mods")
+DOCBOOK_TO_PDF( ${FO_XSL} TheECLWatchMan.xml "The_ECL_Watch_Manual_${DOC_LANG}" "ECLWa_mods")
 
 IF(MAKE_DOCS)
   SET(HELP_DEPENDENCIES)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*The_ECL_Watch_Manual.*")
+    IF("${T}" MATCHES ".*The_ECL_Watch_Manual_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
      ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/TheECLWatchMan.xml" ${PORTAL_HTML_DIR}/ECLWatchMan  "eclwatch_man_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/TheECLWatchMan.xml" ${PORTAL_HTML_DIR}/ECLWatchMan_${DOC_LANG}  "eclwatch_man_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
 ENDIF(MAKE_DOCS)

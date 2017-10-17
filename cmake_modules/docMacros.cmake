@@ -36,24 +36,24 @@ MACRO(RUN_XSLTPROC _xsl _file _out _in_dir _out_dir )
                 DEPENDS docbook-expand ${_xsl} ${_in_dir}/${_file} ${_xslt_target} ${FILES} ${DOC_IMAGE_LIST} ${XSLTPROC_DEPENDENCIES}
                 )
         set_source_files_properties(${_out_dir}/${_out} PROPERTIES GENERATED TRUE)
-        ADD_CUSTOM_TARGET(${_out} DEPENDS ${_out_dir}/${_out} )
+        ADD_CUSTOM_TARGET(${_out}_${DOC_LANG} DEPENDS ${_out_dir}/${_out} )
         SET(XSLTPROC_DEPENDENCIES)
 ENDMACRO(RUN_XSLTPROC)
 
 MACRO(RUN_FOP _file _out)
         ADD_CUSTOM_COMMAND(
-                COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs
-                COMMAND ${FOP_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/${_file} -pdf ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${_out}
-                OUTPUT ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${_out}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${DOC_LANG}
+                COMMAND ${FOP_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/${_file} -pdf ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${DOC_LANG}/${_out}
+                OUTPUT ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${DOC_LANG}/${_out}
                 DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${_file}
                 )
-        set_source_files_properties(${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${_out} PROPERTIES GENERATED TRUE)
-        ADD_CUSTOM_TARGET(${_out} DEPENDS ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${_out} )
+        set_source_files_properties(${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${DOC_LANG}/${_out} PROPERTIES GENERATED TRUE)
+        ADD_CUSTOM_TARGET(${_out} DEPENDS ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/docs/${DOC_LANG}/${_out} )
 ENDMACRO(RUN_FOP)
 
 MACRO(CLEAN_REL_BOOK _file _version_dir _doc_dir _in_dir _out_dir)
         STRING(REGEX REPLACE "([0-9a-z_-]*).xml" "\\1" _file_base "${_file}")
-        SET(_clean_target "clean_${_file}")
+        SET(_clean_target "clean_${_file}_${DOC_LANG}")
         SET(VERSION_DIR ${_version_dir})
         SET(ROOT "book")
         CONFIGURE_FILE(${HPCC_SOURCE_DIR}/docs/BuildTools/relrem.xsl.in ${CMAKE_CURRENT_BINARY_DIR}/${_file_base}.xsl @ONLY)
@@ -64,7 +64,7 @@ ENDMACRO(CLEAN_REL_BOOK)
 
 MACRO(CLEAN_REL_SET _file _version_dir _doc_dir _in_dir _out_dir)
         STRING(REGEX REPLACE "([0-9a-z_-]*).xml" "\\1" _file_base "${_file}")
-        SET(_clean_target "clean_${_file}")
+        SET(_clean_target "clean_${_file}_${DOC_LANG}")
         SET(VERSION_DIR ${_version_dir})
         SET(ROOT "set")
         CONFIGURE_FILE(${HPCC_SOURCE_DIR}/docs/BuildTools/relrem.xsl.in ${CMAKE_CURRENT_BINARY_DIR}/${_file_base}.xsl @ONLY)
@@ -84,7 +84,7 @@ MACRO(DOCBOOK_TO_PDF _xsl _file _name)
                 SET( _docs_target "doc_${_pdf_file}")  # File to Name of type.
                 CLEAN_REL_BOOK(${_file} ${VERSION_DIR} ${DOC_IMAGES} ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
                 set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/${_file_base}.xsl  PROPERTIES GENERATED TRUE)
-                RUN_XSLTPROC(${_xsl} ${_file} ${_fo_file} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR} "clean_${_file}" ${_DB_DEFAULT_ARGS})
+                RUN_XSLTPROC(${_xsl} ${_file} ${_fo_file} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR} "clean_${_file}_${DOC_LANG}" ${_DB_DEFAULT_ARGS})
                 IF (DISABLE_PDF)
                    SET(DISABLE_PDF)
                    SET(_target_file ${_fo_file})

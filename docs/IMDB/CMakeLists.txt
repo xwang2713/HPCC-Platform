@@ -14,5 +14,5 @@
 #    limitations under the License.
 ################################################################################
 
-DOCBOOK_TO_PDF( ${FO_XSL} IMDB.xml "IMDB")
+DOCBOOK_TO_PDF( ${FO_XSL} IMDB.xml "IMDB_${DOC_LANG}")
 

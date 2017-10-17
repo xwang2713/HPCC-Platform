@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+"http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
+<chapter id="CT_Overview">
+  <title><emphasis role="bold">Overview</emphasis></title>
+
+  <para>This manual contains documentation for the set of Client Tools for use
+  with the LexisNexis HPCC. These tools include:</para>
+
+  <informaltable colsep="1" frame="all" rowsep="1">
+    <tgroup cols="2">
+      <colspec align="left" colwidth="122.40pt" />
+
+      <colspec />
+
+      <tbody>
+        <row>
+          <entry><emphasis role="bold">ECL IDE</emphasis></entry>
+
+          <entry>An integrated development environment for ECL programmers to
+          create, edit, and execute ECL code.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis role="bold">ECL Debugger</emphasis></entry>
+
+          <entry>A development tool integrated into the ECL IDE, which is used
+          to debug queries as they are developed.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis role="bold">ECLPlus</emphasis></entry>
+
+          <entry>Command line ECL execution tool to facilitate automation of
+          ECL Code execution.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis role="bold">ECL</emphasis></entry>
+
+          <entry>Command line ECL tool.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis role="bold">ECL Compiler</emphasis></entry>
+
+          <entry>Command line ECL Compiler</entry>
+        </row>
+
+        <row>
+          <entry><emphasis role="bold">DFUPlus</emphasis></entry>
+
+          <entry>Command line Distributed File Utility management tool,
+          facilitate automation of data file spray, despray, and other common
+          file handling tasks.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis role="bold">ESDL</emphasis></entry>
+
+          <entry>Command line ESDL management tool.</entry>
+        </row>
+      </tbody>
+    </tgroup>
+  </informaltable>
+
+  <para><emphasis role="bold"> </emphasis></para>
+
+  <sect1 id="Documentation_Conventions">
+    <title>Documentation Conventions</title>
+
+    <sect2 id="ECL_Language">
+      <title><emphasis>ECL Language</emphasis></title>
+
+      <para>Although ECL is not case-sensitive, ECL reserved keywords and
+      built-in functions in this document are always shown in ALL CAPS to make
+      them stand out for easy identification.</para>
+
+      <sect3 id="CT_ECL_ExampleCode">
+        <title>Example Code</title>
+
+        <para>All example code in this document appears in the following
+        font:</para>
+
+        <programlisting>MyECLFileName := COUNT(Person);
+// MyECLFileName is a user-defined ECL file
+// COUNT is a built-in ECL function
+// Person is the name of a dataset</programlisting>
+
+        <para>ECL file names and record set names are always shown in example
+        code as mixed-case. Run-on words may be used to explicitly identify
+        purpose in examples.</para>
+      </sect3>
+
+      <sect3 id="CT_ECL_Actions">
+        <title>Actions</title>
+
+        <para>In step-by-step sections, there will be explicit actions to
+        perform. These are all shown with a bullet or a numbered step to
+        differentiate action steps from explanatory text, as shown
+        here:</para>
+
+        <para><itemizedlist>
+            <listitem>
+              <para>Keyboard and mouse actions are shown in small caps, such
+              as: DOUBLE-CLICK, or press the ENTER key. word.</para>
+            </listitem>
+
+            <listitem>
+              <para>On-screen items to select are shown in boldface, such as:
+              press the <emphasis role="bold">OK </emphasis>button.</para>
+            </listitem>
+          </itemizedlist></para>
+      </sect3>
+    </sect2>
+
+    <sect2 id="Installation" role="brk">
+      <title>Installation</title>
+
+      <para>The installation program installs all client tools, including the
+      ECL IDE, ECLPlus, DFUPlus, and the ECL Command line tools.</para>
+
+      <orderedlist>
+        <listitem>
+          <para>From the HPCC Systems<superscript>®</superscript> download
+          page, <ulink
+          url="http://hpccsystems.com/download/free-community-edition/client-tools">http://hpccsystems.com/download/free-community-edition/client-tools</ulink></para>
+
+          <para>Download the appropriate Client Tools for your Operating
+          System. (available for CentOS, Ubuntu, Mac OSX, or Windows)</para>
+        </listitem>
+
+        <listitem>
+          <para>Install the client tools software to your machine.</para>
+
+          <para><emphasis role="bold">Windows: </emphasis></para>
+
+          <para>Run the executable file, for example:
+          hpccsystems-clienttools_community-4.X.X-XWindows-i386.exe on your
+          machine. Follow the prompts to complete the installation.</para>
+
+          <para><emphasis role="bold">RPM-Based Systems (CentOS/RedHat):
+          </emphasis></para>
+
+          <para>An RPM installation package is provided. Install RPM with the
+          -Uvh switch, the U or upgrade will perform an upgrade if a previous
+          version is already installed. <programlisting>sudo rpm -Uvh &lt;rpm file name&gt;</programlisting></para>
+
+          <para><emphasis role="bold">Debian-Based Systems
+          (Ubuntu):</emphasis></para>
+
+          <para>For Ubuntu installations a Debian package is provided. To
+          install the package, use:</para>
+
+          <programlisting>sudo dpkg -i &lt;deb filename&gt;</programlisting>
+
+          <para><emphasis role="bold">Mac OSX:</emphasis></para>
+
+          <para>Run the installation file, for example:
+          hpccsystems-clienttools_community-4.X.X-XDarwin-x86_64.dmg. Follow
+          the prompts to complete the installation.</para>
+        </listitem>
+      </orderedlist>
+    </sect2>
+  </sect1>
+</chapter>

@@ -17,8 +17,8 @@
 cmake_minimum_required(VERSION 2.8)
 PROJECT(docs)
 
-#define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs" FULL_DOCS "docs")
-#mark_as_advanced(DOC_TARGETS)
+define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs" FULL_DOCS "docs")
+mark_as_advanced(DOC_TARGETS)
 
 #include(${CMAKE_MODULE_PATH}/docMacros.cmake)
 
@@ -46,14 +46,27 @@ endif()
 # Build image file list to add to source watch.
 #file(GLOB_RECURSE DOC_IMAGES_LIST images/*)
 
-# GHacked up to test for Int'l.
-#
-add_subdirectory(EN_US)
 
 # Required directories to add.
 add_subdirectory(common)
 add_subdirectory(BuildTools)
 add_subdirectory(resources)
+
+# GHacked up to test for Int'l.
+#
+#add_subdirectory(EN_US)
+#add_subdirectory(PT_BR)
+if (NOT DOC_LANGS)
+   set(DOC_LANGS EN_US)
+endif()
+
+string(TOUPPER "${DOC_LANGS}" DOC_LANGS)
+foreach(LANG ${DOC_LANGS})
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${LANG}") 
+    add_subdirectory("${LANG}")
+  endif()
+endforeach()
+
 
 # Doc dirs to include.
 # commented out
@@ -94,5 +107,5 @@ endif()
 
 #add_subdirectory(PortalHTML)
 
-#GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
-#add_custom_target(docs ALL DEPENDS ${_targets})
+GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
+add_custom_target(docs ALL DEPENDS ${_targets})

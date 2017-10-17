@@ -21,9 +21,9 @@ IF(MAKE_DOCS)
       LIST(APPEND HELP_DEPENDENCIES  ${T})
     ENDIF()
   ENDFOREACH()
-  SET(PORTAL_HTML_ZIP "portal_html_zip")
+  SET(PORTAL_HTML_ZIP "portal_html_${DOC_LANG}_zip")
   ADD_CUSTOM_TARGET(${PORTAL_HTML_ZIP} ALL
-           COMMAND zip -r "portal_html.zip" ${PORTAL_HTML_DIR}
+           COMMAND zip -r "portal_html_${DOC_LANG}.zip" ${PORTAL_HTML_DIR}
            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/
            DEPENDS ${HELP_DEPENDENCIES}
            )
