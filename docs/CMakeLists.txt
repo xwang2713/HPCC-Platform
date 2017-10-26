@@ -20,7 +20,7 @@ PROJECT(docs)
 define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs" FULL_DOCS "docs")
 mark_as_advanced(DOC_TARGETS)
 
-#include(${CMAKE_MODULE_PATH}/docMacros.cmake)
+include(${CMAKE_MODULE_PATH}/docMacros.cmake)
 
 set (DOCBOOK_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/resources)
 set (DOCBOOK_XSL ${CMAKE_CURRENT_BINARY_DIR}/resources/docbook-xsl)
@@ -52,15 +52,24 @@ add_subdirectory(common)
 add_subdirectory(BuildTools)
 add_subdirectory(resources)
 
+# Docs automation. 
+# Must before each language dir since UsingConfigManager depends on it
+if (DOCS_AUTO)
+   add_subdirectory(XMLGeneration)
+endif()
+
 # GHacked up to test for Int'l.
 #
-#add_subdirectory(EN_US)
-#add_subdirectory(PT_BR)
 if (NOT DOC_LANGS)
    set(DOC_LANGS EN_US)
 endif()
 
 string(TOUPPER "${DOC_LANGS}" DOC_LANGS)
+
+if ( ${DOC_LANGS} STREQUAL "ALL" )
+  set(DOC_LANGS "EN_US;PT_BR")
+endif ()
+
 foreach(LANG ${DOC_LANGS})
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${LANG}") 
     add_subdirectory("${LANG}")
@@ -94,12 +103,6 @@ endforeach()
 #add_subdirectory(ECLWatch)
 #add_subdirectory(VisualizingECL)
 
-#moving to subdir
-# Docs automation
-if (DOCS_AUTO)
-   add_subdirectory(XMLGeneration)
-#   add_subdirectory(UsingConfigManager)
-endif()
 
 
 #WIP -  Docs

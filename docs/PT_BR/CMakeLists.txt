@@ -15,7 +15,7 @@
 ################################################################################
 
 ###
-#  This CMakeLists intended to be used in docs/EN
+#  This CMakeLists intended to be used in docs/PT_BR
 #    Refactored for internationalization
 ##
 #GHACKED THIS 
@@ -25,17 +25,29 @@
 cmake_minimum_required(VERSION 2.8)
 PROJECT(docs_pt_br)
 
+#define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs_pt_br" FULL_DOCS "docs_pt_br")
+#mark_as_advanced(DOC_TARGETS)
 
-include(${CMAKE_MODULE_PATH}/docMacros.cmake)
+#include(${CMAKE_MODULE_PATH}/docMacros.cmake)
 
 set (DOC_LANG PT_BR)
+#set (DOCBOOK_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/../resources)
+#set (DOCBOOK_XSL ${CMAKE_CURRENT_BINARY_DIR}/../resources/docbook-xsl)
 set (DOC_IMAGES ${CMAKE_CURRENT_SOURCE_DIR}/)
+#set (XML_CATALOG ${CMAKE_CURRENT_BINARY_DIR}/../BuildTools/catalog.xml)
+#set (DOC_VERSION "${HPCC_MAJOR}.${HPCC_MINOR}.${HPCC_POINT}")
+#set (FO_XSL ${CMAKE_CURRENT_BINARY_DIR}/../BuildTools/fo.xsl)
+#set (VERSION_DIR ${CMAKE_CURRENT_BINARY_DIR}/)
+#set (ECLIPSE_HTML_XSL ${CMAKE_CURRENT_BINARY_DIR}/../BuildTools/EclipseHelp.xsl)
 set (ECL_REFERENCE_XML ${CMAKE_CURRENT_BINARY_DIR}/ECLReference/ECLReference.xml)
+#set (HTML_HELP_XSL ${CMAKE_CURRENT_BINARY_DIR}/../resources/docbook-xsl/htmlhelp/htmlhelp.xsl)
 
 set (PORTAL_HTML_DIR "${CMAKE_CURRENT_BINARY_DIR}/PT_BR/PortalHTML")
 
 # Build image file list to add to source watch.
 file(GLOB_RECURSE DOC_IMAGES_LIST images/*)
+
+
 
 add_subdirectory(DynamicESDL)
 add_subdirectory(ECLLanguageReference)
@@ -69,11 +81,15 @@ add_subdirectory(PortalHTML)
 
 
 # Docs automation
-#if (DOCS_AUTO)
+if (DOCS_AUTO)
 #   add_subdirectory(XMLGeneration)
-#   add_subdirectory(UsingConfigManager)
-#endif()
+   add_subdirectory(UsingConfigManager)
+endif()
 
 
 #WIP -  Docs
 #add_subdirectory(RuningHPCCinAmazonWebServicesEC2)
+
+
+#GET_PROPERTY(_targets GLOBAL PROPERTY DOC_TARGETS)
+#add_custom_target(docs_en_us ALL DEPENDS ${_targets})

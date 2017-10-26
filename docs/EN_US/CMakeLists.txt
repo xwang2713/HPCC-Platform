@@ -28,7 +28,7 @@ PROJECT(docs_en_us)
 #define_property(GLOBAL PROPERTY DOC_TARGETS BRIEF_DOCS "docs_en_us" FULL_DOCS "docs_en_us")
 #mark_as_advanced(DOC_TARGETS)
 
-include(${CMAKE_MODULE_PATH}/docMacros.cmake)
+#include(${CMAKE_MODULE_PATH}/docMacros.cmake)
 
 set (DOC_LANG EN_US)
 #set (DOCBOOK_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/../resources)
@@ -85,10 +85,10 @@ add_subdirectory(PortalHTML)
 
 
 # Docs automation
-#if (DOCS_AUTO)
+if (DOCS_AUTO)
 #   add_subdirectory(XMLGeneration)
-#   add_subdirectory(UsingConfigManager)
-#endif()
+   add_subdirectory(UsingConfigManager)
+endif()
 
 
 #WIP -  Docs

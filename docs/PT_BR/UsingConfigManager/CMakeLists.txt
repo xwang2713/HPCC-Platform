@@ -13,31 +13,5 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
-GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
-
-SET(XSLTPROC_DEPENDENCIES)
-FOREACH(T ${Current_Targets})
-   IF("${T}" MATCHES "xsd_to_xml" )
-      LIST(APPEND XSLTPROC_DEPENDENCIES  ${T})
-   ENDIF()
-ENDFOREACH()
-########################################################################
-# commented out per issue # HPCC-10267
-#
-#
-DOCBOOK_TO_PDF( ${FO_XSL} UsingConfigManager.xml "UsingConfigManager")
-#
-#
-########################################################################
-
-IF(MAKE_DOCS)
-  SET(HELP_DEPENDENCIES)
-  GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
-  FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*UsingConfigManager.*")
-      LIST(APPEND HELP_DEPENDENCIES  ${T})
-     ENDIF()
-  ENDFOREACH()
-
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/UsingConfigManager.xml" ${PORTAL_HTML_DIR}/UsingConfigManager  "using_configmgr_html" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
-ENDIF(MAKE_DOCS)
+get_filename_component(DOC_DIR_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../BuildTools/cmake_config/${DOC_DIR_NAME}.txt)

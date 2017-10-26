@@ -13,5 +13,32 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
-get_filename_component(DOC_DIR_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
-include(${CMAKE_CURRENT_SOURCE_DIR}/../../BuildTools/cmake_config/${DOC_DIR_NAME}.txt)
+
+
+# - Try to find the xsltproc executable
+#
+#  SAXON_FOUND - system has the saxon executable.
+#  SAXON_EXECUTABLE - the runtime path of the saxon executable
+
+if (NOT SAXON_FOUND)
+  IF (WIN32)
+    SET (saxon "transform.exe")
+  ELSE()
+    SET (saxon "saxonb-xslt")
+  ENDIF()
+
+  IF (NOT "${EXTERNALS_DIRECTORY}" STREQUAL "")
+    FIND_PROGRAM(SAXON_EXECUTABLE ${saxon} PATHS "${EXTERNALS_DIRECTORY}")
+  ENDIF()
+
+  if (USE_NATIVE_LIBRARIES)
+    # if we didn't find in externals, look in system include path
+    FIND_PROGRAM(SAXON_EXECUTABLE ${saxon})
+  endif()
+
+  include(FindPackageHandleStandardArgs)
+  find_package_handle_standard_args(SAXON DEFAULT_MSG
+    SAXON_EXECUTABLE
+  )
+  MARK_AS_ADVANCED(SAXON_EXECUTABLE)
+ENDIF()

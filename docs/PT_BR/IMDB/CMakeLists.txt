@@ -14,4 +14,4 @@
 #    limitations under the License.
 ################################################################################
 get_filename_component(DOC_DIR_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
-include(${CMAKE_CURRENT_SOURCE_DIR}/../../${DOC_DIR_NAME}/CMakeLists.txt)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../BuildTools/cmake_config/${DOC_DIR_NAME}.txt)

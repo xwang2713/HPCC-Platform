@@ -13,6 +13,5 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
-
-DOCBOOK_TO_PDF( ${FO_XSL} HDFS_to_HPCC_ConnectorIncluder.xml "HDFS_to_HPCC_Connector" "HDFS_Mods")
-
+get_filename_component(DOC_DIR_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../BuildTools/cmake_config/${DOC_DIR_NAME}.txt)
