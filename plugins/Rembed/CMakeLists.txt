@@ -48,6 +48,12 @@ if(REMBED)
             add_definitions(-DRCPP_HEADER_ONLY)
         endif()
 
+        if(NOT WIN32)
+          if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.2.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 7.2.0)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror=implicit-fallthrough=0 -Wno-format-nonliteral")
+          endif()
+        endif()
+
         HPCC_ADD_LIBRARY(Rembed SHARED ${SRCS})
         SET_DEPENDENCIES(CPACK_DEBIAN_PACKAGE_DEPENDS R-base-core r-cran-rcpp r-cran-inline)
         SET_DEPENDENCIES(CPACK_RPM_PACKAGE_REQUIRES R-Rcpp)

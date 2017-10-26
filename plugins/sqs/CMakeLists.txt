@@ -9,11 +9,21 @@ if(SQS)
     ADD_PLUGIN(sqs)
     set(AWS_SDK_CPP_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk-cpp)
     include(ExternalProject)
+
+    set(EPA_CMAKE_ARGS)
+    if(NOT WIN32)
+          if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.2.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 7.2.0)
+              set(EPA_CMAKE_ARGS  "-DCMAKE_CXX_FLAGS:string=-Wno-implicit-fallthrough -Wno-int-in-bool-context")
+          endif()
+    endif()
+
     ExternalProject_Add(
         aws-sdk-cpp
         SOURCE_DIR ${AWS_SDK_CPP_SOURCE_DIR}
         BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/aws-sdk-cpp
-        CMAKE_ARGS -DCUSTOM_MEMORY_MANAGEMENT:string=0
+        CMAKE_ARGS
+           "-DCUSTOM_MEMORY_MANAGEMENT:string=0"
+           "${EPA_CMAKE_ARGS}"
         BUILD_COMMAND $(MAKE) LDFLAGS=-Wl,-rpath-link,${LIB_PATH} aws-cpp-sdk-sqs
         INSTALL_COMMAND "")
     add_library(aws-cpp-sdk-core SHARED IMPORTED)

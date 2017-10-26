@@ -6977,9 +6977,9 @@ public:
         switch (nextChar)
         {
         case '}':
-            error("unexpected object close marker");
+            error("unexpected object close marker"); //fallthrough
         case ']':
-            error("unexpected array close marker");
+            error("unexpected array close marker"); //fallthrough
         case '{':
             state=objAttributes;
             readNext();

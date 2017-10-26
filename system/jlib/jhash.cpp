@@ -85,13 +85,13 @@ unsigned hashc( const unsigned char *k, unsigned length, unsigned initval)
     }
     switch (length)
     {
-    case 7: c = (*k++); HASHONE(hash, c);
-    case 6: c = (*k++); HASHONE(hash, c);
-    case 5: c = (*k++); HASHONE(hash, c);
-    case 4: c = (*k++); HASHONE(hash, c);
-    case 3: c = (*k++); HASHONE(hash, c);
-    case 2: c = (*k++); HASHONE(hash, c);
-    case 1: c = (*k++); HASHONE(hash, c);
+    case 7: c = (*k++); HASHONE(hash, c); //fallthrough
+    case 6: c = (*k++); HASHONE(hash, c); //fallthrough
+    case 5: c = (*k++); HASHONE(hash, c); //fallthrough
+    case 4: c = (*k++); HASHONE(hash, c); //fallthrough
+    case 3: c = (*k++); HASHONE(hash, c); //fallthrough
+    case 2: c = (*k++); HASHONE(hash, c); //fallthrough
+    case 1: c = (*k++); HASHONE(hash, c); //fallthrough
     }
     return hash;
 }
@@ -143,13 +143,13 @@ unsigned hashnc( const unsigned char *k, unsigned length, unsigned initval)
     }
     switch (length)
     {
-    case 7: c = (*k++)&0xdf; HASHONE(hash, c);
-    case 6: c = (*k++)&0xdf; HASHONE(hash, c);
-    case 5: c = (*k++)&0xdf; HASHONE(hash, c);
-    case 4: c = (*k++)&0xdf; HASHONE(hash, c);
-    case 3: c = (*k++)&0xdf; HASHONE(hash, c);
-    case 2: c = (*k++)&0xdf; HASHONE(hash, c);
-    case 1: c = (*k++)&0xdf; HASHONE(hash, c);
+    case 7: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
+    case 6: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
+    case 5: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
+    case 4: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
+    case 3: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
+    case 2: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
+    case 1: c = (*k++)&0xdf; HASHONE(hash, c); //fallthrough
     }
     return hash;
 }

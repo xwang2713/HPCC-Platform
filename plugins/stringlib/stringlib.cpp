@@ -1590,7 +1590,12 @@ STRINGLIB_API void STRINGLIB_CALL slFormatDate(size32_t & __lenResult, char * & 
         memset(&tm, 0, sizeof(tm));
         extractDate(tm, date);
         char buf[255];
+
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wformat-nonliteral"
         strftime(buf, sizeof(buf), format, &tm);
+        #pragma GCC diagnostic pop
+
         len = strlen(buf);
         out = static_cast<char *>(CTXMALLOC(parentCtx, len));
         memcpy(out, buf, len);

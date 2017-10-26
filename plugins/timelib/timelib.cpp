@@ -571,7 +571,10 @@ TIMELIB_API void TIMELIB_CALL tlDateToString(size32_t &__lenResult, char* &__res
         tlInsertDateIntoTimeStruct(&timeInfo, date);
         tlMKTime(&timeInfo);
 
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wformat-nonliteral"
         __lenResult = strftime(buffer, kBufferSize, format, &timeInfo);
+        #pragma GCC diagnostic pop
         if (__lenResult > 0)
         {
             __result = reinterpret_cast<char*>(CTXMALLOC(parentCtx, __lenResult));
@@ -592,7 +595,10 @@ TIMELIB_API void TIMELIB_CALL tlTimeToString(size32_t &__lenResult, char* &__res
     tlInsertTimeIntoTimeStruct(&timeInfo, time);
     tlMKTime(&timeInfo);
 
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wformat-nonliteral"
     __lenResult = strftime(buffer, kBufferSize, format, &timeInfo);
+    #pragma GCC diagnostic pop
     __result = NULL;
 
     if (__lenResult > 0)
@@ -615,7 +621,10 @@ TIMELIB_API void TIMELIB_CALL tlSecondsToString(size32_t &__lenResult, char* &__
 
     tlGMTime_r(&theTime, &timeInfo);
 
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wformat-nonliteral"
     __lenResult = strftime(buffer, kBufferSize, format, &timeInfo);
+    #pragma GCC diagnostic pop
     __result = NULL;
 
     if (__lenResult > 0)

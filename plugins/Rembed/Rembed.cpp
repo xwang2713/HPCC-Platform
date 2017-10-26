@@ -427,12 +427,12 @@ public:
             theIntSet = Rcpp::IntegerVector(elements);
             l[r] = theIntSet;
             break;
-        case type_decimal:
+        case type_decimal: //fallthrough
         case type_real:
             theRealSet = Rcpp::NumericVector(elements);
             l[r] = theRealSet;
             break;
-        case type_string:
+        case type_string: //fallthrough
         case type_varstring:
             theStringSet = Rcpp::StringVector(elements);
             l[r] = theStringSet;
@@ -1265,7 +1265,7 @@ public:
             else
                 rtlFail(0, "Rembed: Unsupported parameter type");
             break;
-        case type_string:
+        case type_string: //fallthrough
         case type_varstring:
         {
             std::vector<std::string> vval;
