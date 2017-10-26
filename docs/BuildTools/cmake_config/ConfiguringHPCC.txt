@@ -25,7 +25,7 @@ ENDFOREACH()
 # commented out per issue # HPCC-10267
 #
 #
-DOCBOOK_TO_PDF( ${FO_XSL} UsingConfigManager.xml "UsingConfigManager_${DOC_LANG}")
+DOCBOOK_TO_PDF( ${FO_XSL} ConfiguringHPCC.xml "ConfiguringHPCC_${DOC_LANG}")
 #
 #
 ########################################################################
@@ -34,10 +34,10 @@ IF(MAKE_DOCS)
   SET(HELP_DEPENDENCIES)
   GET_PROPERTY(Current_Targets GLOBAL PROPERTY DOC_TARGETS)
   FOREACH(T ${Current_Targets})
-    IF("${T}" MATCHES ".*UsingConfigManager_${DOC_LANG}.*")
+    IF("${T}" MATCHES ".*ConfiguringHPCC_${DOC_LANG}.*")
       LIST(APPEND HELP_DEPENDENCIES  ${T})
      ENDIF()
   ENDFOREACH()
 
-  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/UsingConfigManager.xml" ${PORTAL_HTML_DIR}/UsingConfigManager_${DOC_LANG}  "using_configmgr_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
+  DOCBOOK_TO_HTML(${ECLIPSE_HTML_XSL} "${CMAKE_CURRENT_BINARY_DIR}/ConfiguringHPCC.xml" ${PORTAL_HTML_DIR}/ConfiguringHPCC_${DOC_LANG}  "configuringHPCC_html_${DOC_LANG}" "${HPCC_SOURCE_DIR}/docs/common/eclipsehelp.css" "")
 ENDIF(MAKE_DOCS)

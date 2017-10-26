@@ -83,7 +83,7 @@ add_subdirectory(PortalHTML)
 # Docs automation
 if (DOCS_AUTO)
 #   add_subdirectory(XMLGeneration)
-   add_subdirectory(UsingConfigManager)
+   add_subdirectory(ConfiguringHPCC)
 endif()
 
 
