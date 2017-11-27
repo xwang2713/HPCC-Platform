@@ -14,43 +14,23 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
+#include <cstddef>
+#include "jiface.hpp"
+#include "jliball.hpp"
 
 
-#ifndef _ICONFIGENV_HPP_
-#define _ICONFIGENV_HPP_
-
-#ifdef CONFIGENV_EXPORTS
-  #define configenv_decl DECL_EXPORT
-#else
-  #define configenv_decl DECL_IMPORT
-#endif
+#include "IConfigEnv.hpp"
+#include "ConfigEnv.hpp"
 
 interface IPropertyTree;
-interface IEnvSettings;
+interface IConfigEnv;
+interface IConfigComp;
 
-interface IConfigComp : public IInterface
+
+IConfigEnv * ConfigEnvFactory::getIConfigEnv(IPropertyTree *config)
 {
-  virtual bool create(IPropertyTree *params) = 0;
-  virtual bool add(IPropertyTree *params) = 0;
-  virtual bool modify(IPropertyTree *params) = 0;
-  virtual bool remove(IPropertyTree *params) = 0;
-  
-};
+  return  new ConfigEnv(config);
+}
 
 
 
-interface configenv_decl IConfigEnv: extends IConfigComp
-//interface IConfigEnv: extends IConfigComp
-{
-  virtual StringBuffer * queryAttribute(StringBuffer *xpath) = 0;
-  virtual IPropertyTree * query(StringBuffer *xpath) = 0;
-};
-
-
-class configenv_decl ConfigEnvFactory
-{
-public:
-  static IConfigEnv * getIConfigEnv(IPropertyTree *config);
-};
-
-#endif

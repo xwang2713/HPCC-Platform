@@ -24,9 +24,14 @@
 
 project( envgen2 ) 
 
+set ( INCLUDES 
+      EnvGen.hpp 
+    )
 set ( SRCS EnvGen.cpp )
 
 include_directories ( 
+         .
+         ./../deploy 
          ./../../system/include 
          ./../../system/jlib 
          ./../../system/mp 
@@ -43,10 +48,3 @@ target_link_libraries ( envgen2
         jlib 
         configenv
         )
-
-#IF (USE_OPENSSL)
-#    target_link_libraries ( envgen2 
-#    	securesocket
-#    )
-#ENDIF()
-

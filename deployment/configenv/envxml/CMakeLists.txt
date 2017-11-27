@@ -15,24 +15,40 @@
 ################################################################################
 
 
-# Component: deployutils
+# Component: envxml
 #####################################################
 # Description:
 # ------------
-#    Cmake Input File for deployutils
+#    Implements IConfigEnv
 #####################################################
 
-project( deployutils ) 
+project( envxml ) 
 
+set (    INCLUDES 
+         IConfigEnv.hpp
+         EnvHelper.hpp
+         ConfigEnv.hpp 
+         Hardware.hpp 
+         ConfigEnvFactory.hpp 
+
+    )
 set (    SRCS 
-         buildset.cpp 
-         computerpicker.cpp 
-         configenvhelper.cpp
-         wizardInputs.cpp
-         deployutils.cpp
+         ConfigEnvFactory.cpp 
+         ConfigEnv.cpp 
+         EnvHelper.cpp 
+         Hardware.cpp 
+   #      Software.cpp 
+   #      SWDirectories.cpp 
+   #      SWEspProcess.cpp 
+   #     SWEspService.cpp 
+   #      SWProcess.cpp 
+   #      SWRoxieCluster.cpp 
+   #      SWThorCluster.cpp 
+   #      SWTopology.cpp 
     )
 
 include_directories ( 
+         ../
          ${HPCC_SOURCE_DIR}/system/include
          ${HPCC_SOURCE_DIR}/system/jlib
          ${HPCC_SOURCE_DIR}/system/mp
@@ -48,16 +64,16 @@ include_directories (
          ${HPCC_SOURCE_DIR}/system/security/shared
     )
 
-ADD_DEFINITIONS ( -D_USRDLL -DDEPLOYUTILS_EXPORTS )
+ADD_DEFINITIONS ( -D_USRDLL -DCONFIGENV_EXPORTS )
 
-HPCC_ADD_LIBRARY( deployutils SHARED ${SRCS} )
-install ( TARGETS deployutils RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
-target_link_libraries ( deployutils
+HPCC_ADD_LIBRARY( configenv SHARED ${SRCS} )
+install ( TARGETS configenv RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
+target_link_libraries ( configenv
          jlib 
-         environment 
-         xmllib
-         deploy
-         configutils
+#         environment 
+#         xmllib
+#         deploy
+#         configutils
     )
 
 

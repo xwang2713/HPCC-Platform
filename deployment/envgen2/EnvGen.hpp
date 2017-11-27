@@ -13,11 +13,12 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _EVNGEN_INCL
-#define _ENVGEN_INCL
+#ifndef _EVNGEN2_INCL
+#define _ENVGEN2_INCL
 
-#include <vector>
+//#include <vector>
 #include "jliball.hpp"
+#include "XMLTags.h"
 #include "IConfigEnv.hpp"
 
 using namespace std;
@@ -28,15 +29,17 @@ interface IPropertyTree;
 
 class CEnvGen
 {
-   
 
 public:
-   CEnvGen(); 
-   int parseArgs(int argc, char** argv);
+   //CEnvGen(){ iConfigEnv = NULL; };
+   bool parseArgs(int argc, char** argv);
+   void usage();
+   bool create();
 
 private:
    IConfigEnv * iConfigEnv; 
-   
+   //Owned<IPropertyTree>  params;
+   IPropertyTree *  params;
    
 };
 
