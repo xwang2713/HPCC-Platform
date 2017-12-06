@@ -27,6 +27,7 @@ if (APPLE)
     list(APPEND DYLIBS ${ZLIB_LIBRARIES})
     list(APPEND DYLIBS ${LIBXML2_LIBRARIES})
     list(APPEND DYLIBS ${CBLAS_LIBRARIES})
+    list(APPEND DYLIBS ${LIBARCHIVE_LIBRARIES})
 elseif (WIN32)
     #TODO:  Should find these dlls not assume them.
     if (NOT USE_NATIVE_LIBRARIES)
