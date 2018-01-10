@@ -13,5 +13,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
-HPCC_ADD_SUBDIRECTORY (envxml)
+HPCC_ADD_SUBDIRECTORY (envxml_hpcc_pt)
+#HPCC_ADD_SUBDIRECTORY (envxml_boost_pt)
 

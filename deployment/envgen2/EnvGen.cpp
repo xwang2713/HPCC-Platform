@@ -14,10 +14,20 @@
     limitations under the License.
 ############################################################################## */
 
+#include <map>
+#include <string>
 #include "XMLTags.h"
 #include "jliball.hpp"
 #include "EnvGen.hpp"
 
+
+map<string, string> CEnvGen::envCategoryMap =
+{
+  {""  , "Software"}, 
+  {"sw", "Software"}, 
+  {"hd", "Hardware"} 
+};
+  
 
 bool CEnvGen::parseArgs(int argc, char** argv)
 {
@@ -28,7 +38,7 @@ bool CEnvGen::parseArgs(int argc, char** argv)
   pBuildSet->addProp(XML_ATTR_NAME, "mycomp");
   StringBuffer sss;
   toXML(pBuildSet, sss);
-  fprintf(stdout, "%s\n", sss.str());
+  printf("%s\n", sss.str());
    exit(0);
 */
 
@@ -65,7 +75,18 @@ bool CEnvGen::parseArgs(int argc, char** argv)
      else if (stricmp(argv[i], "-ip") == 0)
      {
        i++;
-       config->addProp("ipAddrs", argv[i++]);
+       config->addProp("@iplist", argv[i++]);
+     }
+     else if (stricmp(argv[i], "-mod") == 0)
+     {
+       i++;
+       createUpdateTask("modify", config, argv[i++]);
+     }
+     else
+     {
+       printf("\nUnknown option %s\n", argv[i]);
+       usage();
+       return false;
      }
    }
 
@@ -85,6 +106,45 @@ bool CEnvGen::parseArgs(int argc, char** argv)
    return true;
 }
 
+void CEnvGen::createUpdateTask(const char* action, IPropertyTree * config, const char* param)
+{
+   if (!param || !(*param)) return;
+
+   StringArray items;
+   items.appendList(param, ":");
+   if (items.ordinality() < 3) return;
+
+   IPropertyTree * updateTree =  createPTree("update");
+
+   updateTree->addProp("@action", "modify");
+   updateTree->addProp("@category", (envCategoryMap.at(items[0])).c_str());
+   updateTree->addProp("@component", items[1]);
+   if (*(items[2])) updateTree->addProp("@target", items[2]);
+
+   if (items.ordinality() == 3) return;
+
+   int index = 3;
+   String s(items[3]);
+
+   if (s.indexOf('=') < 0) 
+   {
+      updateTree->addProp("@xpath", items[index]);
+      index++;
+   }
+
+   if (items.ordinality() == 4) return;
+
+   updateTree->addProp("@attrs", items[index]);
+
+
+   config->addPropTree("update", updateTree);
+
+   StringBuffer cfgXML;
+   toXML(config, cfgXML.clear());
+   printf("%s\n",cfgXML.str());
+   
+}
+
 bool CEnvGen::create()
 {
   
@@ -102,6 +162,30 @@ void CEnvGen::usage()
   puts("   -env : Full path of the environment file that will be generated.");
   puts("          If a file with the same name exists, and no \"-update\" provided"); 
   puts("          a new name with _xxx will be generated ");
+  puts("   -ip  : Ip addresses that should be used for environment generation");
+  puts("          Allowed formats are ");
+  puts("          X.X.X.X;");
+  puts("          X.X.X.X-XXX;");
+  puts("   -ipfile: name of the file that contains Ip addresses");
+  puts("          Allowed formats are ");
+  puts("          X.X.X.X;");
+  puts("          X.X.X.X-XXX;");
+  puts("   -supportnodes <number of support nodes>: Number of nodes to be used");
+  puts("           for non-Thor and non-Roxie components. If not specified or ");
+  puts("           specified as 0, thor and roxie nodes may overlap with support");
+  puts("           nodes. If an invalid value is provided, support nodes are ");
+  puts("           treated to be 0");
+  puts("   -roxienodes <number of roxie nodes>: Number of nodes to be generated ");
+  puts("          for roxie. If not specified or specified as 0, no roxie nodes");
+  puts("          are generated");
+  puts("   -thornodes <number of thor nodes>: Number of nodes to be generated ");
+  puts("          for thor slaves. A node for thor master is automatically added. ");
+  puts("          If not specified or specified as 0, no thor nodes");
+
+  //new options
+  puts("   -mod : Modify an entry. Format: ");
+  puts("          category(hd:sw:pg):comp(esp|computer):(cluster|service):(instance|dir|<xpath>):attr1=value|old");
+  puts("          sw:Directories::dir:data=/snap/hpcc/data");
   puts("   -help: print out this usage.");
 }
 

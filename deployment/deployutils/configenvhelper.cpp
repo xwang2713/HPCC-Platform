@@ -715,6 +715,7 @@ void CConfigEnvHelper::addComponent(const char* pszBuildSet, StringBuffer& sbNew
 
     CConfigHelper *pConfigHelper = CConfigHelper::getInstance();
 
+    
     if (pConfigHelper != NULL)
     {
         buildSet.setown(pConfigHelper->getBuildSetTree()->getElements(xPath.str()));
@@ -741,6 +742,7 @@ void CConfigEnvHelper::addComponent(const char* pszBuildSet, StringBuffer& sbNew
       sName.toLowerCase();
       sName.replaceString("process","");
 
+
       if(sbNewName.length())
         value.append(sbNewName.str()).append(getUniqueName(m_pRoot.get(), sName, processName, "Software"));
       else
@@ -756,6 +758,7 @@ void CConfigEnvHelper::addComponent(const char* pszBuildSet, StringBuffer& sbNew
         pCompTree->addPropTree("Properties", createPTreeFromIPT(pProperties));
 
       addNode(pCompTree, m_pRoot->queryPropTree("Software"));
+
     }
   }
   catch (IException* e)

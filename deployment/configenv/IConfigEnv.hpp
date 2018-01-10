@@ -30,20 +30,26 @@ interface IEnvSettings;
 
 interface IConfigComp : public IInterface
 {
-  virtual bool create(IPropertyTree *params) = 0;
-  virtual bool add(IPropertyTree *params) = 0;
-  virtual bool modify(IPropertyTree *params) = 0;
-  virtual bool remove(IPropertyTree *params) = 0;
+  virtual IConfigComp* create(IPropertyTree *params) = 0;
+  virtual IConfigComp* add(IPropertyTree *params) = 0;
+  virtual IConfigComp* modify(IPropertyTree *params) = 0;
+  virtual IConfigComp* remove(IPropertyTree *params) = 0;
   
 };
 
 
 
-interface configenv_decl IConfigEnv: extends IConfigComp
+//interface configenv_decl IConfigEnv: extends IConfigComp
+interface configenv_decl IConfigEnv
 //interface IConfigEnv: extends IConfigComp
 {
-  virtual StringBuffer * queryAttribute(StringBuffer *xpath) = 0;
-  virtual IPropertyTree * query(StringBuffer *xpath) = 0;
+  virtual IConfigEnv* create(IPropertyTree *params) = 0;
+  virtual IConfigEnv* add(IPropertyTree *params) = 0;
+  virtual IConfigEnv* modify(IPropertyTree *params) = 0;
+  virtual IConfigEnv* remove(IPropertyTree *params) = 0;
+  virtual StringBuffer * queryAttribute(const char *xpath) = 0;
+  virtual IPropertyTree * query(const char *xpath) = 0;
+  virtual IConfigEnv* dispatchUpdateTasks(IPropertyTree *params) = 0;
 };
 
 

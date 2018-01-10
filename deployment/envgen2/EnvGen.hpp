@@ -33,10 +33,14 @@ class CEnvGen
 public:
    //CEnvGen(){ iConfigEnv = NULL; };
    bool parseArgs(int argc, char** argv);
+   void createUpdateTask(const char* action, IPropertyTree* config, const char* param);
    void usage();
    bool create();
 
 private:
+
+   static map<string, string> envCategoryMap;
+
    IConfigEnv * iConfigEnv; 
    //Owned<IPropertyTree>  params;
    IPropertyTree *  params;

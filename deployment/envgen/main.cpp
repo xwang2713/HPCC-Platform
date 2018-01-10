@@ -118,6 +118,18 @@ int main(int argc, char** argv)
 {
   InitModuleObjects();
 
+
+/*
+  IPropertyTree* pBuildSet;
+  pBuildSet = createPTree(XML_TAG_BUILDSET);
+  pBuildSet->addProp(XML_ATTR_NAME, "mycomp");
+  StringBuffer sss;
+  toXML(pBuildSet, sss);
+  fprintf(stdout, "%s\n", sss.str());
+*/
+
+
+
   const char* out_envname = NULL;
   const char* in_ipfilename;
   StringBuffer ipAddrs;

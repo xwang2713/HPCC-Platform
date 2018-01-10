@@ -36,7 +36,7 @@
 
 #define STANDARD_CONFIGXMLDIR COMPONENTFILES_DIR"/configxml"
 
-static bool schemaNodeHasAttributes(IPropertyTree* pNode)
+bool schemaNodeHasAttributes(IPropertyTree* pNode)
 {
   //skip over xs:complexType, if any
   IPropertyTree* pTemp = pNode->queryPropTree(XSD_TAG_COMPLEX_TYPE);
@@ -47,7 +47,7 @@ static bool schemaNodeHasAttributes(IPropertyTree* pNode)
   return itAttr  ->first() && itAttr  ->isValid();
 }
 
-static bool schemaNodeHasAttributeGroups(IPropertyTree* pNode)
+bool schemaNodeHasAttributeGroups(IPropertyTree* pNode)
 {
   //skip over xs:complexType, if any
   IPropertyTree* pTemp = pNode->queryPropTree(XSD_TAG_COMPLEX_TYPE);
