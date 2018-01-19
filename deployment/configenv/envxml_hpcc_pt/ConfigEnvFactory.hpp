@@ -1,4 +1,5 @@
 /*##############################################################################
+
     HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems®.
 
     Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,40 +14,34 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _EVNGEN2_INCL
-#define _ENVGEN2_INCL
+#ifndef _CONFIGENVFACTORY_HPP_
+#define _CONFIGENVFACTORY_HPP_
 
-//#include <vector>
+#include <cstddef>
+#include "jiface.hpp"
 #include "jliball.hpp"
-#include "XMLTags.h"
-#include "IConfigEnv.hpp"
-#include "ConfigEnvFactory.hpp"
 
-using namespace std;
-using namespace ech;
+
+#include "IConfigEnv.hpp"
+#include "ConfigEnv.hpp"
 
 interface IPropertyTree;
+//interface IConfigEnv<IPropertyTree, StringBuffer>;
+//interface IConfigComp;
 
-//typedef vector<IPropertyTree*> IPropertyTreePtrArray;
-
-class CEnvGen
+namespace ech
 {
 
+//template<class PTYPE, class SB> 
+class configenv_decl ConfigEnvFactory
+{
 public:
-   //CEnvGen(){ iConfigEnv = NULL; };
-   bool parseArgs(int argc, char** argv);
-   void createUpdateTask(const char* action, IPropertyTree* config, const char* param);
-   void usage();
-   bool create();
-
-private:
-
-   static map<string, string> envCategoryMap;
-
-   IConfigEnv<IPropertyTree, StringBuffer>* iConfigEnv; 
-   //Owned<IPropertyTree>  params;
-   IPropertyTree *  params;
-   
+  static IConfigEnv<IPropertyTree,StringBuffer> * getIConfigEnv(IPropertyTree *config)
+  {
+    return  new ConfigEnv(config);
+  }
 };
+
+}
 
 #endif

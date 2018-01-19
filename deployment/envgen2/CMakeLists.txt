@@ -36,6 +36,8 @@ include_directories (
          ./../../system/jlib 
          ./../../system/mp 
          ./../configenv/
+         ./../configenv/common
+         ./../configenv/envxml_hpcc_pt
          ${CMAKE_BINARY_DIR}
          ${CMAKE_BINARY_DIR}/oss
     )

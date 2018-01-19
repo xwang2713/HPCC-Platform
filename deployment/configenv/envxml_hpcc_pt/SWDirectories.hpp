@@ -1,4 +1,5 @@
 /*##############################################################################
+
     HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems®.
 
     Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,40 +14,35 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _EVNGEN2_INCL
-#define _ENVGEN2_INCL
+#ifndef _SWDIRECTORIES_HPP_
+#define _SWDIRECTORIES_HPP_
 
-//#include <vector>
-#include "jliball.hpp"
-#include "XMLTags.h"
-#include "IConfigEnv.hpp"
-#include "ConfigEnvFactory.hpp"
+#include "EnvHelper.hpp"
 
-using namespace std;
-using namespace ech;
-
-interface IPropertyTree;
-
-//typedef vector<IPropertyTree*> IPropertyTreePtrArray;
-
-class CEnvGen
+namespace ech
 {
 
+class SWDirectories : public CInterface, implements IConfigComp
+{
 public:
-   //CEnvGen(){ iConfigEnv = NULL; };
-   bool parseArgs(int argc, char** argv);
-   void createUpdateTask(const char* action, IPropertyTree* config, const char* param);
-   void usage();
-   bool create();
+   SWDirectories(const char* name, EnvHelper * envHelper);
+
+   IMPLEMENT_IINTERFACE;
+
+   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
+   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
+   virtual int addNode(IPropertyTree *params, const char* xpath, StringBuffer& errMsg, bool merge);
+   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
+   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
+
 
 private:
-
-   static map<string, string> envCategoryMap;
-
-   IConfigEnv<IPropertyTree, StringBuffer>* iConfigEnv; 
-   //Owned<IPropertyTree>  params;
-   IPropertyTree *  params;
+   Mutex mutex;
+   EnvHelper * envHelper;
+   const char* name;
    
 };
+
+}
 
 #endif

@@ -114,7 +114,7 @@ void CEnvGen::createUpdateTask(const char* action, IPropertyTree * config, const
    items.appendList(param, ":");
    if (items.ordinality() < 3) return;
 
-   IPropertyTree * updateTree =  createPTree("update");
+   IPropertyTree * updateTree =  createPTree("Task");
 
    updateTree->addProp("@action", "modify");
    updateTree->addProp("@category", (envCategoryMap.at(items[0])).c_str());
@@ -134,10 +134,27 @@ void CEnvGen::createUpdateTask(const char* action, IPropertyTree * config, const
 
    if (items.ordinality() == 4) return;
 
-   updateTree->addProp("@attrs", items[index]);
+   StringArray attrs;
+   attrs.appendList(items[index], ATTR_SEP);
+   printf("attribute: %s\n",items[index]);
+
+   IPropertyTree *pAttrs = updateTree->addPropTree("Attributes", createPTree("Attributes"));
+   for ( unsigned i = 0; i < attrs.ordinality() ; i++)
+   {
+     IPropertyTree *pAttr = pAttrs->addPropTree("Attribute", createPTree("Attribute"));
+
+     StringArray keyValues;
+     keyValues.appendList(attrs[i], "=");
+     pAttr->addProp("@name", keyValues[0]);
+
+     StringArray newOldValues;
+     newOldValues.appendList(keyValues[1], ATTR_V_SEP);
+     pAttr->addProp("@value", newOldValues[0]);
+     if (newOldValues.ordinality() > 1) pAttr->addProp("@oldValue", newOldValues[1]);
+   }
 
 
-   config->addPropTree("update", updateTree);
+   config->addPropTree("Task", updateTree);
 
    StringBuffer cfgXML;
    toXML(config, cfgXML.clear());
@@ -147,8 +164,15 @@ void CEnvGen::createUpdateTask(const char* action, IPropertyTree * config, const
 
 bool CEnvGen::create()
 {
+   StringBuffer errMsg;
   
-   iConfigEnv->create(params->queryPropTree("Config"));
+
+   int rc = iConfigEnv->create(params->queryPropTree("Config"), errMsg);
+   if (rc != CE_OK)
+   {
+      printf("Create Environment fails\n");
+      printf("rc=%d, %s\n", rc, errMsg.str());
+   }
    return true;
 }
 
@@ -199,7 +223,7 @@ int main(int argc, char** argv)
    if (!envGen->parseArgs(argc, argv)) 
      return 1;
 
-   envGen->create();
+   //envGen->create();
 
    return 0;
 }

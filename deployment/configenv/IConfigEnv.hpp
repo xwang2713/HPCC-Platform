@@ -19,44 +19,57 @@
 #ifndef _ICONFIGENV_HPP_
 #define _ICONFIGENV_HPP_
 
+#include "ConfigEnvError.hpp"
+
 #ifdef CONFIGENV_EXPORTS
   #define configenv_decl DECL_EXPORT
 #else
   #define configenv_decl DECL_IMPORT
 #endif
 
+//Output format
+//XML_SortTags | XML_Format
+
+#ifndef ATTR_SEP 
+#define ATTR_SEP  "^"
+#endif
+
+#ifdef ATTR_V_SEP
+#define ATTR_V_SEP "|"
+#endif
+
+
 interface IPropertyTree;
 interface IEnvSettings;
 
-interface IConfigComp : public IInterface
-{
-  virtual IConfigComp* create(IPropertyTree *params) = 0;
-  virtual IConfigComp* add(IPropertyTree *params) = 0;
-  virtual IConfigComp* modify(IPropertyTree *params) = 0;
-  virtual IConfigComp* remove(IPropertyTree *params) = 0;
-  
-};
-
-
 
 //interface configenv_decl IConfigEnv: extends IConfigComp
+
+template <class PTYPE, class SB>
 interface configenv_decl IConfigEnv
-//interface IConfigEnv: extends IConfigComp
 {
-  virtual IConfigEnv* create(IPropertyTree *params) = 0;
-  virtual IConfigEnv* add(IPropertyTree *params) = 0;
-  virtual IConfigEnv* modify(IPropertyTree *params) = 0;
-  virtual IConfigEnv* remove(IPropertyTree *params) = 0;
-  virtual StringBuffer * queryAttribute(const char *xpath) = 0;
-  virtual IPropertyTree * query(const char *xpath) = 0;
-  virtual IConfigEnv* dispatchUpdateTasks(IPropertyTree *params) = 0;
+  virtual int create(PTYPE *params, SB& errMsg) = 0;
+  virtual int add(PTYPE *params, SB& errMsg, SB& name, bool duplicate) = 0;
+  virtual int addNode(PTYPE *node, const char *xpath, SB& errMsg, bool merge) = 0;
+  virtual int modify(PTYPE *params, SB& errMsg) = 0;
+  virtual int remove(PTYPE *params, SB& errMsg) = 0;
+  virtual const char* queryAttribute(const char *xpath) = 0;
+  virtual PTYPE * getNode(const char *xpath) = 0;
+  //virtual bool validate(const char *xpath, const char value) = 0;
+  virtual int getContent(SB& out, int format) = 0;
+  virtual int dispatchUpdateTasks(PTYPE *params, SB& errMsg) = 0;
+  // validate value from env tree or schema, xpath and schema only provide one usually
+  //virtual bool isValid(const char* xpath, const char* schema, const char* key, const char* value, bool src);
 };
 
 
+/*
+template <class PTYPE, class SB>
 class configenv_decl ConfigEnvFactory
 {
 public:
-  static IConfigEnv * getIConfigEnv(IPropertyTree *config);
+  static IConfigEnv<PTYPE,SB> * getIConfigEnv(PTYPE *config);
 };
+*/
 
 #endif

@@ -1,4 +1,5 @@
 /*##############################################################################
+
     HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems®.
 
     Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,40 +14,20 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _EVNGEN2_INCL
-#define _ENVGEN2_INCL
 
-//#include <vector>
-#include "jliball.hpp"
-#include "XMLTags.h"
-#include "IConfigEnv.hpp"
-#include "ConfigEnvFactory.hpp"
 
-using namespace std;
-using namespace ech;
+#ifndef _CONFIGENVERROR_HPP_
+#define _CONFIGENVERROR_HPP_
 
-interface IPropertyTree;
+#define CE_OK  0
+#define CEWRN_ComponentExists          1000
 
-//typedef vector<IPropertyTree*> IPropertyTreePtrArray;
+#define CEERR_NullPointer             2000
+#define CEERR_UnknownCompoent         2001
+#define CEERR_CannotCreateCompoent    2002
 
-class CEnvGen
-{
-
-public:
-   //CEnvGen(){ iConfigEnv = NULL; };
-   bool parseArgs(int argc, char** argv);
-   void createUpdateTask(const char* action, IPropertyTree* config, const char* param);
-   void usage();
-   bool create();
-
-private:
-
-   static map<string, string> envCategoryMap;
-
-   IConfigEnv<IPropertyTree, StringBuffer>* iConfigEnv; 
-   //Owned<IPropertyTree>  params;
-   IPropertyTree *  params;
-   
-};
+#define CEERR_InvalidIPRange          3000
+#define CEERR_InvalidIP               3001
+#define CEERR_NoIPAddress             3002
 
 #endif
