@@ -32,7 +32,7 @@ add_subdirectory(configmgr)
 
 # Developer build
 # target: configure
-if(NOT "${DESTDIR}" STREQUAL "")
+if( NOT MAKE_SNAP AND NOT "${DESTDIR}" STREQUAL "")
     message(STATUS "DESTDIR is set to ${DESTDIR}. Enabling configure target.")
 
     set(dirlist ${RUNTIME_PATH} ${LOG_PATH} ${LOCK_PATH} ${PID_PATH} ${INIT_PATH} ${CONFIG_DIR})

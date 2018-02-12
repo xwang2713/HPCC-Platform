@@ -145,6 +145,32 @@ if [[ $platform == 'linux' ]]; then
                     break
             fi
     done
+
+    #Add additional lib path for snap package
+    if [[ "${INSTALL_DIR}" = "/snap/"* ]]; then
+      NEW_LIB3=${SNAP}/usr/lib
+      for D in ${LD_LIBRARY_PATH//:/ } ; do
+         if [ "${D}" = "${NEW_LIB3}" ]; then
+               unset NEW_LIB3
+               break
+         fi
+      done
+
+      NEW_LIB4=${SNAP}/usr/lib/x86_64-linux-gnu
+      for D in ${LD_LIBRARY_PATH//:/ } ; do
+         if [ "${D}" = "${NEW_LIB4}" ]; then
+               unset NEW_LIB4
+               break
+         fi
+      done
+
+      echo "$PATH" | grep -q "${SNAP}/usr/bin"
+      if [ $? -ne 0 ]; then
+         export PATH=${SNAP%\/*?}/current/usr/bin:$PATH
+      fi
+
+    fi
+
 elif [[ $platform == 'mac' ]]; then
     NEW_LIB="${PATH_PREFIX}/lib"
     for D in ${DYLD_LIBRARY_PATH//:/ } ; do
@@ -186,6 +212,17 @@ if [ `basename -- "$0"` = "hpcc_setenv" ]; then
         else
                 echo "# \$LD_LIBRARY_PATH already contains ${PATH_PREFIX}/plugins"
         fi
+        if [ -n "${NEW_LIB3}" ]; then
+                echo "export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${NEW_LIB3}"
+        else
+                echo "# \$LD_LIBRARY_PATH already contains ${NEW_LIB3}""
+        fi
+        if [ -n "${NEW_LIB4}" ]; then
+                echo "export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${NEW_LIB4}"
+        else
+                echo "# \$LD_LIBRARY_PATH already contains ${NEW_LIB4}""
+        fi
+
     elif [[ $platform == 'mac' ]]; then
         if [ -n "${NEW_LIB}" ]; then
             echo "export DYLD_LIBRARY_PATH=${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}${NEW_LIB}"
@@ -214,6 +251,12 @@ else
         fi
         if [ -n "${NEW_LIB2}" ]; then
                 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${NEW_LIB2}
+        fi
+        if [ -n "${NEW_LIB3}" ]; then
+                export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${NEW_LIB3}
+        fi
+        if [ -n "${NEW_LIB4}" ]; then
+                export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${NEW_LIB4}
         fi
     elif [[ $platform == 'mac' ]]; then
         if [ -n "${NEW_LIB}" ]; then

@@ -76,6 +76,7 @@ cfg.parser () {
     #echo "${ini[*]}"               # echoing the result
     eval "$(echo "${ini[*]}")"               # eval the result
     [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg 0
+    return 0
 }
 
 ## dir.parser parses the return of configgen -listcommondirs and builds local scope
@@ -101,6 +102,7 @@ dir.parser() {
         done
         IFS=${OIFS}
     [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg 0
+    return 0
 }
 
 ## dir.getByName allows the user to pass the name of a directory from the <Directories/>
@@ -219,10 +221,11 @@ createDir() {
     dir=$1
     [[ "${VERBOSE:-0}" -eq 1 ]] && log_begin_msg "Creating ${dir} directory..."
     if [ ! -d $dir ]; then
-    mkdir -p $dir
-    [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg $? && return $? || return $?
+       mkdir -p $dir
+       #[[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg $? && return $? || return $?
     fi
-    [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg 1 && return 1 || return 1
+    #[[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg 1 && return 1 || return 1
+    return 0
 }
 
 ## removeDir allows the user to pass a directory to be removed.
@@ -233,10 +236,11 @@ removeDir() {
     dir=$1
     [[ "${VERBOSE:-0}" -eq 1 ]] && log_begin_msg "Removing ${dir} directory..."
     if [ -d $dir ]; then
-    rm -rf $dir
-    [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg $? && return $? || return $?
+       rm -rf $dir
+       [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg $? && return $? || return $?
     fi
     [[ "${VERBOSE:-0}" -eq 1 ]] && log_end_msg 1 && return 1 || return 1
+    return 0
 }
 
 
@@ -260,6 +264,7 @@ set_environmentvars() {
     if [ -n "${umask}" ]; then
         umask $umask
     fi
+    return 0
 }
 
 
@@ -280,6 +285,7 @@ validate_configuration() {
         echo -e "\033[31merror\033[0m: configgen xml validation failure"
         exit 1
     fi
+    return 0
 }
 
 get_commondirs() {
@@ -313,6 +319,7 @@ configGenCmd() {
         echo -e "\033[31merror\033[0m: configGenCmd() -> failure in configgen call"
         exit 1
     fi
+    return 0
 }
 
 createRuntime() {

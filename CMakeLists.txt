@@ -122,6 +122,7 @@ option(ENV_XML_FILE "Set the environment xml file name.")
 option(ENV_CONF_FILE "Set the environment conf file name.")
 option(LICENSE_FILE "Set the license file to use.")
 option(DESTDIR "Set the alternate root installation path.")
+option(MAKE_SNAP "Build Snap package" OFF)
 
 if(NOT LICENSE_FILE)
     if(REMBED)
