@@ -43,6 +43,9 @@ if(REMBED)
             ./../../system/mp
             ./../../system/jlib)
 
+        if (NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0.0)
+           set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=format-nonliteral")
+        endif()
         set_property (SOURCE Rembed.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-format-nonliteral")
         add_definitions(-D_USRDLL -DREMBED_EXPORTS)
         if(RCPP_LIBRARY STREQUAL "")
