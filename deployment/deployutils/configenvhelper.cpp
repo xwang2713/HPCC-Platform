@@ -646,167 +646,167 @@ bool CConfigEnvHelper::deleteRoxiePorts(const char* xmlArg)
     {
         IPropertyTree* pChild;
         //if atleast one slave, delete all slaves
-        while ((pChild = pRoxieCluster->queryPropTree( "RoxieSlave[1]" )) != NULL)
-            pRoxieCluster->removeTree( pChild );
+		while ((pChild = pRoxieCluster->queryPropTree( "RoxieSlave[1]" )) != NULL)
+		    pRoxieCluster->removeTree( pChild );
 
-        while ((pChild = pRoxieCluster->queryPropTree( XML_TAG_ROXIE_SLAVE "[1]" )) != NULL)
-            pRoxieCluster->removeTree( pChild );
+		while ((pChild = pRoxieCluster->queryPropTree( XML_TAG_ROXIE_SLAVE "[1]" )) != NULL)
+		    pRoxieCluster->removeTree( pChild );
 
-        break;
-    }
+		break;
+	    }
 
-  renameInstances(pRoxieCluster);
+	  renameInstances(pRoxieCluster);
 
-  return true;
-}
-
-
-void CConfigEnvHelper::deleteFarm(IPropertyTree* pRoxieCluster, const char* pszFarm)
-{
-  StringBuffer xpath;
-  xpath.clear().appendf(XML_TAG_ROXIE_FARM"[@name='%s']", pszFarm);
-  IPropertyTree* pFarm = pRoxieCluster->queryPropTree(xpath.str());
-  Owned<IPropertyTreeIterator> it = pFarm->getElements(XML_TAG_ROXIE_SERVER);
-
-  ForEach(*it)
-  {
-    IPropertyTree* pServer = &it->query();
-    const char* pszServer = pServer->queryProp(XML_ATTR_NAME);
-    IPropertyTree* pLegacyServer = findLegacyServer(pRoxieCluster, pszServer);
-    if (pLegacyServer)
-      pRoxieCluster->removeTree(pLegacyServer);
-  }
-
-  pRoxieCluster->removeTree(pFarm);
-}
-
-void CConfigEnvHelper::deleteServer(IPropertyTree* pRoxieCluster, const char* pszFarm, const char* pszServer)
-{
-  StringBuffer xpath;
-
-  IPropertyTree* pLegacyServer = findLegacyServer(pRoxieCluster, pszServer);
-  if (pLegacyServer)
-    pRoxieCluster->removeTree(pLegacyServer);
-
-  xpath.clear().appendf(XML_TAG_ROXIE_FARM"[@name='%s']", pszFarm);
-  IPropertyTree* pFarm = pRoxieCluster->queryPropTree(xpath.str());
-  if (pFarm)
-  {
-    xpath.clear().appendf(XML_TAG_ROXIE_SERVER"[@name='%s']", pszServer);
-    IPropertyTree* pServer = pFarm->queryPropTree(xpath.str());
-
-    if (pServer)
-      pFarm->removeTree(pServer);
-  }
-}
+	  return true;
+	}
 
 
+	void CConfigEnvHelper::deleteFarm(IPropertyTree* pRoxieCluster, const char* pszFarm)
+	{
+	  StringBuffer xpath;
+	  xpath.clear().appendf(XML_TAG_ROXIE_FARM"[@name='%s']", pszFarm);
+	  IPropertyTree* pFarm = pRoxieCluster->queryPropTree(xpath.str());
+	  Owned<IPropertyTreeIterator> it = pFarm->getElements(XML_TAG_ROXIE_SERVER);
 
-void CConfigEnvHelper::addComponent(const char* pszBuildSet, StringBuffer& sbNewName, IPropertyTree* pCompTree)
-{
-  try
-  {
-    // NOTE - we are assuming buildSet is unique in a build.
-    StringBuffer xPath, value;
-    Owned<IPropertyTreeIterator> buildSet;
-    const char* buildName = NULL;
+	  ForEach(*it)
+	  {
+	    IPropertyTree* pServer = &it->query();
+	    const char* pszServer = pServer->queryProp(XML_ATTR_NAME);
+	    IPropertyTree* pLegacyServer = findLegacyServer(pRoxieCluster, pszServer);
+	    if (pLegacyServer)
+	      pRoxieCluster->removeTree(pLegacyServer);
+	  }
 
-    xPath.appendf("./Programs/Build/BuildSet[@name=\"%s\"]", pszBuildSet);
+	  pRoxieCluster->removeTree(pFarm);
+	}
 
-    CConfigHelper *pConfigHelper = CConfigHelper::getInstance();
+	void CConfigEnvHelper::deleteServer(IPropertyTree* pRoxieCluster, const char* pszFarm, const char* pszServer)
+	{
+	  StringBuffer xpath;
 
-    
-    if (pConfigHelper != NULL)
-    {
-        buildSet.setown(pConfigHelper->getBuildSetTree()->getElements(xPath.str()));
-        buildName = pConfigHelper->getBuildSetTree()->queryPropTree("./Programs/Build[1]")->queryProp(XML_ATTR_NAME);
-    }
-    else
-    {
-        buildSet.setown(m_pRoot->getElements(xPath.str()));
-        buildName = m_pRoot->queryPropTree("./Programs/Build[1]")->queryProp(XML_ATTR_NAME);
-    }
+	  IPropertyTree* pLegacyServer = findLegacyServer(pRoxieCluster, pszServer);
+	  if (pLegacyServer)
+	    pRoxieCluster->removeTree(pLegacyServer);
 
-    buildSet->first();
-    IPropertyTree* pBuildSet = &buildSet->query();
-    const char* buildSetName = pBuildSet->queryProp(XML_ATTR_NAME);
-    const char* processName = pBuildSet->queryProp(XML_ATTR_PROCESS_NAME);
+	  xpath.clear().appendf(XML_TAG_ROXIE_FARM"[@name='%s']", pszFarm);
+	  IPropertyTree* pFarm = pRoxieCluster->queryPropTree(xpath.str());
+	  if (pFarm)
+	  {
+	    xpath.clear().appendf(XML_TAG_ROXIE_SERVER"[@name='%s']", pszServer);
+	    IPropertyTree* pServer = pFarm->queryPropTree(xpath.str());
 
-
-    if (!processName) //support non-generic components as well
-      processName = buildSetName;
-
-    {
-      // Use lower case version of type for name prefix
-      StringBuffer sName(buildSetName);
-      sName.toLowerCase();
-      sName.replaceString("process","");
+	    if (pServer)
+	      pFarm->removeTree(pServer);
+	  }
+	}
 
 
-      if(sbNewName.length())
-        value.append(sbNewName.str()).append(getUniqueName(m_pRoot.get(), sName, processName, "Software"));
-      else
-        value.append(getUniqueName(m_pRoot.get(), sName, processName, "Software"));
 
-      pCompTree->setProp(XML_ATTR_NAME,value);
-      sbNewName.clear().append(sName);
-      pCompTree->setProp(XML_ATTR_BUILD,   buildName);
-      pCompTree->setProp(XML_ATTR_BUILDSET,pszBuildSet);
+	void CConfigEnvHelper::addComponent(const char* pszBuildSet, StringBuffer& sbNewName, IPropertyTree* pCompTree)
+	{
+	  try
+	  {
+	    // NOTE - we are assuming buildSet is unique in a build.
+	    StringBuffer xPath, value;
+	    Owned<IPropertyTreeIterator> buildSet;
+	    const char* buildName = NULL;
 
-      Owned<IPropertyTree> pProperties = pBuildSet->getPropTree("Properties");
-      if (pProperties)
-        pCompTree->addPropTree("Properties", createPTreeFromIPT(pProperties));
+	    xPath.appendf("./Programs/Build/BuildSet[@name=\"%s\"]", pszBuildSet);
 
-      addNode(pCompTree, m_pRoot->queryPropTree("Software"));
+	    CConfigHelper *pConfigHelper = CConfigHelper::getInstance();
 
-    }
-  }
-  catch (IException* e)
-  {
-    throw e;
-  }
-}
+	    
+	    if (pConfigHelper != NULL)
+	    {
+		buildSet.setown(pConfigHelper->getBuildSetTree()->getElements(xPath.str()));
+		buildName = pConfigHelper->getBuildSetTree()->queryPropTree("./Programs/Build[1]")->queryProp(XML_ATTR_NAME);
+	    }
+	    else
+	    {
+		buildSet.setown(m_pRoot->getElements(xPath.str()));
+		buildName = m_pRoot->queryPropTree("./Programs/Build[1]")->queryProp(XML_ATTR_NAME);
+	    }
 
-bool CConfigEnvHelper::EnsureInRange(const char* psz, UINT low, UINT high, const char* caption)
-{
-    bool rc = false;
-    StringBuffer msg;
-    const UINT x = atoi( psz );
-    if ( ((low < high) && (x < low || x > high)) || (low == high && x != low) )
-    {
-        msg.append(caption).append(" must be ");
-        if (low == high)
-            msg.append(low);
-        else
-        {
-            msg.append("between ");
-            msg.append(low).append(" and ");
-            msg.append( high );
-        }
-    }
-    else 
-        if (high == 0 && x < low)
-            msg.append(caption).append(" must be at least ").append(low);
-        else
-            rc = true;
+	    buildSet->first();
+	    IPropertyTree* pBuildSet = &buildSet->query();
+	    const char* buildSetName = pBuildSet->queryProp(XML_ATTR_NAME);
+	    const char* processName = pBuildSet->queryProp(XML_ATTR_PROCESS_NAME);
 
-    if (!rc)
-    {
-        msg.append('.');
-        throw MakeStringException(-1, "%s", msg.str());
-    }
-    return rc;
-}
 
-bool CConfigEnvHelper::handleRoxieSlaveConfig(const char* xmlArg)
-{
-    try
-    {
-        Owned<IPropertyTree> pSrcTree = createPTreeFromXMLString(xmlArg && *xmlArg ? xmlArg : "<RoxieData/>");
-        const char* pszRoxie = pSrcTree->queryProp("@roxieName");
+	    if (!processName) //support non-generic components as well
+	      processName = buildSetName;
 
-        StringBuffer xpath;
-        xpath.clear().appendf("%s/%s[%s='%s']", XML_TAG_SOFTWARE, XML_TAG_ROXIECLUSTER, XML_ATTR_NAME, pszRoxie);
+	    {
+	      // Use lower case version of type for name prefix
+	      StringBuffer sName(buildSetName);
+	      sName.toLowerCase();
+	      sName.replaceString("process","");
+
+
+	      if(sbNewName.length())
+		value.append(sbNewName.str()).append(getUniqueName(m_pRoot.get(), sName, processName, "Software"));
+	      else
+		value.append(getUniqueName(m_pRoot.get(), sName, processName, "Software"));
+
+	      pCompTree->setProp(XML_ATTR_NAME,value);
+	      sbNewName.clear().append(sName);
+	      pCompTree->setProp(XML_ATTR_BUILD,   buildName);
+	      pCompTree->setProp(XML_ATTR_BUILDSET,pszBuildSet);
+
+	      Owned<IPropertyTree> pProperties = pBuildSet->getPropTree("Properties");
+	      if (pProperties)
+		pCompTree->addPropTree("Properties", createPTreeFromIPT(pProperties));
+
+	      addNode(pCompTree, m_pRoot->queryPropTree("Software"));
+
+	    }
+	  }
+	  catch (IException* e)
+	  {
+	    throw e;
+	  }
+	}
+
+	bool CConfigEnvHelper::EnsureInRange(const char* psz, UINT low, UINT high, const char* caption)
+	{
+	    bool rc = false;
+	    StringBuffer msg;
+	    const UINT x = atoi( psz );
+	    if ( ((low < high) && (x < low || x > high)) || (low == high && x != low) )
+	    {
+		msg.append(caption).append(" must be ");
+		if (low == high)
+		    msg.append(low);
+		else
+		{
+		    msg.append("between ");
+		    msg.append(low).append(" and ");
+		    msg.append( high );
+		}
+	    }
+	    else 
+		if (high == 0 && x < low)
+		    msg.append(caption).append(" must be at least ").append(low);
+		else
+		    rc = true;
+
+	    if (!rc)
+	    {
+		msg.append('.');
+		throw MakeStringException(-1, "%s", msg.str());
+	    }
+	    return rc;
+	}
+
+	bool CConfigEnvHelper::handleRoxieSlaveConfig(const char* xmlArg)
+	{
+	    try
+	    {
+		Owned<IPropertyTree> pSrcTree = createPTreeFromXMLString(xmlArg && *xmlArg ? xmlArg : "<RoxieData/>");
+		const char* pszRoxie = pSrcTree->queryProp("@roxieName");
+
+		StringBuffer xpath;
+		xpath.clear().appendf("%s/%s[%s='%s']", XML_TAG_SOFTWARE, XML_TAG_ROXIECLUSTER, XML_ATTR_NAME, pszRoxie);
         IPropertyTree* pRoxie = m_pRoot->queryPropTree(xpath.str());
 
         if (!pRoxie)

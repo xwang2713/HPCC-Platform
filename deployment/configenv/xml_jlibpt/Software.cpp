@@ -17,6 +17,9 @@
 
 #include "Software.hpp"
 #include "SWProcess.hpp"
+#include "SWThorCluster.hpp"
+#include "SWRoxieCluster.hpp"
+#include "SWEspProcess.hpp"
 #include "SWDirectories.hpp"
 #include "deployutils.hpp"
 
@@ -28,17 +31,15 @@ Software::Software(EnvHelper * envHelper)
   this->envHelper = envHelper;
 }
 
-int Software::create(IPropertyTree *params, StringBuffer& errMsg)
+void Software::create(IPropertyTree *params)
 {
   IPropertyTree * envTree = envHelper->getEnvTree();
    
-  const IPropertyTree * buildSetTree = envHelper->getBuildSet();
+  const IPropertyTree * buildSetTree = envHelper->getBuildSetTree();
   envTree->addPropTree(XML_TAG_SOFTWARE, createPTreeFromIPT(
     buildSetTree->queryPropTree("./" XML_TAG_SOFTWARE)));
 
-  int rc;
-  rc = getSWComp("esp")->create(params, errMsg);
-  if (rc != CE_OK) return rc;
+  getSWComp("esp")->create(params);
 
   StringBuffer xpath;
   xpath.clear().appendf("./%s/%s/%s", XML_TAG_PROGRAMS, XML_TAG_BUILD, XML_TAG_BUILDSET);
@@ -53,39 +54,30 @@ int Software::create(IPropertyTree *params, StringBuffer& errMsg)
     if (stricmp(buildSetName, "esp") == 0) continue;
     if (rules.foundInProp("do_not_generate", buildSetName)) continue;
 
-    rc = getSWComp(buildSetName)->create(params, errMsg);
-    if (rc != CE_OK) return rc;
-
+    getSWComp(buildSetName)->create(params);
   }
 
-  return CE_OK;
 }
 
 
-int Software::add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate)
+int Software::add(IPropertyTree *params)
 {
-    //if add instance
-	//  add to Hardware computer
-	//  add to component needed on all nodes
-	//endif
-
-	return CE_OK;
+  const char *comp    = params->queryProp("@component");
+  return getSWComp(comp)->add(params);
 }
 
-int Software::addNode(IPropertyTree *node, const char *xpath, StringBuffer& errMsg, bool merge)
-{
-   return CE_OK;
-}
+//int Software::addNode(IPropertyTree *node, const char *xpath, bool merge)
+//{
+//   return 0;
+//}
 
 
-int Software::addInstance(IPropertyTree *params, StringBuffer& errMsg)
+/*
+// This should go to SWProcess class
+int Software::addInstance(IPropertyTree *params)
 {
    IPropertyTree *pAttrsTree = params->queryPropTree("Attributes");
-   if (pAttrsTree == NULL) 
-   {
-     errMsg.append("Params property tree of  addInstance is null.");
-     return CEERR_NullPointer;
-   }
+   assert(pAttrsTree); 
 
    const char* ipInfo;
    bool isFile = false; 
@@ -104,58 +96,47 @@ int Software::addInstance(IPropertyTree *params, StringBuffer& errMsg)
 
    if (!ipInfo || !(*ipInfo))
    {
-      errMsg.append("No ip address provided for addInstance"); 
-      return CEERR_NoIPAddress;
+      throw MakeStringException(CfgEnvErrorCode::NoIPAddress, "No ip address provided for addInstance"); 
    }
 
    StringArray ipArray;
    if (envHelper->processNodeAddress(ipInfo, ipArray, isFile) == 0) 
    {
-      errMsg.append("No ip address provided for addInstance"); 
-      return CEERR_NoIPAddress;
+      throw MakeStringException(CfgEnvErrorCode::NoIPAddress, "No ip address provided for addInstance"); 
    }
 
-   
-
-     //add computer and get computer name
-     //add instance for on all nodes
+   //add computer and get computer name
+   //add instance for on all nodes
    
 
    //const char *target  = params->queryProp("@component");
-   return CE_OK;
+
+   //query id 
+   return 0;
+}
+*/
+
+int Software::modify(IPropertyTree *params)
+{
+   //IPropertyTree * envTree = envHelper->getEnvTree();
+   const char *comp = params->queryProp("@component");
+   return getSWComp(comp)->modify(params);
 }
 
 
-
-int Software::modify(IPropertyTree *params, StringBuffer& errMsg)
+void Software::remove(IPropertyTree *params)
 {
-  IPropertyTree * envTree = envHelper->getEnvTree();
-
-  //const char *action  = params->queryProp("@action");  
-  const char *comp    = params->queryProp("@target");
-  const char *xpath   = params->queryProp("@xpath");
-
-
-  if (stricmp(xpath, "instance") == 0)
-  {
-     return ((SWProcess*)getSWComp(comp))->addInstance(params, errMsg);
-  }
-  else
-  {
-    const char *target  = params->queryProp("@component");
-    return getSWComp(comp)->modify(params, errMsg);
-  }
-}
-
-
-int Software::remove(IPropertyTree *params, StringBuffer& errMsg)
-{
-   return CE_OK;
+   const char *comp = params->queryProp("@component");
+   return getSWComp(comp)->remove(params);
 }
 
 IConfigComp* Software::getSWComp(const char *compName)
 {
+   //should call envHelper->getXMLTagName(compName)
+   //const char *compNameLC =  envHelper->getXMLTagName(compName);
+
    const char * compNameLC = (StringBuffer(compName).toLowerCase()).str();
+
    IConfigComp ** ppComp = swCompMap.getValue(compNameLC);
    if (ppComp && *ppComp) return *ppComp;
 
@@ -175,26 +156,40 @@ comp: eclccserver
 comp: eclscheduler
 comp: esp
 comp: espsmc
+comp: ws_ecl
+comp: dynamic_esdl
 comp: ftslave
 comp: hqltest
 comp: roxie
 comp: sasha
 comp: thor
 comp: topology
-comp: ws_ecl
    */
 
-   if ((stricmp(compNameLC, "Directories") == 0) || (stricmp(compNameLC, "dirs") == 0))
+   if (!stricmp(compNameLC, "directories")  || !stricmp(compNameLC, "dirs"))
    {
-      pComp = (IConfigComp*) new SWDirectories(compName, envHelper);
+      pComp = (IConfigComp*) new SWDirectories("directories", envHelper);
    }
-   else if (stricmp(compNameLC, "yyyy") == 0)
+   else if (!stricmp(compNameLC, "roxie") || !stricmp(compNameLC, "RoxieCluster")) 
    {
-      pComp = (IConfigComp*) new SWProcess(compName, envHelper);
+      pComp = (IConfigComp*) new SWRoxieCluster("roxie", envHelper);
+   }
+   else if (!stricmp(compNameLC, "thor") || !stricmp(compNameLC, "ThorCluster")) 
+   {
+      pComp = (IConfigComp*) new SWThorCluster("thor", envHelper);
+   }
+   else if (!stricmp(compNameLC, "esp") || !stricmp(compNameLC, "EspProcess")) 
+   {
+      pComp = (IConfigComp*) new SWEspProcess("esp", envHelper);
+   }
+   else if (!stricmp(compNameLC, "srv") || !stricmp(compNameLC, "EspService") ||
+            !stricmp(compNameLC, "elcwatch") || !stricmp(compNameLC, "espsmc")) 
+   {
+      pComp = (IConfigComp*) new SWEspProcess("espsmc", envHelper);
    }
    else
    {
-      pComp = (IConfigComp*) new SWProcess(compName, envHelper);
+      pComp = (IConfigComp*) new SWProcess(compNameLC, envHelper);
    }
 
    if (pComp != NULL)
@@ -202,7 +197,7 @@ comp: ws_ecl
       swCompMap.setValue(compName,  pComp);
    }
 
-
+  
    return pComp;
 }
 

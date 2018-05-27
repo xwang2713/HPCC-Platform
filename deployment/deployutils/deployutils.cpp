@@ -1267,6 +1267,7 @@ public:
               bOptSubType = true;
           }
 
+
           bool bHasElements = schemaNodeHasElements(pElement) != NULL;
 
           if (bViewChildNodes)
@@ -1378,6 +1379,7 @@ public:
             else
               m_multiRowNodes->addProp("Node", szElementName);
           }
+
 
           if (pInstanceNode)
           {
@@ -1945,6 +1947,7 @@ IPropertyTree* generateTreeFromXsd(const IPropertyTree* pEnv, IPropertyTree* pSc
   obj.setGenerateOptional(flag);
   obj.setWizard(pWInputs);
   obj.generateHeaders();
+
   return pCompTree.getLink();
 }
 

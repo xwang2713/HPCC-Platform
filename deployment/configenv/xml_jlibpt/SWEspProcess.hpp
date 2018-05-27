@@ -14,35 +14,25 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _SWDIRECTORIES_HPP_
-#define _SWDIRECTORIES_HPP_
+#ifndef _SWESPPROCESS_HPP_
+#define _SWESPPROCESS_HPP_
 
 #include "EnvHelper.hpp"
+#include "SWProcess.hpp"
 
 namespace ech
 {
 
-class SWDirectories : public CInterface, implements IConfigComp
+class SWEspProcess : public SWProcess
 {
 public:
-   SWDirectories(const char* name, EnvHelper * envHelper);
+    SWEspProcess(const char* name, EnvHelper * envHelper);
 
-   IMPLEMENT_IINTERFACE;
-
-   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
-   virtual int addNode(IPropertyTree *params, const char* xpath, StringBuffer& errMsg, bool merge);
-   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
-
-
-private:
-   Mutex mutex;
-   EnvHelper * envHelper;
-   const char* name;
+    int add(IPropertyTree *params);
+    //IPropertyTree * addComponent(IPropertyTree *params);
+    void addBinding(IPropertyTree *parent, IPropertyTree * attrs);
    
 };
 
 }
-
 #endif

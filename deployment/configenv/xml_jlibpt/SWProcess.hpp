@@ -1,0 +1,63 @@
+/*##############################################################################
+
+    HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems®.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+############################################################################## */
+#ifndef _SWPROCESS_HPP_
+#define _SWPROCESS_HPP_
+
+#include "EnvHelper.hpp"
+#include "ComponentBase.hpp"
+#include "SWComponentBase.hpp"
+
+namespace ech
+{
+
+class SWProcess : public SWComponentBase
+{
+public:
+   SWProcess(const char* name, EnvHelper * envHelper);
+
+   virtual void create(IPropertyTree *params);
+   virtual int add(IPropertyTree *params);
+   //virtual int addNode(IPropertyTree *params, const char* xpath, bool merge);
+   //virtual int modify(IPropertyTree *params);
+   //virtual void remove(IPropertyTree *params);
+   virtual IPropertyTree * addComponent(IPropertyTree *params);
+   virtual IPropertyTree * cloneComponent(IPropertyTree *params);
+
+   virtual void computerAdded(IPropertyTree *computerNode);
+   virtual void computerUpdated(IPropertyTree *computerNode, const char *oldName);
+   virtual void computerDeleted(const char *name);
+
+   virtual void checkInstanceAttributes(IPropertyTree *instanceNode, IPropertyTree *parent);
+
+   void addInstances(IPropertyTree *parent, IPropertyTree *params);
+   void addInstance(IPropertyTree *computerNode, IPropertyTree *parent, IPropertyTree *attrs);
+   IPropertyTree * addComputer(const char* ip);
+
+   IConfigComp* getInstanceNetAddresses(StringArray& ipList, const char* clusterName=NULL);
+   unsigned getInstanceCount(const char* clusterName=NULL);
+
+   IPropertyTree * getPortDefinition();
+   bool portIsRequired();
+   int getDefaultPort();
+
+
+protected:
+   StringBuffer instanceElemName;
+};
+
+}
+#endif

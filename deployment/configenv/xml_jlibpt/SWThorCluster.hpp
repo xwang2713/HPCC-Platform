@@ -14,38 +14,29 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _SOFTWARE_HPP_
-#define _SOFTWARE_HPP_
+#ifndef _SWTHORCLUSTER_HPP_
+#define _SWTHORCLUSTER_HPP_
 
 #include "EnvHelper.hpp"
+#include "SWProcess.hpp"
 
 namespace ech
 {
 
-class Software : public CInterface, implements IConfigComp
+class SWThorCluster : public SWProcess
 {
 public:
-   Software(EnvHelper * envHelper);
+    SWThorCluster(const char* name, EnvHelper * envHelper);
 
-   IMPLEMENT_IINTERFACE;
-
-   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
-   virtual int addNode(IPropertyTree *node, const char* xpath, StringBuffer& errMsg, bool merge);
-   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
-
-   int addInstance(IPropertyTree *params, StringBuffer& errMsg);
-
-   IConfigComp* getSWComp(const char * compName);
-
-private:
-   Mutex mutex;
-   EnvHelper * envHelper;
+    IPropertyTree * addComponent(IPropertyTree *params);
+    IPropertyTree * cloneComponent(IPropertyTree *params);
    
-   MapStringTo<IConfigComp*> swCompMap;
+private:
+    StringBuffer masterInstanceElemName;
+
 };
 
-}
 
+
+}
 #endif

@@ -48,15 +48,18 @@ bool CEnvGen::parseArgs(int argc, char** argv)
    params = createPTree("Env");
    //Owned<IPropertyTree> config = createPTree("Config");
    IPropertyTree * config = createPTree("Config");
+   
    /*
    StringBuffer s;
    if (config)
    {
       fprintf(stdout, "test ... \n");
-      //toXML(config, s);
+      toXML(config, s);
       //toJSON(config, s);
+      fprintf(stdout, "%s\n",s.str());
    }
    */
+  
 
    params->addPropTree("Config", config);
 
@@ -77,10 +80,40 @@ bool CEnvGen::parseArgs(int argc, char** argv)
        i++;
        config->addProp("@iplist", argv[i++]);
      }
+     else if (stricmp(argv[i], "-supportnodes") == 0)
+     {
+       i++;
+       config->addProp("@supportnodes", argv[i++]);
+     }
+     else if (stricmp(argv[i], "-espnodes") == 0)
+     {
+       i++;
+       config->addProp("@espnodes", argv[i++]);
+     }
+     else if (stricmp(argv[i], "-roxienodes") == 0)
+     {
+       i++;
+       config->addProp("@roxienodes", argv[i++]);
+     }
+     else if (stricmp(argv[i], "-thornodes") == 0)
+     {
+       i++;
+       config->addProp("@thornodes", argv[i++]);
+     }
+     else if (stricmp(argv[i], "-add") == 0)
+     {
+       i++;
+       createUpdateTask("add", config, argv[i++]);
+     }
      else if (stricmp(argv[i], "-mod") == 0)
      {
        i++;
        createUpdateTask("modify", config, argv[i++]);
+     }
+     else if (stricmp(argv[i], "-rmv") == 0)
+     {
+       i++;
+       createUpdateTask("remove", config, argv[i++]);
      }
      else
      {
@@ -103,6 +136,10 @@ bool CEnvGen::parseArgs(int argc, char** argv)
 
    iConfigEnv =  ConfigEnvFactory::getIConfigEnv(config);
 
+   StringBuffer cfgXML;
+   toXML(config, cfgXML.clear());
+   printf("%s\n",cfgXML.str());
+
    return true;
 }
 
@@ -116,27 +153,39 @@ void CEnvGen::createUpdateTask(const char* action, IPropertyTree * config, const
 
    IPropertyTree * updateTree =  createPTree("Task");
 
-   updateTree->addProp("@action", "modify");
-   updateTree->addProp("@category", (envCategoryMap.at(items[0])).c_str());
-   updateTree->addProp("@component", items[1]);
-   if (*(items[2])) updateTree->addProp("@target", items[2]);
+   updateTree->addProp("@action", action);
+   updateTree->addProp("@category", (envCategoryMap.at(items.item(0))).c_str());
+   //has @key
+   StringArray compAndKey;
+   compAndKey.appendList(items[1], "@");
+   updateTree->addProp("@component", compAndKey[0]);
+   if (compAndKey.ordinality() > 1) 
+     updateTree->addProp("@key", compAndKey[1]);
+   
+   int index = 2;
+   if (!stricmp(action, "remove"))
+   {
+      if (*(items[2])) updateTree->addProp("@target", items[2]);
+      index = 3;
+   }
 
-   if (items.ordinality() == 3) return;
+   if (items.ordinality() == index) return;
 
-   int index = 3;
-   String s(items[3]);
+   String s(items[index]);
 
    if (s.indexOf('=') < 0) 
    {
-      updateTree->addProp("@xpath", items[index]);
+      updateTree->addProp("@selector", items[index]);
       index++;
    }
 
-   if (items.ordinality() == 4) return;
+
+   if (items.ordinality() == index) return;
 
    StringArray attrs;
    attrs.appendList(items[index], ATTR_SEP);
    printf("attribute: %s\n",items[index]);
+
 
    IPropertyTree *pAttrs = updateTree->addPropTree("Attributes", createPTree("Attributes"));
    for ( unsigned i = 0; i < attrs.ordinality() ; i++)
@@ -156,25 +205,33 @@ void CEnvGen::createUpdateTask(const char* action, IPropertyTree * config, const
 
    config->addPropTree("Task", updateTree);
 
+   /*
    StringBuffer cfgXML;
    toXML(config, cfgXML.clear());
    printf("%s\n",cfgXML.str());
+   */
    
 }
 
 bool CEnvGen::create()
 {
-   StringBuffer errMsg;
   
-
-   int rc = iConfigEnv->create(params->queryPropTree("Config"), errMsg);
-   if (rc != CE_OK)
-   {
-      printf("Create Environment fails\n");
-      printf("rc=%d, %s\n", rc, errMsg.str());
-   }
+   IPropertyTree* config = params->queryPropTree("Config");
+   const char* action = config->queryProp("@action");
+   if (stricmp(action, "create") ) return true;
+   iConfigEnv->create(config);
    return true;
 }
+
+bool CEnvGen::update()
+{
+   IPropertyTree* config = params->queryPropTree("Config");
+   if (stricmp(config->queryProp("@action"), "update")) return true;
+   iConfigEnv->dispatchUpdateTasks(config);
+   
+   return true; 
+}
+
 
 void CEnvGen::usage()
 {
@@ -207,9 +264,11 @@ void CEnvGen::usage()
   puts("          If not specified or specified as 0, no thor nodes");
 
   //new options
+  puts("   -add category(hd:sw:pg):comp@name(esp|computer):selector(instance|dir|<relative xpath>):attr=value");
   puts("   -mod : Modify an entry. Format: ");
-  puts("          category(hd:sw:pg):comp(esp|computer):(cluster|service):(instance|dir|<xpath>):attr1=value|old");
-  puts("          sw:Directories::dir:data=/snap/hpcc/data");
+  puts("          category(hd:sw:pg):comp(esp|computer)@(cluster|service):(instance|dir|<xpath>):attr1=value|old");
+  puts("          sw:Directories:dir:data=/snap/hpcc/data");
+  puts("-rmv category(hd:sw:pg):comp@name(service@ws_ecl|computer@localhost):target<xpath to delete>:selector<condition>(instance|dir|<relative xpath>):attr=value|old");
   puts("   -help: print out this usage.");
 }
 
@@ -223,7 +282,17 @@ int main(int argc, char** argv)
    if (!envGen->parseArgs(argc, argv)) 
      return 1;
 
-   //envGen->create();
 
+   try {
+      envGen->create();
+   }
+   catch (IException* e)
+   {
+     int errCode = e->errorCode();
+     StringBuffer errMsg;
+     e->errorMessage(errMsg);
+     printf("Error: %d, %s\n", errCode, errMsg.str()); 
+     e->Release();
+   }
    return 0;
 }

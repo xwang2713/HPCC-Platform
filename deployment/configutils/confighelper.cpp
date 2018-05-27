@@ -72,6 +72,7 @@ CConfigHelper* CConfigHelper::getInstance(const IPropertyTree *cfg, const char* 
 
             try
             {
+                printf("ming +++++ buildset path: %s\n", p_sConfigHelper->m_strBuildSetFilePath.str());
                 p_sConfigHelper->m_pDefBldSet.set(createPTreeFromXMLFile(p_sConfigHelper->m_strBuildSetFilePath.str()));
             }
             catch (IException *e)

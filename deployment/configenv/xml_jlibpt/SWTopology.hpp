@@ -14,34 +14,32 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _CONFIGENVFACTORY_HPP_
-#define _CONFIGENVFACTORY_HPP_
+#ifndef _SWTOPOLOGY_HPP_
+#define _SWTOPOLOGY_HPP_
 
-#include <cstddef>
-#include "jiface.hpp"
-#include "jliball.hpp"
-
-
-#include "IConfigEnv.hpp"
-#include "ConfigEnv.hpp"
-
-interface IPropertyTree;
-//interface IConfigEnv<IPropertyTree, StringBuffer>;
-//interface IConfigComp;
+#include "EnvHelper.hpp"
+#include "SWComponentBase.hpp"
 
 namespace ech
 {
 
-//template<class PTYPE, class SB> 
-class configenv_decl ConfigEnvFactory
+class SWTopology : public SWComponentBase
 {
 public:
-  static IConfigEnv<IPropertyTree,StringBuffer> * getIConfigEnv(IPropertyTree *config)
-  {
-    return  new ConfigEnv(config);
-  }
+   SWTopology(EnvHelper * envHelper);
+
+   virtual void create(IPropertyTree *params);
+   virtual int add(IPropertyTree *params);
+   //virtual int modify(IPropertyTree *params);
+   //virtual void remove(IPropertyTree *params);
+
+private:
+//   StringArray notifyList;
+//   Owned<IPropertyTree> pSchema;
+//   IPropertyTree*  pBuildSet;
+
+   
 };
 
 }
-
 #endif

@@ -83,7 +83,7 @@ CWizardInputs::~CWizardInputs()
 void CWizardInputs::setEnvironment()
 {
   StringBuffer xpath;
-  if(m_pXml->hasProp("@ipList"))
+  if(m_pXml->hasProp("@ipList")) 
     formIPList(m_pXml->queryProp("@ipList"), m_ipaddress);
 
   if(m_pXml->hasProp("@supportNodes"))
@@ -152,13 +152,16 @@ void CWizardInputs::setEnvironment()
 
      if (strlen(pConfigHelper->getBuildSetFileName()) == 0 || pBuildSet == NULL)
      {
-         throw MakeStringException( -1 , "The buildset file %s/%s does not exist", pConfigHelper->getBuildSetFilePath(), pConfigHelper->getBuildSetFileName());
+         throw MakeStringException( -1 , "The buildset file %s/%s does not exist",
+           pConfigHelper->getBuildSetFilePath(), pConfigHelper->getBuildSetFileName());
      }
 
      m_buildSetTree.setown(pBuildSet);
      
-     fileName.clear().append((pEnvParams->queryProp("configs") != NULL ? (sb.clear().append(pEnvParams->queryProp("configs")).append("/")): STANDARD_CONFIG_DIR));
-     fileName.append((pParams->queryProp("wizardalgorithm") != NULL ? (sb.clear().append(pParams->queryProp("wizardalgorithm"))) : STANDARD_CONFIG_ALGORITHMFILE));
+     fileName.clear().append((pEnvParams->queryProp("configs") != 
+       NULL ? (sb.clear().append(pEnvParams->queryProp("configs")).append("/")): STANDARD_CONFIG_DIR));
+     fileName.append((pParams->queryProp("wizardalgorithm") != 
+       NULL ? (sb.clear().append(pParams->queryProp("wizardalgorithm"))) : STANDARD_CONFIG_ALGORITHMFILE));
      
      if(fileName.length() && checkFileExists(fileName.str()))
        m_algProp.setown(createProperties(fileName.str()));
@@ -499,6 +502,7 @@ IPropertyTree* CWizardInputs::createEnvironment()
   Owned<IPropertyTree> pProgramTree = createPTreeFromIPT(m_buildSetTree);
   pNewEnvTree->addPropTree(XML_TAG_PROGRAMS, createPTreeFromIPT(pProgramTree->queryPropTree("./" XML_TAG_PROGRAMS)));
 
+
   Owned<IPropertyTree> pCompTree = createPTree(XML_TAG_HARDWARE);
   generateHardwareHeaders(pNewEnvTree, sbTemp, false, pCompTree);
   pCompTree->removeProp(XML_TAG_COMPUTER);
@@ -583,6 +587,7 @@ IPropertyTree* CWizardInputs::createEnvironment()
 
   pNewEnvTree->addPropTree(XML_TAG_HARDWARE, createPTreeFromIPT(pCompTree));
   //Before we generate software tree check for dependencies of component for do_not_generate ,roxie, thor
+
   checkForDependencies();
   generateSoftwareTree(pNewEnvTree);
   return pNewEnvTree;
@@ -1195,11 +1200,37 @@ void CWizardInputs::addComponentToSoftware(IPropertyTree* pNewEnvTree, IProperty
     Owned<IPropertyTree> pSchema = loadSchema(m_buildSetTree->queryPropTree("./" XML_TAG_PROGRAMS "/" XML_TAG_BUILD "[1]"), pBuildSet, buildSetPath, NULL);
     IPropertyTree* pCompTree = generateTreeFromXsd(pNewEnvTree, pSchema, processName, buildSetName, m_cfg, m_service.str(), false);
 
+
+
+/*
+//ming
+if (!stricmp(processName, "RoxieCluster") || !stricmp(processName, "roxie"))
+{
+   StringBuffer compXML;
+   toXML(pCompTree, compXML.clear());
+   printf("comptree 2\n%s\n",compXML.str());
+
+}
+*/
+
+
     sbNewName.clear();
     if (strstr(buildSetName ,"my") == NULL && (strcmp(buildSetName, "topology") != 0))
       sbNewName.append("my");
 
     addComponentToEnv(pNewEnvTree, buildSetName, sbNewName, pCompTree);
+
+/*
+//ming
+if (!stricmp(processName, "RoxieCluster") || !stricmp(processName, "roxie"))
+{
+   StringBuffer compXML2;
+   toXML(pCompTree, compXML2.clear());
+   printf("comptree 3\n%s\n",compXML2.str());
+
+}
+*/
+
 
     if (!strcmp(processName, XML_TAG_ESPSERVICE) || !strcmp(processName, XML_TAG_PLUGINPROCESS))
       processName = buildSetName;
@@ -1254,6 +1285,12 @@ void CWizardInputs::addComponentToSoftware(IPropertyTree* pNewEnvTree, IProperty
 
             if (!strcmp(buildSetName, "roxie") && m_roxieOnDemand)
               addRoxieThorClusterToEnv(pNewEnvTree, pInstDetail, buildSetName, true);
+/*
+   //ming
+   StringBuffer compXML5;
+   toXML(pCompTree, compXML5.clear());
+   printf("comptree 5\n%s\n",compXML5.str());
+*/
           }
           else
           {
@@ -1275,6 +1312,17 @@ void CWizardInputs::addComponentToSoftware(IPropertyTree* pNewEnvTree, IProperty
         }
       }
     }
+/*
+//ming
+if (!stricmp(processName, "RoxieCluster") || !stricmp(processName, "roxie"))
+{
+   StringBuffer compXML4;
+   toXML(pCompTree, compXML4.clear());
+   printf("comptree 4\n%s\n",compXML4.str());
+
+}
+*/
+
   }
 }
 

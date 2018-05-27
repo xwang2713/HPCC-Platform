@@ -19,7 +19,8 @@
 #ifndef _ICONFIGENV_HPP_
 #define _ICONFIGENV_HPP_
 
-#include "ConfigEnvError.hpp"
+//#include "ConfigEnvError.hpp"
+
 
 #ifdef CONFIGENV_EXPORTS
   #define configenv_decl DECL_EXPORT
@@ -45,30 +46,44 @@ interface IEnvSettings;
 
 //interface configenv_decl IConfigEnv: extends IConfigComp
 
-template <class PTYPE, class SB>
+template <class PTTYPE, class SB>
 interface configenv_decl IConfigEnv
 {
-  virtual int create(PTYPE *params, SB& errMsg) = 0;
-  virtual int add(PTYPE *params, SB& errMsg, SB& name, bool duplicate) = 0;
-  virtual int addNode(PTYPE *node, const char *xpath, SB& errMsg, bool merge) = 0;
-  virtual int modify(PTYPE *params, SB& errMsg) = 0;
-  virtual int remove(PTYPE *params, SB& errMsg) = 0;
+  virtual void create(PTTYPE *params) = 0;
+
+  // return the id of add/modified node
+  virtual int add(PTTYPE *params) = 0;
+  virtual int modify(PTTYPE *params) = 0;
+
+  virtual void remove(PTTYPE *params) = 0;
   virtual const char* queryAttribute(const char *xpath) = 0;
-  virtual PTYPE * getNode(const char *xpath) = 0;
-  //virtual bool validate(const char *xpath, const char value) = 0;
-  virtual int getContent(SB& out, int format) = 0;
-  virtual int dispatchUpdateTasks(PTYPE *params, SB& errMsg) = 0;
+  //should be PTTYPE * getContent(const char *xpath) = 0;
+  virtual PTTYPE * getNode(const char *xpath) = 0;
+  // xpath NULL or / will get whole environment
+  virtual void getContent(const char *xpath, SB& out, int format) = 0;
+  // return success or failure. default format is XML. This will be direct action. No checking and relationship will be applied.
+  virtual void addContent(const char *xpath, SB& in, int type) = 0; 
+  virtual void dispatchUpdateTasks(PTTYPE *params) = 0;
+
+
+  //virtual bool validate(PTTYPE *params, SB& msg) = 0;
+  //Probably don't need following
+  //virtual bool validate(const char *xpath, const char value, SB& errMsg) = 0;
+
+  //virtual PTTYPE * getNode(int id) = 0;
+  //virtual int getNodeId(const char *xpath) = 0;
+
   // validate value from env tree or schema, xpath and schema only provide one usually
   //virtual bool isValid(const char* xpath, const char* schema, const char* key, const char* value, bool src);
 };
 
 
 /*
-template <class PTYPE, class SB>
+template <class PTTYPE, class SB>
 class configenv_decl ConfigEnvFactory
 {
 public:
-  static IConfigEnv<PTYPE,SB> * getIConfigEnv(PTYPE *config);
+  static IConfigEnv<PTTYPE,SB> * getIConfigEnv(PTTYPE *config);
 };
 */
 

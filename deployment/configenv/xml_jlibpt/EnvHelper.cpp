@@ -39,6 +39,7 @@ EnvHelper::EnvHelper(IPropertyTree *config)
    init(config);
 }
 
+
 const char* EnvHelper::getConfig(const char* key, CONFIG_TYPE type) const
 {
    StringBuffer sbKey;
@@ -71,6 +72,16 @@ EnvHelper::~EnvHelper()
 
 void EnvHelper::init(IPropertyTree *config)
 {
+
+   /*
+   //id   
+   baseIds.setValue("Hardware", 1);  
+   baseIds.setValue("EnvSettings", 2);  
+   baseIds.setValue("Programs", 3);  
+   baseIds.setValue("Software", 4);  
+   */
+  
+
    StringBuffer fileName;
    const char* optionsFileName = config->queryProp("@options");
    if (optionsFileName && *optionsFileName) 
@@ -93,14 +104,14 @@ void EnvHelper::init(IPropertyTree *config)
       fileName.clear().append(buildSetFileName);
    else 
       fileName.clear().append(DEFAULT_BUILDSET);
-   buildSet = createPTreeFromXMLFile(fileName.str());
+   buildSetTree.setown(createPTreeFromXMLFile(fileName.str()));
 
    const char* envXmlFileName = config->queryProp("@envxml");
    if (envXmlFileName && *envXmlFileName)
-      envTree = createPTreeFromXMLFile(envXmlFileName);
+      envTree.setown(createPTreeFromXMLFile(envXmlFileName));
    else if (!USE_WIZARD)
    {
-      envTree = createPTreeFromXMLString("<" XML_HEADER "><" XML_TAG_ENVIRONMENT "></" XML_TAG_ENVIRONMENT ">");
+      envTree.setown(createPTreeFromXMLString("<" XML_HEADER "><" XML_TAG_ENVIRONMENT "></" XML_TAG_ENVIRONMENT ">"));
 
       //Initialize CConfigHelper
       const char* espConfigPath =  (config->hasProp("@esp-config"))?
@@ -120,17 +131,42 @@ void EnvHelper::init(IPropertyTree *config)
 
 }
 
+/*
+ Can't find MapStringTo<int> method to return kes or navigation methods
+ Will do it later
+int EnvHelper::categoryToId(const char* category)
+{
+  return baseIds.find(category);
+}
+
+const char*  EnvHelper::idToCategory(int id)   
+{
+  HashIterator iter(baseIds);
+  iter.first();
+  ForEach(iter.isValid())
+  {
+    const char* key = iter.query();     
+    if (baseIds(key) = id) return key;
+    iter.next();
+  }
+
+  return "";
+   
+}
+*/
+
 EnvHelper * EnvHelper::setEnvTree(StringBuffer &envXml)
 {
-  envTree = createPTreeFromXMLString(envXml);
+  envTree.setown(createPTreeFromXMLString(envXml));
   return this;
 }
 
 IConfigComp* EnvHelper::getEnvComp(const char *compName)
 {
    const char * compNameLC = (StringBuffer(compName).toLowerCase()).str(); 
-   IConfigComp * pComp = (IConfigComp*) compMap.getValue(compNameLC);
+   IConfigComp * pComp = compMap.getValue(compNameLC);
    if (pComp) return pComp;
+
 
    pComp = NULL;
    if (stricmp(compNameLC, "hardware") == 0)
@@ -160,7 +196,12 @@ IConfigComp* EnvHelper::getEnvComp(const char *compName)
 
 IConfigComp* EnvHelper::getEnvSWComp(const char *swCompName)
 {
-  return ((Software*)getEnvComp("software"))->getSWComp(swCompName);
+  Software* sw =  (Software*)getEnvComp("software");
+  IConfigComp* icc = sw->getSWComp(swCompName);
+  return icc;
+
+ 
+  //return ((Software*)getEnvComp("software"))->getSWComp(swCompName);
 }
 
 int  EnvHelper::processNodeAddress(const char *ipInfo, StringArray &ips, bool isFile)
@@ -235,17 +276,17 @@ bool EnvHelper::validateAndToInteger(const char *str,int &out, bool throwExcepFl
   if (end == str)
   {
     if (throwExcepFlag)
-      throw MakeStringException( -1 , "Error: non-integer parameter '%s' specified.\n",str);
+      throw MakeStringException( CfgEnvErrorCode::NonInteger , "Error: non-integer parameter '%s' specified.\n",str);
   }
   else if ('\0' != *end)
   {
     if (throwExcepFlag)
-      throw MakeStringException( -1 , "Error: non-integer characters found in '%s' when expecting integer input.\n",str);
+      throw MakeStringException( CfgEnvErrorCode::NonInteger , "Error: non-integer characters found in '%s' when expecting integer input.\n",str);
   }
   else if ( (INT_MAX < sl || INT_MIN > sl) || ((LONG_MIN == sl || LONG_MAX == sl) && ERANGE == errno))
   {
     if (throwExcepFlag)
-      throw MakeStringException( -1 , "Error: integer '%s' is out of range.\n",str);
+      throw MakeStringException( CfgEnvErrorCode::OutOfRange , "Error: integer '%s' is out of range.\n",str);
   }
   else
   {
@@ -272,5 +313,89 @@ bool EnvHelper::addPTToEnvTree(const char *xpath, IPropertyTree *pTree)
 }
 */
 
+/*
+IPropertyTree * EnvHelper::generateCompFromXsd(const char* compName, IPropertyTree* schemaPT)
+{
+
+  Owned<IPropertyTree> pCompTree(createPTree(compName));
+
+   StringBuffer compXML;
+   toXML(pCompTree, compXML.clear());
+   printf("comp tree %s\n",compName);
+   printf("%s\n",compXML.str());
+
+  return pCompTree.getLink();
+}
+*/
+
+const char* EnvHelper::getXMLTagName(const char* name)
+{
+   if (!name)
+      throw MakeStringException(CfgEnvErrorCode::InvalidParams, "Null string in getXMLTagName");
+
+   const char * nameLC = (StringBuffer(name).toLowerCase()).str();
+    
+   if (!strcmp(nameLC, "hardware") || !strcmp(nameLC, "hd"))
+      return XML_TAG_HARDWARE;
+   else if (!strcmp(nameLC, "software") || strcmp(nameLC, "sw"))
+      return XML_TAG_SOFTWARE;
+   else if (!strcmp(nameLC, "envsettings") || strcmp(nameLC, "es"))
+      return "EnvSettings";
+   else if (!strcmp(nameLC, "programs") || strcmp(nameLC, "pg") ||
+            !strcmp(nameLC, "build") || strcmp(nameLC, "bd"))
+      return "Programs/Build";
+   else if (!strcmp(nameLC, "directories") || !strcmp(nameLC, "dirs"))
+      return XML_TAG_DIRECTORIES;
+   else if (!strcmp(nameLC, "roxie") || !strcmp(nameLC, "roxiecluster"))
+      return XML_TAG_ROXIECLUSTER;
+   else if (!strcmp(nameLC, "dali") || !strcmp(nameLC, "daliserverprocess") ||
+            !strcmp(nameLC, "dalisrv"))
+      return XML_TAG_DALISERVERPROCESS;
+   else if (!strcmp(nameLC, "dafile") || !strcmp(nameLC, "dafilesrv") ||
+            !strcmp(nameLC, "dafileserverprocess"))
+      return XML_TAG_DAFILESERVERPROCESS;
+   else if (!strcmp(nameLC, "dfu") || !strcmp(nameLC, "dfusrv") ||
+            !strcmp(nameLC, "dfuserverprocess"))
+      return  "DfuServerProcess";
+   else if (!strcmp(nameLC, "dropzone"))
+      return XML_TAG_DROPZONE;
+   else if (!strcmp(nameLC, "eclcc") || !strcmp(nameLC, "eclccsrv") ||
+            !strcmp(nameLC, "eclccserver"))
+      return XML_TAG_ECLCCSERVERPROCESS;
+   else if (!strcmp(nameLC, "esp") || !strcmp(nameLC, "espprocess"))
+      return XML_TAG_ESPPROCESS;
+   else if (!strcmp(nameLC, "espsvc") || !strcmp(nameLC, "espservice"))
+      return XML_TAG_ESPSERVICE;
+   else if (!strcmp(nameLC, "binding") || !strcmp(nameLC, "espbinding"))
+      return XML_TAG_ESPBINDING;
+   else if (!strcmp(nameLC, "sasha") || !strcmp(nameLC, "sashasrv"))
+      return XML_TAG_SASHA_SERVER_PROCESS;
+   else if (!strcmp(nameLC, "eclsch") || !strcmp(nameLC, "eclscheduler"))
+      return XML_TAG_ECLSCHEDULERPROCESS;
+   else if (!strcmp(nameLC, "topology") || !strcmp(nameLC, "topo"))
+      return XML_TAG_TOPOLOGY;
+
+   else
+      return name;
 }
 
+
+IPropertyTree * EnvHelper::clonePTree(const char* xpath)
+{
+   StringBuffer error;
+   if (!validateXPathSyntax(xpath, &error))
+      throw MakeStringException(CfgEnvErrorCode::InvalidParams, 
+         "Syntax error in xpath  %s: %s", xpath, error.str());
+      
+   IPropertyTree *src = envTree->queryPropTree(xpath); 
+   return clonePTree(src);
+}
+
+IPropertyTree * EnvHelper::clonePTree(IPropertyTree *src)
+{
+   StringBuffer xml;
+   toXML(src, xml);
+   return createPTreeFromXMLString(xml.str());
+}
+
+}

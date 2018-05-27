@@ -18,33 +18,38 @@
 #define _HARDWARE_HPP_
 
 #include "EnvHelper.hpp"
+#include "ComponentBase.hpp"
 
 namespace ech
 {
 
-class Hardware : public CInterface, implements IConfigComp
+class Hardware : public ComponentBase
 {
 public:
+   static const char* TYPE;
+   static const char* MAKER;
+   static const char* SPEED;
+   static const char* DOMAIN;
+   static const char* OS;
+
    Hardware(EnvHelper * envHelper);
 
-   IMPLEMENT_IINTERFACE;
+   virtual void create(IPropertyTree *params);
+   virtual int add(IPropertyTree *params);
+   //virtual int addNode(IPropertyTree *node, const char* xpath, bool merge);
+   //virtual int modify(IPropertyTree *params);
+   //virtual void remove(IPropertyTree *params);
 
-   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
-   virtual int addNode(IPropertyTree *node, const char* xpath, StringBuffer& errMsg, bool merge);
-   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
-
-   IPropertyTree* addComputer(const char* ip, const char* namePrefix,
-              const char* name, const char* type, const char* domain);
    const char* getComputerName(const char* netAddress);
    const char* getComputerNetAddress(const char* name);
-   IPropertyTree* addComputerType(const char* name, const char * type="linuxmachine",
-                  const char* manufacturer="unknown", const char* speed="1000", const char* os="linux" );
+   IPropertyTree* addComputer(IPropertyTree *params);
+   IPropertyTree* addComputerType(IPropertyTree *params);
+   IPropertyTree* addDomain(IPropertyTree *params);
+   //IPropertyTree* addSwitch(IPropertyTree *params);
 
 private:
-   Mutex mutex;
-   EnvHelper * envHelper;
+   StringArray notifyUpdateList;
+   StringArray notifyAddList;
    
 };
 

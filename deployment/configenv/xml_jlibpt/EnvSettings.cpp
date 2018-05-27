@@ -22,16 +22,14 @@ namespace ech
 {
 
 
-EnvSettings::EnvSettings(EnvHelper * envHelper)
+EnvSettings::EnvSettings(EnvHelper * envHelper):ComponentBase("envsettings", envHelper)
 {
-  this->envHelper = envHelper;
 }
 
-int EnvSettings::create(IPropertyTree *params, StringBuffer& errMsg)
+void EnvSettings::create(IPropertyTree *params)
 {
   IPropertyTree * envTree = envHelper->getEnvTree();
-  if (envTree == NULL)
-    throw MakeStringException(-1, "Environment tree is NULL");
+  assert (envTree);
 
   IPropertyTree* pSettings = envTree->addPropTree(XML_TAG_ENVSETTINGS, createPTree());
 
@@ -46,23 +44,22 @@ int EnvSettings::create(IPropertyTree *params, StringBuffer& errMsg)
     pSettings->addProp(iter->getPropKey(), prop.length() ? prop.str():"");
   }
 
-  return CE_OK;
 }
 
 
-int EnvSettings::add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate)
+int EnvSettings::add(IPropertyTree *params)
 {
-   return CE_OK;
+   return 0;
 }
 
-int EnvSettings::modify(IPropertyTree *params, StringBuffer& errMsg)
+int EnvSettings::modify(IPropertyTree *params)
 {
-   return CE_OK;
+   return 0;
 }
 
-int EnvSettings::remove(IPropertyTree *params, StringBuffer& errMsg)
+void EnvSettings::remove(IPropertyTree *params)
 {
-   return CE_OK;
+   return;
 }
 
 }

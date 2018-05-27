@@ -19,15 +19,25 @@
 #ifndef _CONFIGENVERROR_HPP_
 #define _CONFIGENVERROR_HPP_
 
-#define CE_OK  0
-#define CEWRN_ComponentExists          1000
+enum CfgEnvErrorCode
+{ 
+   OK=0,
 
-#define CEERR_NullPointer             2000
-#define CEERR_UnknownCompoent         2001
-#define CEERR_CannotCreateCompoent    2002
+   ComponentExists=1000,
 
-#define CEERR_InvalidIPRange          3000
-#define CEERR_InvalidIP               3001
-#define CEERR_NoIPAddress             3002
+   InvalidParams=2000,
+   NullPointer=2001,
+   UnknownCompoent=2002,
+   CannotCreateCompoent=2003,
+   UnknownTask=2004,
+
+   InvalidIPRange=2100,
+   InvalidIP=2101,
+   NoIPAddress=2102,
+
+   NonInteger=2200,
+   OutOfRange=2201
+};
+
 
 #endif

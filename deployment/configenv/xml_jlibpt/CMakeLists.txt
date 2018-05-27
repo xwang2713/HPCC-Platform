@@ -29,32 +29,37 @@ set (    INCLUDES
          GenEnvRules.hpp
          EnvHelper.hpp
          ConfigEnv.hpp 
+         ComponentBase.hpp 
+         SWComponentBase.hpp 
          Hardware.hpp 
          Programs.hpp 
          EnvSettings.hpp 
          Software.hpp 
          SWDirectories.hpp 
          SWProcess.hpp 
+         SWRoxieCluster.hpp 
          ConfigEnvFactory.hpp 
-         AttributesFromXSD.hpp
+         ComponentFromXSD.hpp
 
     )
 set (    SRCS 
          ConfigEnv.cpp 
          ../common/GenEnvRules.cpp
          EnvHelper.cpp 
+         ComponentBase.cpp 
+         SWComponentBase.cpp 
          Hardware.cpp 
          Programs.cpp 
          EnvSettings.cpp 
          Software.cpp 
          SWProcess.cpp 
          SWDirectories.cpp 
-   #      SWEspProcess.cpp 
-   #     SWEspService.cpp 
-   #      SWRoxieCluster.cpp 
-   #      SWThorCluster.cpp 
-   #      SWTopology.cpp 
-         AttributesFromXSD.cpp
+         SWEspProcess.cpp 
+         SWEspService.cpp 
+         SWRoxieCluster.cpp 
+         SWThorCluster.cpp 
+         SWTopology.cpp 
+         ComponentFromXSD.cpp
     )
 
 include_directories ( 

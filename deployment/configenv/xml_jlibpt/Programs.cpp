@@ -21,40 +21,39 @@
 namespace ech
 {
 
-Programs::Programs(EnvHelper * envHelper)
+Programs::Programs(EnvHelper * envHelper):ComponentBase("programs", envHelper)
 {
   this->envHelper = envHelper;
 }
 
-int Programs::create(IPropertyTree *params, StringBuffer& errMsg)
+void Programs::create(IPropertyTree *params)
 {
   IPropertyTree * envTree = envHelper->getEnvTree();
    
-  Owned<IPropertyTree> pProgramTree = createPTreeFromIPT(envHelper->getBuildSet());
+  Owned<IPropertyTree> pProgramTree = createPTreeFromIPT(envHelper->getBuildSetTree());
   envTree->addPropTree(XML_TAG_PROGRAMS, createPTreeFromIPT(pProgramTree->queryPropTree("./" XML_TAG_PROGRAMS)));
 
-  return CE_OK;
 }
 
 
-int Programs::add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate)
+int Programs::add(IPropertyTree *params)
 {
-   return CE_OK;
+   return 0;
 }
 
-int Programs::addNode(IPropertyTree *node, const char* xpath,  StringBuffer& errMsg, bool mer)
+//void Programs::addNode(IPropertyTree *node, const char* xpath, bool mer)
+//{
+//   return;
+//}
+
+int Programs::modify(IPropertyTree *params)
 {
-   return CE_OK;
+   return 0;
 }
 
-int Programs::modify(IPropertyTree *params, StringBuffer& errMsg)
+void Programs::remove(IPropertyTree *params)
 {
-   return CE_OK;
-}
-
-int Programs::remove(IPropertyTree *params, StringBuffer& errMsg)
-{
-   return CE_OK;
+   return;
 }
 
 }

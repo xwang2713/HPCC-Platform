@@ -14,37 +14,34 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _SWPROCESS_HPP_
-#define _SWPROCESS_HPP_
+#ifndef _ENVSETTINGS_HPP_
+#define _ENVSETTINGS_HPP_
 
 #include "EnvHelper.hpp"
+#include "ComponentBase.hpp"
 
 namespace ech
 {
 
-class SWProcess : public CInterface, implements IConfigComp
+class EnvSettings : public ComponentBase
 {
 public:
-   SWProcess(const char* name, EnvHelper * envHelper);
+   EnvSettings(EnvHelper * envHelper);
 
-   IMPLEMENT_IINTERFACE;
+   
+   //IMPLEMENT_IINTERFACE;
 
-   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
-   virtual int addNode(IPropertyTree *params, const char* xpath, StringBuffer& errMsg, bool merge);
-   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int addInstance(IPropertyTree *params, StringBuffer& errMsg);
-
-   IConfigComp* getNodes(StringArray& ipList, const char* clusterName=NULL);
-   int getNumOfNodes(const char* clusterName=NULL);
+   virtual void create(IPropertyTree *params);
+   virtual int add(IPropertyTree *params);
+   //virtual int addNode(IPropertyTree *node, const char* xpath, bool merge) { return; }
+   virtual int modify(IPropertyTree *params);
+   virtual void remove(IPropertyTree *params);
 
 private:
-   Mutex mutex;
-   EnvHelper * envHelper;
-   const char* name;
+   StringArray notifyList;
    
 };
 
 }
+
 #endif

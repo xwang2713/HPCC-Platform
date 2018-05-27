@@ -14,32 +14,44 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _PROGRAMS_HPP_
-#define _PROGRAMS_HPP_
+#ifndef _CONFIGENV_HPP_
+#define _CONFIGENV_HPP_
 
 #include "EnvHelper.hpp"
+#include "IConfigEnv.hpp"
 
 namespace ech
 {
 
-class Programs : public CInterface, implements IConfigComp
+class ConfigEnv : public CInterface, implements IConfigEnv<IPropertyTree, StringBuffer>
 {
+
 public:
-   Programs(EnvHelper * envHelper);
+
+   ConfigEnv() {}
+   ConfigEnv(IPropertyTree *config);
 
    IMPLEMENT_IINTERFACE;
 
-   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
-   virtual int addNode(IPropertyTree *node, const char* xpath, StringBuffer& errMsg, bool merge);
-   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
+   virtual void create(IPropertyTree *params);
+   virtual int add(IPropertyTree *params);
+   //virtual int addNode(IPropertyTree *node, const char* xpath, bool merge=false);
+   virtual int modify(IPropertyTree *params);
+   virtual void remove(IPropertyTree *params);
+   virtual void dispatchUpdateTasks(IPropertyTree *params);
 
-private:
-   Mutex mutex;
-   EnvHelper * envHelper;
+   virtual const char* queryAttribute(const char *xpath);
+   virtual IPropertyTree* getNode(const char *xpath);
+   virtual void getContent(const char* xpath, StringBuffer& out, int format=XML_SortTags|XML_Format);
+   virtual void addContent(const char* xpath, StringBuffer& in, int type=XML_Format);
+
    
+   
+private:
+   EnvHelper * envHelper;
+
 };
 
 }
+
 #endif

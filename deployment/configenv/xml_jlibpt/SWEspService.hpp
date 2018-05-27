@@ -1,4 +1,5 @@
 /*##############################################################################
+
     HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems®.
 
     Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,41 +14,25 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _EVNGEN2_INCL
-#define _ENVGEN2_INCL
+#ifndef _SWESPSERVICE_HPP_
+#define _SWESPSERVICE_HPP_
 
-//#include <vector>
-#include "jliball.hpp"
-#include "XMLTags.h"
-#include "IConfigEnv.hpp"
-#include "ConfigEnvFactory.hpp"
+#include "EnvHelper.hpp"
+#include "SWComponentBase.hpp"
 
-using namespace std;
-using namespace ech;
-
-interface IPropertyTree;
-
-//typedef vector<IPropertyTree*> IPropertyTreePtrArray;
-
-class CEnvGen
+namespace ech
 {
 
+//to do: should inherient from ComposeBase
+class SWEspService : public SWComponentBase
+{
 public:
-   //CEnvGen(){ iConfigEnv = NULL; };
-   bool parseArgs(int argc, char** argv);
-   void createUpdateTask(const char* action, IPropertyTree* config, const char* param);
-   void usage();
-   bool create();
-   bool update();
+    SWEspService(const char* name, EnvHelper * envHelper );
 
-private:
-
-   static map<string, string> envCategoryMap;
-
-   IConfigEnv<IPropertyTree, StringBuffer>* iConfigEnv; 
-   //Owned<IPropertyTree>  params;
-   IPropertyTree *  params;
+protected:
+    const char *serviceName; 
    
 };
 
+}
 #endif

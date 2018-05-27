@@ -29,24 +29,24 @@ SWDirectories::SWDirectories(const char* name, EnvHelper * envHelper)
   this->envHelper = envHelper;
 }
 
-int SWDirectories::create(IPropertyTree *params, StringBuffer& errMsg)
+void SWDirectories::create(IPropertyTree *params)
 {
-  return CE_OK;
+  return;
 }
 
 
-int SWDirectories::add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate)
+int SWDirectories::add(IPropertyTree *params)
 {
-   return CE_OK;
+   return 0;
 }
 
 
-int SWDirectories::addNode(IPropertyTree *node, const char* xpath, StringBuffer& errMsg, bool merge)
-{
-   return CE_OK;
-}
+//int SWDirectories::addNode(IPropertyTree *node, const char* xpath, bool merge)
+//{
+//   return 0;
+//}
 
-int SWDirectories::modify(IPropertyTree *params, StringBuffer& errMsg)
+int SWDirectories::modify(IPropertyTree *params)
 {
   synchronized block(mutex);
 
@@ -76,12 +76,13 @@ int SWDirectories::modify(IPropertyTree *params, StringBuffer& errMsg)
     }
   }
 
-  return CE_OK;
+  //query id
+  return 0;
 }
 
-int SWDirectories::remove(IPropertyTree *params, StringBuffer& errMsg)
+void SWDirectories::remove(IPropertyTree *params)
 {
-   return CE_OK;
+   return;
 }
 
 }

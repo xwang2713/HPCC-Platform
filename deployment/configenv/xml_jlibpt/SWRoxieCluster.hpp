@@ -14,33 +14,28 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ############################################################################## */
-#ifndef _ENVSETTINGS_HPP_
-#define _ENVSETTINGS_HPP_
+#ifndef _SWROXIECLUSTER_HPP_
+#define _SWROXIECLUSTER_HPP_
 
 #include "EnvHelper.hpp"
+#include "SWProcess.hpp"
 
 namespace ech
 {
 
-class EnvSettings : public CInterface, implements IConfigComp
+class SWRoxieCluster : public SWProcess
 {
 public:
-   EnvSettings(EnvHelper * envHelper);
+    SWRoxieCluster(const char* name, EnvHelper * envHelper);
 
-   IMPLEMENT_IINTERFACE;
-
-   virtual int create(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate);
-   virtual int addNode(IPropertyTree *node, const char* xpath, StringBuffer& errMsg, bool merge) {return CE_OK;}
-   virtual int modify(IPropertyTree *params, StringBuffer& errMsg);
-   virtual int remove(IPropertyTree *params, StringBuffer& errMsg);
-
-private:
-   Mutex mutex;
-   EnvHelper * envHelper;
+    IPropertyTree * addComponent(IPropertyTree *params);
+    IPropertyTree * addFarmProcess(IPropertyTree *params, IPropertyTree *parent=NULL, bool genRoxieOnDemand=false);
    
+/*
+private:
+    bool roxieOnDemand;
+*/
 };
 
 }
-
 #endif

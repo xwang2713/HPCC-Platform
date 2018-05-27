@@ -35,12 +35,11 @@ namespace ech
 //interface IConfigComp;
 interface IConfigComp : public IInterface
 {
-  virtual int create(IPropertyTree *params, StringBuffer& errMsg) = 0;
-  virtual int add(IPropertyTree *params, StringBuffer& errMsg, StringBuffer& name, bool duplicate) = 0;
-  virtual int addNode(IPropertyTree *node, const char* xpath, StringBuffer& errMsg, bool merge) = 0;
-  virtual int modify(IPropertyTree *params, StringBuffer& errMsg) = 0;
-  virtual int remove(IPropertyTree *params, StringBuffer& errMsg) = 0;
-
+  virtual void create(IPropertyTree *params) = 0;
+  virtual int add(IPropertyTree *params) = 0;
+  //virtual void addNode(IPropertyTree *node, const char* xpath, bool merge) = 0;
+  virtual int modify(IPropertyTree *params) = 0;
+  virtual void remove(IPropertyTree *params) = 0;
 };
 
 #define DEFAULT_ENV_XML CONFIG_DIR"/environment.xml"
@@ -73,16 +72,21 @@ public:
    ~EnvHelper();
    const EnvConfigOptions& getEnvConfigOptions() const { return *envCfgOptions; }
    const GenEnvRules& getGenEnvRules() const { return *genEnvRules; }
-   const IPropertyTree * getBuildSet() const { return buildSet;}
+   const IPropertyTree * getBuildSetTree() const { return buildSetTree;}
    IPropertyTree * getEnvTree() { return envTree; }
    IConfigComp* getEnvComp(const char * compName);
    IConfigComp* getEnvSWComp(const char * swCompName);
    const char* getConfig(const char* key, CONFIG_TYPE type=CONFIG_INPUT) const; 
    EnvHelper * setEnvTree(StringBuffer &envXml);
    bool validateAndToInteger(const char *str,int &out, bool throwExcepFlag);
+   const char* getXMLTagName(const char* name);
 
 
-   //ip address 
+   // PTree helper 
+   IPropertyTree * clonePTree(const char* xpath);
+   IPropertyTree * clonePTree(IPropertyTree *src);
+
+   // ip address 
    void processNodeAddress(IPropertyTree *params);
    int  processNodeAddress(const char * ipInfo, StringArray &ips, bool isFile=false);
    const StringArray& getNodeList() const { return ipArray; } 
@@ -97,11 +101,19 @@ public:
    //bool deletePTFromEnvTree(const char *pTreeParentName, const char* pTreeName);
    //bool deletePropFromEnvTree(const char *pTreeName, const char* attr);
 
+   //Node id
+   //int categoryToId(const char* category); 
+   //const char*  idToCategory(int id); 
+
+   //Schema
+   //IPropertyTree * generateCompFromXsd(const char* compName, IPropertyTree* schemaPT);
+   
+
 private:
    void init(IPropertyTree * config);
 
-   IPropertyTree * envTree;
-   IPropertyTree * buildSet;
+   Owned<IPropertyTree> envTree;
+   Owned<IPropertyTree> buildSetTree;
    EnvConfigOptions *envCfgOptions;
    GenEnvRules *genEnvRules;
    IPropertyTree * config;
@@ -110,13 +122,8 @@ private:
    int *numOfCompSigned;
    int supportIpListPosition = 0;
 
-/*
-   IConfigComp * hardware;
-   IConfigComp * software;
-   IConfigComp * settings;
-   IConfigComp * programs;
-*/
-   MapStringTo<IConfigComp*> compMap;
+   MapStringToMyClass<IConfigComp> compMap;
+   MapStringTo<int> baseIds;
 };
 
 }
