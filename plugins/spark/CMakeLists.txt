@@ -26,8 +26,8 @@ cmake_minimum_required(VERSION 3.3)
 
 project(spark-integration)
 
-if(USE_SPARK)
-
+if(SPARK)
+    ADD_PLUGIN(spark PACKAGES Java MINVERSION 1.8.0)
     if(SPARK_URL)
         string( REPLACE "\/" ";" SPARK_URL_LIST ${SPARK_URL} )
         list( GET SPARK_URL_LIST "-1"  spark_file_name_w_ext )
@@ -140,5 +140,5 @@ if(USE_SPARK)
         COMPONENT runtime
         DESTINATION "externals/spark-hadoop/conf"
         )
-
-endif(USE_SPARK)
+    
+endif(SPARK)
