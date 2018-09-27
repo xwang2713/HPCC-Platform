@@ -28,6 +28,7 @@ project(spark-integration)
 
 if(SPARK)
     ADD_PLUGIN(spark PACKAGES Java MINVERSION 1.8.0)
+
     if(SPARK_URL)
         string( REPLACE "\/" ";" SPARK_URL_LIST ${SPARK_URL} )
         list( GET SPARK_URL_LIST "-1"  spark_file_name_w_ext )
@@ -131,6 +132,9 @@ if(SPARK)
         DESTINATION "jars/spark/"
         )
 
+    configure_file("spark-environment.xml.in" "spark-environment.xml")
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/spark-environment.xml DESTINATION etc/${DIR_NAME}/rpmnew COMPONENT Runtime)
+    
     configure_file(spark-defaults.conf.in spark-defaults.conf @ONLY)
     configure_file(spark-env.sh.in spark-env.sh @ONLY)
     install(
@@ -140,5 +144,18 @@ if(SPARK)
         COMPONENT runtime
         DESTINATION "externals/spark-hadoop/conf"
         )
+
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/sparkthor.sh.in" "${CMAKE_CURRENT_BINARY_DIR}/sparkthor.sh" @ONLY)
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/sparkthor-worker.sh.in" "${CMAKE_CURRENT_BINARY_DIR}/sparkthor-worker.sh" @ONLY)
+    install(PROGRAMS 
+        ${CMAKE_CURRENT_BINARY_DIR}/sparkthor.sh
+        ${CMAKE_CURRENT_BINARY_DIR}/sparkthor-worker.sh
+        DESTINATION sbin COMPONENT Runtime)
+
+    configure_file(init_sparkthor.in init_sparkthor @ONLY)
+    install(
+        PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/init_sparkthor
+        DESTINATION ${EXEC_DIR}
+        COMPONENT Runtime)
     
 endif(SPARK)
