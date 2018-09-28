@@ -158,4 +158,23 @@ if(SPARK)
         DESTINATION ${EXEC_DIR}
         COMPONENT Runtime)
     
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/sparkThor.xsl.in ${CMAKE_CURRENT_BINARY_DIR}/sparkThor.xsl @ONLY)
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/spark-defaults.xsl.in ${CMAKE_CURRENT_BINARY_DIR}/spark-defaults.xsl @ONLY)
+    install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/sparkThor.xsd
+        ${CMAKE_CURRENT_BINARY_DIR}/sparkThor.xsl
+        ${CMAKE_CURRENT_BINARY_DIR}/spark-defaults.xsl
+        DESTINATION componentfiles/configxml
+        COMPONENT Runtime)
+        
+    configure_file(sparkthor@instance.service.in sparkthor@.service @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/sparkthor@.service DESTINATION etc/systemd/system COMPONENT Systemd)
+
+    if(PLATFORM)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sparkthor-service.install DESTINATION etc/init.d/install COMPONENT Systemd)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sparkthor-service.uninstall DESTINATION etc/init.d/uninstall COMPONENT Systemd)
+    else()
+        configure_file(spark-environment.install.in spark-environment.install @ONLY)
+        install(FILES ${CMAKE_CURRENT_BINARY_DIR}/spark-environment.install DESTINATION /etc/init.d/install COMPONENT Runtime)
+    endif(PLATFORM)
 endif(SPARK)

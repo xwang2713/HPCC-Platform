@@ -1,0 +1,51 @@
+#!/bin/bash
+################################################################################
+#    HPCC SYSTEMS software Copyright (C) 2018 HPCC Systems®.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+################################################################################
+
+source @INSTALL_DIR@/etc/init.d/hpcc_common
+source @INSTALL_DIR@/etc/init.d/init-functions
+
+installConfs ()
+{
+    fileName=$1
+    configPath=$2
+    mkdir -p @CONFIG_DIR@
+    mkdir -p @CONFIG_DIR@/rpmnew
+
+    printf "Installing %-44s ..." "${fileName}"
+
+    if [ ! -e @CONFIG_DIR@/${fileName} ]; then
+        # Always install new files without comment
+        cp -f @INSTALL_DIR@/@CONFIG_DIR@/rpmnew/${fileName} @CONFIG_DIR@/${fileName}
+        cp -f @INSTALL_DIR@/@CONFIG_DIR@/rpmnew/${fileName} @CONFIG_DIR@/rpmnew/${fileName}
+        log_success_msg
+    elif [ -e @CONFIG_DIR@/rpmnew/${fileName} ] && ! `diff -q @CONFIG_DIR@/rpmnew/${fileName} @INSTALL_DIR@/@CONFIG_DIR@/rpmnew/${fileName} >/dev/null` ; then
+        # There are changes in the default config since last installed
+        if ! `diff -q @CONFIG_DIR@/rpmnew/${fileName} @CONFIG_DIR@/${fileName} >/dev/null` ; then
+            # User has made their own changes too, so don't overwrite
+            log_failure_msg "Not overwriting modified configuration file ${fileName}"
+        else
+            # User has NOT made their own changes - ok to update
+            cp -f @INSTALL_DIR@/@CONFIG_DIR@/rpmnew/${fileName} @CONFIG_DIR@/${fileName}
+            cp -f @INSTALL_DIR@/@CONFIG_DIR@/rpmnew/${fileName} @CONFIG_DIR@/rpmnew/${fileName}
+            log_success_msg "Updated configuration file ${fileName}"
+        fi
+    else
+        log_success_msg "No changes to configuration file ${fileName}"
+    fi
+}
+
+installConfs "spark-environment.xml" $configs/  1 || exit 1

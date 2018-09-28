@@ -24,8 +24,6 @@ CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/roxie.xsd.in ${CMAKE_CURRENT_BINARY_D
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/RoxieTopology.xsl ${CMAKE_CURRENT_BINARY_DIR}/RoxieTopology.xsl)
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/thor.xsd.in ${CMAKE_CURRENT_BINARY_DIR}/thor.xsd)
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/thor.xsl ${CMAKE_CURRENT_BINARY_DIR}/thor.xsl)
-CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/sparkThor.xsl.in ${CMAKE_CURRENT_BINARY_DIR}/sparkThor.xsl @ONLY)
-CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/spark-defaults.xsl.in ${CMAKE_CURRENT_BINARY_DIR}/spark-defaults.xsl @ONLY)
 
 configure_file(environment.xsd.in environment.xsd @ONLY)
 configure_file(cgencomplist_linux.xml.in cgencomplist_linux.xml @ONLY)
@@ -99,9 +97,6 @@ FOREACH( iFILES
     ${CMAKE_CURRENT_SOURCE_DIR}/daliplugin.xsd
     ${CMAKE_CURRENT_SOURCE_DIR}/backupnode.xsd
     ${CMAKE_CURRENT_SOURCE_DIR}/backupnode_vars.xsl
-    ${CMAKE_CURRENT_BINARY_DIR}/sparkThor.xsd
-    ${CMAKE_CURRENT_BINARY_DIR}/sparkThor.xsl
-    ${CMAKE_CURRENT_BINARY_DIR}/spark-defaults.xsl
 )
     Install ( FILES ${iFILES} DESTINATION componentfiles/configxml COMPONENT Runtime)
 ENDFOREACH ( iFILES )
