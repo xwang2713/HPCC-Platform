@@ -28,6 +28,7 @@
 #include "SWTopology.hpp"
 #include "deployutils.hpp"
 #include "ComponentBase.hpp"
+#include "SWSparkThorProcess.hpp"
 
 namespace ech
 {
@@ -192,6 +193,10 @@ void Software::getSWCompName(const char *inputName, StringBuffer& out)
    {
       out.append("ftslave");
    }
+   else if (!stricmp(compNameLC, "spark") || !stricmp(compNameLC, "sparkthor") || !stricmp(compNameLC, "SparkThorProcess"))
+   {
+      out.append("sparkthor");
+   }
    else
    {
       out.append(compNameLC);
@@ -295,6 +300,10 @@ IConfigComp* Software::getSWComp(const char *compName)
    else if (!stricmp(buildSetName, "backupnode"))
    {
       pComp = (IConfigComp*) new SWBackupNode(buildSetName, m_envHelper);
+   }
+   else if (!stricmp(buildSetName, "sparkthor"))
+   {
+      pComp = (IConfigComp*) new SWSparkThorProcess(buildSetName, m_envHelper);
    }
    else
    {

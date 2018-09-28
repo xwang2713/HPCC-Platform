@@ -132,6 +132,11 @@
           <AuthenticateFeature description="Access to WS Logging service" path="WsLoggingAccess" resource="WsLoggingAccess" service="wslogging"/>
         </Properties>
       </BuildSet>
+      <BuildSet installSet="deploy_map.xml"
+             name="sparkthor"
+             path="componentfiles/sparkthor"
+             processName="SparkThorProcess"
+             schema="sparkThor.xsd"/>
     </Build>
   </Programs>
 </Environment>

@@ -48,6 +48,7 @@ set (    INCLUDES
          ComponentFromXSD.hpp
          environment.hpp
          SWBackupNode.hpp
+         SWSparkThorProcess.hpp
 
     )
 set (    SRCS
@@ -71,6 +72,7 @@ set (    SRCS
          SWTopology.cpp
          ComponentFromXSD.cpp
          SWBackupNode.cpp
+         SWSparkThorProcess.cpp
     )
 
 include_directories (

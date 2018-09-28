@@ -351,6 +351,8 @@ const char* EnvHelper::getXMLTagName(const char* name)
       return "FTSlaveProcess";
    else if (!strcmp(nameLC, "backupnode") || !strcmp(nameLC, "backup"))
       return "BackupNodeProcess";
+   else if (!strcmp(nameLC, "spark") || !strcmp(nameLC, "sparkthor") || !strcmp(nameLC, "sparkthorprocess"))
+      return "SparkThorProcess";
 
    else
       return name;
