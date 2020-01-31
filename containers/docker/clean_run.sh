@@ -1,3 +1,4 @@
+#!/bin/bash
 ################################################################################
 #    HPCC SYSTEMS software Copyright (C) 2019 HPCC Systems®.
 #
@@ -13,23 +14,33 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
-FROM hpccsystems/hpcc-base:7-bionic
 
-ARG version=
-RUN if [ -z "${version}" ] ; then echo Missing HPCC version; exit 1; else : ; fi
+SCRIPT_HOME=$(dirname $0)
+. ${SCRIPT_HOME}/common
 
+no_prompt=false
+[ "$1" = "-f" ] && no_prompt=true
 
-RUN set -ex; \
-   apt-get update; \
-   apt-get install -y curl libarchive13 openjdk-8-jdk --fix-missing; \
-   export VERSION_MMP=${version%-*}; \
-   export CLIENTTOOLS_PACKAGE=hpccsystems-clienttools-community_${version}bionic_amd64.deb; \
-   wget  "http://d2wulyp08c6njk.cloudfront.net/releases/CE-Candidate-${VERSION_MMP}/bin/clienttools/${CLIENTTOOLS_PACKAGE}"; \
-   #echo "$CLIENTTOOLS_DOWNLOAD_MD5 ${CLIENTTOOLS_PACKAGE}" | md5sum -c -; \
-   dpkg -i "${CLIENTTOOLS_PACKAGE}" ;\
-   rm -rf "${CLIENTTOOLS_PACKAGE}"
+if [ "${no_prompt}" = "false" ]
+then
+  echo
+  read -p "This command will delete all running and stopped containers. Do you want to continue? [Y|n] " answer
+  if [ "$answer" != "Y" ] && [ "$answer" != "y" ]
+  then
+    exit 0
+  fi
+fi
 
+$DOCKER_SUDO docker ps  | while read line
+do
+  id=$(echo $line | cut -d ' ' -f1)
+  [ "CONTAINER" = "$id" ] && continue
+  $DOCKER_SUDO docker stop $id
+done
 
-ENTRYPOINT ["/docker-entrypoint.sh"]
-
-CMD ["sleep.sh"]
+$DOCKER_SUDO docker ps -a | while read line
+do
+  id=$(echo $line | cut -d ' ' -f1)
+  [ "CONTAINER" = "$id" ] && continue
+  $DOCKER_SUDO docker rm $id
+done
