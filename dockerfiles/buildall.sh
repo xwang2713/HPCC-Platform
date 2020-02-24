@@ -1,9 +1,12 @@
 #!/bin/bash
 
 BASE_VER=7.8                                    # The docker hub label for the platform-build-base image. Changes rarely.
-BUILD_TAG=$(git describe --exact-match --tags)  # The git tag for the images we are building
+#BUILD_TAG=$(git describe --exact-match --tags)  # The git tag for the images we are building
+BUILD_TAG=$(git rev-parse --short HEAD)
+
 BUILD_LABEL=${BUILD_TAG}                        # The docker hub label for all other components
-BUILD_USER=hpcc-systems                         # The github repo owner
+#BUILD_USER=hpcc-systems                         # The github repo owner
+BUILD_USER=xwang2713                         # The github repo owner
 BUILD_TYPE=                                     # Set to Debug for a debug build, leave blank for default (RelWithDebInfo)
 
 # These values are set in a GitHub workflow build
