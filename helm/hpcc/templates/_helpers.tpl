@@ -172,12 +172,17 @@ Add config arg for a component
 {{- define "hpcc.configArg" -}}
 "--config=/etc/config/{{ .name }}.yaml"
 {{- end -}}
-
+{{- define "hpcc.configArg.noquote" -}}
+--config=/etc/config/{{ .name }}.yaml
+{{- end -}}
 {{/*
 Add dali arg for a component
 */}}
 {{- define "hpcc.daliArg" -}}
 "--daliServers={{ (index .Values.dali 0).name }}"
+{{- end -}}
+{{- define "hpcc.daliArg.noquote" -}}
+--daliServers={{ (index .Values.dali 0).name }}
 {{- end -}}
 
 {{/*

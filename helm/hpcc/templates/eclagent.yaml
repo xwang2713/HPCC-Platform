@@ -75,12 +75,7 @@ data:
                 #limit-memory
                 #limit-cpu
             workingDir: /var/lib/HPCCSystems
-            command: [ {{ $apptype | quote }} ]
-            args: [
-                        {{ include "hpcc.configArg" . }},
-                        {{ include "hpcc.daliArg" $ }},
-                        %args
-                     ]
+            command: ["/bin/bash", "-c", "{{ $apptype }}  {{ include "hpcc.configArg.noquote" . }} {{ include "hpcc.daliArg.noquote" $ }} %args &&  curl -X POST http://localhost:15020/quitquitquit" ]
             volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 12 }}
 {{ include "hpcc.addDataVolumeMount" . | indent 12 }}
