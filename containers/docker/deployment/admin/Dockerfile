@@ -21,7 +21,8 @@ RUN if [ -z "${version}" ] ; then echo Missing HPCC version; exit 1; else : ; fi
 #ENV PLATFORM_DOWNLOAD_MD5  a62b43a1ef1ecf7d8d702d9033e9cf39
 RUN set -ex; \
    apt-get update; \
-   apt-get install -y iputils-ping curl xterm libarchive13 ansible iputils-ping python3-pip libssl-dev --fix-missing ; \
+   apt-get install -y iputils-ping curl xterm libarchive13 ansible \
+     libcurl3-gnutls gpg python3-pip libssl-dev --fix-missing ; \
    pip3 install kubernetes ; \
    groupadd hpcc && useradd -s /bin/bash -r -m -d /home/hpcc -g hpcc -c "hpcc Runtime User" hpcc ; \
    export VERSION_MMP=${version%-*}; \
