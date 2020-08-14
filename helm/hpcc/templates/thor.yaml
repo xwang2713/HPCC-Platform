@@ -35,8 +35,8 @@ spec:
         workingDir: /var/lib/HPCCSystems
         command: [ agentexec ]
         args: [
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }},
+                {{ include "hpcc.configArg" . | quote }},
+                {{ include "hpcc.daliArg" $ | quote }},
                 {{ printf "\"--name=%s\"" .name }}
               ]
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
@@ -72,8 +72,8 @@ spec:
         workingDir: /var/lib/HPCCSystems
         command: [ agentexec ]
         args: [
-                {{ include "hpcc.configArg" $thorAgentScope }},
-                {{ include "hpcc.daliArg" $ }},
+                {{ include "hpcc.configArg" $thorAgentScope | quote }},
+                {{ include "hpcc.daliArg" $ | quote }},
                 {{ printf "\"--name=%s\"" .name }}
               ]
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
@@ -153,12 +153,7 @@ data:
                 #limit-memory
                 #limit-cpu
             workingDir: /var/lib/HPCCSystems
-            command: [ {{ $agentAppType | quote }} ] 
-            args: [
-                        {{ include "hpcc.configArg" . }},
-                        {{ include "hpcc.daliArg" $ }},
-                        %args
-                     ]
+            command: ["/bin/bash", "-c", "{{ $agentAppType }} {{ include "hpcc.configArg" . }} {{ include "hpcc.daliArg" $ }} %args {{ $.Values.global.jobExtraCommands | default "" }}" ]
             volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 12 }}
 {{ include "hpcc.addDataVolumeMount" (dict "root" $ "me" . ) | indent 12 }}
@@ -191,12 +186,7 @@ data:
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 12 }}
 {{ include "hpcc.addImageAttrs" (dict "root" $ "me" .) | indent 12 }}
             workingDir: /var/lib/HPCCSystems
-            command: [ thormaster_lcr ] 
-            args: [
-                    {{ include "hpcc.configArg" . }},
-                    {{ include "hpcc.daliArg" $ }},
-                    %args
-                  ]
+            command: ["/bin/bash", "-c", "thormaster_lcr {{ include "hpcc.configArg" . }} {{ include "hpcc.daliArg" $ }} %args {{ $.Values.global.jobExtraCommands | default "" }}"]
             volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 12 }}
 {{ include "hpcc.addDataVolumeMount" (dict "root" $ "me" . ) | indent 12 }}
@@ -227,12 +217,7 @@ data:
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 12 }}
 {{ include "hpcc.addImageAttrs" (dict "root" $ "me" .) | indent 12 }}
             workingDir: /var/lib/HPCCSystems
-            command: [ thorslave_lcr ] 
-            args: [
-                    {{ include "hpcc.configArg" . }},
-                    {{ include "hpcc.daliArg" $ }},
-                    %args
-                  ]
+            command: ["/bin/bash", "-c", "thorslave_lcr {{ include "hpcc.configArg" . }} {{ include "hpcc.daliArg" $ }} %args {{ $.Values.global.jobExtraCommands | default "" }}"]
             volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 12 }}
 {{ include "hpcc.addDataVolumeMount" (dict "root" $ "me" . ) | indent 12 }}

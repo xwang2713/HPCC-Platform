@@ -21,8 +21,8 @@ spec:
         command: [ esp ] 
         args: [
                 {{ printf "--application=%s" $application | quote }},
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }}
+                {{ include "hpcc.configArg" . | quote }},
+                {{ include "hpcc.daliArg" $ | quote }}
               ]
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
 {{ include "hpcc.addImageAttrs" (dict "root" $ "me" .) | indent 8 }}

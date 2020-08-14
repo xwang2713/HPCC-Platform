@@ -140,6 +140,9 @@
         },
         "defaultMirrorPath": {
           "type": "string"
+        },
+        "jobExtraCommands": {
+          "type": "string"
         }
       },
       "additionalProperties": false

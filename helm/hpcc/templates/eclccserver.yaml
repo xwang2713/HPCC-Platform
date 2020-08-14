@@ -24,8 +24,8 @@ spec:
         workingDir: /var/lib/HPCCSystems
         command: [ eclccserver ] 
         args: [
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }}
+                {{ include "hpcc.configArg" . | quote }},
+                {{ include "hpcc.daliArg" $ | quote }}
               ]
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
 {{ include "hpcc.addImageAttrs" (dict "root" $ "me" .) | indent 8 }}
@@ -79,12 +79,7 @@ data:
                 #limit-memory
                 #limit-cpu
             workingDir: /var/lib/HPCCSystems
-            command: [ eclccserver ]
-            args: [
-                        {{ include "hpcc.configArg" . }},
-                        {{ include "hpcc.daliArg" $ }},
-                        %args
-                     ]
+            command: ["/bin/bash", "-c", "eclccserver {{ include "hpcc.configArg" . }} {{ include "hpcc.daliArg" $ }} %args {{ $.Values.global.jobExtraCommands | default "" }}"]
             volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 12 }}
 {{ include "hpcc.addDataVolumeMount" (dict "root" $ "me" . ) | indent 12 }}
