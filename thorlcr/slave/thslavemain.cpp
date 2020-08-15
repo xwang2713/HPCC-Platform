@@ -295,7 +295,11 @@ ILogMsgHandler *startSlaveLog()
 #endif
     //setupContainerizedStorageLocations();
     LOG(MCdebugProgress, thorJob, "Build %s", BUILD_TAG);
+#ifndef _CONTAINERIZED
     return logHandler;
+#else
+    return nullptr;
+#endif
 }
 
 void setSlaveAffinity(unsigned processOnNode)
