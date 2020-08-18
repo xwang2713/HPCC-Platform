@@ -170,14 +170,14 @@ Add Secret volume for a component
 Add config arg for a component
 */}}
 {{- define "hpcc.configArg" -}}
-"--config=/etc/config/{{ .name }}.yaml"
+--config=/etc/config/{{ .name }}.yaml
 {{- end -}}
 
 {{/*
 Add dali arg for a component
 */}}
 {{- define "hpcc.daliArg" -}}
-"--daliServers={{ (index .Values.dali 0).name }}"
+--daliServers={{ (index .Values.dali 0).name }}
 {{- end -}}
 
 {{/*

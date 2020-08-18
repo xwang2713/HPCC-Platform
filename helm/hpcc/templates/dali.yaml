@@ -21,7 +21,7 @@ spec:
         workingDir: /var/lib/HPCCSystems
         command: [ daserver ] 
         args: [
-                {{ include "hpcc.configArg" . }}
+                {{ include "hpcc.configArg" . | quote }}
               ]
 {{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
 {{ include "hpcc.addImageAttrs" (dict "root" $ "me" .) | indent 8 }}

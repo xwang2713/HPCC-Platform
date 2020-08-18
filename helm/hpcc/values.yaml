@@ -18,6 +18,11 @@ global:
   # Can also be overridden locally in individual components
   ## defaultEsp: eclservices
 
+  # common extra commands applied to all Job pod. Format: && cmd1 && cmd2 ...
+  # For Istio Pilot Agent terminate sidecar: "&& curl -X POST http://localhost:15020/quitquitquit"
+  # To enable istio envoy sidecar injection: kubectl label namespace <name> istio-injection=enabled --overwrite
+  # jobExtraCommands: "&& curl -X POST http://localhost:15020/quitquitquit"
+
 ## storage:
 ##
 ## If storage.[type].existingClaim is defined, a Persistent Volume Claim must

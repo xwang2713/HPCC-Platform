@@ -106,8 +106,8 @@ spec:
         workingDir: /var/lib/HPCCSystems
         command: [ roxie ] 
         args: [
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }},
+                {{ include "hpcc.configArg" . | quote }},
+                {{ include "hpcc.daliArg" $ | quote }},
                 "--numChannels={{ $numChannels }}",
                 "--server=true", 
                 "--topologyServers={{ $toponame }}:{{ $roxie.topoport }}",
@@ -167,8 +167,8 @@ spec:
         workingDir: /var/lib/HPCCSystems
         command: [ roxie ]
         args: [ 
-                {{ include "hpcc.configArg" $roxie }},
-                {{ include "hpcc.daliArg" $ }},
+                {{ include "hpcc.configArg" $roxie | quote }},
+                {{ include "hpcc.daliArg" $ | quote }},
                 "--channels={{ $channel }}", 
                 "--server={{ not $roxie.serverReplicas }}",
                 "--numChannels={{ $numChannels }}",
