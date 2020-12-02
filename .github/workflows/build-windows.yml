@@ -30,6 +30,12 @@ jobs:
         working-directory: .
         run: |
           choco install winflexbison3 -y
+      - name: Check out source code
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+      - name: Setup msvc environment
+        uses: hpcc-systems/msvc-dev-cmd@v1
       - name: Install vcpkg packages
         working-directory: .
         run: |
@@ -38,12 +44,6 @@ jobs:
           vcpkg install zlib:x64-windows
           vcpkg install openssl:x64-windows
           vcpkg install libxslt:x64-windows
-      - name: Check out source code
-        uses: actions/checkout@v2
-        with:
-          submodules: true
-      - name: Setup msvc environment
-        uses: hpcc-systems/msvc-dev-cmd@v1
       - name: Windows compilation
         working-directory: .
         run: |
