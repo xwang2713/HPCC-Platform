@@ -1,22 +1,15 @@
 name: Build HPCC Windows
 
 on:
-  pull_request:
+  commit:
     branches:
-      - "master"
-      - "candidate-*"
-      - "!candidate-7.8.*"
-      - "!candidate-7.6.*"
-      - "!candidate-7.4.*"
-      - "!candidate-7.2.*"
-      - "!candidate-7.0.*"
-      - "!candidate-6.*"
+      - "winbuild3" 
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Display build summary
+      - name: Display build 
         env:
           OPTION: x64
         working-directory: .
