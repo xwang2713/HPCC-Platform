@@ -418,7 +418,7 @@ bool EclGraphElement::alreadyUpToDate(IAgentContext & agent)
     }
 
     IPropertyTree & cur = f->queryAttributes();
-    if ((eclCRC != cur.getPropInt("@eclCRC")) || (totalCRC != cur.getPropInt64("@totalCRC")))
+    if ((eclCRC != (unsigned)cur.getPropInt("@eclCRC")) || (totalCRC != (unsigned __int64)cur.getPropInt64("@totalCRC")))
         return false;
     return true;
 }
@@ -754,7 +754,7 @@ IHThorException * EclGraphElement::makeWrappedException(IException * e)
 //---------------------------------------------------------------------------
 
 EclSubGraph::EclSubGraph(IAgentContext & _agent, EclGraph & _parent, EclSubGraph * _owner, unsigned _seqNo, bool enableProbe, CHThorDebugContext * _debugContext, IProbeManager * _probeManager)
-    : parent(_parent), owner(_owner), seqNo(_seqNo), probeEnabled(enableProbe), debugContext(_debugContext), probeManager(_probeManager), isLoopBody(false)
+    : probeEnabled(enableProbe), seqNo(_seqNo), parent(_parent), owner(_owner), debugContext(_debugContext), probeManager(_probeManager), isLoopBody(false)
 {
     executed = false;
     created = false;
@@ -890,7 +890,7 @@ void EclSubGraph::updateProgress()
             {
                 unsigned __int64 elapsedTime = cycle_to_nanosec(elapsedGraphCycles);
                 parent.updateWUStatistic(lockedwu, SSTsubgraph, subgraphid, StTimeElapsed, nullptr, elapsedTime);
-                const cost_type cost = calcCost(agent->queryAgentMachineCost(), nanoToMilli(elapsedTime));
+                const cost_type cost = money2cost_type(calcCost(agent->queryAgentMachineCost(), nanoToMilli(elapsedTime)));
                 if (cost)
                 {
                     StringBuffer scope;
@@ -1249,7 +1249,6 @@ void EclGraph::execute(const byte * parentExtract)
     try
     {
         unsigned startTime = msTick();
-        aindex_t lastSink = -1;
         ForEachItemIn(idx, graphs)
         {
             EclSubGraph & cur = graphs.item(idx);
@@ -1268,7 +1267,7 @@ void EclGraph::execute(const byte * parentExtract)
             unsigned __int64 elapsedNs = milliToNano(elapsed);
             updateWorkunitStat(wu, SSTgraph, queryGraphName(), StTimeElapsed, description.str(), elapsedNs, wfid);
 
-            const cost_type cost = calcCost(agent->queryAgentMachineCost(), nanoToMilli(elapsedNs));
+            const cost_type cost = money2cost_type(calcCost(agent->queryAgentMachineCost(), elapsed));
             if (cost)
             {
                 StringBuffer scope;
@@ -1430,7 +1429,7 @@ const void * GraphResult::getLinkedRowResult()
 
 GraphResults::GraphResults(unsigned _maxResults)
 {
-    results.ensure(_maxResults);
+    results.ensureCapacity(_maxResults);
 }
 
 void GraphResults::clear()

@@ -957,7 +957,7 @@ StringBuffer &replaceString(StringBuffer & result, size_t lenSource, const char 
     return result;
 }
 
-StringBuffer &replaceEnvVariables(StringBuffer & result, const char *source, bool exceptions, const char* delim, const char* term)
+StringBuffer &replaceVariables(StringBuffer & result, const char *source, bool exceptions, IVariableSubstitutionHelper *helper, const char* delim, const char* term)
 {
     if (isEmptyString(source) || isEmptyString(delim) || isEmptyString(term))
         return result;
@@ -974,17 +974,15 @@ StringBuffer &replaceEnvVariables(StringBuffer & result, const char *source, boo
             if (thumb)
             {
                 StringAttr name(finger, (size_t)(thumb - finger));
-                const char *value = getenv(name);
-                if (value)
+                if (helper->findVariable(name, result))
                 {
-                    result.append(value);
                     size_t replaced = (thumb - source) + lenTerm;
                     source = thumb + lenTerm;
                     left -= replaced;
                     continue;
                 }
                 if (exceptions)
-                    throw MakeStringException(-1, "Environment variable %s not set", name.str());
+                    throw MakeStringException(-1, "string substitution variable %s not set", name.str());
             }
         }
         result.append(*source);
@@ -995,6 +993,25 @@ StringBuffer &replaceEnvVariables(StringBuffer & result, const char *source, boo
     // there are no more possible replacements, make sure we keep the end of the original buffer
     result.append(left, source);
     return result;
+}
+
+class CEnvVariableSubstitutionHelper : public CInterfaceOf<IVariableSubstitutionHelper>
+{
+public:
+    CEnvVariableSubstitutionHelper(){}
+    virtual bool findVariable(const char *name, StringBuffer &value) override
+    {
+        const char *s = getenv(name);
+        if (s)
+            value.append(s);
+        return s!=nullptr;
+    }
+};
+
+StringBuffer &replaceEnvVariables(StringBuffer & result, const char *source, bool exceptions, const char* delim, const char* term)
+{
+    CEnvVariableSubstitutionHelper helper;
+    return replaceVariables(result, source, exceptions, &helper, delim, term);
 }
 
 StringBuffer &replaceStringNoCase(StringBuffer & result, size_t lenSource, const char *source, size_t lenOldStr, const char* oldStr, size_t lenNewStr, const char* newStr)
@@ -1620,7 +1637,8 @@ static StringBuffer & appendStringExpandControl(StringBuffer &out, unsigned len,
                     out.append(c);
                 break;
             default:
-                if (isUtf8 || ((c >= ' ') && (c <= 126)))
+                //Some characters < 32 are illegal unicode, but this may have come from a string/data so output them cleanly as \ooo
+                if ((c >= ' ') && (isUtf8 || (c <= 126)))
                     out.append(c);
                 else
                     out.appendf("\\%03o", c); 
@@ -1651,6 +1669,13 @@ StringBuffer & appendStringAsECL(StringBuffer &out, unsigned len, const char * s
 StringBuffer & appendUtf8AsECL(StringBuffer &out, unsigned len, const char * src)
 {
     return appendStringExpandControl(out, len, src, false, false, true);
+}
+
+StringBuffer & appendStringAsUtf8(StringBuffer &out, unsigned len, const char * src)
+{
+    for (unsigned i=0; i < len; i++)
+        appendUtf8(out, (byte)src[i]);
+    return out;
 }
 
 
@@ -2586,21 +2611,21 @@ bool startsWithIgnoreCase(const char* src, const char* prefix)
     return *prefix==0;
 }
 
-bool endsWith(const char* src, const char* dst)
+bool endsWith(const char* src, const char* suffix)
 {
     size_t srcLen = strlen(src);
-    size_t dstLen = strlen(dst);
-    if (dstLen<=srcLen)
-        return memcmp(dst, src+srcLen-dstLen, dstLen)==0;
+    size_t suffixLen = strlen(suffix);
+    if (suffixLen<=srcLen)
+        return memcmp(suffix, src+srcLen-suffixLen, suffixLen)==0;
     return false;
 }
 
-bool endsWithIgnoreCase(const char* src, const char* dst)
+bool endsWithIgnoreCase(const char* src, const char* suffix)
 {
     size_t srcLen = strlen(src);
-    size_t dstLen = strlen(dst);
-    if (dstLen<=srcLen)
-        return memicmp(dst, src+srcLen-dstLen, dstLen)==0;
+    size_t suffixLen = strlen(suffix);
+    if (suffixLen<=srcLen)
+        return memicmp(suffix, src+srcLen-suffixLen, suffixLen)==0;
     return false;
 }
 

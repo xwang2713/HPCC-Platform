@@ -1,33 +1,36 @@
 {{/*
 Expand the name of the chart.
+Pass in dict with root
 */}}
 {{- define "hpcc.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- default .root.Chart.Name .root.Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
+Pass in dict with root
 */}}
 {{- define "hpcc.fullname" -}}
-{{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- if .root.Values.fullnameOverride -}}
+{{- .root.Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- $name := default .Chart.Name .Values.nameOverride -}}
-{{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- $name := default .root.Chart.Name .root.Values.nameOverride -}}
+{{- if contains $name .root.Release.Name -}}
+{{- .root.Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .root.Release.Name $name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
 Create chart name and version as used by the chart label.
+Pass in dict with root
 */}}
 {{- define "hpcc.chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -84,11 +87,15 @@ storage:
 {{- /* Add implicit planes if data or spill storage plane not specified*/ -}}
 {{- if not $dataStorage.plane }}
   - name: hpcc-data-plane
-    mount: {{ .Values.global.defaultDataPath | default "/var/lib/HPCCSystems/hpcc-data" | quote }}
+    prefix: {{ .Values.global.defaultDataPath | default "/var/lib/HPCCSystems/hpcc-data" | quote }}
 {{- end }}
 {{- if not $spillStorage.plane }}
   - name: hpcc-spill-plane
-    mount: {{ .Values.global.defaultSpillPath | default "/var/lib/HPCCSystems/hpcc-spill" | quote }}
+    prefix: {{ .Values.global.defaultSpillPath | default "/var/lib/HPCCSystems/hpcc-spill" | quote }}
+{{- end }}
+{{- if .Values.global.cost }}
+cost:
+{{ toYaml .Values.global.cost | indent 2 }}
 {{- end }}
 {{- end -}}
 
@@ -97,10 +104,10 @@ Generate local logging info, merged with global
 Pass in dict with root and me
 */}}
 {{- define "hpcc.generateLoggingConfig" -}}
-{{- $logging := deepCopy .me | mergeOverwrite .root.Values.global }}
-{{- if hasKey $logging "logging" }}
+{{- $logging := deepCopy (.me.logging | default dict) | mergeOverwrite (.root.Values.global.logging | default dict) -}}
+{{- if not (empty $logging) }}
 logging:
-{{ toYaml $logging.logging | indent 2 }}
+{{ toYaml $logging | indent 2 }}
 {{- end -}}
 {{- end -}}
 
@@ -109,6 +116,10 @@ logging:
 Add ConfigMap volume mount for a component
 */}}
 {{- define "hpcc.addConfigMapVolumeMount" -}}
+- name: {{ .name }}-temp-volume
+  mountPath: /tmp
+- name: {{ .name }}-hpcctmp-volume
+  mountPath: /var/lib/HPCCSystems
 - name: {{ .name }}-configmap-volume
   mountPath: /etc/config
 {{- end -}}
@@ -117,6 +128,10 @@ Add ConfigMap volume mount for a component
 Add ConfigMap volume for a component
 */}}
 {{- define "hpcc.addConfigMapVolume" -}}
+- name: {{ .name }}-temp-volume
+  emptyDir: {}
+- name: {{ .name }}-hpcctmp-volume
+  emptyDir: {}
 - name: {{ .name }}-configmap-volume
   configMap:
     name: {{ .name }}-configmap
@@ -152,13 +167,14 @@ If any storage planes are defined that name pvcs they will be mounted
  {{- end }}
 {{- end }}
 {{- if (not $dataStorage.plane) }}
-- name: datastorage-pv
+- name: datastorage-pvc
   mountPath: "/var/lib/HPCCSystems/hpcc-data"
 {{- end }}
 {{- end -}}
 
 {{/*
 Add data volume
+Pass in dict with root
 */}}
 {{- define "hpcc.addDataVolume" -}}
 {{- /*Create local variables which always exist to avoid having to check if intermediate key values exist*/ -}}
@@ -189,96 +205,108 @@ Add data volume
  {{- end }}
 {{- end -}}
 {{- if (not $dataStorage.plane) }}
-- name: datastorage-pv
+- name: datastorage-pvc
   persistentVolumeClaim:
-    claimName: {{ $dataStorage.existingClaim | default (printf "%s-datastorage-pvc" (include "hpcc.fullname" .root )) }}
+    claimName: {{ $dataStorage.existingClaim | default (printf "%s-datastorage-pvc" (include "hpcc.fullname" . )) }}
 {{- end }}
 {{- end -}}
 
 {{/*
-Add dll volume mount - if default plane is used, or the dll storage plane specifies a pvc
+Add a volume mount - if default plane is used, or the storage plane specifies a pvc
+Pass in dict with root, me, name, and optional path
 */}}
-{{- define "hpcc.addDllVolumeMount" -}}
-{{- $storage := (.Values.storage | default dict) -}}
+{{- define "hpcc.getVolumeMountPrefix" -}}
+{{- $storage := (.root.Values.storage | default dict) -}}
 {{- $planes := ($storage.planes | default list) -}}
-{{- $dllStorage := ($storage.dllStorage | default dict) -}}
-{{- if $dllStorage.plane -}}
+{{- if .me.plane -}}
  {{- range $plane := $planes -}}
-  {{- if and ($plane.pvc) (eq $plane.name $dllStorage.plane) -}}
-- name: dllstorage-pv
-  mountPath: {{ $plane.prefix | quote }}
+  {{- if and ($plane.pvc) (eq $plane.name .me.plane) -}} # NB: can only be 1 match
+{{ $plane.prefix }}
   {{- end -}}
  {{- end -}}
 {{- else -}}
-- name: dllstorage-pv
-  mountPath: "/var/lib/HPCCSystems/queries"
+{{ printf "/var/lib/HPCCSystems/%s" (.path | default (printf "%sstorage" .name)) | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Add a volume mount - if default plane is used, or the storage plane specifies a pvc
+Pass in dict with root, me, name, and optional path
+*/}}
+{{- define "hpcc.addVolumeMount" -}}
+{{- $mountPath := include "hpcc.getVolumeMountPrefix" . }}
+{{- if not $mountPath -}}
+{{- $_ := fail (printf "Invalid storage definition for:" .name ) -}}
+{{- end -}}
+- name: {{ .name }}
+  mountPath: {{ $mountPath }}
+{{- end -}}
+
+{{/*
+Add dll volume mount - if default plane is used, or the dll storage plane specifies a pvc
+Pass in dict with root
+*/}}
+{{- define "hpcc.addDllVolumeMount" -}}
+{{- $storage := (.root.Values.storage | default dict) -}}
+{{- $planes := ($storage.planes | default list) -}}
+{{- $dllStorage := ($storage.dllStorage | default dict) -}}
+{{ include "hpcc.addVolumeMount" (dict "root" .root "name" "dllstorage-pvc" "path" "queries" "me" $dllStorage) }}
+{{- end -}}
+
+{{/*
+Add dali volume mount - if default plane is used, or the dali storage plane specifies a pvc
+Pass in dict with root
+*/}}
+{{- define "hpcc.addDaliVolumeMount" -}}
+{{- $storage := (.root.Values.storage | default dict) -}}
+{{- $planes := ($storage.planes | default list) -}}
+{{- $daliStorage := ($storage.daliStorage | default dict) -}}
+{{ include "hpcc.addVolumeMount" (dict "root" .root "name" "dalistorage-pvc" "path" "dalistorage" "me" $daliStorage) }}
+{{- end -}}
+
+{{/*
+Add a volume - if default plane is used, or the storage plane specifies a pvc
+Pass in dict with root, me and name
+*/}}
+{{- define "hpcc.addVolume" -}}
+{{- /*Create local variables which always exist to avoid having to check if intermediate key values exist*/ -}}
+{{- $storage := (.root.Values.storage | default dict) -}}
+{{- $planes := ($storage.planes | default list) -}}
+{{- if .me.plane -}}
+ {{- range $plane := $planes -}}
+  {{- if and ($plane.pvc) (eq $plane.name .me.plane) -}}
+- name: {{ .name }}
+  persistentVolumeClaim:
+    claimName: {{ $plane.pvc }}
+  {{- end }}
+ {{- end }}
+{{- else -}}
+- name: {{ .name }}
+  persistentVolumeClaim:
+    claimName: {{ .me.existingClaim | default (printf "%s-%s" (include "hpcc.fullname" .) .name) }}
 {{- end -}}
 {{- end -}}
 
 {{/*
 Add dll volume - if default plane is used, or the dll storage plane specifies a pvc
+Pass in dict with root
 */}}
 {{- define "hpcc.addDllVolume" -}}
 {{- /*Create local variables which always exist to avoid having to check if intermediate key values exist*/ -}}
-{{- $storage := (.Values.storage | default dict) -}}
-{{- $planes := ($storage.planes | default list) -}}
+{{- $storage := (.root.Values.storage | default dict) -}}
 {{- $dllStorage := ($storage.dllStorage | default dict) -}}
-{{- if $dllStorage.plane -}}
- {{- range $plane := $planes -}}
-  {{- if and ($plane.pvc) (eq $plane.name $dllStorage.plane) -}}
-- name: dllstorage-pv
-  persistentVolumeClaim:
-    claimName: {{ $plane.pvc }}
-  {{- end }}
- {{- end }}
-{{- else -}}
-- name: dllstorage-pv
-  persistentVolumeClaim:
-    claimName: {{ $dllStorage.existingClaim | default (printf "%s-dllstorage-pvc" (include "hpcc.fullname" .)) }}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Add dali volume mount - if default plane is used, or the dali storage plane specifies a pvc
-*/}}
-{{- define "hpcc.addDaliVolumeMount" -}}
-{{- $storage := (.Values.storage | default dict) -}}
-{{- $planes := ($storage.planes | default list) -}}
-{{- $daliStorage := ($storage.daliStorage | default dict) -}}
-{{- if $daliStorage.plane -}}
- {{- range $plane := $planes -}}
-  {{- if and ($plane.pvc) (eq $plane.name $daliStorage.plane) -}}
-- name: dalistorage-pv
-  mountPath: {{ $plane.prefix | quote }}
-  {{- end -}}
- {{- end -}}
-{{- else -}}
-- name: dalistorage-pv
-  mountPath: "/var/lib/HPCCSystems/dalistorage"
-{{- end -}}
+{{ include "hpcc.addVolume" (dict "root" .root "name" "dllstorage-pvc" "me" $dllStorage) }}
 {{- end -}}
 
 {{/*
 Add dali volume - if default plane is used, or the dali storage plane specifies a pvc
+Pass in dict with root
 */}}
 {{- define "hpcc.addDaliVolume" -}}
 {{- /*Create local variables which always exist to avoid having to check if intermediate key values exist*/ -}}
-{{- $storage := (.Values.storage | default dict) -}}
-{{- $planes := ($storage.planes | default list) -}}
+{{- $storage := (.root.Values.storage | default dict) -}}
 {{- $daliStorage := ($storage.daliStorage | default dict) -}}
-{{- if $daliStorage.plane -}}
- {{- range $plane := $planes -}}
-  {{- if and ($plane.pvc) (eq $plane.name $daliStorage.plane) -}}
-- name: dalistorage-pv
-  persistentVolumeClaim:
-    claimName: {{ $plane.pvc }}
-  {{- end }}
- {{- end }}
-{{- else -}}
-- name: dalistorage-pv
-  persistentVolumeClaim:
-    claimName: {{ $daliStorage.existingClaim | default (printf "%s-dalistorage-pvc" (include "hpcc.fullname" .)) }}
-{{- end -}}
+{{ include "hpcc.addVolume" (dict "root" .root "name" "dalistorage-pvc" "me" $daliStorage) }}
 {{- end -}}
 
 {{/*
@@ -304,13 +332,13 @@ Add Secret volume for a component
 {{- $component := .component -}}
 {{- $categories := .categories -}}
 {{- range $category, $key := .root.Values.secrets -}}
- {{- if (has $category $categories) -}}
-{{- range $secretid, $secretname := $key -}}
+{{- if (has $category $categories) -}}
+{{- range $secretid, $secretname := $key }}
 - name: secret-{{ $secretid }}
   secret:
     secretName: {{ $secretname }}
 {{ end -}}
- {{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -320,19 +348,19 @@ Add sentinel-based probes for a component
 {{- define "hpcc.addSentinelProbes" -}}
 env:
 - name: "SENTINEL"
-  value: "{{ .name }}.sentinel"
+  value: "/tmp/{{ .name }}.sentinel"
 startupProbe:
   exec:
     command:
     - cat
-    - "{{ .name }}.sentinel"
+    - "/tmp/{{ .name }}.sentinel"
   failureThreshold: 30
   periodSeconds: 10
 readinessProbe:
   exec:
     command:
     - cat
-    - "{{ .name }}.sentinel"
+    - "/tmp/{{ .name }}.sentinel"
   periodSeconds: 10
 {{ end -}}
 
@@ -394,7 +422,6 @@ Check that the storage and spill planes for a component exist
 {{- end }}
 {{- end -}}
 
-
 {{/*
 Add config arg for a component
 */}}
@@ -442,8 +469,8 @@ A kludge to ensure mounted storage (e.g. for nfs, minikube or docker for desktop
 # This is only required when mounting a remote filing systems from another container or machine.
 # NB: this includes where the filing system is on the containers host machine .
 # Examples include, minikube, docker for desktop, or NFS mounted storage.
-# NB: uid=999 and gid=1000 are the uid/gid of the hpcc user, built into platform-core
-{{- $permCmd := printf "chown -R 999:1000 %s" .volumePath }}
+# NB: uid=10000 and gid=10001 are the uid/gid of the hpcc user, built into platform-core
+{{- $permCmd := printf "chown -R 10000:10001 %s" .volumePath }}
 - name: volume-mount-hack
   image: busybox
   command: [
@@ -461,16 +488,17 @@ Check dll mount point, using hpcc.changeMountPerms
 */}}
 {{- define "hpcc.checkDllMount" -}}
 {{- if .root.Values.storage.dllStorage.forcePermissions | default false }}
-{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "dllstorage-pv" "volumePath" "/var/lib/HPCCSystems/queries") }}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "dllstorage-pvc" "volumePath" "/var/lib/HPCCSystems/queries") }}
 {{- end }}
 {{- end }}
 
 {{/*
 Check datastorage mount point, using hpcc.changeMountPerms
+Pass in a dictionary with root
 */}}
 {{- define "hpcc.checkDataMount" -}}
 {{- if .root.Values.storage.dataStorage.forcePermissions | default false }}
-{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "datastorage-pv" "volumePath" "/var/lib/HPCCSystems/hpcc-data") }}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "datastorage-pvc" "volumePath" "/var/lib/HPCCSystems/hpcc-data") }}
 {{- end }}
 {{- end }}
 
@@ -479,7 +507,7 @@ Check dalistorage mount point, using hpcc.changeMountPerms
 */}}
 {{- define "hpcc.checkDaliMount" -}}
 {{- if .root.Values.storage.daliStorage.forcePermissions | default false }}
-{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "dalistorage-pv" "volumePath" "/var/lib/HPCCSystems/dalistorage") }}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "dalistorage-pvc" "volumePath" "/var/lib/HPCCSystems/dalistorage") }}
 {{- end }}
 {{- end }}
 
@@ -515,16 +543,17 @@ securityContext:
   capabilities:
     add:
     - SYS_PTRACE
+  readOnlyRootFilesystem: false
 {{- else }}
   capabilities:
     drop:
     - ALL
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
 {{- end }}
   runAsNonRoot: true
-  runAsUser: 999
-  runAsGroup: 1000
-  readOnlyRootFilesystem: false
+  runAsUser: 10000
+  runAsGroup: 10001
 {{ end -}}
 
 {{/*
@@ -543,6 +572,7 @@ Generate instance queue names
 - name: {{ .name }}
   type: roxie 
   prefix: {{ .prefix | default "null" }}
+  queriesOnly: true
  {{- end }}
 {{ end -}}
 {{- range $.Values.thor -}}
@@ -552,7 +582,7 @@ Generate instance queue names
   prefix: {{ .prefix | default "null" }}
   width: {{ mul (.numWorkers | default 1) ( .channelsPerWorker | default 1) }}
  {{- end }}
-{{- end -}}
+{{ end -}}
 {{- end -}}
 
 {{/*
@@ -567,6 +597,7 @@ Generate list of available services
   type: roxie
   port: {{ $service.port }}
   target: {{ $roxie.name }}
+  public: {{ $service.external }}
    {{- end -}}
   {{- end }}
 {{ end -}}
@@ -578,6 +609,28 @@ Generate list of available services
   tls: {{ $esp.tls }}
   public: {{ $esp.public }}
 {{ end -}}
+{{- range $dali := $.Values.dali -}}
+{{- if and (hasKey $dali "services") (not $dali.services.disabled) -}}
+{{- range $sashaName, $_sasha := $dali.services -}}
+{{- $sasha := ($_sasha | default dict) -}}
+{{- if and (not $sasha.disabled) ($sasha.servicePort) -}}
+- name: {{ printf "sasha-%s" $sashaName }}
+  type: sasha
+  port: {{ $sasha.servicePort }}
+{{ end -}}
+{{ end -}}
+{{ end -}}
+{{ end -}}
+{{- if and (hasKey $.Values "sasha") (not $.Values.sasha.disabled) -}}
+{{- range $sashaName, $_sasha := $.Values.sasha -}}
+{{- $sasha := ($_sasha | default dict) -}}
+{{- if and (not $sasha.disabled) ($sasha.servicePort) -}}
+- name: {{ printf "sasha-%s" $sashaName }}
+  type: sasha
+  port: {{ $sasha.servicePort }}
+{{ end -}}
+{{ end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -600,4 +653,185 @@ resources:
   limits:
     cpu: "50m"
     memory: "100M"
+{{- end -}}
+
+{{/*
+Generate vault info
+*/}}
+{{- define "hpcc.generateEclccSecurity" -}}
+{{- with .Values.security -}}
+{{- if not (empty .eclSecurity) -}}
+{{- toYaml (deepCopy .) }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Sasha configmap
+Pass in dict with root and me
+*/}}
+{{- define "hpcc.sashaConfigMap" -}}
+{{- $configMapName := printf "sasha-%s" .me.name -}}
+apiVersion: v1
+metadata:
+  name: {{ printf "%s-configmap" $configMapName }}
+data:
+  {{ $configMapName }}.yaml: |
+    version: 1.0
+    sasha:
+{{ toYaml (omit .me "logging") | indent 6 }}
+{{- include "hpcc.generateLoggingConfig" . | indent 6 }}
+{{- $categories := list "system" -}}
+{{- if has "data" .me.access -}}
+{{- $categories := append $categories "storage" -}}
+{{- end }}
+{{ include "hpcc.generateVaultConfig" (dict "root" .root "categories" $categories ) | indent 6 }}
+{{- if .me.storage }}
+      storagePath: {{ include "hpcc.getVolumeMountPrefix" (dict "root" .root "name" (printf "sasha-%s" .me.name) "me" .me.storage) }}
+{{- end }}
+    global:
+{{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
+{{- end -}}
+
+{{/*
+A template to generate Sasha service containers
+*/}}
+{{- define "hpcc.addSashaContainer" }}
+{{- $serviceName := printf "sasha-%s" .me.name }}
+- name: {{ $serviceName | quote }}
+  workingDir: /var/lib/HPCCSystems
+  command: [ saserver ] 
+  args: [
+{{- with (dict "name" $serviceName) }}
+          {{ include "hpcc.configArg" . }},
+{{- end }}
+          "--service={{ .me.name }}",
+{{ include "hpcc.daliArg" .root | indent 10 }}
+        ]
+{{- include "hpcc.addResources" (dict "me" .me.resources) | indent 2 }}
+{{- include "hpcc.addSecurityContext" .  | indent 2 }}
+{{- with (dict "name" $serviceName) }}
+{{ include "hpcc.addSentinelProbes" .  | indent 2 }}
+{{- end }}
+{{ include "hpcc.addImageAttrs" .  | indent 2 }}
+{{- end -}}
+
+{{/*
+A template to generate Sasha service
+Pass in dict with root, me
+*/}}
+{{- define "hpcc.addSashaVolumeMounts" }}
+{{- $serviceName := printf "sasha-%s" .me.name -}}
+{{- if .me.storage }}
+{{ include "hpcc.addVolumeMount" (dict "root" .root "name" $serviceName "me" .me.storage ) -}}
+{{- end }}
+{{ with (dict "name" $serviceName ) -}}
+{{ include "hpcc.addConfigMapVolumeMount" . }}
+{{- end }}
+{{- if has "dalidata" .me.access }}
+{{ include "hpcc.addDaliVolumeMount" . -}}
+{{- end }}
+{{- if has "data" .me.access }}
+{{ include "hpcc.addDataVolumeMount" . }}
+{{- end }}
+{{- if has "dll" .me.access }}
+{{ include "hpcc.addDllVolumeMount" . -}}
+{{- end }}
+{{ include "hpcc.addSecretVolumeMounts" (dict "root" .root "categories" (list "system" ) ) -}}
+{{- if has "data" .me.access -}}
+{{ include "hpcc.addSecretVolumeMounts" (dict "root" .root "categories" (list "storage" ) ) -}}
+{{- end }}
+{{- end -}}
+
+
+{{/*
+A template to generate Sasha service
+Pass in dict with root, me
+*/}}
+{{- define "hpcc.addSashaVolumes" }}
+{{- $serviceName := printf "sasha-%s" .me.name -}}
+{{- if .me.storage }}
+{{ include "hpcc.addVolume" (dict "root" .root "name" $serviceName "me" .me.storage) -}}
+{{- end }}
+{{ with (dict "name" $serviceName) -}}
+{{ include "hpcc.addConfigMapVolume" . }}
+{{- end }}
+{{- if has "dalidata" .me.access }}
+{{ include "hpcc.addDaliVolume" . -}}
+{{- end }}
+{{- if has "data" .me.access }}
+{{ include "hpcc.addDataVolume" . }}
+{{- end }}
+{{- if has "dll" .me.access }}
+{{ include "hpcc.addDllVolume" . -}}
+{{- end }}
+{{- end -}}
+
+{{/*
+A template to generate Sasha service
+Pass in dict me
+*/}}
+{{- define "hpcc.addSashaService" }}
+{{- $serviceName := printf "sasha-%s" .me.name }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $serviceName | quote }}
+spec:
+  ports:
+  - port: {{ .me.servicePort }}
+    protocol: TCP
+    targetPort: {{ .port | default 8877 }}
+  selector:
+    run: {{ $serviceName | quote }}
+  type: ClusterIP
+{{- end -}}
+
+
+{{/*
+Return access permssions for a given service
+*/}}
+{{- define "hpcc.getSashaServiceAccess" }}
+{{- if (eq "coalescer" .name) -}}
+dalidata
+{{- else if (eq "wu-archiver" .name) -}}
+dali data dll
+{{- else if (eq "dfuwu-archiver" .name) -}}
+dali
+{{- else if (eq "dfurecovery-archiver" .name) -}}
+dali
+{{- else if (eq "file-expiry" .name) -}}
+dali data
+{{- else -}}
+{{- $_ := fail (printf "Unknown sasha service:" .name ) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A template to generate a PVC
+Pass in dict with root, me, name, and optional path
+*/}}
+{{- define "hpcc.addPVC" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-%s" (include "hpcc.fullname" .) .name }}
+  labels:
+    app.kubernetes.io/name: {{ printf "%s-%s" (include "hpcc.fullname" .) .name }}
+    app.kubernetes.io/instance: {{ .root.Release.Name }}
+    app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+    helm.sh/chart: {{ include "hpcc.chart" . }}
+spec:
+  accessModes:
+    - {{ .mode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .me.storageSize }}
+{{- if .me.storageClass }}
+{{- if (eq "-" .me.storageClass) }}
+  storageClassName: ""
+{{- else }}
+  storageClassName: "{{ .me.storageClass }}"
+{{- end }}
+{{- end }}
 {{- end -}}

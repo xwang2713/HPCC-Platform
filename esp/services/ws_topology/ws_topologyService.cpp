@@ -1032,7 +1032,7 @@ void CWsTopologyEx::readTpLogFileRequest(IEspContext &context, const char* fileN
             throw MakeStringException(ECLWATCH_INVALID_INPUT, "This log file has no timestamp.");
 
         if  (req.getLastHours_isNull())
-            throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invlid 'Hours' field.");
+            throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invalid 'Hours' field.");
 
         readLogReq.lastHours = req.getLastHours();
         unsigned hour, minute, second, nano;
@@ -1051,7 +1051,7 @@ void CWsTopologyEx::readTpLogFileRequest(IEspContext &context, const char* fileN
             throw MakeStringException(ECLWATCH_INVALID_INPUT, "This log file has no timestamp.");
 
         if ((readLogReq.startDate.length() < 8) && (readLogReq.endDate.length() < 8))
-            throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invlid 'Time' field.");
+            throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invalid 'Time' field.");
         break;
     }
     }
@@ -1322,14 +1322,27 @@ bool CWsTopologyEx::onTpLogicalClusterQuery(IEspContext &context, IEspTpLogicalC
         IArrayOf<IEspTpLogicalCluster> clusters;
         CConstWUClusterInfoArray wuClusters;
 #ifdef _CONTAINERIZED
+        double version = context.getClientVersion();
+        CRoxieQueueFilter roxieQueueFilter = req.getRoxieQueueFilter();
+        if (roxieQueueFilter == RoxieQueueFilter_Undefined)
+            roxieQueueFilter = CRoxieQueueFilter_All;
+
         Owned<IPropertyTreeIterator> iter = queryComponentConfig().getElements("queues");
         ForEach(*iter)
         {
             IPropertyTree &queue = iter->query();
+            bool queriesOnly = queue.getPropBool("@queriesOnly");
+            if (queriesOnly && (roxieQueueFilter == CRoxieQueueFilter_WorkunitsOnly))
+                continue;
+            if (!queriesOnly && (roxieQueueFilter == CRoxieQueueFilter_QueriesOnly))
+                continue;
+
             Owned<IEspTpLogicalCluster> cluster = createTpLogicalCluster();
             cluster->setName(queue.queryProp("@name"));
             cluster->setType(queue.queryProp("@type"));
             cluster->setLanguageVersion("3.0.0");
+            if (version >= 1.31)
+                cluster->setQueriesOnly(queriesOnly);
             clusters.append(*cluster.getClear());
         }
 #else
@@ -1384,9 +1397,9 @@ bool CWsTopologyEx::onTpClusterInfo(IEspContext &context, IEspTpClusterInfoReque
         Owned<IRemoteConnection> conn = querySDS().connect("/Status/Servers/", myProcessSession(),RTM_SUB,SDS_LOCK_TIMEOUT);
         if (conn)
         {
-            Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(req.getName());
+            Owned<IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(req.getName());
             if (clusterInfo == nullptr)
-                throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid Target Cluster name provided: '%s'", req.getName());
+                throw makeStringExceptionV(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid Target Cluster name provided: '%s'", req.getName());
 
             SCMStringBuffer thorQueues;
             clusterInfo->getThorQueue(thorQueues);

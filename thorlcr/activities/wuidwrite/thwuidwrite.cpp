@@ -38,12 +38,28 @@ protected:
     StringAttr resultName;
     unsigned resultSeq;
 
+    void throwWuResultTooLarge()
+    {
+        StringBuffer errMsg("Dataset too large to output to workunit (limit is set to ");
+        errMsg.append(workunitWriteLimit/0x100000).append(") megabytes, in result (");
+        if (resultName.length())
+            errMsg.append("name=").append(resultName);
+        else
+            errMsg.append("sequence=").append(resultSeq);
+        errMsg.append(")");
+        throw MakeThorException(TE_WorkUnitWriteLimitExceeded, "%s", errMsg.str());
+    }
     void addResult(rowcount_t resultCount, MemoryBuffer &resultData, bool complete)
     {
         Owned<IWorkUnit> wu = &container.queryJob().queryWorkUnit().lock();
         Owned<IWUResult> result = updateWorkUnitResult(wu, resultName, resultSeq);
         if (appendOutput)
+        {
+            __int64 existingSz = result->getResultRawSize(nullptr, nullptr);
+            if (workunitWriteLimit && (existingSz+resultData.length() > workunitWriteLimit))
+                throwWuResultTooLarge();
             result->addResultRaw(resultData.length(), resultData.toByteArray(), ResultFormatRaw);
+        }
         else
             result->setResultRaw(resultData.length(), resultData.toByteArray(), ResultFormatRaw);
         result->setResultRowCount(resultCount);
@@ -80,8 +96,8 @@ public:
         CMasterActivity::init();
         // In absense of OPT_OUTPUTLIMIT check pre 5.2 legacy name OPT_OUTPUTLIMIT_LEGACY
         workunitWriteLimit = activityMaxSize ? activityMaxSize : getOptInt(OPT_OUTPUTLIMIT, getOptInt(OPT_OUTPUTLIMIT_LEGACY, defaultDaliResultLimit));
-        if (workunitWriteLimit>defaultDaliResultOutputMax)
-            throw MakeActivityException(this, 0, "Configured max result size, %d MB, exceeds absolute max limit of %d MB. A huge Dali result usually indicates the ECL needs altering.", workunitWriteLimit, defaultDaliResultOutputMax);
+        if (workunitWriteLimit>daliResultOutputMax)
+            throw MakeActivityException(this, 0, "Configured max result size, %d MB, exceeds absolute max limit of %d MB. A huge Dali result usually indicates the ECL needs altering.", workunitWriteLimit, daliResultOutputMax);
         assertex(workunitWriteLimit<=0x1000); // 32bit limit because MemoryBuffer/CMessageBuffers involved etc.
         workunitWriteLimit *= 0x100000;
     }
@@ -121,17 +137,8 @@ public:
                 unsigned numGot;
                 mb.read(numGot);
                 unsigned l=mb.remaining();
-                if (workunitWriteLimit && totalSize+resultData.length()+l > workunitWriteLimit)
-                {
-                    StringBuffer errMsg("Dataset too large to output to workunit (limit is set to ");
-                    errMsg.append(workunitWriteLimit/0x100000).append(") megabytes, in result (");
-                    if (resultName.length())
-                        errMsg.append("name=").append(resultName);
-                    else
-                        errMsg.append("sequence=").append(resultSeq);
-                    errMsg.append(")");
-                    throw MakeThorException(TE_WorkUnitWriteLimitExceeded, "%s", errMsg.str());
-                }
+                if (workunitWriteLimit && (totalSize+resultData.length()+l > workunitWriteLimit))
+                    throwWuResultTooLarge();
                 resultData.append(l, mb.readDirect(l));
                 mb.clear();
                 numResults += numGot;

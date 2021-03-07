@@ -218,8 +218,7 @@
                     monitorinterval="900"
                     monitorqueue="dfuserver_monitor_queue"
                     name="mydfuserver"
-                    queue="dfuserver_queue"
-                    transferBufferSize="65536">
+                    queue="dfuserver_queue">
    <Instance computer="localhost"
              directory="${RUNTIME_PATH}/mydfuserver"
              name="s1"
@@ -286,7 +285,6 @@
           state=""
           trustedPeers="anyone"/>
    <Authentication htpasswdFile="/etc/HPCCSystems/.htpasswd"
-                   ldapAuthMethod="kerberos"
                    ldapConnections="10"
                    ldapServer=""
                    method="none"

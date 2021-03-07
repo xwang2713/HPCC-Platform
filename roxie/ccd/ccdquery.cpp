@@ -331,7 +331,7 @@ QueryOptions::QueryOptions()
     traceLimit = defaultTraceLimit;
     noSeekBuildIndex = defaultNoSeekBuildIndex;
     allSortsMaySpill = false; // No global default for this
-    failOnLeaks = false;
+    failOnLeaks = alwaysFailOnLeaks;
     collectFactoryStatistics = defaultCollectFactoryStatistics;
     parallelWorkflow = false;
     numWorkflowThreads = 1;
@@ -1209,6 +1209,8 @@ public:
 
     void addToMap()
     {
+        if (traceRoxiePackets)
+            DBGLOG("addToMap %s: hashvalue = %" I64F "x channel %d", id.str(), hashValue, channelNo);
         hash64_t hv = rtlHash64Data(sizeof(channelNo), &channelNo, hashValue);
         CriticalBlock b(activeQueriesCrit);
         activeQueries.setValue(hv, this);
@@ -1782,6 +1784,23 @@ unsigned checkWorkunitVersionConsistency(const IConstWorkUnit *wu)
         throw makeStringException(ROXIE_MISMATCH, "Attempting to execute a workunit that hasn't been compiled");
     if (wuVersion > ACTIVITY_INTERFACE_VERSION || wuVersion < MIN_ACTIVITY_INTERFACE_VERSION)
         throw MakeStringException(ROXIE_MISMATCH, "Workunit was compiled for eclhelper interface version %d, this roxie requires version %d..%d", wuVersion, MIN_ACTIVITY_INTERFACE_VERSION, ACTIVITY_INTERFACE_VERSION);
+    if (wuVersion == 652)
+    {
+        // Any workunit compiled using eclcc 7.12.0-7.12.18 is not compatible
+        StringBuffer buildVersion, eclVersion;
+        wu->getBuildVersion(StringBufferAdaptor(buildVersion), StringBufferAdaptor(eclVersion));
+        const char *version = strstr(buildVersion, "7.12.");
+
+        //Avoid matching a version number in the path that was used to build (enclosed in [] at the end)
+        const char *extra = strchr(buildVersion, '[');
+        if (version && (!extra || version < extra))
+        {
+            const char *point = version + strlen("7.12.");
+            unsigned pointVer = atoi(point);
+            if (pointVer <= 18)
+                throw MakeStringException(ROXIE_MISMATCH, "Workunit was compiled by eclcc version %s which is not compatible with this runtime", buildVersion.str());
+        }
+    }
     return wuVersion;
 }
 
@@ -2091,7 +2110,7 @@ IQueryFactory *createAgentQueryFactory(const char *id, const IQueryDll *dll, con
         else if (dll)
         {
             checkWorkunitVersionConsistency(dll);
-            Owned<IQueryFactory> serverFactory = CQueryFactory::getCachedQuery(hashValue, 0);
+            Owned<IQueryFactory> serverFactory = createServerQueryFactory(id, LINK(dll), package, stateInfo, isDynamic, forceRetry);
             assertex(serverFactory);
             ret.setown(new CAgentQueryFactory(id, dll, package, hashValue, channel, serverFactory->querySharedOnceContext(), isDynamic));
         }

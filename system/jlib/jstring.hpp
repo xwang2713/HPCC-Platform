@@ -390,6 +390,8 @@ extern jlib_decl StringBuffer & appendStringAsSQL(StringBuffer & out, unsigned l
 extern jlib_decl StringBuffer & appendStringAsECL(StringBuffer & out, unsigned len, const char * src);
 extern jlib_decl StringBuffer & appendStringAsQuotedECL(StringBuffer &out, unsigned len, const char * src);
 extern jlib_decl StringBuffer & appendUtf8AsECL(StringBuffer &out, unsigned len, const char * src);
+extern jlib_decl StringBuffer & appendStringAsUtf8(StringBuffer &out, unsigned len, const char * src);
+
 
 extern jlib_decl const char *decodeJSON(const char *x, StringBuffer &ret, unsigned len=(unsigned)-1, const char **errMark=NULL);
 extern jlib_decl void extractItem(StringBuffer & res, const char * src, const char * sep, int whichItem, bool caps);
@@ -402,6 +404,13 @@ extern jlib_decl int utf8CharLen(unsigned char ch);
 extern jlib_decl int utf8CharLen(const unsigned char *ch, unsigned maxsize = (unsigned)-1);
 
 extern jlib_decl StringBuffer &replaceString(StringBuffer & result, size_t lenSource, const char *source, size_t lenOldStr, const char* oldStr, size_t lenNewStr, const char* newStr);
+
+interface IVariableSubstitutionHelper
+{
+    virtual bool findVariable(const char *name, StringBuffer &value) = 0;
+};
+
+extern jlib_decl StringBuffer &replaceVariables(StringBuffer & result, const char *source, bool exceptions, IVariableSubstitutionHelper *helper, const char* delim = "${", const char* term = "}");
 extern jlib_decl StringBuffer &replaceEnvVariables(StringBuffer & result, const char *source, bool exceptions, const char* delim = "${env.", const char* term = "}");
 
 inline const char *encodeUtf8XML(const char *x, StringBuffer &ret, unsigned flags=false, unsigned len=(unsigned)-1)
@@ -577,10 +586,10 @@ extern jlib_decl StringBuffer & ncnameUnescape(char const * in, StringBuffer & o
 extern jlib_decl StringBuffer & elideString(StringBuffer & s, unsigned maxLength);
 
 extern jlib_decl bool startsWith(const char* src, const char* prefix);
-extern jlib_decl bool endsWith(const char* src, const char* dst);
+extern jlib_decl bool endsWith(const char* src, const char* suffix);
 
 extern jlib_decl bool startsWithIgnoreCase(const char* src, const char* prefix);
-extern jlib_decl bool endsWithIgnoreCase(const char* src, const char* dst);
+extern jlib_decl bool endsWithIgnoreCase(const char* src, const char* suffix);
 
 inline bool strieq(const char* s, const char* t) { return stricmp(s,t)==0; }
 inline bool streq(const char* s, const char* t) { return strcmp(s,t)==0; }

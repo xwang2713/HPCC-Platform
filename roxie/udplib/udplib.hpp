@@ -41,33 +41,43 @@ typedef unsigned RecordLengthType;
 class UDPLIB_API ServerIdentifier
 {
 private:
-    IpAddress serverIp;  // MORE - should really be an endpoint?
+    unsigned netAddress = 0;
 public:
-    ServerIdentifier() : serverIp() { }
-    ServerIdentifier(const ServerIdentifier &from) : serverIp(from.serverIp) { }
-    ServerIdentifier(const IpAddress &from) : serverIp(from) { }
-    const IpAddress &getNodeAddress() const;
+    ServerIdentifier() { }
+    ServerIdentifier(const ServerIdentifier &from) : netAddress(from.netAddress) { }
+    ServerIdentifier(const IpAddress &from) { setIp(from); }
+    const IpAddress getIpAddress() const;
+    unsigned getIp4() const { return netAddress; };
+    inline bool isNull() const { return netAddress==0; }
+    inline void clear() { netAddress=0; }
     const ServerIdentifier & operator=(const ServerIdentifier &from)
     {
-        serverIp = from.serverIp;
+        netAddress = from.netAddress;
         return *this;
     }
     bool operator==(const ServerIdentifier &from) const
     {
-        return serverIp.ipequals(from.serverIp);
+        return netAddress == from.netAddress;
     }
     unsigned hash() const
     {
-        return serverIp.iphash(0);
+        return hashc((const byte *)&netAddress,sizeof(netAddress),0);
+    }
+    unsigned fasthash() const
+    {
+        return netAddress >> 24;
     }
     inline void setIp(const IpAddress &_ip)
     {
-        serverIp = _ip;
+        netAddress = _ip.getIP4();
     }
     StringBuffer &getTraceText(StringBuffer &s) const
     {
+        IpAddress serverIp;
+        serverIp.setIP4(netAddress);
         return serverIp.getIpText(s);
     }
+    bool isMe() const;
 };
 
 extern UDPLIB_API ServerIdentifier myNode;
@@ -137,8 +147,8 @@ interface ISendManager : extends IInterface
     virtual bool allDone() = 0;
 };
 
-extern UDPLIB_API IReceiveManager *createReceiveManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size, unsigned maxSlotsPerSender);
-extern UDPLIB_API ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter);
+extern UDPLIB_API IReceiveManager *createReceiveManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size, unsigned maxSlotsPerSender, bool encryptionInTransit);
+extern UDPLIB_API ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter, bool encryptionInTransit);
 
 extern UDPLIB_API void setAeronProperties(const IPropertyTree *config);
 extern UDPLIB_API IReceiveManager *createAeronReceiveManager(const SocketEndpoint &ep);

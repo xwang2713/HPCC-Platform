@@ -299,6 +299,7 @@ protected:
             case SSTworkflow:
             case SSTgraph:
                 // SSTworkflow and SSTgraph may be safely ignored.  They are not required to produce the statistics.
+                expandProcessTreeFromStats(rootTarget, target, &cur);
                 continue;
             case SSTfunction:
                 //MORE:Should function scopes be included in the graph scope somehow, and if so how?
@@ -1574,20 +1575,13 @@ private:
                 return true;
             case SChildGraph:
             {
+#ifdef _DEBUG
+                assertex(treeIters.tos().query().getPropInt("att[@name='_kind']/@value") == TAKsubgraph);
                 unsigned numIters = treeIters.ordinality();
-                //This should really be implemented by a filter on the node - but it would require _kind/_parentActivity to move to the node tag
-                if (treeIters.tos().query().getPropInt("att[@name='_kind']/@value") != TAKsubgraph)
-                {
-                    state = SChildGraphNext;
-                    break;
-                }
                 unsigned parentActivityId = treeIters.item(numIters-2).query().getPropInt("@id");
                 unsigned parentId = treeIters.tos().query().getPropInt("att[@name='_parentActivity']/@value");
-                if (parentId != parentActivityId)
-                {
-                    state = SChildGraphNext;
-                    break;
-                }
+                assertex(parentId == parentActivityId);
+#endif
                 scopeId.set(ChildGraphScopePrefix).append(treeIters.tos().query().getPropInt("@id"));
                 pushScope(scopeId);
                 scopeType = SSTchildgraph;
@@ -1693,11 +1687,27 @@ private:
             }
             case SSubGraphFirstActivity:
             {
+                //Walk the contents of each subgraph once, splitting the entries into activities and child graphs
+                IArrayOf<IPropertyTree> activities;
+                IArrayOf<IPropertyTree> childGraphs;
                 Owned<IPropertyTreeIterator> treeIter = treeIters.tos().query().getElements("att/graph/node");
-                if (treeIter && treeIter->first())
+                ForEach(*treeIter)
                 {
-                    treeIter.setown(createSortedIterator(*treeIter, compareActivityNode));
-                    pushIterator(treeIter, SSubGraphEnd);
+                    IPropertyTree & cur = treeIter->get();
+                    if (cur.getPropInt("att[@name='_kind']/@value") != TAKsubgraph)
+                        activities.append(cur);
+                    else
+                        childGraphs.append(cur);
+                }
+                if (activities.ordinality())
+                {
+                    //Create an iterator for the child graphs in this subgraph which is iterated in order as the activities are processed
+                    Owned<IPropertyTreeIterator> graphIter = createSortedIterator(childGraphs, compareSubGraphNode);
+                    graphIter->first();
+                    childGraphIters.append(*graphIter.getClear());
+
+                    Owned<IPropertyTreeIterator> activityIter = createSortedIterator(activities, compareActivityNode);
+                    pushIterator(activityIter, SSubGraphEnd);
                     state = SActivity;
                 }
                 else
@@ -1726,7 +1736,11 @@ private:
                 if (treeIters.tos().next())
                     state = SActivity;
                 else
+                {
+                    assertex(!childGraphIters.tos().isValid());
+                    childGraphIters.pop();
                     state = popIterator();
+                }
                 break;
             case SChildGraphNext:
                 if (treeIters.tos().next())
@@ -1736,13 +1750,22 @@ private:
                 break;
             case SChildGraphFirst:
             {
-                unsigned numIters = treeIters.ordinality();
-                IPropertyTreeIterator & graphIter = treeIters.item(numIters-2);
-                Owned<IPropertyTreeIterator> treeIter = graphIter.query().getElements("att/graph/node");
-                //Really want to filter by <att name="_parentActivity" value="<parentid>">
-                if (treeIter && treeIter->first())
+                unsigned parentActivityId = treeIters.tos().query().getPropInt("@id");
+                IArrayOf<IPropertyTree> childGraphs;
+                IPropertyTreeIterator & allGraphs = childGraphIters.tos();
+                while (allGraphs.isValid())
                 {
-                    treeIter.setown(createSortedIterator(*treeIter, compareSubGraphNode));
+                    IPropertyTree & cur = allGraphs.query();
+                    unsigned parentId = cur.getPropInt("att[@name='_parentActivity']/@value");
+                    if (parentId != parentActivityId)
+                        break;
+                    childGraphs.append(OLINK(cur));
+                    allGraphs.next();
+                }
+
+                if (childGraphs.ordinality())
+                {
+                    Owned<IPropertyTreeIterator> treeIter = createSortedIterator(childGraphs, compareSubGraphNode);
                     pushIterator(treeIter, SActivityEnd);
                     state = SChildGraph;
                 }
@@ -1838,10 +1861,12 @@ private:
         case SGraph:
             state = SDone;
             break;
+        case SActivity:
+            childGraphIters.pop();
+            //fall through
         case SChildGraph:
         case SSubGraph:
         case SEdge:
-        case SActivity:
             popScope();
             state = popIterator();
             break;
@@ -1858,6 +1883,7 @@ protected:
     Owned<IConstWUGraphIterator> graphIter;
     Owned<IPropertyTree> curGraph;
     IArrayOf<IPropertyTreeIterator> treeIters;
+    IArrayOf<IPropertyTreeIterator> childGraphIters;
     UnsignedArray scopeLengths;
     UnsignedArray stateStack;
     StringBuffer curScopeName;
@@ -3990,7 +4016,19 @@ public:
         if (workUnitTraceLevel > 1)
             DBGLOG("Releasing locked workunit %s", queryWuid());
         if (c)
-            c->unlockRemote();
+        {
+            try
+            {
+                c->unlockRemote();
+            }
+            catch (IException *E)
+            {
+                // Exceptions here should be very uncommon - but there's also not a lot we can do if we get one
+                // Allowing them to be thrown out of the destructor is going to terminate the program which is NOT what we want.
+                EXCLOG(E);
+                ::Release(E);
+            }
+        }
     }
 
     virtual IConstWorkUnit * unlock()
@@ -8456,6 +8494,9 @@ void CLocalWorkUnit::setStatistic(StatisticCreatorType creatorType, const char *
 
     if (!statTree)
     {
+        /* NB: Sasha archive uses this structure directly
+         * if it changes, the code in saarch.cpp needs updating
+         */
         statTree = stats->addPropTree("Statistic");
         statTree->setProp("@creator", creator);
         statTree->setProp("@scope", scope);
@@ -12791,12 +12832,7 @@ static void clearAliases(IPropertyTree * queryRegistry, const char * id)
 
     StringBuffer xpath;
     xpath.append("Alias[@id=\"").append(lcId).append("\"]");
-
-    Owned<IPropertyTreeIterator> iter = queryRegistry->getElements(xpath);
-    ForEach(*iter)
-    {
-        queryRegistry->removeProp(xpath.str());
-    }
+    while (queryRegistry->removeProp(xpath));
 }
 
 IPropertyTree * addNamedQuery(IPropertyTree * queryRegistry, const char * name, const char * wuid, const char * dll, bool library, const char *userid, const char *snapshot)
@@ -13383,17 +13419,46 @@ extern WORKUNIT_API void addTimeStamp(IWorkUnit * wu, StatisticScopeType scopeTy
     wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), scopeType, scopestr, kind, NULL, getTimeStampNowValue(), 1, 0, StatsMergeAppend);
 }
 
-extern WORKUNIT_API cost_type calculateThorCost(unsigned __int64 ms, unsigned clusterWidth)
+static double getCpuSize(const char *resourceName)
 {
-    IPropertyTree *costs = queryCostsConfiguration();
-    if (costs)
-    {
-        cost_type thor_master_rate = money2cost_type(costs->getPropReal("thor/@master"));
-        cost_type thor_slave_rate = money2cost_type(costs->getPropReal("thor/@slave"));
+    const char * cpuRequestedStr = queryComponentConfig().queryProp(resourceName);
+    if (!cpuRequestedStr)
+        return 0.0;
+    char * endptr;
+    double cpuRequested = strtod(cpuRequestedStr, &endptr);
+    if (cpuRequested < 0.0)
+        return 0.0;
+    if (*endptr == 'm')
+        cpuRequested /= 1000;
+    return cpuRequested;
+}
 
-        return calcCost(thor_master_rate, ms) + calcCost(thor_slave_rate, ms) * clusterWidth;
-    }
-    return 0;
+static double getCostCpuHour()
+{
+    double costCpuHour = queryGlobalConfig().getPropReal("cost/@perCpu");
+    if (costCpuHour < 0.0)
+        return 0.0;
+    return costCpuHour;
+}
+
+extern WORKUNIT_API double getMachineCostRate()
+{
+    return getCostCpuHour() * getCpuSize("resources/@cpu") ;
+};
+
+extern WORKUNIT_API double getThorManagerRate()
+{
+    return getCostCpuHour() * getCpuSize("managerResources/@cpu");
+}
+
+extern WORKUNIT_API double getThorWorkerRate()
+{
+    return getCostCpuHour() * getCpuSize("workerResources/@cpu");
+}
+
+extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned clusterWidth)
+{
+    return calcCost(getThorManagerRate(), ms) + calcCost(getThorWorkerRate(), ms) * clusterWidth;
 }
 
 void aggregateStatistic(StatsAggregation & result, IConstWorkUnit * wu, const WuScopeFilter & filter, StatisticKind search)

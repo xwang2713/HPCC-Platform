@@ -336,7 +336,7 @@ define([
                 columns: {
                     col1: selector({
                         width: 27,
-                        selectorType: 'checkbox'
+                        selectorType: "checkbox"
                     }),
                     Suspended: {
                         label: this.i18n.Suspended,
@@ -394,7 +394,7 @@ define([
                         label: this.i18n.ID,
                         width: 380,
                         formatter: function (Id, idx) {
-                            return "<a href='#' class='dgrid-row-url'>" + Id + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + Id + "</a>";
                         }
                     },
                     Name: {
@@ -409,7 +409,7 @@ define([
                         width: 160,
                         label: this.i18n.WUID,
                         formatter: function (Wuid, idx) {
-                            return "<a href='#' class='dgrid-row-url2'>" + Wuid + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url2'>" + Wuid + "</a>";
                         }
                     },
                     Dll: {
@@ -633,7 +633,6 @@ define([
                 registry.byId(this.id + "Options").closeDropDown();
             }
         },
-
 
         _onRowDblClick: function (item, workunitTab) {
             var tab = null;

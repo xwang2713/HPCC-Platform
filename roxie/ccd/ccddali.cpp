@@ -33,7 +33,13 @@
 #include "workflow.hpp"
 #include "mpcomm.hpp"
 
+#ifndef _CONTAINERIZED
+#define ROXIE_DALI_CACHE
+#endif
+
+#ifdef ROXIE_DALI_CACHE
 const char *roxieStateName = "RoxieLocalState.xml";
+#endif
 
 class CDaliPackageWatcher : public CInterface, implements ISafeSDSSubscription, implements ISDSNodeSubscription, implements IDaliPackageWatcher
 {
@@ -167,6 +173,7 @@ private:
     CriticalSection daliConnectionCrit;
     Owned<IUserDescriptor> userdesc;
     InterruptableSemaphore disconnectSem;
+    CriticalSection watchersCrit;
     IArrayOf<IDaliPackageWatcher> watchers;
     CSDSServerStatus *serverStatus;
 
@@ -191,7 +198,8 @@ private:
                 }
                 else if (owner->connect(ROXIE_DALI_CONNECT_TIMEOUT))
                 {
-                    DBGLOG("roxie: CRoxieDaliConnectWatcher reconnected");
+                    if (traceLevel)
+                        DBGLOG("CRoxieDaliConnectWatcher reconnected");
                     try
                     {
                         owner->disconnectSem.wait();
@@ -235,6 +243,7 @@ private:
         connectWatcher.join();
     }
 
+#ifdef ROXIE_DALI_CACHE
     // The cache is static since it outlives the dali connections
 
     static CriticalSection cacheCrit;
@@ -287,6 +296,12 @@ private:
                 cache->addPropTree(newLoc, LINK(val));
         }
     }
+#else
+    inline static void initCache() {}
+    inline static void loadCache() {}
+    inline IPropertyTree *readCache(const char *xpath) { return nullptr; }
+    inline static void writeCache(const char *foundLoc, const char *newLoc, IPropertyTree *val) {}
+#endif
 
     IPropertyTree *loadDaliTree(const char *path, const char *id)
     {
@@ -588,6 +603,7 @@ public:
 
     virtual void commitCache()
     {
+#ifdef ROXIE_DALI_CACHE
         if (isConnected && cache && !oneShotRoxie)
         {
             CriticalBlock b(cacheCrit);
@@ -606,6 +622,7 @@ public:
                 cacheFile->rename(oldCacheFileName);
             newFile->rename(cacheFileName);
         }
+#endif
     }
 
     virtual IConstWorkUnit *attachWorkunit(const char *wuid, ILoadedDllEntry *source)
@@ -702,20 +719,26 @@ public:
 
     static void releaseCache()
     {
+#ifdef ROXIE_DALI_CACHE
         CriticalBlock b(cacheCrit);
         cache.clear();
+#endif
     }
 
     virtual void releaseSubscription(IDaliPackageWatcher *subscription)
     {
-        watchers.zap(*subscription);
         subscription->unsubscribe();
+        CriticalBlock b(watchersCrit);
+        watchers.zap(*subscription);
     }
 
     IDaliPackageWatcher *getSubscription(const char *id, const char *xpath, ISafeSDSSubscription *notifier, bool exact)
     {
         IDaliPackageWatcher *watcher = new CDaliPackageWatcher(id, xpath, notifier);
-        watchers.append(*LINK(watcher));
+        {
+            CriticalBlock b(watchersCrit);
+            watchers.append(*LINK(watcher));
+        }
         if (isConnected)
             watcher->subscribe(exact);
         return watcher;
@@ -777,6 +800,7 @@ public:
                     serverStatus->queryProperties()->setProp("@cluster", roxieName.str());
                     serverStatus->commitProperties();
                     isConnected = true; // Make sure this is set before the onReconnect calls, so that they refresh with info from Dali rather than from cache
+                    CriticalBlock b(watchersCrit);
                     ForEachItemIn(idx, watchers)
                     {
                         watchers.item(idx).onReconnect();
@@ -903,8 +927,10 @@ public:
 bool CRoxieDaliHelper::isConnected = false;
 CRoxieDaliHelper * CRoxieDaliHelper::daliHelper;
 CriticalSection CRoxieDaliHelper::daliHelperCrit;
+#ifdef ROXIE_DALI_CACHE
 CriticalSection CRoxieDaliHelper::cacheCrit;
 Owned<IPropertyTree> CRoxieDaliHelper::cache;
+#endif
 
 CriticalSection CRoxieDllServer::crit;
 

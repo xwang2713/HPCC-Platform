@@ -36,7 +36,7 @@ define([
                 columns: {
                     col1: selector({
                         width: 27,
-                        selectorType: 'checkbox',
+                        selectorType: "checkbox",
                         sortable: false
                     }),
                     Name: {
@@ -44,7 +44,7 @@ define([
                         width: 180,
                         sortable: true,
                         formatter: function (cell, row) {
-                            return "<a href='#' class='dgrid-row-url'>" + cell + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + cell + "</a>";
                         }
                     },
                     WorkUnit: { label: this.i18n.WUID, sortable: true }

@@ -21,6 +21,7 @@ function getConfig(env) {
         paths: {
             "hpcc": baseUrl + "/eclwatch",
             "src": baseUrl + "/lib/src",
+            "srcReact": baseUrl + "/src-react",
             "ganglia": baseUrl + "/ganglia",
             "templates": baseUrl + "/eclwatch/templates",
             "ecl": baseUrl + "/eclwatch/ecl",
@@ -31,6 +32,7 @@ function getConfig(env) {
             "@hpcc-js/common": hpccBaseUrl + "/common/dist/index",
             "@hpcc-js/comms": hpccBaseUrl + "/comms/dist/index",
             "@hpcc-js/composite": hpccBaseUrl + "/composite/dist/index",
+            "@hpcc-js/dataflow": hpccBaseUrl + "/dataflow/dist/index",
             "@hpcc-js/dgrid": hpccBaseUrl + "/dgrid/dist/index",
             "@hpcc-js/dgrid-shim": hpccBaseUrl + "/dgrid-shim/dist/index",
             "@hpcc-js/eclwatch": hpccBaseUrl + "/eclwatch/dist/index",
@@ -54,39 +56,39 @@ function getConfig(env) {
         },
         packages: [
             {
-                name: 'dojo',
-                location: baseUrl + '/node_modules/dojo',
-                lib: '.'
+                name: "dojo",
+                location: baseUrl + "/node_modules/dojo",
+                lib: "."
             },
             {
-                name: 'dijit',
-                location: baseUrl + '/node_modules/dijit',
-                lib: '.'
+                name: "dijit",
+                location: baseUrl + "/node_modules/dijit",
+                lib: "."
             },
             {
-                name: 'dojox',
-                location: baseUrl + '/node_modules/dojox',
-                lib: '.'
+                name: "dojox",
+                location: baseUrl + "/node_modules/dojox",
+                lib: "."
             },
             {
-                name: 'dojo-themes',
-                location: baseUrl + '/node_modules/dojo-themes',
-                lib: '.'
+                name: "dojo-themes",
+                location: baseUrl + "/node_modules/dojo-themes",
+                lib: "."
             },
             {
-                name: 'dgrid',
-                location: baseUrl + '/dgrid',
-                lib: '.'
+                name: "dgrid",
+                location: baseUrl + "/dgrid",
+                lib: "."
             },
             {
-                name: 'xstyle',
-                location: baseUrl + '/xstyle',
-                lib: '.'
+                name: "xstyle",
+                location: baseUrl + "/xstyle",
+                lib: "."
             },
             {
-                name: 'put-selector',
-                location: baseUrl + '/put-selector',
-                lib: '.'
+                name: "put-selector",
+                location: baseUrl + "/put-selector",
+                lib: "."
             }
         ]
     };

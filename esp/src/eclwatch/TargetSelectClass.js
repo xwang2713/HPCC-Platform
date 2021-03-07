@@ -6,7 +6,7 @@ define([
     "dojo/_base/Deferred",
     "dojo/data/ItemFileReadStore",
     "dojo/promise/all",
-    "dojo/store/Memory",
+    "src/Memory",
 
     "src/WsTopology",
     "src/WsWorkunits",
@@ -16,7 +16,7 @@ define([
     "src/WsPackageMaps",
     "src/Utility"
 
-], function (lang, nlsHPCCMod, arrayUtil, xhr, Deferred, ItemFileReadStore, all, Memory,
+], function (lang, nlsHPCCMod, arrayUtil, xhr, Deferred, ItemFileReadStore, all, MemoryMod,
     WsTopology, WsWorkunits, FileSpray, WsAccess, WsESDLConfig, WsPackageMaps, Utility) {
 
     var nlsHPCC = nlsHPCCMod.default;
@@ -412,21 +412,20 @@ define([
                 var baseFolder = this._dropZoneTarget.machine.Directory;
                 var selectedFolder = this.get("value");
                 return baseFolder + selectedFolder;
-            }
+            };
             if (this._dropZoneTarget) {
                 this._loadDropZoneFolders(pathSepChar, this._dropZoneTarget.machine.Netaddress, this._dropZoneTarget.machine.Directory, this._dropZoneTarget.machine.OS).then(function (results) {
                     results.sort();
-                    var store = new Memory({
-                        data: arrayUtil.map(results, function (_path) {
-                            var path = _path.substring(context._dropZoneTarget.machine.Directory.length);
-                            return {
-                                name: path,
-                                id: _path
-                            };
-                        })
-                    });
+                    var store = new MemoryMod.Memory();
+                    store.setData(arrayUtil.map(results, function (_path) {
+                        var path = _path.substring(context._dropZoneTarget.machine.Directory.length);
+                        return {
+                            name: path,
+                            id: _path
+                        };
+                    }));
                     context.set("store", store);
-                    context.set("placeholder", defaultPath)
+                    context.set("placeholder", defaultPath);
                     context._postLoad();
                 });
             }
@@ -466,12 +465,12 @@ define([
                             context.options.push({
                                 label: targetData[i].Queue,
                                 value: targetData[i].Queue
-                            })
+                            });
                         }
                         context._postLoad();
                     }
                 }
-            })
+            });
         },
 
         loadSprayTargets: function () {
@@ -530,11 +529,13 @@ define([
             }).then(function (response) {
                 if (lang.exists("TpLogicalClusterQueryResponse.TpLogicalClusters.TpLogicalCluster", response)) {
                     var targetData = response.TpLogicalClusterQueryResponse.TpLogicalClusters.TpLogicalCluster;
+                    context.logicalClusters = {};
                     for (var i = 0; i < targetData.length; ++i) {
                         context.options.push({
                             label: targetData[i].Name,
                             value: targetData[i].Name
                         });
+                        context.logicalClusters[targetData[i].Name] = targetData[i];
                     }
 
                     if (!context.includeBlank && context._value === "") {
@@ -547,6 +548,10 @@ define([
                 }
                 context._postLoad();
             });
+        },
+
+        selectedTarget() {
+            return this.logicalClusters[this.get("value")];
         },
 
         loadECLSamples: function () {
@@ -588,7 +593,7 @@ define([
                     var shortestLabel = "";
                     for (var i = 0; i < targetData.length; ++i) {
                         options.push({
-                            label: targetData[i].name,// + " " + targetData[i].filesize + " " + targetData[i].modifiedtime,
+                            label: targetData[i].name, // + " " + targetData[i].filesize + " " + targetData[i].modifiedtime,
                             value: targetData[i].name
                         });
                         if (shortestLabelLen > targetData[i].name.length) {

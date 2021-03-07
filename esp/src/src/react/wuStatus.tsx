@@ -7,7 +7,6 @@ import nlsHPCC from "../nlsHPCC";
 import { theme } from "./theme";
 import * as React from "react";
 
-
 const Steps = [
     {
         text: nlsHPCC.Created,
@@ -86,7 +85,7 @@ export const WUStatus: React.FunctionComponent<WUStatus> = ({
         return () => {
             wuWatchHandle.release();
         };
-    }, []);
+    }, [wuid]);
 
     return (
         <MuiThemeProvider theme={theme}>
@@ -100,7 +99,7 @@ export const WUStatus: React.FunctionComponent<WUStatus> = ({
                         <StepLabel {...labelProps}>{label}</StepLabel>
                     </Step>;
                 })}
-            </Stepper>;
+            </Stepper>
         </MuiThemeProvider>
     );
 };

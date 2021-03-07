@@ -96,6 +96,12 @@ private:
     mutable std::vector<unsigned> currentDelay;  // NOTE - technically should be atomic, but in the event of a race we don't really care who wins
 };
 
+// In containerized mode with dynamic topology , we prefer a different mechanism for tracking node health
+
+extern UDPLIB_API void noteNodeSick(const ServerIdentifier &node);
+extern UDPLIB_API void noteNodeHealthy(const ServerIdentifier &node);
+extern UDPLIB_API unsigned getIbytiDelay(const ServerIdentifier &node);
+
 interface ITopologyServer : public IInterface
 {
     virtual const SocketEndpointArray &queryAgents(unsigned channel) const = 0;
@@ -103,10 +109,12 @@ interface ITopologyServer : public IInterface
     virtual const ChannelInfo &queryChannelInfo(unsigned channel) const = 0;
     virtual const std::vector<unsigned> &queryChannels() const = 0;
     virtual bool implementsChannel(unsigned channel) const = 0;
+    virtual void report(StringBuffer &ret) const = 0;
 };
 
 extern UDPLIB_API unsigned getNumAgents(unsigned channel);
 extern UDPLIB_API const ITopologyServer *getTopology();
+extern UDPLIB_API void freezeTopology(bool frozen);
 
 struct RoxieEndpointInfo
 {
@@ -118,6 +126,8 @@ struct RoxieEndpointInfo
 
 extern UDPLIB_API void initializeTopology(const StringArray &topoServers, const std::vector<RoxieEndpointInfo> &myRoles);
 extern UDPLIB_API void publishTopology(unsigned traceLevel);
+extern UDPLIB_API void stopTopoThread();
+
 #ifndef _CONTAINERIZED
 extern UDPLIB_API void createStaticTopology(const std::vector<RoxieEndpointInfo> &allRoles, unsigned traceLevel);
 #endif

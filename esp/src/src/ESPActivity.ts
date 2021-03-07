@@ -1,7 +1,6 @@
 ﻿import * as arrayUtil from "dojo/_base/array";
 import * as declare from "dojo/_base/declare";
 import * as lang from "dojo/_base/lang";
-import * as Memory from "dojo/store/Memory";
 import * as Observable from "dojo/store/Observable";
 
 import * as ESPDFUWorkunit from "./ESPDFUWorkunit";
@@ -10,16 +9,22 @@ import * as ESPUtil from "./ESPUtil";
 import * as ESPWorkunit from "./ESPWorkunit";
 import * as WsSMC from "./WsSMC";
 import * as WsWorkunits from "./WsWorkunits";
+import { Memory } from "./Memory";
 
-const Store = declare([Memory], {
-    idProperty: "__hpcc_id",
+class Store extends Memory {
+
+    constructor() {
+        super("__hpcc_id");
+    }
+
     mayHaveChildren(item) {
         return (item.getChildCount && item.getChildCount());
-    },
+    }
+
     getChildren(parent, options) {
         return parent.queryChildren();
     }
-});
+}
 
 const Activity = declare([ESPUtil.Singleton, ESPUtil.Monitor], {
     //  Asserts  ---
@@ -214,7 +219,7 @@ export function Get() {
     return globalActivity;
 }
 
-export function CreateActivityStore(options) {
-    const store = new Store(options);
-    return Observable(store);
+export function CreateActivityStore() {
+    const store = new Store();
+    return new Observable(store);
 }

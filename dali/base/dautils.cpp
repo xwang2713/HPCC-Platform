@@ -286,6 +286,24 @@ CDfsLogicalFileName & CDfsLogicalFileName::operator = (CDfsLogicalFileName const
     return *this;
 }
 
+bool CDfsLogicalFileName::isExternalPlane() const
+{
+    return external && startsWithIgnoreCase(lfn, PLANE_SCOPE "::");
+}
+
+bool CDfsLogicalFileName::getExternalPlane(StringBuffer & plane) const
+{
+    if (!isExternalPlane())
+        return false;
+
+    const char * start = lfn.str() + strlen(PLANE_SCOPE "::");
+    const char * end = strstr(start,"::");
+    assertex(end);
+    plane.append(end-start, start);
+    return true;
+}
+
+
 void CDfsLogicalFileName::set(const CDfsLogicalFileName &other)
 {
     lfn.set(other.lfn);
@@ -590,8 +608,8 @@ bool CDfsLogicalFileName::normalizeExternal(const char * name, StringAttr &res, 
         normalizeScope(s1, s1, ns1-s1, planeName, strict);
 
         Owned<IStoragePlane> plane = getStoragePlane(planeName, true);
-        if (plane->numDevices() != 1)
-            throw makeStringExceptionV(-1, "Scope contains invalid storage plane '%s'", name);
+        if (plane->numDevices() == 0)
+            throw makeStringExceptionV(-1, "Scope contains invalid storage plane '%s'", planeName.str());
             
         str.append("::").append(planeName);
         str.append(ns1);
@@ -3388,7 +3406,7 @@ public:
         mb.read(count);
         if (count)
         {
-            ldInfo.ensure(count);
+            ldInfo.ensureCapacity(count);
             for (unsigned c=0; c<count; c++)
                 ldInfo.append(new CLockMetaData(mb));
         }
@@ -3549,4 +3567,37 @@ ILockInfoCollection *createLockInfoCollection()
 ILockInfoCollection *deserializeLockInfoCollection(MemoryBuffer &mb)
 {
     return new CLockInfoCollection(mb);
+}
+
+static const char* remLeading(const char* s)
+{
+    if (*s == '/')
+        s++;
+    return s;
+}
+
+static unsigned daliConnectTimeoutMs = 5000;
+extern da_decl IRemoteConnection* connectXPathOrFile(const char* path, bool safe, StringBuffer& xpath)
+{
+    CDfsLogicalFileName lfn;
+    StringBuffer lfnPath;
+    if ((strstr(path, "::") != nullptr) && !strchr(path, '/'))
+    {
+        lfn.set(path);
+        lfn.makeFullnameQuery(lfnPath, DXB_File);
+        path = lfnPath.str();
+    }
+    else if (strchr(path + ((*path == '/') ? 1 : 0),'/') == nullptr)
+        safe = true;    // all root trees safe
+
+    Owned<IRemoteConnection> conn = querySDS().connect(remLeading(path), myProcessSession(), safe ? 0 : RTM_LOCK_READ, daliConnectTimeoutMs);
+    if (!conn && !lfnPath.isEmpty())
+    {
+        lfn.makeFullnameQuery(lfnPath.clear(), DXB_SuperFile);
+        path = lfnPath.str();
+        conn.setown(querySDS().connect(remLeading(path), myProcessSession(), safe? 0 : RTM_LOCK_READ, daliConnectTimeoutMs));
+    }
+    if (conn.get())
+        xpath.append(path);
+    return conn.getClear();
 }

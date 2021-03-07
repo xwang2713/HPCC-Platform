@@ -25,7 +25,7 @@
 #include "workunit.hpp"
 #include "exception_util.hpp"
 #include "portlist.h"
-
+#include "daqueue.hpp"
 
 const char* MSG_FAILED_GET_ENVIRONMENT_INFO = "Failed to get environment information.";
 
@@ -1972,29 +1972,16 @@ void CTpWrapper::getAttPath(const char* Path,StringBuffer& returnStr)
 
 extern TPWRAPPER_API ISashaCommand* archiveOrRestoreWorkunits(StringArray& wuids, IProperties* params, bool archive, bool dfu)
 {
-
     StringBuffer sashaAddress;
-    unsigned port = DEFAULT_SASHA_PORT;
     if (params && params->hasProp("sashaServerIP"))
     {
         sashaAddress.set(params->queryProp("sashaServerIP"));
-        port = params->getPropInt("sashaServerPort", DEFAULT_SASHA_PORT);
+        sashaAddress.append(':').append(params->getPropInt("sashaServerPort", DEFAULT_SASHA_PORT));
     }
     else
-    {
-        IArrayOf<IConstTpSashaServer> sashaservers;
-        CTpWrapper dummy;
-        dummy.getTpSashaServers(sashaservers);
-        if (sashaservers.ordinality() == 0)
-            throw makeStringException(ECLWATCH_ARCHIVE_SERVER_NOT_FOUND, "Sasha server not found");
+        getSashaService(sashaAddress, "sasha-wu-archiver", true);
 
-        IArrayOf<IConstTpMachine>& sashaservermachine = sashaservers.item(0).getTpMachines();
-        sashaAddress.set(sashaservermachine.item(0).getNetaddress());
-        if (sashaAddress.isEmpty())
-            throw makeStringException(ECLWATCH_ARCHIVE_SERVER_NOT_FOUND, "Sasha address not found");
-    }
-
-    SocketEndpoint ep(sashaAddress.str(), port);
+    SocketEndpoint ep(sashaAddress);
     Owned<INode> node = createINode(ep);
     Owned<ISashaCommand> cmd = createSashaCommand();
     cmd->setAction(archive ? SCA_ARCHIVE : SCA_RESTORE);
@@ -2009,4 +1996,339 @@ extern TPWRAPPER_API ISashaCommand* archiveOrRestoreWorkunits(StringArray& wuids
             "Sasha (%s) took too long to respond for Archive/restore workunit.",
             sashaAddress.str());
     return cmd.getClear();
+}
+
+extern TPWRAPPER_API IStringIterator* getContainerTargetClusters(const char* processType, const char* processName)
+{
+    Owned<CStringArrayIterator> ret = new CStringArrayIterator;
+    Owned<IPropertyTreeIterator> queues = queryComponentConfig().getElements("queues");
+    ForEach(*queues)
+    {
+        IPropertyTree& queue = queues->query();
+        if (!isEmptyString(processType))
+        {
+            const char* type = queue.queryProp("@type");
+            if (isEmptyString(type) || !strieq(type, processType))
+                continue;
+        }
+        const char* qName = queue.queryProp("@name");
+        if (isEmptyString(qName))
+            continue;
+
+        if (!isEmptyString(processName) && !strieq(qName, processName))
+            continue;
+
+        ret->append_unique(qName);
+    }
+    if (!isEmptyString(processType) && !strieq("roxie", processType))
+        return ret.getClear();
+
+    Owned<IPropertyTreeIterator> services = queryComponentConfig().getElements("services[@type='roxie']");
+    ForEach(*services)
+    {
+        IPropertyTree& service = services->query();
+        const char* targetName = service.queryProp("@target");
+        if (isEmptyString(targetName))
+            continue;
+
+        if (!isEmptyString(processName) && !strieq(targetName, processName))
+            continue;
+
+        ret->append_unique(targetName);
+    }
+    return ret.getClear();
+}
+
+class CContainerWUClusterInfo : public CSimpleInterfaceOf<IConstWUClusterInfo>
+{
+    StringAttr name;
+    StringAttr serverQueue;
+    StringAttr agentQueue;
+    StringAttr thorQueue;
+    ClusterType platform;
+    unsigned clusterWidth;
+
+public:
+    CContainerWUClusterInfo(const char* _name, const char* type, unsigned _clusterWidth)
+        : name(_name), clusterWidth(_clusterWidth)
+    {
+        StringBuffer queue;
+        if (strieq(type, "thor"))
+        {
+            thorQueue.set(getClusterThorQueueName(queue.clear(), name));
+            platform = ThorLCRCluster;
+        }
+        else if (strieq(type, "roxie"))
+        {
+            agentQueue.set(getClusterEclAgentQueueName(queue.clear(), name));
+            platform = RoxieCluster;
+        }
+        else
+        {
+            agentQueue.set(getClusterEclAgentQueueName(queue.clear(), name));
+            platform = HThorCluster;
+        }
+
+        serverQueue.set(getClusterEclCCServerQueueName(queue.clear(), name));
+    }
+
+    virtual IStringVal& getName(IStringVal& str) const override
+    {
+        str.set(name.get());
+        return str;
+    }
+    virtual IStringVal& getAgentQueue(IStringVal& str) const override
+    {
+        str.set(agentQueue);
+        return str;
+    }
+    virtual IStringVal& getServerQueue(IStringVal& str) const override
+    {
+        str.set(serverQueue);
+        return str;
+    }
+    virtual IStringVal& getThorQueue(IStringVal& str) const override
+    {
+        str.set(thorQueue);
+        return str;
+    }
+    virtual ClusterType getPlatform() const override
+    {
+        return platform;
+    }
+    virtual unsigned getSize() const override
+    {
+        return clusterWidth;
+    }
+    virtual bool isLegacyEclServer() const override
+    {
+        return false;
+    }
+    virtual IStringVal& getScope(IStringVal& str) const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual unsigned getNumberOfSlaveLogs() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual IStringVal & getAgentName(IStringVal & str) const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual IStringVal & getECLSchedulerName(IStringVal & str) const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const StringArray & getECLServerNames() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual IStringVal & getRoxieProcess(IStringVal & str) const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const StringArray & getThorProcesses() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const StringArray & getPrimaryThorProcesses() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const SocketEndpointArray & getRoxieServers() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const char *getLdapUser() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const char *getLdapPassword() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual unsigned getRoxieRedundancy() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual unsigned getChannelsPerNode() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual int getRoxieReplicateOffset() const override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const char *getAlias() const override
+    {
+        UNIMPLEMENTED;
+    }
+};
+
+extern TPWRAPPER_API unsigned getContainerWUClusterInfo(CConstWUClusterInfoArray& clusters)
+{
+    Owned<IPropertyTreeIterator> queues = queryComponentConfig().getElements("queues");
+    ForEach(*queues)
+    {
+        IPropertyTree& queue = queues->query();
+        Owned<IConstWUClusterInfo> cluster = new CContainerWUClusterInfo(queue.queryProp("@name"),
+            queue.queryProp("@type"), (unsigned) queue.getPropInt("@width", 1));
+        clusters.append(*cluster.getClear());
+    }
+
+    return clusters.ordinality();
+}
+
+extern TPWRAPPER_API IConstWUClusterInfo* getWUClusterInfoByName(const char* clusterName)
+{
+#ifndef _CONTAINERIZED
+    return getTargetClusterInfo(clusterName);
+#else
+    VStringBuffer xpath("queues[@name='%s']", clusterName);
+    IPropertyTree* queue = queryComponentConfig().queryPropTree(xpath);
+    if (!queue)
+        return nullptr;
+
+    return new CContainerWUClusterInfo(queue->queryProp("@name"), queue->queryProp("@type"),
+        (unsigned) queue->getPropInt("@width", 1));
+#endif
+}
+
+extern TPWRAPPER_API void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory>& connMap)
+{
+    Owned<IPropertyTreeIterator> services = queryComponentConfig().getElements("services[@type='roxie']");
+    ForEach(*services)
+    {
+        IPropertyTree& service = services->query();
+        const char* name = service.queryProp("@name");
+        const char* target = service.queryProp("@target");
+        const char* port = service.queryProp("@port");
+
+        if (isEmptyString(target) || isEmptyString(name)) //bad config?
+            continue;
+
+        StringBuffer s;
+        s.append(name).append(':').append(port ? port : "9876");
+        Owned<ISmartSocketFactory> sf = new CSmartSocketFactory(s.str(), false, 60, (unsigned) -1);
+        connMap.setValue(target, sf.get());
+    }
+}
+
+extern TPWRAPPER_API unsigned getThorClusterNames(StringArray& targetNames, StringArray& queueNames)
+{
+#ifndef _CONTAINERIZED
+    StringArray thorNames, groupNames;
+    getEnvironmentThorClusterNames(thorNames, groupNames, targetNames, queueNames);
+#else
+    Owned<IStringIterator> targets = getContainerTargetClusters("thor", nullptr);
+    ForEach(*targets)
+    {
+        SCMStringBuffer target;
+        targets->str(target);
+        targetNames.append(target.str());
+
+        StringBuffer qName;
+        queueNames.append(getClusterThorQueueName(qName, target.str()));
+    }
+#endif
+    return targetNames.ordinality();
+}
+
+static std::set<std::string> validTargets;
+static CriticalSection validTargetSect;
+static bool targetsDirty = true;
+
+static void refreshValidTargets()
+{
+    validTargets.clear();
+#ifdef _CONTAINERIZED
+    // discovered from generated cluster names
+    Owned<IStringIterator> it = getContainerTargetClusters(nullptr, nullptr);
+#else
+    Owned<IStringIterator> it = getTargetClusters(nullptr, nullptr);
+#endif
+    ForEach(*it)
+    {
+        SCMStringBuffer s;
+        IStringVal& val = it->str(s);
+        if (validTargets.find(val.str()) == validTargets.end())
+        {
+            validTargets.insert(val.str());
+            PROGLOG("adding valid target: %s", val.str());
+        }
+    }
+}
+
+extern TPWRAPPER_API void validateTargetName(const char* target)
+{
+    if (isEmptyString(target))
+        throw makeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Empty target name.");
+
+    CriticalBlock block(validTargetSect);
+    if (targetsDirty)
+    {
+        refreshValidTargets();
+        targetsDirty = false;
+    }
+
+    if (validTargets.find(target) != validTargets.end())
+        return;
+
+#ifdef _CONTAINERIZED
+    //Currently, if there's any change to the target queues, esp will be auto restarted by K8s.
+    throw makeStringExceptionV(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid target name: %s", target);
+#else
+    if (!validateTargetClusterName(target))
+        throw makeStringExceptionV(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid target name: %s", target);
+
+    targetsDirty = true;
+#endif
+}
+
+bool getSashaService(StringBuffer &serviceAddress, const char *serviceName, bool failIfNotFound)
+{
+    if (!isEmptyString(serviceName))
+    {
+#ifdef _CONTAINERIZED
+        VStringBuffer serviceQualifier("services[@type='sasha'][@name='%s']", serviceName);
+        IPropertyTree *serviceTree = queryComponentConfig().queryPropTree(serviceQualifier);
+        if (serviceTree)
+        {
+            serviceAddress.append(serviceName).append(':').append(serviceTree->queryProp("@port"));
+            return true;
+        }
+#else
+        // all services are on same sasha on bare-metal as far as esp services are concerned
+        StringBuffer sashaAddress;
+        IArrayOf<IConstTpSashaServer> sashaservers;
+        CTpWrapper dummy;
+        dummy.getTpSashaServers(sashaservers);
+        if (0 != sashaservers.ordinality())
+        {
+            // NB: this code (in bare-matal) doesn't handle >1 Sasha.
+            // Prior to this change, it would have failed to [try to] contact any Sasha.
+            IConstTpSashaServer& sashaserver = sashaservers.item(0);
+            IArrayOf<IConstTpMachine> &sashaservermachine = sashaserver.getTpMachines();
+            sashaAddress.append(sashaservermachine.item(0).getNetaddress());
+            if (!sashaAddress.isEmpty())
+            {
+                serviceAddress.append(sashaAddress).append(':').append(DEFAULT_SASHA_PORT);
+                return true;
+            }
+        }
+#endif
+    }
+    if (failIfNotFound)
+        throw makeStringExceptionV(ECLWATCH_ARCHIVE_SERVER_NOT_FOUND, "Sasha '%s' server not found", serviceName);
+    return false;
+}
+
+bool getSashaServiceEP(SocketEndpoint &serviceEndpoint, const char *service, bool failIfNotFound)
+{
+    StringBuffer serviceAddress;
+    if (!getSashaService(serviceAddress, service, failIfNotFound))
+        return false;
+    serviceEndpoint.set(serviceAddress);
+    return true;
 }

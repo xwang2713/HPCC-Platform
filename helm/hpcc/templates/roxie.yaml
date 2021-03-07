@@ -1,43 +1,69 @@
+{{/*
+roxie configmap
+Pass in dict with root and me
+*/}}
+{{- define "hpcc.roxieConfigMap" -}}
+apiVersion: v1
+metadata:
+  name: {{ .me.name }}-configmap
+data:
+  {{ .me.name }}.yaml: |
+    version: 1.0
+    roxie:
+{{ toYaml ( omit .me "logging") | indent 6 }}
+      numChannels: {{ .numChannels }}
+      topologyServers: "{{ .toponame }}:{{ .topoport }}"
+      resolveLocally: false
+{{- include "hpcc.generateLoggingConfig" (dict "root" .root "me" .me) | indent 6 }}
+{{ include "hpcc.generateVaultConfig" (dict "root" .root "categories" (list "storage" "ecl" "ecl-user" ) ) | indent 6 }}
+    global:
+{{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
+{{- end -}}
+
 {{ range $roxie := $.Values.roxie -}}
 {{- if not $roxie.disabled -}}
-{{- include "hpcc.checkDefaultStoragePlane" (dict "root" $ "me" $roxie )}}
+{{- $commonCtx := dict "root" $ "me" $roxie }}
+{{- $_ := set $commonCtx "toponame" (printf "%s-toposerver" $roxie.name) -}}
+{{- $_ := set $commonCtx "numChannels" ($roxie.numChannels | int | default 1) -}}
+{{- $_ := set $commonCtx "topoport" ($roxie.topoport | int | default 9004) -}}
+{{- $configSHA := include "hpcc.roxieConfigMap" $commonCtx | sha256sum }}
+{{- include "hpcc.checkDefaultStoragePlane" $commonCtx }}
 {{- if not $roxie.localAgent -}}
-{{- $toponame := printf "%s-toposerver" $roxie.name -}}
-{{- $numChannels := $roxie.numChannels | int | default 1 -}}
-{{- $topoport := $roxie.topoport | int | default 9004 -}}
+{{- $_ := set $roxie "localAgent" false -}}
 {{- $servername := printf "%s-server" $roxie.name -}}
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $toponame | quote }}
+  name: {{ $commonCtx.toponame | quote }}
 spec:
   replicas: {{ $roxie.topoReplicas | default 1 }}
   selector:
     matchLabels:
-      run: {{ $toponame | quote }}
+      run: {{ $commonCtx.toponame | quote }}
   template:
     metadata:
       labels:
-        run: {{ $toponame | quote }}
+        run: {{ $commonCtx.toponame | quote }}
         roxie-cluster: {{ $roxie.name | quote }}
+      annotations:
+        checksum/config: {{ $configSHA }}
     spec:
       serviceAccountName: "hpcc-default"
       containers:
-      - name: {{ $toponame | quote }}
+      - name: {{ $commonCtx.toponame | quote }}
 {{ include "hpcc.addSentinelProbes" $roxie | indent 8 }}
-{{- include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
+{{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
+{{- if not $.Values.global.privileged }}
 {{- include "hpcc.addStubResources" . | indent 8 }}
-{{ include "hpcc.addImageAttrs" (dict "root" $ "me" $roxie) | indent 8 }}
+{{- end }}
+{{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         workingDir: /var/lib/HPCCSystems
         command: [ toposerver ] 
         volumeMounts:
-        - name: {{ .name }}-configmap-volume
-          mountPath: /etc/config
+{{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
       volumes:
-      - name: {{ .name }}-configmap-volume
-        configMap:
-          name: {{ .name }}-configmap
+{{ include "hpcc.addConfigMapVolume" . | indent 6 }}
 ---
 
 {{- range $service := $roxie.services }}
@@ -64,14 +90,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $toponame | quote }}
+  name: {{ $commonCtx.toponame | quote }}
 spec:
   ports:
-  - port: {{ $topoport  }}
+  - port: {{ $commonCtx.topoport  }}
     protocol: TCP
-    targetPort: {{ $topoport }}
+    targetPort: {{ $commonCtx.topoport }}
   selector:
-    run: {{ $toponame | quote }}
+    run: {{ $commonCtx.toponame | quote }}
   clusterIP: None # Headless service
 
 ---
@@ -100,21 +126,7 @@ spec:
 
 ---
 kind: ConfigMap 
-apiVersion: v1 
-metadata:
-  name: {{ $roxie.name }}-configmap 
-data:
-  {{ $roxie.name }}.yaml: |
-    version: 1.0
-    roxie:
-{{ toYaml ( omit $roxie "logging") | indent 6 }}
-      numChannels: {{ $numChannels }}
-      topologyServers: "{{ $toponame }}:{{ $topoport }}"
-      resolveLocally: false
-{{- include "hpcc.generateLoggingConfig" (dict "root" $ "me" $roxie) | indent 6 }}
-{{ include "hpcc.generateVaultConfig" (dict "root" $ "categories" (list "storage" "ecl" "ecl-user" ) ) | indent 6 }}
-    global:
-{{ include "hpcc.generateGlobalConfigMap" $ | indent 6 }}
+{{ include "hpcc.roxieConfigMap" $commonCtx }}
 ---
 
 {{ if $roxie.serverReplicas -}}
@@ -135,6 +147,8 @@ spec:
         roxie-cluster: {{ $roxie.name | quote }}
         accessDali: "yes"
         accessEsp: "yes"
+      annotations:
+        checksum/config: {{ $configSHA }}
     spec:
       serviceAccountName: "hpcc-default"
       initContainers:
@@ -162,21 +176,21 @@ spec:
 {{ include "hpcc.addSentinelProbes" $roxie | indent 8 }}
 {{ include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
 {{- include "hpcc.addResources" (dict "me" $roxie.serverResources) | indent 8 }}
-{{ include "hpcc.addImageAttrs" (dict "root" $ "me" $roxie) | indent 8 }}
+{{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" $roxie | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" (dict "root" $ "me" . ) | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $ | indent 8 }}
+{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
+{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" $roxie | indent 6 }}
-{{ include "hpcc.addDataVolume" (dict "root" $ "me" . ) | indent 6 }}
-{{ include "hpcc.addDllVolume" $ | indent 6 }}
+{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
+{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 6 }}
 ---
 
 {{ end -}}
-{{ range $c, $e := until ($roxie.numChannels|int) -}}
+{{ range $c, $e := until ($commonCtx.numChannels|int) -}}
 {{- $channel := add $c 1 -}}
 {{- $name := printf "%s-agent-%d" $roxie.name $channel -}}
 
@@ -185,7 +199,7 @@ kind: Deployment
 metadata:
   name: {{ $name | quote}}
 spec:
-  replicas: {{ $roxie.channelReplicas | default 1 }}
+  replicas: {{ $roxie.replicas | default 1 }}
   selector:
     matchLabels:
       run: {{ $name | quote}}
@@ -199,6 +213,8 @@ spec:
         roxie-cluster: {{ $roxie.name | quote }}
         accessDali: "yes"
         accessEsp: "yes"
+      annotations:
+        checksum/config: {{ $configSHA }}
     spec:
       serviceAccountName: "hpcc-default"
       initContainers:
@@ -229,16 +245,16 @@ spec:
 {{- end }}
 {{ include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
 {{- include "hpcc.addResources" (dict "me" $roxie.channelResources) | indent 8 }}
-{{ include "hpcc.addImageAttrs" (dict "root" $ "me" $roxie) | indent 8 }}
+{{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" $roxie | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" (dict "root" $ "me" $roxie ) | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $ | indent 8 }}
+{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
+{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" $roxie | indent 6 }}
-{{ include "hpcc.addDataVolume" (dict "root" $ "me" $roxie ) | indent 6 }}
-{{ include "hpcc.addDllVolume" $ | indent 6 }}
+{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
+{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 6 }}
 
 ---

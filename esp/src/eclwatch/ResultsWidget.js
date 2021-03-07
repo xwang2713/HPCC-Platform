@@ -88,31 +88,42 @@ define([
                 columns: {
                     col1: selector({
                         width: 27,
-                        selectorType: 'checkbox'
+                        selectorType: "checkbox"
                     }),
                     Name: {
                         label: this.i18n.Name, width: 180, sortable: true,
                         formatter: function (Name, idx) {
-                            return "<a href='#' class='dgrid-row-url'>" + Name + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + Name + "</a>";
                         }
                     },
                     FileName: {
                         label: this.i18n.FileName, sortable: true,
                         formatter: function (FileName, idx) {
-                            return "<a href='#' class='dgrid-row-url2'>" + FileName + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url2'>" + FileName + "</a>";
                         }
                     },
                     Value: {
                         label: this.i18n.Value,
-                        width: 360,
+                        width: 240,
                         sortable: true
+                    },
+                    Skew: {
+                        label: this.i18n.Skew,
+                        width: 120,
+                        sortable: true,
+                        formatter: function (Skew, row) {
+                            if (row.LogicalFile && row.LogicalFile.MaxSkew && row.LogicalFile.MinSkew) {
+                                return row.LogicalFile.MaxSkew + " / " + row.LogicalFile.MinSkew;
+                            }
+                            return "";
+                        }
                     },
                     ResultViews: {
                         label: this.i18n.Views, sortable: true,
                         formatter: function (ResultViews, idx) {
                             var retVal = "";
                             arrayUtil.forEach(ResultViews, function (item, idx) {
-                                retVal += "<a href='#' viewName=" + encodeURIComponent(item) + " class='dgrid-row-url3'>" + item + "</a>&nbsp;";
+                                retVal += "<a href='#' onClick='return false;' viewName=" + encodeURIComponent(item) + " class='dgrid-row-url3'>" + item + "</a>&nbsp;";
                             });
                             return retVal;
                         }
@@ -236,8 +247,12 @@ define([
             var context = this;
             this.wu.getInfo({
                 onGetResults: function (results) {
-                    context.store.setData(results);
-                    context.grid.refresh();
+                    Promise.all(results.map(function (result) {
+                        return result.fetchLogicalFile();
+                    })).then(function (responses) {
+                        context.store.setData(results);
+                        context.grid.refresh();
+                    });
                 }
             });
         },

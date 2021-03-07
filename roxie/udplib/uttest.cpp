@@ -179,11 +179,11 @@ public:
         Owned<IReceiveManager> rcvMgr;
         if (useAeron)
         {
-            SocketEndpoint myEP(7000, myNode.getNodeAddress());
+            SocketEndpoint myEP(7000, myNode.getIpAddress());
             rcvMgr.setown(createAeronReceiveManager(myEP));
         }
         else
-            rcvMgr.setown(createReceiveManager(7000, 7001, 7002, 7003, multicastIP, udpQueueSize, maxPacketsPerSender));
+            rcvMgr.setown(createReceiveManager(7000, 7001, 7002, 7003, multicastIP, udpQueueSize, maxPacketsPerSender, false));
         Owned<roxiemem::IRowManager> rowMgr = roxiemem::createRowManager(0, NULL, queryDummyContextLogger(), NULL, false);
         Owned<IMessageCollator> collator = rcvMgr->createMessageCollator(rowMgr, 1);
         unsigned lastReport = 0;
@@ -291,9 +291,9 @@ void testNxN()
         maxPacketsPerSender = udpQueueSize;
     Owned <ISendManager> sendMgr;
     if (useAeron)
-        sendMgr.setown(createAeronSendManager(7000, udpNumQs, myNode.getNodeAddress()));
+        sendMgr.setown(createAeronSendManager(7000, udpNumQs, myNode.getIpAddress()));
     else
-        sendMgr.setown(createSendManager(7000, 7001, 7002, 7003, multicastIP, 100, udpNumQs, NULL));
+        sendMgr.setown(createSendManager(7000, 7001, 7002, 7003, multicastIP, 100, udpNumQs, NULL, false));
     Receiver receiver;
 
     IMessagePacker **packers = new IMessagePacker *[numNodes];
@@ -778,7 +778,7 @@ int main(int argc, char * argv[] )
         myIndex = numNodes;
         ForEachItemIn(idx, allNodes)
         {
-            if (allNodes.item(idx).ipequals(myNode.getNodeAddress()))
+            if (allNodes.item(idx).ipequals(myNode.getIpAddress()))
             {
                 myIndex = idx;
                 break;
