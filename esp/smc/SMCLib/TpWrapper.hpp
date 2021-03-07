@@ -42,7 +42,7 @@
 #include <string>
 #include <set>
 #include "sacmd.hpp"
-
+#include "jsmartsock.ipp"
 
 using std::set;
 using std::string;
@@ -211,6 +211,16 @@ private:
 };
 
 extern TPWRAPPER_API ISashaCommand* archiveOrRestoreWorkunits(StringArray& wuids, IProperties* params, bool archive, bool dfu);
+
+extern TPWRAPPER_API unsigned getContainerWUClusterInfo(CConstWUClusterInfoArray& clusters);
+extern TPWRAPPER_API IConstWUClusterInfo* getWUClusterInfoByName(const char* clustName);
+
+extern TPWRAPPER_API IStringIterator *getContainerTargetClusters(const char* processType, const char* processName);
+extern TPWRAPPER_API void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory>& connMap);
+extern TPWRAPPER_API unsigned getThorClusterNames(StringArray& targetNames, StringArray& queueNames);
+extern TPWRAPPER_API void validateTargetName(const char* target);
+extern TPWRAPPER_API bool getSashaService(StringBuffer &serviceAddress, const char *service, bool failIfNotFound);
+extern TPWRAPPER_API bool getSashaServiceEP(SocketEndpoint &serviceEndpoint, const char *service, bool failIfNotFound);
 
 #endif //_ESPWIZ_TpWrapper_HPP__
 

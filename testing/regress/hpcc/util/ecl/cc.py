@@ -22,7 +22,7 @@ import logging
 
 from ...common.error import Error
 from ...common.shell import Shell
-from ...util.util import PrintException
+from ...util.util import printException
 
 logger = logging.getLogger('RegressionTestEngine')
 
@@ -59,10 +59,10 @@ class ECLCC(Shell):
                 os.unlink(filename)
             result, stderr = self.getArchive(ecl)
 
-            if result.startswith( 'Error()'):
+            if result.startswith( 'Error('):
                 if ecl.testFail():
                     logger.debug("%3d. Fail is the expected result (ecl:'%s')", ecl.getTaskId(),  ecl.getBaseEclRealName())
-                    retVal = True
+                    retVal = False # True
                 else:
                     retVal = False
                     ecl.diff += ("%3d. Test: %s\n") % (ecl.getTaskId(), ecl.getBaseEclRealName())
@@ -92,7 +92,7 @@ class ECLCC(Shell):
                 FILE.close()
                 retVal = True
         except Exception as e:
-            PrintException(repr(e) + "ECLCC.makeArchive()")
+            printException(repr(e) + "ECLCC.makeArchive()")
             
         return retVal
 

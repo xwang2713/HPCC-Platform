@@ -2276,7 +2276,8 @@ void CWsDfuEx::doGetFileDetails(IEspContext &context, IUserDescriptor *udesc, co
                 FileDetails.setCompressedFileSize(compressedSize);
                 if (version >= 1.34)
                 {
-                    Decimal d(((double) compressedSize)/size*100);
+                    __int64 diff = size - compressedSize;
+                    Decimal d(((double) diff)/size*100);
                     d.round(2);
                     FileDetails.setPercentCompressed(d.getCString());
                 }
@@ -3962,7 +3963,7 @@ bool CWsDfuEx::onAdd(IEspContext &context, IEspAddRequest &req, IEspAddResponse 
 
         Owned<IDFUhelper> dfuhelper = createIDFUhelper();
         StringBuffer xmlstr(req.getXmlmap().length(),(const char*)req.getXmlmap().bufferBase());
-        dfuhelper->addFileXML(req.getDstname(), xmlstr, userdesc.get());
+        dfuhelper->addFileXML(req.getDstname(), xmlstr, req.getDstcluster(), userdesc.get());
     }
     catch(IException* e)
     {
@@ -6064,6 +6065,8 @@ void CWsDfuEx::dFUFileAccessCommon(IEspContext &context, const CDfsLogicalFileNa
         }
     }
     resp.setType(kind);
+
+    df->setAccessed();
 
     LOG(MCauditInfo,",FileAccess,EspProcess,READ,%s,%s,%s,jobid=%s,expirySecs=%d", cluster.str(), userID.str(), fileName.str(), requestId, expirySecs);
 }

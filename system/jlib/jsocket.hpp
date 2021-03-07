@@ -97,6 +97,8 @@ public:
     void ipserialize(MemoryBuffer & out) const;         
     void ipdeserialize(MemoryBuffer & in);          
     unsigned ipdistance(const IpAddress &ip,unsigned offset=0) const;       // network order distance (offset: 0-3 word (leat sig.), 0=Ipv4)
+    unsigned getIP4() const;
+    void setIP4(unsigned);
     bool ipincrement(unsigned count,byte minoctet=0,byte maxoctet=255,unsigned short minipv6piece=0,unsigned maxipv6piece=0xffff);
     unsigned ipsetrange( const char *text); // e.g. 10.173.72.1-65  ('-' may be omitted)
                                             // returns number in range (use ipincrement to iterate through)
@@ -379,7 +381,7 @@ public:
 
     virtual void  close() = 0;
 
-    virtual unsigned OShandle() = 0;              // for internal use
+    virtual unsigned OShandle() const = 0;              // for internal use
     virtual size32_t avail_read() = 0;           // called after wait_read to see how much data available
 
     virtual size32_t write_multiple(unsigned num,void const**buf, size32_t *size) = 0; // same as write except writes multiple blocks
@@ -401,6 +403,7 @@ public:
     virtual bool check_connection() = 0;
 
     virtual bool isSecure() const = 0;
+    virtual bool isValid() const = 0;
 
 /*
 Exceptions raised: (when set_raise_exceptions(TRUE))

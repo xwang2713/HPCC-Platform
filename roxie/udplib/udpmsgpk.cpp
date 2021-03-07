@@ -435,9 +435,7 @@ public:
 PUID GETPUID(DataBuffer *dataBuff)
 {
     UdpPacketHeader *pktHdr = (UdpPacketHeader*) dataBuff->data;
-    unsigned ip4;
-    if (pktHdr->node.getNodeAddress().getNetAddress(sizeof(ip4), &ip4) != sizeof(ip4))
-        throw makeStringException(ROXIE_INTERNAL_ERROR, "IPv6 not supported in roxie"); // MORE - do we ever care about ipv6?
+    unsigned ip4 = pktHdr->node.getIp4();
     return (((PUID) ip4) << 32) | (PUID) pktHdr->msgSeq;
 }
 
@@ -470,6 +468,8 @@ unsigned CMessageCollator::queryBytesReceived() const
 bool CMessageCollator::attach_databuffer(DataBuffer *dataBuff)
 {
     activity = true;
+    UdpPacketHeader *pktHdr = (UdpPacketHeader*) dataBuff->data;
+    totalBytesReceived += pktHdr->length;
     if (memLimitExceeded || roxiemem::memPoolExhausted())
     {
         DBGLOG("UdpCollator: mem limit exceeded");
@@ -490,6 +490,7 @@ bool CMessageCollator::attach_data(const void *data, unsigned len)
     // Simple code can allocate databuffer, copy data in, then call attach_databuffer
     // MORE - we can attach as we create may be more sensible (and simplify roxiemem rather if it was the ONLY way)
     activity = true;
+    totalBytesReceived += len;
     if (memLimitExceeded || roxiemem::memPoolExhausted())
     {
         DBGLOG("UdpCollator: mem limit exceeded");
@@ -511,9 +512,6 @@ bool CMessageCollator::attach_data(const void *data, unsigned len)
 
 void CMessageCollator::collate(DataBuffer *dataBuff)
 {
-    UdpPacketHeader *pktHdr = (UdpPacketHeader*) dataBuff->data;
-    totalBytesReceived += pktHdr->length;
-
     PUID puid = GETPUID(dataBuff);
     // MORE - I think we leak a PackageSequencer for messages that we only receive parts of - maybe only an issue for "catchall" case
     PackageSequencer *pkSqncr = mapping.getValue(puid);

@@ -58,7 +58,7 @@ define([
             var currSel = this.getSelectedChild();
             if (currSel && !currSel.initalized) {
                 if (currSel.id === this.id + "_Grid") {
-                    this.refreshGrid()
+                    this.refreshGrid();
                 } else if (currSel.id === this.legacyTargetClustersIframeWidget.id && !this.legacyTargetClustersIframeWidget.initalized) {
                     this.legacyTargetClustersIframeWidget.init({
                         src: ESPRequest.getBaseURL("WsTopology") + "/TpTargetClusterQuery?Type=ROOT"
@@ -97,7 +97,7 @@ define([
                 columns: {
                     col1: selector({
                         width: 20,
-                        selectorType: 'checkbox',
+                        selectorType: "checkbox",
                         disabled: function (item) {
                             return item.type !== "targetClusterProcess";
                         }
@@ -111,7 +111,7 @@ define([
                         sortable: false,
                         formatter: function (configuration) {
                             if (configuration === true) {
-                                return "<a href='#' />" + Utility.getImageHTML("configuration.png", context.i18n.Configuration) + "</a>";
+                                return "<a href='#' onClick='return false;' />" + Utility.getImageHTML("configuration.png", context.i18n.Configuration) + "</a>";
                             }
                             return "";
                         }
@@ -135,7 +135,7 @@ define([
                             var img = "";
                             var name = _name;
                             if (row.type === "targetClusterComponent") {
-                                name = "<a href='#' class='dgrid-row-url'>" + row.Netaddress + " - " + _name + "</a>";
+                                name = "<a href='#' onClick='return false;' class='dgrid-row-url'>" + row.Netaddress + " - " + _name + "</a>";
                             }
                             return img + "&nbsp;" + name;
                         },
@@ -181,7 +181,7 @@ define([
             });
 
             retVal.on(".dgrid-row:dblclick", function (evt) {
-                event.preventDefault();
+                evt.preventDefault();
             });
 
             retVal.on("dgrid-select", function (event) {

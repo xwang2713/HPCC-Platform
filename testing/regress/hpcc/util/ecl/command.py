@@ -50,9 +50,6 @@ class ECLcmd(Shell):
         args.append('--port=' + self.config.espSocket)
         if self.config.useSsl.lower() == 'true':
             args.append('--ssl')
-        
-        retryCount = int(kwargs.pop('retryCount',  1))
-        args.append('--wait='+str(retryCount * eclfile.getTimeout() * 1000))  # ms
 
         server = kwargs.pop('server', False)
         if server:
@@ -66,7 +63,7 @@ class ECLcmd(Shell):
         if password:
             args.append("--password=" + password)
 
-        args = args + eclfile.getFParameters()
+        args = args + eclfile.getFParameters() + eclfile.getExtraDParameters()
 
         if cmd == 'publish':
             args.append(eclfile.getArchiveName())
@@ -74,8 +71,10 @@ class ECLcmd(Shell):
             name = kwargs.pop('name', False)
             if not name:
                 name = eclfile.getBaseEclName()
+                jname = eclfile.getJobname()
 
             args.append("--name=" + name)
+            args.append("-Dname=" + jname)
 
         else:
             args.append('--exception-level=warning')
@@ -166,7 +165,10 @@ class ECLcmd(Shell):
             if wuid ==  'N/A':
                 logger.debug("%3d. in finally queryWuid() -> 'result':'%s', 'wuid':'%s', 'state':'%s'", eclfile.getTaskId(),  res['result'],  res['wuid'],  res['state'])
                 wuid = res['wuid']
-                if res['result'] != "OK":
+                if eclfile.testFail():
+                    #eclfile.diff=eclfile.getBaseEcl()+'\n\t'+data+'\n'
+                    pass
+                elif res['result'] != "OK":
                     eclfile.diff=eclfile.getBaseEcl()+'\n\t'+res['state']+'\n'
                     logger.error("%3d. %s in queryWuid(%s)",  eclfile.getTaskId(),  res['state'],  eclfile.getJobname())
 

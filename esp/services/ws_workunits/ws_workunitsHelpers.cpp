@@ -31,6 +31,7 @@
 #include "hqlexpr.hpp"
 #include "rmtsmtp.hpp"
 #include "LogicFileWrapper.hpp"
+#include "TpWrapper.hpp"
 
 #ifndef _NO_LDAP
 #include "ldapsecurity.ipp"
@@ -199,20 +200,6 @@ WsWUExceptions::WsWUExceptions(IConstWorkUnit& wu): numerr(0), numwrn(0), numinf
         errors.append(*e.getLink());
     }
 }
-
-#define SDS_LOCK_TIMEOUT 30000
-
-void getSashaNode(SocketEndpoint &ep)
-{
-    Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
-    Owned<IConstEnvironment> env = factory->openEnvironment();
-    Owned<IPropertyTree> root = &env->getPTree();
-    IPropertyTree *pt = root->queryPropTree("Software/SashaServerProcess[1]/Instance[1]");
-    if (!pt)
-        throw MakeStringException(ECLWATCH_ARCHIVE_SERVER_NOT_FOUND, "Archive Server not found.");
-    ep.set(pt->queryProp("@netAddress"), pt->getPropInt("@port",DEFAULT_SASHA_PORT));
-}
-
 
 void WsWuInfo::getSourceFiles(IEspECLWorkunit &info, unsigned long flags)
 {
@@ -1290,11 +1277,7 @@ bool WsWuInfo::getClusterInfo(IEspECLWorkunit &info, unsigned long flags)
     {
         int clusterTypeFlag = 0;
 
-        Owned<IEnvironmentFactory> envFactory = getEnvironmentFactory(true);
-        Owned<IConstEnvironment> constEnv = envFactory->openEnvironment();
-        Owned<IPropertyTree> root = &constEnv->getPTree();
-
-        Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(clusterName.str());
+        Owned<IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(clusterName.str());
         if (clusterInfo.get())
         {//Set thor flag or roxie flag in order to display some options for thor or roxie
             ClusterType platform = clusterInfo->getPlatform();
@@ -2250,46 +2233,31 @@ void WsWuInfo::getWorkunitResTxt(MemoryBuffer& buf)
     queryDllServer().getDll(query->getQueryResTxtName(resname).str(), buf);
 }
 
-IConstWUQuery* WsWuInfo::getEmbeddedQuery()
-{
-    Owned<IWuWebView> wv = createWuWebView(*cw, NULL, NULL, NULL, false, nullptr);
-    if (wv)
-        return wv->getEmbeddedQuery();
 
-    return NULL;
-}
-
-void WsWuInfo::getWorkunitArchiveQuery(IStringVal& str)
+void WsWuInfo::getWorkunitArchiveQuery(StringBuffer& str)
 {
     Owned<IConstWUQuery> query = cw->getQuery();
     if(!query)
         throw MakeStringException(ECLWATCH_QUERY_NOT_FOUND_FOR_WU,"No query for workunit %s.",wuid.str());
 
-    query->getQueryText(str);
+    StringBufferAdaptor istr(str);
+    query->getQueryText(istr);
     if ((str.length() < 1) || !isArchiveQuery(str.str()))
     {
         if (!query->hasArchive())
             throw MakeStringException(ECLWATCH_CANNOT_GET_WORKUNIT, "Archive query not found for workunit %s.", wuid.str());
 
-        Owned<IConstWUQuery> embeddedQuery = getEmbeddedQuery();
-        if (!embeddedQuery)
-            throw MakeStringException(ECLWATCH_CANNOT_GET_WORKUNIT, "Embedded query not found for workunit %s.", wuid.str());
-
-        embeddedQuery->getQueryText(str);
-        if ((str.length() < 1) || !isArchiveQuery(str.str()))
+        Owned<IWuWebView> wv = createWuWebView(*cw, NULL, NULL, NULL, false, nullptr);
+        if (!wv)
+            throw MakeStringException(ECLWATCH_CANNOT_GET_WORKUNIT, "Cannot create webview for workunit %s.", wuid.str());
+        if (!wv->getEmbeddedArchive(str) || (str.length() < 1) || !isArchiveQuery(str.str()))
             throw MakeStringException(ECLWATCH_CANNOT_GET_WORKUNIT, "Archive query not found for workunit %s.", wuid.str());
     }
 }
 
-void WsWuInfo::getWorkunitArchiveQuery(StringBuffer& buf)
-{
-    StringBufferAdaptor queryText(buf);
-    getWorkunitArchiveQuery(queryText);
-}
-
 void WsWuInfo::getWorkunitArchiveQuery(MemoryBuffer& buf)
 {
-    SCMStringBuffer queryText;
+    StringBuffer queryText;
     getWorkunitArchiveQuery(queryText);
     buf.append(queryText.length(), queryText.str());
 }
@@ -3223,7 +3191,7 @@ void WsWuHelpers::setXmlParameters(IWorkUnit *wu, const char *xml, IArrayOf<ICon
     setXmlParameters(wu, xml, setJobname);
 }
 
-void WsWuHelpers::submitWsWorkunit(IEspContext& context, IConstWorkUnit* cw, const char* cluster, const char* snapshot, int maxruntime, bool compile, bool resetWorkflow, bool resetVariables,
+void WsWuHelpers::submitWsWorkunit(IEspContext& context, IConstWorkUnit* cw, const char* cluster, const char* snapshot, int maxruntime, int maxcost, bool compile, bool resetWorkflow, bool resetVariables,
     const char *paramXml, IArrayOf<IConstNamedValue> *variables, IArrayOf<IConstNamedValue> *debugs, IArrayOf<IConstApplicationValue> *applications)
 {
     ensureWsWorkunitAccess(context, *cw, SecAccess_Write);
@@ -3269,7 +3237,8 @@ void WsWuHelpers::submitWsWorkunit(IEspContext& context, IConstWorkUnit* cw, con
     wu->setState(WUStateSubmitted);
     if (maxruntime)
         wu->setDebugValueInt("maxRunTime",maxruntime,true);
-
+    if (maxcost)
+        wu->setDebugValueInt("maxCost", maxcost, true);
     if (debugs && debugs->length())
     {
         ForEachItemIn(i, *debugs)
@@ -3342,14 +3311,14 @@ void WsWuHelpers::submitWsWorkunit(IEspContext& context, IConstWorkUnit* cw, con
     AuditSystemAccess(context.queryUserId(), true, "Submitted %s", wuid.str());
 }
 
-void WsWuHelpers::submitWsWorkunit(IEspContext& context, const char *wuid, const char* cluster, const char* snapshot, int maxruntime, bool compile, bool resetWorkflow, bool resetVariables,
+void WsWuHelpers::submitWsWorkunit(IEspContext& context, const char *wuid, const char* cluster, const char* snapshot, int maxruntime, int maxcost, bool compile, bool resetWorkflow, bool resetVariables,
     const char *paramXml, IArrayOf<IConstNamedValue> *variables, IArrayOf<IConstNamedValue> *debugs, IArrayOf<IConstApplicationValue> *applications)
 {
     Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
     Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid);
     if(!cw)
         throw MakeStringException(ECLWATCH_CANNOT_OPEN_WORKUNIT,"Cannot open workunit %s.",wuid);
-    submitWsWorkunit(context, cw, cluster, snapshot, maxruntime, compile, resetWorkflow, resetVariables, paramXml, variables, debugs, applications);
+    submitWsWorkunit(context, cw, cluster, snapshot, maxruntime, maxcost, compile, resetWorkflow, resetVariables, paramXml, variables, debugs, applications);
 }
 
 
@@ -3371,7 +3340,7 @@ void WsWuHelpers::runWsWorkunit(IEspContext &context, StringBuffer &wuid, const 
     copyWsWorkunit(context, *wu, srcWuid);
     wu.clear();
 
-    submitWsWorkunit(context, wuid.str(), cluster, NULL, 0, false, true, true, paramXml, variables, debugs, applications);
+    submitWsWorkunit(context, wuid.str(), cluster, NULL, 0, 0, false, true, true, paramXml, variables, debugs, applications);
 }
 
 void WsWuHelpers::runWsWorkunit(IEspContext &context, IConstWorkUnit *cw, const char *srcWuid, const char *cluster, const char *paramXml,
@@ -3381,7 +3350,7 @@ void WsWuHelpers::runWsWorkunit(IEspContext &context, IConstWorkUnit *cw, const 
     copyWsWorkunit(context, *wu, srcWuid);
     wu.clear();
 
-    submitWsWorkunit(context, cw, cluster, NULL, 0, false, true, true, paramXml, variables, debugs, applications);
+    submitWsWorkunit(context, cw, cluster, NULL, 0,  0, false, true, true, paramXml, variables, debugs, applications);
 }
 
 IException * WsWuHelpers::noteException(IWorkUnit *wu, IException *e, ErrorSeverity level)
@@ -3422,7 +3391,7 @@ void WsWuHelpers::runWsWuQuery(IEspContext &context, IConstWorkUnit *cw, const c
     copyWsWorkunit(context, *wu, srcWuid);
     wu.clear();
 
-    submitWsWorkunit(context, cw, cluster, NULL, 0, false, true, true, paramXml, NULL, NULL, applications);
+    submitWsWorkunit(context, cw, cluster, NULL, 0,  0, false, true, true, paramXml, NULL, NULL, applications);
 }
 
 void WsWuHelpers::runWsWuQuery(IEspContext &context, StringBuffer &wuid, const char *queryset, const char *query,
@@ -3436,7 +3405,7 @@ void WsWuHelpers::runWsWuQuery(IEspContext &context, StringBuffer &wuid, const c
     copyWsWorkunit(context, *wu, srcWuid);
     wu.clear();
 
-    submitWsWorkunit(context, wuid.str(), cluster, NULL, 0, false, true, true, paramXml, NULL, NULL, applications);
+    submitWsWorkunit(context, wuid.str(), cluster, NULL, 0,  0, false, true, true, paramXml, NULL, NULL, applications);
 }
 
 void WsWuHelpers::checkAndTrimWorkunit(const char* methodName, StringBuffer& input)

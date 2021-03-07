@@ -18,6 +18,7 @@
 #include "jmisc.hpp"
 #include "udplib.hpp"
 #include "udptopo.hpp"
+#include "udpipmap.hpp"
 #include "roxie.hpp"
 #include "portlist.h"
 #include <thread>
@@ -27,7 +28,6 @@
 
 unsigned initIbytiDelay; // In milliseconds
 unsigned minIbytiDelay;  // In milliseconds
-
 
 unsigned ChannelInfo::getIbytiDelay(unsigned primarySubChannel) const  // NOTE - zero-based
 {
@@ -85,6 +85,33 @@ bool ChannelInfo::otherAgentHasPriority(unsigned priorityHash, unsigned otherAge
     return false;
 }
 
+static unsigned *createNewNodeHealthScore(const ServerIdentifier &)
+{
+    return new unsigned(initIbytiDelay);
+}
+
+static IpMapOf<unsigned> buddyHealth(createNewNodeHealthScore);   // For each buddy IP ever seen, maintains a score of how long I should wait for it to respond when it is the 'first responder'
+
+void noteNodeSick(const ServerIdentifier &node)
+{
+    // NOTE - IpMapOf is thread safe (we never remove entries). Two threads hitting at the same time may result in the change from one being lost, but that's not a disaster
+    unsigned current = buddyHealth[node];
+    unsigned newDelay = current / 2;
+    if (newDelay < minIbytiDelay)
+        newDelay = minIbytiDelay;
+    buddyHealth[node] = newDelay;
+}
+
+void noteNodeHealthy(const ServerIdentifier &node)
+{
+    // NOTE - IpMapOf is thread safe (we never remove entries). Two threads hitting at the same time may result in the change from one being lost, but that's not a disaster
+    buddyHealth[node] = initIbytiDelay;
+}
+
+unsigned getIbytiDelay(const ServerIdentifier &node)
+{
+    return buddyHealth[node];
+}
 
 class CTopologyServer : public CInterfaceOf<ITopologyServer>
 {
@@ -97,6 +124,7 @@ public:
     virtual const ChannelInfo &queryChannelInfo(unsigned channel) const override;
     virtual const std::vector<unsigned> &queryChannels() const override;
     virtual bool implementsChannel(unsigned channel) const override;
+    virtual void report(StringBuffer &ret) const override;
 
 private:
     std::map<unsigned, SocketEndpointArray> agents;  // indexed by channel
@@ -106,6 +134,9 @@ private:
     std::map<unsigned, unsigned> mySubChannels;
     std::vector<unsigned> channels;
     std::vector<unsigned> replicationLevels;
+#ifdef _DEBUG
+    StringAttr rawData;
+#endif
 };
 
 SocketEndpoint myAgentEP;
@@ -115,6 +146,9 @@ CTopologyServer::CTopologyServer()
 }
 
 CTopologyServer::CTopologyServer(const char *topologyInfo)
+#ifdef _DEBUG
+    : rawData(topologyInfo)
+#endif
 {
     std::istringstream ss(topologyInfo);
     std::string line;
@@ -210,6 +244,16 @@ bool CTopologyServer::implementsChannel(unsigned channel) const
     else
         return true;   // Kinda-sorta - perhaps not true if separated servers from agents, but even then child queries may access channel 0
 }
+
+void CTopologyServer::report(StringBuffer &ret) const
+{
+#ifdef _DEBUG
+    ret.append(rawData);
+#else
+    UNIMPLEMENTED;
+#endif
+}
+
 const SocketEndpointArray CTopologyServer::nullArray;
 
 // Class TopologyManager (there is a single instance) handles interaction with topology servers
@@ -221,10 +265,13 @@ public:
     TopologyManager() { currentTopology.setown(new CTopologyServer); };
     void setServers(const StringArray &_topoServers);
     void setRoles(const std::vector<RoxieEndpointInfo> &myRoles);
+    void closedown();
     const ITopologyServer &getCurrent();
 
     bool update();
     unsigned numServers() const { return topoServers.length(); }
+    void freeze(bool frozen);
+
 private:
     Owned<const ITopologyServer> currentTopology;
     SpinLock lock;
@@ -233,12 +280,15 @@ private:
     const unsigned maxReasonableResponse = 32*32*1024;  // At ~ 32 bytes per entry, 1024 channels and 32-way redundancy that's a BIG cluster!
     StringBuffer md5;
     StringBuffer topoBuf;
+    bool frozen = false;    // used for testing
 };
 
 static TopologyManager topologyManager;
 
 bool TopologyManager::update()
 {
+    if (frozen)
+        return false;
     bool updated = false;
     ForEachItemIn(idx, topoServers)
     {
@@ -273,8 +323,9 @@ bool TopologyManager::update()
                         else
                         {
                             MemoryBuffer mb;
-                            char *mem = (char *)mb.reserveTruncate(responseLen);
+                            char *mem = (char *)mb.reserveTruncate(responseLen+1);
                             topo->read(mem, responseLen);
+                            mem[responseLen] = '\0';
                             if (responseLen>=md5.length() && mem[0]=='=')
                             {
                                 if (md5.length()==0 || memcmp(mem, md5.str(), md5.length())!=0)
@@ -311,6 +362,11 @@ bool TopologyManager::update()
     return updated;
 }
 
+void TopologyManager::freeze(bool _frozen)
+{
+    frozen = _frozen;
+}
+
 const ITopologyServer &TopologyManager::getCurrent()
 {
     SpinBlock b(lock);
@@ -326,7 +382,6 @@ void TopologyManager::setServers(const StringArray &_topoServers)
 void TopologyManager::setRoles(const std::vector<RoxieEndpointInfo> &myRoles)
 {
     topoBuf.clear();
-    DBGLOG("TopologyManager::setRoles - %d roles", (int) myRoles.size());
     for (const auto &role : myRoles)
     {
         switch (role.role)
@@ -345,9 +400,22 @@ void TopologyManager::setRoles(const std::vector<RoxieEndpointInfo> &myRoles)
     currentTopology.swap(newServer);
 }
 
+void TopologyManager::closedown()
+{
+    topoBuf.replaceString("server|", "-server|");
+    topoBuf.replaceString("agent|", "-agent|");
+    freeze(false);
+    update();
+}
+
 extern UDPLIB_API const ITopologyServer *getTopology()
 {
     return &topologyManager.getCurrent();
+}
+
+extern UDPLIB_API void freezeTopology(bool frozen)
+{
+    topologyManager.freeze(frozen);
 }
 
 extern UDPLIB_API unsigned getNumAgents(unsigned channel)
@@ -396,6 +464,7 @@ extern UDPLIB_API void publishTopology(unsigned traceLevel)
                 }
                 waitTime = topoUpdateInterval;
             }
+            topologyManager.closedown();
         });
     }
 }
@@ -409,3 +478,42 @@ extern UDPLIB_API void stopTopoThread()
     }
 }
 
+#ifdef _USE_CPPUNIT
+#include "unittests.hpp"
+
+class BuddyHealthTest : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(BuddyHealthTest);
+        CPPUNIT_TEST(testBuddyHealth);
+    CPPUNIT_TEST_SUITE_END();
+
+    void testBuddyHealth()
+    {
+        initIbytiDelay = 64;
+        minIbytiDelay = 16;
+        IpAddress a1("123.4.5.1");
+        IpAddress a2("123.4.6.2");
+        IpAddress a3("123.4.5.3");
+        CPPUNIT_ASSERT(getIbytiDelay(a1)==initIbytiDelay);
+        noteNodeSick(a1);
+        noteNodeSick(a2);
+        CPPUNIT_ASSERT(getIbytiDelay(a1)==initIbytiDelay/2);
+        CPPUNIT_ASSERT(getIbytiDelay(a2)==initIbytiDelay/2);
+        CPPUNIT_ASSERT(getIbytiDelay(a3)==initIbytiDelay);
+        noteNodeHealthy(a1);
+        CPPUNIT_ASSERT(getIbytiDelay(a1)==initIbytiDelay);
+        CPPUNIT_ASSERT(getIbytiDelay(a2)==initIbytiDelay/2);
+        CPPUNIT_ASSERT(getIbytiDelay(a3)==initIbytiDelay);
+        noteNodeSick(a2);
+        noteNodeSick(a2);
+        noteNodeSick(a2);
+        noteNodeSick(a2);
+        noteNodeSick(a2);
+        CPPUNIT_ASSERT(getIbytiDelay(a2)==minIbytiDelay);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( BuddyHealthTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( BuddyHealthTest, "BuddyHealthTest" );
+
+#endif

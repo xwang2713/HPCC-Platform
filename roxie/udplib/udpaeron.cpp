@@ -393,7 +393,7 @@ public:
     CRoxieAeronSendManager(unsigned _dataPort, unsigned _numQueues, const IpAddress &_myIP)
     : dataPort(_dataPort),
       numQueues(_numQueues),
-      receiversTable([this](const IpAddress &ip) { return new UdpAeronReceiverEntry(ip, dataPort, aeron, numQueues);}),
+      receiversTable([this](const ServerIdentifier &ip) { return new UdpAeronReceiverEntry(ip.getIpAddress(), dataPort, aeron, numQueues);}),
       myIP(_myIP)
     {
         if (useEmbeddedAeronDriver && !is_running())
@@ -425,7 +425,7 @@ public:
 
 IMessagePacker *CRoxieAeronSendManager::createMessagePacker(ruid_t ruid, unsigned sequence, const void *messageHeader, unsigned headerSize, const ServerIdentifier &destNode, int queue)
 {
-    const IpAddress &dest = destNode.getNodeAddress();
+    const IpAddress dest = destNode.getIpAddress();
     return ::createMessagePacker(ruid, sequence, messageHeader, headerSize, *this, receiversTable[dest], myIP, getNextMessageSequence(), queue);
 }
 

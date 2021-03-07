@@ -65,6 +65,8 @@
 
 // #define REMOTE_DISCONNECT_ON_DESTRUCTOR  // enable to disconnect on IFile destructor
                                             // this should not be enabled in WindowRemoteDirectory used
+//#define CHECK_FILE_IO           // If enabled, reads and writes are checked for sensible parameters
+
 
 #ifdef _DEBUG
 #define ASSERTEX(e) assertex(e); 
@@ -1731,7 +1733,13 @@ IFileIO * CFile::openShared(IFOmode mode,IFSHmode share,IFEflags extraFlags)
 #endif
     if (stdh>=0)
         return new CSequentialFileIO(handle,mode,share,extraFlags);
-    return new CFileIO(handle,mode,share,extraFlags);
+
+    Owned<IFileIO> io = new CFileIO(handle,mode,share,extraFlags);
+#ifdef CHECK_FILE_IO
+    return new CCheckingFileIO(filename, io);
+#else
+    return io.getClear();
+#endif
 }
 
 
@@ -2084,6 +2092,86 @@ size32_t CFileRangeIO::write(offset_t pos, size32_t len, const void * data)
     }
     return io->write(pos+headerSize, len, data);
 }
+
+//--------------------------------------------------------------------------
+
+CCheckingFileIO::~CCheckingFileIO()
+{
+    if (lastWriteSize && !closed)
+        report("FileCheck: IO for File %s destroyed before closing", filename.str());
+}
+
+size32_t CCheckingFileIO::read(offset_t pos, size32_t len, void * data)
+{
+    CriticalBlock block(cs);
+    if ((pos == lastReadPos) && (len < minSeqReadSize) && (pos + len != size()))
+        report("FileCheck: Sequential read [%s] of %u is < %u", filename.str(), len, minSeqReadSize);
+
+    size32_t numRead = io->read(pos, len, data);
+    lastReadPos = pos + numRead;
+    return numRead;
+}
+
+offset_t CCheckingFileIO::size()
+{
+    return io->size();
+}
+
+size32_t CCheckingFileIO::write(offset_t pos, size32_t len, const void * data)
+{
+    CriticalBlock block(cs);
+    if (len != 0)
+    {
+        if ((lastWriteSize != 0) && (lastWriteSize < minWriteSize))
+            report("FileCheck: Sequential write to [%s] of size %u before offset %" I64F "u of %u is < %u", filename.str(), lastWriteSize, pos, len, minWriteSize);
+        lastWriteSize = len;
+    }
+    else
+        report("FileCheck: Unexpected zero byte write on %s at offset %" I64F "u", filename.str(), pos);
+
+    return io->write(pos, len, data);
+}
+
+void CCheckingFileIO::setSize(offset_t size)
+{
+    io->setSize(size);
+}
+
+offset_t CCheckingFileIO::appendFile(IFile *file,offset_t pos,offset_t len)
+{
+    return io->appendFile(file, pos, len);
+}
+
+void CCheckingFileIO::flush()
+{
+    io->flush();
+}
+
+void CCheckingFileIO::close()
+{
+    io->close();
+    closed = true;
+}
+
+unsigned __int64 CCheckingFileIO::getStatistic(StatisticKind kind)
+{
+    return io->getStatistic(kind);
+}
+
+void CCheckingFileIO::report(const char * format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    VALOG(MCinternalError, unknownJob, format, args);
+    va_end(args);
+    if (!traced)
+    {
+        printStackReport();
+        traced = true;
+    }
+}
+
+
 
 //--------------------------------------------------------------------------
 
@@ -4467,6 +4555,12 @@ bool RemoteFilename::isUnixPath() const // bit arbitrary
 #endif
 }
 
+bool RemoteFilename::isUrl() const
+{
+    return ::isUrl(tailpath);
+}
+
+
 char RemoteFilename::getPathSeparator() const
 {
     return isUnixPath()?'/':'\\';
@@ -4488,7 +4582,7 @@ StringBuffer & RemoteFilename::getRemotePath(StringBuffer & out) const
 {   // this creates a name that can be used by windows or linux
 
     // Any filenames in the format protocol:// should not be converted to //ip:....
-    if (isUrl(tailpath))
+    if (isUrl())
         return getLocalPath(out);
 
     char c=getPathSeparator();
@@ -4512,6 +4606,10 @@ StringBuffer & RemoteFilename::getRemotePath(StringBuffer & out) const
     return out;
 }
 
+const FileSystemProperties & RemoteFilename::queryFileSystemProperties() const
+{
+    return ::queryFileSystemProperties(tailpath);
+}
 
 bool RemoteFilename::isLocal() const
 {
@@ -5628,30 +5726,31 @@ bool unmountDrive(const char *drv)
 
 }
 
-IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, StringBuffer &filename)
+IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, StringBuffer &filename, IFOmode mode)
 {
     CDateTime dt;
     dt.setNow();
     unsigned t = (unsigned)dt.getSimple();
-    if (dir)
-    {
-        filename.append(dir);
-        addPathSepChar(filename);
-    }
-    if (prefix && *prefix)
-        filename.append(prefix);
-    else
-        filename.append("uniq");
+    unsigned attempts = 5; // max attempts
     if (!ext || !*ext)
         ext = "tmp";
-    filename.appendf("_%" I64F "x.%x.%x.%s", (__int64)GetCurrentThreadId(), (unsigned)GetCurrentProcessId(), t, ext);
-    OwnedIFile iFile = createIFile(filename.str());
-    unsigned attempts = 5; // max attempts
     for (;;)
     {
+        filename.clear();
+        if (dir)
+        {
+            filename.append(dir);
+            addPathSepChar(filename);
+        }
+        if (prefix && *prefix)
+            filename.append(prefix);
+        else
+            filename.append("uniq");
+        filename.appendf("_%" I64F "x.%x.%x.%s", (__int64)GetCurrentThreadId(), (unsigned)GetCurrentProcessId(), t, ext);
+        OwnedIFile iFile = createIFile(filename.str());
         if (!iFile->exists())
         {
-            try { return iFile->openShared(IFOcreate, IFSHnone); } // NB: could be null if path not found
+            try { return iFile->openShared(mode, IFSHnone); } // NB: could be null if path not found
             catch (IException *e)
             {
                 EXCLOG(e, "createUniqueFile");
@@ -5659,12 +5758,9 @@ IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, 
             }
         }
         if (0 == --attempts)
-            break;
+            return nullptr;
         t += getRandom();
-        filename.clear().appendf("uniq_%" I64F "x.%x.%x.%s", (__int64)GetCurrentThreadId(), (unsigned)GetCurrentProcessId(), t, ext);
-        iFile.setown(createIFile(filename.str()));
     }
-    return NULL;
 }
 
 unsigned sortDirectory( CIArrayOf<CDirectoryEntry> &sortedfiles,
@@ -6998,3 +7094,16 @@ void FileIOStats::trace()
         printf("Writes: %u  Bytes: %u  TimeMs: %u\n", (unsigned)ioWrites, (unsigned)ioWriteBytes, (unsigned)cycle_to_millisec(ioWriteCycles));
 }
 
+//--------------------------------------------------------------------------------------------------------------------
+
+static constexpr FileSystemProperties linuxFileSystemProperties     {true, true, true, true, 0x10000};             // 64K
+static constexpr FileSystemProperties defaultUrlFileSystemProperties{false, false, false, false, 0x400000};        // 4Mb
+
+//This implementation should eventually make use of the file hook.
+const FileSystemProperties & queryFileSystemProperties(const char * filename)
+{
+    if (isUrl(filename))
+        return defaultUrlFileSystemProperties;
+    else
+        return linuxFileSystemProperties;
+}

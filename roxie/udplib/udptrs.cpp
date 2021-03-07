@@ -22,6 +22,7 @@
 
 #include "jsocket.hpp"
 #include "jlog.hpp"
+#include "jencrypt.hpp"
 #include "roxie.hpp"
 #ifdef _WIN32
 #include <winsock.h>
@@ -37,7 +38,7 @@ unsigned udpOutQsPriority = 0;
 unsigned udpMaxRetryTimedoutReqs = 0; // 0 means off (keep retrying forever)
 unsigned udpRequestToSendTimeout = 0; // value in milliseconds - 0 means calculate from query timeouts
 unsigned udpRequestToSendAckTimeout = 10; // value in milliseconds
-bool udpSnifferEnabled = true;
+bool udpSnifferEnabled = false;
 
 using roxiemem::DataBuffer;
 // MORE - why use DataBuffers on output side?? We could use zeroCopy techniques if we had a dedicated memory area.
@@ -78,12 +79,20 @@ using roxiemem::DataBuffer;
  *    - resend rts if we send data but there is some remaining
  */
 
+static byte key[32] = {
+    0xf7, 0xe8, 0x79, 0x40, 0x44, 0x16, 0x66, 0x18, 0x52, 0xb8, 0x18, 0x6e, 0x76, 0xd1, 0x68, 0xd3,
+    0x87, 0x47, 0x01, 0xe6, 0x66, 0x62, 0x2f, 0xbe, 0xc1, 0xd5, 0x9f, 0x4a, 0x53, 0x27, 0xae, 0xa1,
+};
+
+
+
 class UdpReceiverEntry : public IUdpReceiverEntry
 {
 private:
     queue_t *output_queue = nullptr;
     bool    initialized = false;
     const bool isLocal = false;
+    const bool encrypted = false;
     ISocket *send_flow_socket = nullptr;
     ISocket *data_socket = nullptr;
     const unsigned numQueues;
@@ -181,6 +190,7 @@ public:
                 break;
 #endif
         }
+        MemoryBuffer encryptBuffer;
         for (DataBuffer *buffer: toSend)
         {
             UdpPacketHeader *header = (UdpPacketHeader*) buffer->data;
@@ -192,7 +202,13 @@ public:
             }
             try
             {
-                data_socket->write(buffer->data, length);
+                if (encrypted)
+                {
+                    aesEncrypt(key, sizeof(key), buffer->data, length, encryptBuffer.clear());
+                    data_socket->write(encryptBuffer.toByteArray(), encryptBuffer.length());
+                }
+                else
+                    data_socket->write(buffer->data, length);
             }
             catch(IException *e)
             {
@@ -307,8 +323,8 @@ public:
         return nullptr;
     }
 
-    UdpReceiverEntry(const IpAddress &_ip, const IpAddress &_sourceIP, unsigned _numQueues, unsigned _queueSize, unsigned _sendFlowPort, unsigned _dataPort)
-    : ip (_ip), sourceIP(_sourceIP), numQueues(_numQueues), isLocal(_ip.isLocal())
+    UdpReceiverEntry(const IpAddress &_ip, const IpAddress &_sourceIP, unsigned _numQueues, unsigned _queueSize, unsigned _sendFlowPort, unsigned _dataPort, bool _encrypted)
+    : ip (_ip), sourceIP(_sourceIP), numQueues(_numQueues), isLocal(_ip.isLocal()), encrypted(_encrypted)
     {
         assert(!initialized);
         assert(numQueues > 0);
@@ -522,7 +538,7 @@ class CSendManager : implements ISendManager, public CInterface
                                 StringBuffer s;
                                 DBGLOG("UdpSender: received request_received msg from node=%s", f.destNode.getTraceText(s).str());
                             }
-                            parent.receiversTable[f.destNode.getNodeAddress()].requestAcknowledged();
+                            parent.receiversTable[f.destNode].requestAcknowledged();
                             break;
 
                         default: 
@@ -643,7 +659,7 @@ class CSendManager : implements ISendManager, public CInterface
 
                 if (udpSnifferEnabled)
                     send_sniff(sniffType::busy);
-                UdpReceiverEntry &receiverInfo = parent.receiversTable[permit.destNode.getNodeAddress()];
+                UdpReceiverEntry &receiverInfo = parent.receiversTable[permit.destNode];
                 unsigned payload = receiverInfo.sendData(permit, bucket);
                 if (udpSnifferEnabled)
                     send_sniff(sniffType::idle);
@@ -688,10 +704,10 @@ class CSendManager : implements ISendManager, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
 
-    CSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int q_size, int _numQueues, const IpAddress &_myIP, TokenBucket *_bucket)
+    CSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int q_size, int _numQueues, const IpAddress &_myIP, TokenBucket *_bucket, bool encrypted)
         : bucket(_bucket),
           myIP(_myIP),
-          receiversTable([_myIP, _numQueues, q_size, server_flow_port, data_port](const IpAddress &ip) { return new UdpReceiverEntry(ip, _myIP, _numQueues, q_size, server_flow_port, data_port);})
+          receiversTable([_myIP, _numQueues, q_size, server_flow_port, data_port, encrypted](const ServerIdentifier &ip) { return new UdpReceiverEntry(ip.getIpAddress(), _myIP, _numQueues, q_size, server_flow_port, data_port, encrypted);})
     {
 #ifndef _WIN32
         setpriority(PRIO_PROCESS, 0, -3);
@@ -721,26 +737,23 @@ public:
 
     virtual IMessagePacker *createMessagePacker(ruid_t ruid, unsigned sequence, const void *messageHeader, unsigned headerSize, const ServerIdentifier &destNode, int queue) override
     {
-        const IpAddress &dest = destNode.getNodeAddress();
-        return ::createMessagePacker(ruid, sequence, messageHeader, headerSize, *this, receiversTable[dest], myIP, getNextMessageSequence(), queue);
+        return ::createMessagePacker(ruid, sequence, messageHeader, headerSize, *this, receiversTable[destNode], myIP, getNextMessageSequence(), queue);
     }
 
     virtual bool dataQueued(ruid_t ruid, unsigned msgId, const ServerIdentifier &destNode) override
     {
-        const IpAddress &dest = destNode.getNodeAddress();
         UdpPacketHeader pkHdr;
         pkHdr.ruid = ruid;
         pkHdr.msgId = msgId;
-        return receiversTable[dest].dataQueued(pkHdr);
+        return receiversTable[destNode].dataQueued(pkHdr);
     }
 
     virtual bool abortData(ruid_t ruid, unsigned msgId, const ServerIdentifier &destNode)
     {
-        const IpAddress &dest = destNode.getNodeAddress();
         UdpPacketHeader pkHdr;
         pkHdr.ruid = ruid;
         pkHdr.msgId = msgId;
-        return receiversTable[dest].removeData((void*) &pkHdr, &UdpReceiverEntry::comparePacket);
+        return receiversTable[destNode].removeData((void*) &pkHdr, &UdpReceiverEntry::comparePacket);
     }
 
     virtual bool allDone() 
@@ -756,10 +769,10 @@ public:
 
 };
 
-ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter)
+ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter, bool encryptionInTransit)
 {
-    assertex(!myNode.getNodeAddress().isNull());
-    return new CSendManager(server_flow_port, data_port, client_flow_port, sniffer_port, sniffer_multicast_ip, queue_size_pr_server, queues_pr_server, myNode.getNodeAddress(), rateLimiter);
+    assertex(!myNode.getIpAddress().isNull());
+    return new CSendManager(server_flow_port, data_port, client_flow_port, sniffer_port, sniffer_multicast_ip, queue_size_pr_server, queues_pr_server, myNode.getIpAddress(), rateLimiter, encryptionInTransit);
 }
 
 class CMessagePacker : implements IMessagePacker, public CInterface

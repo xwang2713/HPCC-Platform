@@ -85,7 +85,6 @@ typedef IEclProcess* (* EclProcessFactory)();
 
 constexpr LogMsgCategory MCsetresult = MCprogress(100);     // Category used to inform when setting result
 constexpr LogMsgCategory MCgetresult = MCprogress(200);     // Category used to inform when getting result
-constexpr LogMsgCategory MCresolve = MCprogress(100);       // Category used to inform during name resolution
 constexpr LogMsgCategory MCrunlock = MCprogress(100);      // Category used to inform about run lock progress
 
 Owned<IPropertyTree> agentTopology;
@@ -336,14 +335,11 @@ public:
     virtual void threadmain() override
     {
         StringBuffer rawText;
-        unsigned priority = (unsigned) -2;
-        unsigned memused = 0;
         IpAddress peer;
         bool continuationNeeded;
         bool isStatus;
 
         Owned<IDebuggerContext> debuggerContext;
-        unsigned slavesReplyLen = 0;
         HttpHelper httpHelper(NULL);
         try
         {
@@ -373,7 +369,6 @@ public:
             return;
         }
 
-        bool isRaw = false;
         bool isHTTP = false;
         Owned<IPropertyTree> queryXml;
         StringBuffer sanitizedText;
@@ -397,8 +392,6 @@ public:
             }
             bool isRequest = false;
             bool isRequestArray = false;
-            bool isBlind = false;
-            bool isDebug = false;
 
             sanitizeQuery(queryXml, queryName, sanitizedText, isHTTP, uid, isRequest, isRequestArray);
             DBGLOG("Received debug query %s", sanitizedText.str());
@@ -565,11 +558,11 @@ EclAgent::EclAgent(IConstWorkUnit *wu, const char *_wuid, bool _checkVersion, bo
             w->setXmlParams(_queryXML);
         updateSuppliedXmlParams(w);
     }
-    IPropertyTree *costs = queryCostsConfiguration();
-    if (costs)
+    agentMachineCost = getMachineCostRate();
+    if (agentMachineCost > 0.0)
     {
-        agentMachineCost = money2cost_type(costs->getPropReal("@agent"));
-        if (agentMachineCost)
+        IPropertyTree *costs = queryCostsConfiguration();
+        if (costs)
         {
             double softCostLimit = costs->getPropReal("@limit");
             double guillotineCost = wu->getDebugValueReal("maxCost", softCostLimit);
@@ -919,7 +912,6 @@ UChar *EclAgent::getResultVarUnicode(const char * stepname, unsigned sequence)
     PROTECTED_GETRESULT(stepname, sequence, "VarUnicode", "unicode",
         MemoryBuffer result;
         r->getResultUnicode(MemoryBuffer2IDataVal(result));
-        unsigned tlen = result.length()/2;
         result.append((UChar)0);
         return (UChar *)result.detach();
     );
@@ -1437,7 +1429,6 @@ ILocalOrDistributedFile *EclAgent::resolveLFN(const char *fname, const char *err
 
 bool EclAgent::fileExists(const char *name)
 {
-    unsigned __int64 size = 0;
     StringBuffer lfn;
     expandLogicalName(lfn, name);
 
@@ -1619,7 +1610,7 @@ void EclAgent::restoreCluster(IWorkUnit *wu)
 
 unsigned EclAgent::getNodes()//retrieve node count for current cluster
 {
-    if (clusterWidth == -1)
+    if (clusterWidth == (unsigned)-1)
     {
         if (!isStandAloneExe)
         {
@@ -1876,6 +1867,23 @@ void EclAgent::doProcess()
                 throw makeStringException(0, "Attempting to execute a workunit that hasn't been compiled");
             if (checkVersion && ((eclccCodeVersion > ACTIVITY_INTERFACE_VERSION) || (eclccCodeVersion < MIN_ACTIVITY_INTERFACE_VERSION)))
                 failv(0, "Workunit was compiled for eclagent interface version %d, this eclagent requires version %d..%d", eclccCodeVersion, MIN_ACTIVITY_INTERFACE_VERSION, ACTIVITY_INTERFACE_VERSION);
+            if (checkVersion && eclccCodeVersion == 652)
+            {
+                // Any workunit compiled using eclcc 7.12.0-7.12.18 is not compatible
+                StringBuffer buildVersion, eclVersion;
+                w->getBuildVersion(StringBufferAdaptor(buildVersion), StringBufferAdaptor(eclVersion));
+                const char *version = strstr(buildVersion, "7.12.");
+
+                //Avoid matching a version number in the path that was used to build (enclosed in [] at the end)
+                const char *extra = strchr(buildVersion, '[');
+                if (version && (!extra || version < extra))
+                {
+                    const char *point = version + strlen("7.12.");
+                    unsigned pointVer = atoi(point);
+                    if (pointVer <= 18)
+                        failv(0, "Workunit was compiled by eclcc version %s which is not compatible with this runtime", buildVersion.str());
+                }
+            }
             if(noRetry && (w->getState() == WUStateFailed))
                 throw MakeStringException(0, "Ecl agent started in 'no retry' mode for failed workunit, so failing");
             w->setState(WUStateRunning);
@@ -2371,7 +2379,7 @@ void EclAgentWorkflowMachine::noteTiming(unsigned wfid, timestamp_type startTime
     updateWorkunitStat(wu, SSTworkflow, scope, StWhenStarted, nullptr, startTime, 0);
     updateWorkunitStat(wu, SSTworkflow, scope, StTimeElapsed, nullptr, elapsedNs, 0);
 
-    const cost_type cost = calcCost(agent.queryAgentMachineCost(), nanoToMilli(elapsedNs)) + aggregateCost(wu, scope, true);
+    const cost_type cost = money2cost_type(calcCost(agent.queryAgentMachineCost(), nanoToMilli(elapsedNs))) + aggregateCost(wu, scope, true);
     if (cost)
         wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTworkflow, scope, StCostExecute, NULL, cost, 1, 0, StatsMergeReplace);
 }
@@ -3049,8 +3057,8 @@ char * EclAgent::queryIndexMetaData(char const * lfn, char const * xpath)
         try
         {
             OwnedIFile file = createIFile(part->getFilename(rfn, copy));
-            unsigned __int64 thissize = file->size();
-            if(thissize != -1)
+            offset_t thissize = file->size();
+            if(thissize != (offset_t)-1)
             {
                 StringBuffer remotePath;
                 rfn.getPath(remotePath);
@@ -3580,7 +3588,6 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
             daliDownMonitor.setown(new CDaliDownMonitor(daliEp));
             addMPConnectionMonitor(daliDownMonitor);
 
-            LOG(MCoperatorInfo, "hthor build %s", BUILD_TAG);
             startLogMsgParentReceiver();
             connectLogMsgManagerToDali();
 
@@ -3622,7 +3629,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
                 }
 
                 const char * appName = argv[0];
-                for (int finger=0; argv[0][finger] != (const char)NULL; finger++)
+                for (int finger=0; argv[0][finger] != '\0'; finger++)
                 {
                     if (argv[0][finger] == PATHSEPCHAR)
                         appName = (const char *)(argv[0] + finger + 1);
@@ -3654,6 +3661,8 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
             uid.append("WLOCAL_").append((unsigned)GetCurrentProcessId());
             wuid.set(uid);
         }
+        setDefaultJobId(wuid.str());
+        LOG(MCoperatorInfo, "hthor build %s", BUILD_TAG);
 
 #ifdef MONITOR_ECLAGENT_STATUS
         if (serverstatus)
@@ -3996,7 +4005,7 @@ class DebugProbe : public InputProbe, implements IActivityDebugContext
 public:
     DebugProbe(IHThorInput *_in, IEngineRowStream *_stream, unsigned _sourceId, unsigned _sourceIdx, DebugActivityRecord *_sourceAct, unsigned _targetId, unsigned _targetIdx, DebugActivityRecord *_targetAct, unsigned _iteration, unsigned _channel, IDebuggableContext *_debugContext)
         : InputProbe(_in, _stream, _sourceId, _sourceIdx, _targetId, _targetIdx, _iteration, _channel),
-          sourceAct(_sourceAct), targetAct(_targetAct), debugContext(_debugContext)
+          debugContext(_debugContext), sourceAct(_sourceAct), targetAct(_targetAct)
     {
         historyCapacity = debugContext->getDefaultHistoryCapacity();
         nextHistorySlot = 0;

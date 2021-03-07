@@ -29,7 +29,7 @@
 
 #define CHEAP_UCHAR_DEF
 #ifdef _WIN32
-typedef wchar_t UChar;
+typedef char16_t UChar;
 #else //_WIN32
 typedef unsigned short UChar;
 #endif //_WIN32
@@ -217,6 +217,7 @@ extern DEFTYPE_API ICollationInfo * getCollation(IAtom * collation);
 extern DEFTYPE_API ITranslationInfo * getDefaultTranslation(ICharsetInfo * tgt, ICharsetInfo * src);
 extern DEFTYPE_API ITranslationInfo * queryDefaultTranslation(ICharsetInfo * tgt, ICharsetInfo * src);
 extern DEFTYPE_API bool isAscii(ITypeInfo * type);
+extern DEFTYPE_API ICharsetInfo * getAsciiCharset();
 
 //---------------------------------------------------------------------------
 

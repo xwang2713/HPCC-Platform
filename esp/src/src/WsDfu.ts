@@ -1,8 +1,6 @@
 import * as arrayUtil from "dojo/_base/array";
-import * as declare from "dojo/_base/declare";
 import * as Deferred from "dojo/_base/Deferred";
 import * as lang from "dojo/_base/lang";
-import * as Memory from "dojo/store/Memory";
 import * as Observable from "dojo/store/Observable";
 import * as QueryResults from "dojo/store/util/QueryResults";
 import * as topic from "dojo/topic";
@@ -10,14 +8,14 @@ import * as topic from "dojo/topic";
 import * as parser from "dojox/xml/parser";
 
 import { ESPBase } from "./ESPBase";
-
 import * as ESPRequest from "./ESPRequest";
+import { Memory } from "./Memory";
 
-const DiskUsageStore = declare([Memory], {
+class DiskUsageStore extends Memory {
 
     constructor() {
-        this.idProperty = "__hpcc_id";
-    },
+        super("__hpcc_id");
+    }
 
     query(query, options) {
         switch (query.CountBy) {
@@ -70,11 +68,11 @@ const DiskUsageStore = declare([Memory], {
         }));
         return QueryResults(deferredResults);
     }
-});
+}
 
 export function CreateDiskUsageStore() {
     const store = new DiskUsageStore();
-    return Observable(store);
+    return new Observable(store);
 }
 
 export function DFUArrayAction(logicalFiles, actionType) {

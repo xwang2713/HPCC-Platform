@@ -58,6 +58,7 @@
 
 #include "reservedwords.hpp"
 #include "eclcc.hpp"
+#include "codesigner.hpp"
 
 #ifndef _CONTAINERIZED
 #include "environment.hpp"
@@ -251,6 +252,9 @@ public:
         cclogFilename.append("cc.").append((unsigned)GetCurrentProcessId()).append(".log");
         defaultAllowed[false] = true;  // May want to change that?
         defaultAllowed[true] = true;
+#ifdef _CONTAINERIZED
+        setSecurityOptions();
+#endif
     }
     ~EclCC()
     {
@@ -267,6 +271,7 @@ public:
     }
     bool printKeywordsToXml();
     int parseCommandLineOptions(int argc, const char* argv[]);
+    void setSecurityOptions();
     void loadOptions();
     void loadManifestOptions();
     bool processFiles();
@@ -526,6 +531,11 @@ int main(int argc, const char *argv[])
         queryLogMsgManager()->changeMonitorFilter(queryStderrLogMsgHandler(), filter);
 #else
         setupContainerizedLogMsgHandler();
+        bool useChildProcesses = configuration->getPropInt("@useChildProcesses", false);
+        if (!useChildProcesses)  // If using eclcc in separate container (useChildProcesses==false),
+        {                        // it will need to create a directory for gpg and import keys from secrets
+            queryCodeSigner().initForContainer();
+        }
 #endif
         exitCode = doMain(argc, argv);
         stopPerformanceMonitor();
@@ -762,12 +772,14 @@ void EclCC::reportCompileErrors(IErrorReceiver & errorProcessor, const char * pr
 {
     StringBuffer failText;
     StringBuffer absCCLogName;
+#ifndef _CONTAINERIZED
     if (optLogfile.get())
         createUNCFilename(optLogfile.get(), absCCLogName, false);
     else
+#endif
         absCCLogName = "log file";
 
-    failText.appendf("Compile/Link failed for %s (see '%s' for details)",processName,absCCLogName.str());
+    failText.appendf("Compile/Link failed for %s (see %s for details)",processName,absCCLogName.str());
     errorProcessor.reportError(ERR_INTERNALEXCEPTION, failText.str(), processName, 0, 0, 0);
     try
     {
@@ -1495,9 +1507,7 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     instance.stats.generateTime = (unsigned)nanoToMilli(totalTimeNs) - instance.stats.parseTime;
     updateWorkunitStat(instance.wu, SSTcompilestage, "compile", StTimeElapsed, NULL, totalTimeNs);
 
-    IPropertyTree *costs = queryCostsConfiguration();
-    const cost_type machineCost = costs ? money2cost_type(costs->getPropReal("@eclcc")) : 0;
-    const cost_type cost = calcCost(machineCost, nanoToMilli(totalTimeNs));
+    const cost_type cost = money2cost_type(calcCost(getMachineCostRate(), nanoToMilli(totalTimeNs)));
     if (cost)
         instance.wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTcompilestage, "compile", StCostExecute, NULL, cost, 1, 0, StatsMergeReplace);
 
@@ -2102,7 +2112,6 @@ bool EclCC::processFiles()
             return false;
         }
     }
-
 
     StringBuffer searchPath;
     if (!optNoStdInc && stdIncludeLibraryPath.length())
@@ -2926,6 +2935,30 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
     return 0;
 }
 
+void EclCC::setSecurityOptions()
+{
+    IPropertyTree *eclSecurity = configuration->getPropTree("eclSecurity");
+    if (eclSecurity)
+    {
+        // Name of security option in configuration yaml
+        const char * configName[] = {"@embedded", "@pipe", "@extern", "@datafile" };
+        // Name of security option used internally
+        const char * securityOption[] = {"cpp", "pipe", "extern", "datafile" };
+        for (int i=0; i < 4; i++)
+        {
+            const char * optVal = eclSecurity->queryProp(configName[i]);
+            if (optVal)
+            {
+                if (!strcmp(optVal, "allow"))
+                    allowedPermissions.append(securityOption[i]);
+                else if (!strcmp(optVal, "deny"))
+                    deniedPermissions.append(securityOption[i]);
+                else if (!strcmp(optVal, "allowSigned"))
+                    allowSignedPermissions.append(securityOption[i]);
+            }
+        }
+    }
+}
 //=========================================================================================
 
 

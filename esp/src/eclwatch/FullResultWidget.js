@@ -4,7 +4,7 @@ define([
     "src/nlsHPCC",
     "dojo/_base/array",
     "dojo/request/iframe",
-    "dojo/store/Memory",
+    "src/Memory",
     "dojo/store/Observable",
 
     "dijit/registry",
@@ -24,7 +24,7 @@ define([
     "dijit/form/Button",
     "dijit/form/ToggleButton",
     "dijit/ToolbarSeparator"
-], function (declare, lang, nlsHPCCMod, arrayUtil, iframe, Memory, Observable,
+], function (declare, lang, nlsHPCCMod, arrayUtil, iframe, MemoryMod, Observable,
     registry,
     Grid, DijitRegistry,
     _Widget, ESPBaseMod, ESPUtil,
@@ -131,11 +131,9 @@ define([
                 arrayUtil.forEach(result, function (item, idx) {
                     item["__hpcc_id"] = idx;
                 });
-                var store = new Memory({
-                    idProperty: "__hpcc_id",
-                    data: result
-                });
-                this.store = Observable(store);
+                var store = new MemoryMod.Memory("__hpcc_id");
+                store.setData(result);
+                this.store = new Observable(store);
                 this.grid = new declare([ESPUtil.Grid(false, true)])({
                     columns: columns,
                     store: this.store

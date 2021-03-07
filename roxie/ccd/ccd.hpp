@@ -51,9 +51,20 @@
 
 #define ROXIE_STATEFILE_VERSION 2
 
+// Have not yet tested impact of new IBYTI handling in non-containerized systems
+
+#ifdef _CONTAINERIZED
+#define NEW_IBYTI
+#endif
+
+#if defined(_CONTAINERIZED) || defined (NEW_IBYTI)
+// Both containerized mode and new IBYTI mode assume subchannels are passed in header.
+// It SHOULD also work, and may be beneficial, in non-containerized systems but has not as yet been confirmed.
+#define SUBCHANNELS_IN_HEADER
+#endif
+
 extern IException *MakeRoxieException(int code, const char *format, ...) __attribute__((format(printf, 2, 3)));
 void openMulticastSocket();
-extern size32_t channelWrite(unsigned channel, void const* buf, size32_t size);
 
 void setMulticastEndpoints(unsigned numChannels);
 
@@ -66,11 +77,7 @@ void setMulticastEndpoints(unsigned numChannels);
 #define ROXIE_SLA_PRIORITY 0x40000000    // mask in activityId indicating it goes SLA priority queue
 #define ROXIE_HIGH_PRIORITY 0x80000000   // mask in activityId indicating it goes on the fast queue
 #define ROXIE_LOW_PRIORITY 0x00000000    // mask in activityId indicating it goes on the slow queue (= default)
-#ifdef ROXIE_SLA_LOGIC
 #define ROXIE_PRIORITY_MASK (ROXIE_SLA_PRIORITY | ROXIE_HIGH_PRIORITY | ROXIE_LOW_PRIORITY)
-#else
-#define ROXIE_PRIORITY_MASK (ROXIE_HIGH_PRIORITY | ROXIE_LOW_PRIORITY )
-#endif
 
 #define ROXIE_ACTIVITY_FETCH 0x20000000    // or'ed into activityId for fetch part of full keyed join activities
 
@@ -136,31 +143,39 @@ public:
     }
 };
 
+extern bool localAgent;
+extern bool encryptInTransit;
+
 class RoxiePacketHeader
 {
 private:
     RoxiePacketHeader(const RoxiePacketHeader &source) =  delete;
 
 public:
-    unsigned packetlength;
-    unsigned short retries;         // how many retries on this query, the high bits are used as flags, see above
-    unsigned short overflowSequence;// Used if more than one packet-worth of data from server - eg keyed join. We don't mind if we wrap...
-    unsigned short continueSequence;// Used if more than one chunk-worth of data from agent. We don't mind if we wrap
-    unsigned short channel;         // multicast family to send on
-    unsigned activityId;            // identifies the helper factory to be used (activityId in graph)
-    hash64_t queryHash;             // identifies the query
+    unsigned packetlength = 0;
+    unsigned short retries = 0;         // how many retries on this query, the high bits are used as flags, see above
+    unsigned short overflowSequence = 0;// Used if more than one packet-worth of data from server - eg keyed join. We don't mind if we wrap...
+    unsigned short continueSequence = 0;// Used if more than one chunk-worth of data from agent. We don't mind if we wrap
+    unsigned short channel = 0;         // multicast family to send on
+    unsigned activityId = 0;            // identifies the helper factory to be used (activityId in graph)
+    hash64_t queryHash = 0;             // identifies the query
 
-    ruid_t uid;                     // unique id
+    ruid_t uid = 0;                     // unique id
     ServerIdentifier serverId;
-#ifdef TIME_PACKETS
-    unsigned tick;
+#ifdef SUBCHANNELS_IN_HEADER
+    ServerIdentifier subChannels[MAX_SUBCHANNEL];
 #endif
+#ifdef TIME_PACKETS
+    unsigned tick = 0;
+#endif
+    RoxiePacketHeader() = default;
 
     RoxiePacketHeader(const RemoteActivityId &_remoteId, ruid_t _uid, unsigned _channel, unsigned _overflowSequence);
     RoxiePacketHeader(const RoxiePacketHeader &source, unsigned _activityId, unsigned _subChannel);
 
     static unsigned getSubChannelMask(unsigned subChannel);
     unsigned priorityHash() const;
+    void copy(const RoxiePacketHeader &oh);
     bool matchPacket(const RoxiePacketHeader &oh) const;
     void init(const RemoteActivityId &_remoteId, ruid_t _uid, unsigned _channel, unsigned _overflowSequence);
     StringBuffer &toString(StringBuffer &ret) const;
@@ -175,6 +190,34 @@ public:
         unsigned bitpos = countTrailingUnsetBits((unsigned) retries);
         return bitpos / SUBCHANNEL_BITS;
     }
+
+#ifdef SUBCHANNELS_IN_HEADER
+    unsigned mySubChannel() const // NOTE - 0 based
+    {
+        if (localAgent)
+            return 0;
+        for (unsigned idx = 0; idx < MAX_SUBCHANNEL; idx++)
+        {
+            if (subChannels[idx].isMe())
+                return idx;
+        }
+        throwUnexpected();
+    }
+
+    bool hasBuddies() const
+    {
+        if (localAgent)
+            return false;
+        if (subChannels[1].isNull())
+        {
+            assert(subChannels[0].isMe());
+            return false;
+        }
+        return true;
+    }
+
+    void clearSubChannels();
+#endif
 
     inline unsigned getSequenceId() const
     {
@@ -192,6 +235,16 @@ public:
     }
 };
 
+
+interface ISerializedRoxieQueryPacket : extends IInterface
+{
+    virtual RoxiePacketHeader &queryHeader() const = 0;
+    virtual const byte *queryTraceInfo() const = 0;
+    virtual unsigned getTraceLength() const = 0;
+    virtual IRoxieQueryPacket *deserialize() const = 0;
+    virtual ISerializedRoxieQueryPacket *cloneSerializedPacket(unsigned channel) const = 0;
+};
+
 interface IRoxieQueryPacket : extends IInterface
 {
     virtual RoxiePacketHeader &queryHeader() const = 0;
@@ -205,9 +258,9 @@ interface IRoxieQueryPacket : extends IInterface
     virtual unsigned getContextLength() const = 0;
 
     virtual IRoxieQueryPacket *clonePacket(unsigned channel) const = 0;
-    virtual unsigned hash() const = 0;
-    virtual bool cacheMatch(const IRoxieQueryPacket *) const = 0; // note - this checks whether it's a repeat from server's point-of-view
     virtual IRoxieQueryPacket *insertSkipData(size32_t skipDataLen, const void *skipData) const = 0;
+
+    virtual ISerializedRoxieQueryPacket *serialize() const = 0;
 };
 
 interface IQueryDll;
@@ -235,7 +288,6 @@ extern bool debugPermitted;
 extern bool useRemoteResources;
 extern bool checkFileDate;
 extern bool lazyOpen;
-extern bool localAgent;
 extern bool useAeron;
 extern bool ignoreOrphans;
 extern bool doIbytiDelay;
@@ -271,10 +323,13 @@ extern bool prestartAgentThreads;
 extern unsigned preabortKeyedJoinsThreshold;
 extern unsigned preabortIndexReadsThreshold;
 extern bool traceStartStop;
-extern bool traceServerSideCache;
+extern bool traceRoxiePackets;
+extern bool delaySubchannelPackets;
 extern bool traceTranslations;
 extern bool defaultTimeActivities;
 extern bool defaultTraceEnabled;
+extern unsigned IBYTIbufferSize;
+extern unsigned IBYTIbufferLifetime;
 extern unsigned defaultTraceLimit;
 extern unsigned watchActivityId;
 extern unsigned testAgentFailure;
@@ -290,7 +345,6 @@ extern HardwareInfo hdwInfo;
 extern unsigned parallelAggregate;
 extern bool inMemoryKeysEnabled;
 extern unsigned __int64 minFreeDiskSpace;
-extern unsigned serverSideCacheSize;
 extern bool probeAllRows;
 extern bool steppingEnabled;
 extern bool simpleLocalKeyedJoins;
@@ -300,6 +354,7 @@ extern bool mergeAgentStatistics;
 extern bool defaultNoSeekBuildIndex;
 extern unsigned parallelLoadQueries;
 extern bool adhocRoxie;
+extern bool alwaysFailOnLeaks;
 
 #ifdef _CONTAINERIZED
 static constexpr bool roxieMulticastEnabled = false;
@@ -371,6 +426,11 @@ extern void doUNIMPLEMENTED(unsigned line, const char *file);
 
 extern IRoxieQueryPacket *createRoxiePacket(void *data, unsigned length);
 extern IRoxieQueryPacket *createRoxiePacket(MemoryBuffer &donor); // note: donor is empty after call
+// Direct deserialize callbeck packets from received network data
+extern IRoxieQueryPacket *deserializeCallbackPacket(MemoryBuffer &donor); // note: donor is empty after call
+// Delayed deserialize from received network data
+extern ISerializedRoxieQueryPacket *createSerializedRoxiePacket(MemoryBuffer &donor); // note: donor is empty after call
+
 extern void dumpBuffer(const char *title, const void *buf, unsigned recSize);
 
 inline unsigned getBondedChannel(unsigned partNo)
@@ -691,8 +751,8 @@ class AgentContextLogger : public StringContextLogger
     StringAttr wuid;
 public:
     AgentContextLogger();
-    AgentContextLogger(IRoxieQueryPacket *packet);
-    void set(IRoxieQueryPacket *packet);
+    AgentContextLogger(ISerializedRoxieQueryPacket *packet);
+    void set(ISerializedRoxieQueryPacket *packet);
     void putStatProcessed(unsigned subGraphId, unsigned actId, unsigned idx, unsigned processed, unsigned strands) const;
     void putStats(unsigned subGraphId, unsigned actId, const CRuntimeStatisticCollection &stats) const;
     void flush();

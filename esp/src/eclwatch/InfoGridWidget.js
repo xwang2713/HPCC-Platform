@@ -6,7 +6,7 @@ define([
     "dojo/dom",
     "dojo/dom-construct",
     "dojo/dom-class",
-    "dojo/store/Memory",
+    "src/Memory",
     "dojo/store/Observable",
     "dojo/topic",
     "dojo/has",
@@ -29,7 +29,7 @@ define([
     "dijit/Toolbar",
     "dijit/ToolbarSeparator"
 ],
-    function (declare, lang, nlsHPCCMod, arrayUtil, dom, domConstruct, domClass, Memory, Observable, topic, has,
+    function (declare, lang, nlsHPCCMod, arrayUtil, dom, domConstruct, domClass, MemoryMod, Observable, topic, has,
         registry,
         _Widget, ESPUtil, ESPWorkunit, Utility,
         template) {
@@ -74,7 +74,7 @@ define([
                 var retVal = {};
                 var parts = msg.split("Graph graph");
                 if (parts.length > 1) {
-                    var parts1 = parts[1].split("[")
+                    var parts1 = parts[1].split("[");
                     if (parts1.length > 1) {
                         retVal.graphID = "graph" + parts1[0];
                         parts1.shift();
@@ -110,11 +110,8 @@ define([
                 }
 
                 var context = this;
-                var store = new Memory({
-                    idProperty: "id",
-                    data: []
-                });
-                this.infoStore = Observable(store);
+                var store = new MemoryMod.Memory("id");
+                this.infoStore = new Observable(store);
 
                 this.infoGrid = new declare([ESPUtil.Grid(false, true)])({
                     selectionMode: "single",
@@ -145,10 +142,10 @@ define([
                                 var info = context.extractGraphInfo(Message);
                                 if (info.graphID && info.subgraphID && info.activityID) {
                                     var txt = "Graph " + info.graphID + "[" + info.subgraphID + "], " + info.activityName + "[" + info.activityID + "]";
-                                    Message = Message.replace(txt, "<a href='#' class='dgrid-row-url'>" + txt + "</a>")
+                                    Message = Message.replace(txt, "<a href='#' onClick='return false;' class='dgrid-row-url'>" + txt + "</a>");
                                 } else if (info.graphID && info.subgraphID) {
                                     var txt = "Graph " + info.graphID + "[" + info.subgraphID + "]";
-                                    Message = Message.replace(txt, "<a href='#' class='dgrid-row-url'>" + txt + "</a>")
+                                    Message = Message.replace(txt, "<a href='#' onClick='return false;' class='dgrid-row-url'>" + txt + "</a>");
                                 } else {
                                     Message = Utility.xmlEncode2(Message);
                                 }
@@ -234,7 +231,7 @@ define([
                 return str;
             },
             csvFormatHeader: function (data, delim) {
-                var retVal = ""
+                var retVal = "";
                 if (data.length) {
                     for (var key in data[0]) {
                         if (retVal.length)
@@ -245,7 +242,7 @@ define([
                 return retVal;
             },
             csvFormatRow: function (row, idx, delim) {
-                var retVal = ""
+                var retVal = "";
                 for (var key in row) {
                     if (retVal.length)
                         retVal += delim;
@@ -279,7 +276,7 @@ define([
                     var blob = new Blob([csvContent], {
                         type: "text/csv;charset=utf-8;"
                     });
-                    navigator.msSaveBlob(blob, "ErrWarn.csv")
+                    navigator.msSaveBlob(blob, "ErrWarn.csv");
                 } else {
                     var link = document.createElement("a");
                     link.setAttribute("href", encodedUri);

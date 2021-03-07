@@ -35,6 +35,7 @@ interface IMemoryMappedFile;
 
 class MemoryBuffer;
 class Semaphore;
+struct FileSystemProperties;
 
 enum IFOmode { IFOcreate, IFOread, IFOwrite, IFOreadwrite, IFOcreaterw };    // modes for open
 enum IFSHmode { IFSHnone, IFSHread=0x8, IFSHfull=0x10};   // sharing modes
@@ -262,7 +263,7 @@ extern jlib_decl void createHardLink(const char* fileName, const char* existingF
 
 extern jlib_decl IFile * createIFile(const char * filename);
 extern jlib_decl IFile * createIFile(MemoryBuffer & buffer);
-extern jlib_decl IFileIO * createIFileIO(HANDLE handle,IFOmode=IFOreadwrite,IFEflags extraFlags=IFEnone);
+extern jlib_decl IFileIO * createIFileIO(HANDLE handle,IFOmode mode,IFEflags extraFlags=IFEnone);
 extern jlib_decl IDirectoryIterator * createDirectoryIterator(const char * path = NULL, const char * wildcard = NULL, bool sub = false, bool includedirs = true);
 extern jlib_decl IDirectoryIterator * createNullDirectoryIterator();
 extern jlib_decl IFileIO * createIORange(IFileIO * file, offset_t header, offset_t length);     // restricts input/output to a section of a file.
@@ -371,9 +372,11 @@ public:
     StringBuffer & getPath(StringBuffer & name) const;      // Either local or full depending on location 
     StringBuffer & getLocalPath(StringBuffer &name) const;  // Local Path (e.g. "c:\dfsdata\test.d00._1_of_3")
     StringBuffer & getRemotePath(StringBuffer &name) const; // Full Remote Path  (e.g. "\\192.168.0.123\c$\dfsdata\test.d00._1_of_3")
-    
+
+    const FileSystemProperties & queryFileSystemProperties() const;
     bool isLocal() const;                                   // on calling node
     bool isUnixPath() const;                                // a unix filename
+    bool isUrl() const;
     char getPathSeparator() const;                          // separator for this path
     const SocketEndpoint & queryEndpoint() const            { return ep; } // node containing file
     const IpAddress      & queryIP() const                  { return ep; }
@@ -597,7 +600,7 @@ extern jlib_decl void extractBlobElements(const char * prefix, const RemoteFilen
 extern jlib_decl bool mountDrive(const char *drv,const RemoteFilename &rfn); // linux only currently
 extern jlib_decl bool unmountDrive(const char *drv); // linux only currently
 
-extern jlib_decl IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, StringBuffer &tmpName);
+extern jlib_decl IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, StringBuffer &tmpName, IFOmode mode=IFOcreate);
 
 
 // used by remote copy
@@ -645,5 +648,23 @@ public:
     RelaxedAtomic<__uint64> ioWrites{0};
 };
 
+//--------------------------------------------------------------------------------------------------------------------
+
+// A structure that contains information about files on a file system.  Should be extended with any useful information.
+struct FileSystemProperties
+{
+public:
+    const bool canRename;
+    const bool canSeekWrite;
+    const bool hasDirectories;
+    const bool preExtendOutput;
+    const offset_t minimumBufferSize;
+};
+
+//Return information about files on a particular filesystem.  Objects returned will always remain valid.
+extern jlib_decl const FileSystemProperties & queryFileSystemProperties(const char * filename);
+inline bool canRename(const char * filename) { return queryFileSystemProperties(filename).canRename; }
+inline bool canSeekWrite(const char * filename) { return queryFileSystemProperties(filename).canSeekWrite; }
+inline bool hasDirectories(const char * filename) { return queryFileSystemProperties(filename).hasDirectories; }
 
 #endif

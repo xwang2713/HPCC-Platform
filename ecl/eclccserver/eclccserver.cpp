@@ -35,6 +35,7 @@
 #endif
 #include <unordered_map>
 #include <string>
+#include "codesigner.hpp"
 
 static Owned<IPropertyTree> globals;
 static const char * * globalArgv = nullptr;
@@ -225,7 +226,7 @@ class EclccCompileThread : implements IPooledThread, implements IErrorReporter, 
                 }
             }
             else if (!summaryParse.find(errStr))
-                IERRLOG("Unrecognised error: %s", errStr);
+                IERRLOG("%s", errStr);
         }
         catch (IException *E)
         {
@@ -574,7 +575,10 @@ public:
         if (ok)
         {
             workunit->setState(WUStateCompiled);
-            const char *newClusterName = workunit->queryClusterName();   // Workunit can change the cluster name via #workunit, so reload it
+            // Workunit can change the cluster name via #workunit, so reload it
+            // Note that we need a StringAttr here not a char * as the lifetime of the value returned from queryClusterName is
+            // only until the workunit object is released.
+            StringAttr newClusterName = workunit->queryClusterName();
             if (strcmp(newClusterName, clusterName.str()) != 0)
             {
 #ifdef _CONTAINERIZED
@@ -583,13 +587,13 @@ public:
                 clusterInfo.setown(getTargetClusterInfo(newClusterName));
                 if (!clusterInfo)
                 {
-                    VStringBuffer errStr("Cluster %s by #workunit not recognized", newClusterName);
+                    VStringBuffer errStr("Cluster %s by #workunit not recognized", newClusterName.str());
                     failCompilation(errStr);
                     return;
                 }
                 if (platform != clusterInfo->getPlatform())
                 {
-                    VStringBuffer errStr("Cluster %s specified by #workunit is wrong type for this queue", newClusterName);
+                    VStringBuffer errStr("Cluster %s specified by #workunit is wrong type for this queue", newClusterName.str());
                     failCompilation(errStr);
                     return;
                 }
@@ -874,11 +878,13 @@ int main(int argc, const char *argv[])
     setStatisticsComponentName(SCTeclcc, processName, true);
     if (globals->getPropBool("@enableSysLog",true))
         UseSysLogForOperatorMessages();
+#ifndef _CONTAINERIZED
 #ifndef _WIN32
     if (globals->getPropBool("@generatePrecompiledHeader", true))
         generatePrecompiledHeader();
     else
         removePrecompiledHeader();
+#endif
 #endif
 
     const char *daliServers = globals->queryProp("@daliServers");
@@ -902,10 +908,15 @@ int main(int argc, const char *argv[])
         }
         else
         {
+#ifndef _CONTAINERIZED
             unsigned optMonitorInterval = globals->getPropInt("@monitorInterval", 60);
             if (optMonitorInterval)
                 startPerformanceMonitor(optMonitorInterval*1000, PerfMonStandard, nullptr);
+#endif
+
 #ifdef _CONTAINERIZED
+            queryCodeSigner().initForContainer();
+
             bool filtered = false;
             std::unordered_map<std::string, bool> listenQueues;
             Owned<IPTreeIterator> listening = globals->getElements("listen");
@@ -962,7 +973,9 @@ int main(int argc, const char *argv[])
     {
         IERRLOG("Terminating unexpectedly");
     }
+#ifndef _CONTAINERIZED
     stopPerformanceMonitor();
+#endif
     globals.clear();
     UseSysLogForOperatorMessages(false);
     ::closedownClientProcess(); // dali client closedown

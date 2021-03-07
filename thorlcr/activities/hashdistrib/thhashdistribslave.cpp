@@ -506,7 +506,7 @@ protected:
                 targets.append(new CTarget(*this, 0, false, "DESTINATION=ALL"));
             else
             {
-                targets.ensure(owner.numnodes);
+                targets.ensureCapacity(owner.numnodes);
                 for (unsigned n=0; n<owner.numnodes; n++)
                 {
                     VStringBuffer info("DESTINATION=%u", n);
@@ -3026,7 +3026,7 @@ protected:
         }
         else if (_numHashTables > numHashTables)
         {
-            _hashTables.ensure(_numHashTables);
+            _hashTables.ensureCapacity(_numHashTables);
             hashTables = (CHashTableRowTable **)_hashTables.getArray();
             for (unsigned i=numHashTables; i<_numHashTables; i++)
             {
@@ -3667,7 +3667,7 @@ unsigned CBucketHandler::getActivityId() const
 void CBucketHandler::init(unsigned _numBuckets, IRowStream *keyStream)
 {
     numBuckets = _numBuckets;
-    _buckets.ensure(numBuckets);
+    _buckets.ensureCapacity(numBuckets);
     buckets = (CBucket **)_buckets.getArray();
     for (unsigned i=0; i<numBuckets; i++)
     {
@@ -4297,6 +4297,7 @@ IRowStream *mergeLocalAggs(Owned<IHashDistributor> &distributor, CSlaveActivity 
         IHThorRowAggregator &helper;
         IHashDistributor &distributor;
         CSlaveActivity &activity;
+        bool stopped = false;
     public:
         CAggregatingStream(IHThorRowAggregator &_helper, IEngineRowAllocator &_rowAllocator, ICompare &_cmp, IHashDistributor &_distributor, CSlaveActivity &_activity)
             : helper(_helper), rowAllocator(_rowAllocator), cmp(_cmp), distributor(_distributor), rowBuilder(_rowAllocator), activity(_activity)
@@ -4304,6 +4305,7 @@ IRowStream *mergeLocalAggs(Owned<IHashDistributor> &distributor, CSlaveActivity 
         }
         void start(IRowStream *_input)
         {
+            stopped = false;
             input.setown(_input);
         }
         // IRowStream
@@ -4344,6 +4346,9 @@ IRowStream *mergeLocalAggs(Owned<IHashDistributor> &distributor, CSlaveActivity 
         }
         virtual void stop() override
         {
+            if (stopped)
+                return;
+            stopped = true;
             sz = 0;
             rowBuilder.clear();
             input->stop();

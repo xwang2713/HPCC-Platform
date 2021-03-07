@@ -1,15 +1,26 @@
 ﻿import * as arrayUtil from "dojo/_base/array";
 import * as declare from "dojo/_base/declare";
 import * as lang from "dojo/_base/lang";
-import * as Memory from "dojo/store/Memory";
 
 import * as ESPUtil from "./ESPUtil";
 import * as Utility from "./Utility";
 import * as WsSMC from "./WsSMC";
+import { Memory } from "./Memory";
 
-const Store = declare([Memory], {
-    idProperty: "__hpcc_id"
-});
+class Store extends Memory {
+
+    constructor() {
+        super("__hpcc_id");
+    }
+}
+
+class QueueMemory extends Memory {
+
+    constructor(protected parent) {
+        super("__hpcc_id");
+    }
+
+}
 
 const Queue = declare([ESPUtil.Singleton, ESPUtil.Monitor], {
 
@@ -17,11 +28,7 @@ const Queue = declare([ESPUtil.Singleton, ESPUtil.Monitor], {
         this.__hpcc_id = id;
 
         this._watched = [];
-        this.children = new Memory({
-            idProperty: "__hpcc_id",
-            parent: this,
-            data: []
-        });
+        this.children = new QueueMemory(this);
     },
 
     pause() {

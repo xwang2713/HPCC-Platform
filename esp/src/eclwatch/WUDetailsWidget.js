@@ -177,6 +177,7 @@ define([
         },
         _onRefresh: function (event) {
             this.wu.refresh(true);
+            this.wu.fetchServiceNames();
         },
         _onClone: function (event) {
             this.wu.clone();
@@ -309,6 +310,7 @@ define([
                     context.updateInput(name, oldValue, newValue);
                 });
                 this.wu.refresh();
+                this.wu.fetchServiceNames();
             }
 
             this.infoGridWidget.init(params);
@@ -326,7 +328,7 @@ define([
 
         initTab: function () {
             if (!this.wu) {
-                return
+                return;
             }
             var currSel = this.getSelectedChild();
             if (currSel.id === this.widget._Variables.id && !this.widget._Variables.__hpcc_initalized) {
@@ -389,7 +391,7 @@ define([
         },
 
         objectToText: function (obj) {
-            var text = ""
+            var text = "";
             for (var key in obj) {
                 text += "<tr><td>" + key + ":</td>";
                 if (typeof obj[key] === "object") {
@@ -426,7 +428,7 @@ define([
                                 value: targetData[i]
                             });
                         }
-                        context.allowedClusters.set("value", "")
+                        context.allowedClusters.set("value", "");
                         domClass.add(context.id + "Cluster", "hidden");
                     } else {
                         domClass.add(context.id + "AllowedClusters", "hidden");
@@ -602,6 +604,9 @@ define([
             } else if (name === "Scope" && newValue) {
                 domClass.remove("scopeOptional", "hidden");
                 domClass.add("scopeOptional", "show");
+            } else if (name === "ServiceNames" && newValue && newValue.Item) {
+                var domElem = registry.byId(this.id + "ServiceNamesCustom");
+                domElem.set("value", newValue.Item.join("\n"));
             }
             if (name === "__hpcc_changedCount" && newValue > 0) {
                 var getInt = function (item) {

@@ -24,6 +24,8 @@
 #include "jmisc.hpp"
 #include "jqueue.tpp"
 #include "jregexp.hpp"
+#include "jlog.ipp"
+#include "jisem.hpp"
 #include <assert.h>
 #ifdef _WIN32
 #include <process.h>
@@ -127,6 +129,7 @@ unsigned WINAPI Thread::_threadmain(LPVOID v)
 void *Thread::_threadmain(void *v)
 #endif
 {
+    resetThreadLogging();   // Not strictly needed if everything handled via thread_local variable's constructors...
     Thread * t = (Thread *)v;
 #ifdef _WIN32
     if (SEHHandling) 
@@ -317,7 +320,8 @@ void Thread::handleException(IException *e)
     assertex(exceptionHandlers);
     if (exceptionHandlers->ordinality() == 0)
     {
-        PrintExceptionLog(e,getName());
+        if (!dynamic_cast<InterruptedSemaphoreException *>(e))
+            PrintExceptionLog(e,getName());
         //throw; // don't rethrow unhandled, preferable over alternative of causing process death
         e->Release();
     }
@@ -732,7 +736,7 @@ void CAsyncFor::For(unsigned num,unsigned maxatonce,bool abortFollowingException
             for (i=0;(i<num)&&(i<maxatonce);i++)
                 ready.signal();
             IArrayOf<Thread> started;
-            started.ensure(num);
+            started.ensureCapacity(num);
             for (i=0;i<num;i++) {
                 ready.wait();
                 if (abortFollowingException && e) break;
@@ -788,14 +792,34 @@ void CAsyncFor::For(unsigned num,unsigned maxatonce,bool abortFollowingException
                 }
             };
             IArrayOf<Thread> started;
-            started.ensure(num);
+            started.ensureCapacity(num);
             for (i=0;i<num-1;i++)
             {
                 Owned<Thread> thread = new cdothread(this,i,&errmutex,e);
                 thread->start();
                 started.append(*thread.getClear());
             }
-            Do(num-1);
+
+            try {
+                Do(num-1);
+            }
+            catch (IException * _e)
+            {
+                synchronized block(errmutex);
+                if (e)
+                    _e->Release();  // only return first
+                else
+                    e = _e;
+            }
+#ifndef NO_CATCHALL
+            catch (...)
+            {
+                synchronized block(errmutex);
+                if (!e)
+                    e = MakeStringException(0, "Unknown exception in main Thread");
+            }
+#endif
+
             ForEachItemIn(idx, started)
             {
                 started.item(idx).join();
@@ -916,6 +940,7 @@ public:
     {
         do
         {
+            resetThreadLogging();
             sem.wait();
             {
                 CriticalBlock block(parent.crit); // to synchronize
@@ -2406,6 +2431,7 @@ public:
                 PROGLOG("%s: Pipe Aborting",title.get());
             aborted = true;
             closeInput();
+            if (forkthread)
             {
                 CriticalUnblock unblock(sect);
                 forkthread->join(1000);

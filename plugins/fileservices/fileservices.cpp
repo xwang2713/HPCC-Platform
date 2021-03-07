@@ -68,9 +68,9 @@ static const char * EclDefinition =
 "  SetReadOnly(const varstring lfn, boolean ro) : c,action,context,entrypoint='fsSetReadOnly'; \n"
 "  RenameLogicalFile(const varstring oldname, const varstring newname, boolean allowoverwrite=false) : c,action,context,entrypoint='fsRenameLogicalFile_v2'; \n"
 "  varstring GetBuildInfo() : c,pure,entrypoint='fsGetBuildInfo';\n"
-"  SendEmail(const varstring to, const varstring subject, const varstring body, const varstring mailServer=GETENV('SMTPserver'), unsigned4 port=(unsigned4) GETENV('SMTPport', '25'), const varstring sender=GETENV('emailSenderAddress')) : c,action,context,entrypoint='fsSendEmail'; \n"
-"  SendEmailAttachText(const varstring to, const varstring subject, const varstring body, const varstring attachment, const varstring mimeType, const varstring attachmentName, const varstring mailServer=GETENV('SMTPserver'), unsigned4 port=(unsigned4) GETENV('SMTPport', '25'), const varstring sender=GETENV('emailSenderAddress')) : c,action,context,entrypoint='fsSendEmailAttachText'; \n"
-"  SendEmailAttachData(const varstring to, const varstring subject, const varstring body, const data attachment, const varstring mimeType, const varstring attachmentName, const varstring mailServer=GETENV('SMTPserver'), unsigned4 port=(unsigned4) GETENV('SMTPport', '25'), const varstring sender=GETENV('emailSenderAddress')) : c,action,context,entrypoint='fsSendEmailAttachData'; \n"
+"  SendEmail(const varstring to, const varstring subject, const varstring body, const varstring mailServer=GETENV('SMTPserver'), unsigned4 port=(unsigned4) GETENV('SMTPport', '25'), const varstring sender=GETENV('emailSenderAddress'), const varstring cc='', const varstring bcc='', boolean highPriority=false) : c,action,context,entrypoint='fsSendEmail_v2'; \n"
+"  SendEmailAttachText(const varstring to, const varstring subject, const varstring body, const varstring attachment, const varstring mimeType, const varstring attachmentName, const varstring mailServer=GETENV('SMTPserver'), unsigned4 port=(unsigned4) GETENV('SMTPport', '25'), const varstring sender=GETENV('emailSenderAddress'), const varstring cc='', const varstring bcc='', boolean highPriority=false) : c,action,context,entrypoint='fsSendEmailAttachText_v2'; \n"
+"  SendEmailAttachData(const varstring to, const varstring subject, const varstring body, const data attachment, const varstring mimeType, const varstring attachmentName, const varstring mailServer=GETENV('SMTPserver'), unsigned4 port=(unsigned4) GETENV('SMTPport', '25'), const varstring sender=GETENV('emailSenderAddress'), const varstring cc='', const varstring bcc='', boolean highPriority=false) : c,action,context,entrypoint='fsSendEmailAttachData_v2'; \n"
 "  varstring CmdProcess(const varstring prog, const varstring src) : c,action,entrypoint='fsCmdProcess'; \n"
 "  string CmdProcess2(const varstring prog, const string src) : c,action,entrypoint='fsCmdProcess2'; \n"
 "  SprayFixed(const varstring sourceIP, const varstring sourcePath, integer4 recordSize, const varstring destinationGroup, const varstring destinationLogicalName, integer4 timeOut=-1, const varstring espServerIpPort=GETENV('ws_fs_server'), integer4 maxConnections=-1, boolean allowoverwrite=false, boolean replicate=false,boolean compress=false, boolean failIfNoSourceFile=false, integer4 expireDays=-1, const varstring dfuServerQueue='', boolean noSplit=false) : c,action,context,entrypoint='fsSprayFixed_v4'; \n"
@@ -142,6 +142,9 @@ static const char * EclDefinition =
 "  varstring GetEspURL(const varstring username = '', const varstring userPW = '') : c,once,entrypoint='fsGetEspURL'; \n"
 "  varstring GetDefaultDropZone() : c,once,entrypoint='fsGetDefaultDropZone'; \n"
 "  dataset(FsDropZoneRecord) GetDropZones() : c,context,entrypoint='fsGetDropZones'; \n"
+"  integer4 GetExpireDays(const varstring lfn) : c,context,entrypoint='fsGetExpireDays'; \n"
+"  SetExpireDays(const varstring lfn, integer4 expireDays) : c,context,entrypoint='fsSetExpireDays'; \n"
+"  ClearExpireDays(const varstring lfn) : c,context,entrypoint='fsClearExpireDays'; \n"
 "END;";
 
 #define WAIT_SECONDS 30
@@ -572,28 +575,43 @@ FILESERVICES_API void FILESERVICES_CALL fsRenameLogicalFile_v2(ICodeContext *ctx
 }
 
 
-FILESERVICES_API void FILESERVICES_CALL fsSendEmail(ICodeContext * ctx, const char * to, const char * subject, const char * body, const char * mailServer, unsigned port, const char * sender)
+FILESERVICES_API void FILESERVICES_CALL fsSendEmail_v2(ICodeContext * ctx, const char * to, const char * subject, const char * body, const char * mailServer, unsigned port, const char * sender, const char *cc, const char *bcc, bool highPriority)
 {
     StringArray warnings;
-    sendEmail( to, subject, body, mailServer, port, sender, &warnings);
+    sendEmail( to, cc, bcc, subject, body, mailServer, port, sender, &warnings, highPriority);
     ForEachItemIn(i,warnings)
         WUmessage(ctx, SeverityWarning, "SendEmail", warnings.item(i));
 }
 
-FILESERVICES_API void FILESERVICES_CALL fsSendEmailAttachText(ICodeContext * ctx, const char * to, const char * subject, const char * body, const char * attachment, const char * mimeType, const char * attachmentName, const char * mailServer, unsigned int port, const char * sender)
+FILESERVICES_API void FILESERVICES_CALL fsSendEmail(ICodeContext * ctx, const char * to, const char * subject, const char * body, const char * mailServer, unsigned port, const char * sender)
+{
+    fsSendEmail_v2(ctx, to, subject, body, mailServer, port, sender, nullptr, nullptr, false);
+}
+
+FILESERVICES_API void FILESERVICES_CALL fsSendEmailAttachText_v2(ICodeContext * ctx, const char * to, const char * subject, const char * body, const char * attachment, const char * mimeType, const char * attachmentName, const char * mailServer, unsigned int port, const char * sender, const char *cc, const char *bcc, bool highPriority)
 {
     StringArray warnings;
-    sendEmailAttachText(to, subject, body, attachment, mimeType, attachmentName, mailServer, port, sender, &warnings);
+    sendEmailAttachText(to, cc, bcc, subject, body, attachment, mimeType, attachmentName, mailServer, port, sender, &warnings, highPriority);
     ForEachItemIn(i,warnings)
         WUmessage(ctx, SeverityWarning, "SendEmailAttachText", warnings.item(i));
 }
 
-FILESERVICES_API void FILESERVICES_CALL fsSendEmailAttachData(ICodeContext * ctx, const char * to, const char * subject, const char * body, size32_t lenAttachment, const void * attachment, const char * mimeType, const char * attachmentName, const char * mailServer, unsigned int port, const char * sender)
+FILESERVICES_API void FILESERVICES_CALL fsSendEmailAttachText(ICodeContext * ctx, const char * to, const char * subject, const char * body, const char * attachment, const char * mimeType, const char * attachmentName, const char * mailServer, unsigned int port, const char * sender)
+{
+    fsSendEmailAttachText_v2(ctx, to, subject, body, attachment, mimeType, attachmentName, mailServer, port, sender, nullptr, nullptr, false);
+}
+
+FILESERVICES_API void FILESERVICES_CALL fsSendEmailAttachData_v2(ICodeContext * ctx, const char * to, const char * subject, const char * body, size32_t lenAttachment, const void * attachment, const char * mimeType, const char * attachmentName, const char * mailServer, unsigned int port, const char * sender, const char *cc, const char *bcc, bool highPriority)
 {
     StringArray warnings;
-    sendEmailAttachData(to, subject, body, lenAttachment, attachment, mimeType, attachmentName, mailServer, port, sender, &warnings);
+    sendEmailAttachData(to, cc, bcc, subject, body, lenAttachment, attachment, mimeType, attachmentName, mailServer, port, sender, &warnings, highPriority);
     ForEachItemIn(i,warnings)
         WUmessage(ctx, SeverityWarning, "SendEmailAttachData", warnings.item(i));
+}
+
+FILESERVICES_API void FILESERVICES_CALL fsSendEmailAttachData(ICodeContext * ctx, const char * to, const char * subject, const char * body, size32_t lenAttachment, const void * attachment, const char * mimeType, const char * attachmentName, const char * mailServer, unsigned int port, const char * sender)
+{
+    fsSendEmailAttachData_v2(ctx, to, subject, body, lenAttachment, attachment, mimeType, attachmentName, mailServer, port, sender, nullptr, nullptr, false);
 }
 
 
@@ -2992,4 +3010,45 @@ FILESERVICES_API void FILESERVICES_CALL fsGetDropZones(ICodeContext *ctx, size32
 
     __lenResult = mb.length();
     __result = mb.detach();
+}
+
+
+
+FILESERVICES_API int FILESERVICES_CALL fsGetExpireDays(ICodeContext * ctx, const char *_lfn)
+{
+    StringBuffer lfn;
+    constructLogicalName(ctx, _lfn, lfn);
+    Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, false,false, false, nullptr, defaultPrivilegedUser);
+    if (df)
+        return df->getExpire();
+    else
+        throw makeStringExceptionV(0, "GetExpireDays: Could not find logical file %s", lfn.str());
+}
+
+FILESERVICES_API void FILESERVICES_CALL fsSetExpireDays(ICodeContext * ctx, const char *_lfn, int expireDays)
+{
+    if (expireDays < 0)
+        throw makeStringExceptionV(0, "SetExpireDays: expireDays parameter value should be >= 0 (%d)", expireDays);
+
+    StringBuffer lfn;
+    constructLogicalName(ctx, _lfn, lfn);
+    Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, false,false, false, nullptr, defaultPrivilegedUser);
+    if (df)
+        df->setExpire(expireDays);
+    else
+        throw makeStringExceptionV(0, "SetExpireDays: Could not find logical file %s", lfn.str());
+}
+
+FILESERVICES_API void FILESERVICES_CALL fsClearExpireDays(ICodeContext * ctx, const char *_lfn)
+{
+    StringBuffer lfn;
+    constructLogicalName(ctx, _lfn, lfn);
+    Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, false,false, false, nullptr, defaultPrivilegedUser);
+    if (df)
+        df->setExpire(-1);
+    else
+        throw makeStringExceptionV(0, "ClearExpireDays: Could not find logical file %s", lfn.str());
 }

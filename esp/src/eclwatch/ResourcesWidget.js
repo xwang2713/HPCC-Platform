@@ -66,12 +66,12 @@ define([
                 columns: {
                     col1: selector({
                         width: 27,
-                        selectorType: 'checkbox'
+                        selectorType: "checkbox"
                     }),
                     DisplayPath: {
                         label: this.i18n.Name, sortable: true,
                         formatter: function (url, row) {
-                            return "<a href='#' class='dgrid-row-url'>" + url + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + url + "</a>";
                         }
                     }
                 }

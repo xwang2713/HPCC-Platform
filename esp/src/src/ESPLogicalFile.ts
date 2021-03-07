@@ -14,7 +14,7 @@ import * as WsDfu from "./WsDfu";
 
 const _logicalFiles = {};
 
-const createID = function (Cluster, Name) {
+export const createID = function (Cluster, Name) {
     return (Cluster ? Cluster : "") + "--" + Name;
 };
 
@@ -30,19 +30,23 @@ const create = function (id) {
     return _logicalFiles[id];
 };
 
-const Store = declare([ESPRequest.Store], {
-    service: "WsDfu",
-    action: "DFUQuery",
-    responseQualifier: "DFUQueryResponse.DFULogicalFiles.DFULogicalFile",
-    responseTotalQualifier: "DFUQueryResponse.NumFiles",
-    idProperty: "__hpcc_id",
-    startProperty: "PageStartFrom",
-    countProperty: "PageSize",
+class Store extends ESPRequest.Store {
 
-    _watched: [],
+    service = "WsDfu";
+    action = "DFUQuery";
+    responseQualifier = "DFUQueryResponse.DFULogicalFiles.DFULogicalFile";
+    responseTotalQualifier = "DFUQueryResponse.NumFiles";
+    idProperty = "__hpcc_id";
+
+    startProperty = "PageStartFrom";
+    countProperty = "PageSize";
+
+    _watched: { [id: string]: any } = {};
+
     create(id) {
         return create(id);
-    },
+    }
+
     preRequest(request) {
         switch (request.Sortby) {
             case "RecordCount":
@@ -56,7 +60,8 @@ const Store = declare([ESPRequest.Store], {
         lang.mixin(request, {
             IncludeSuperOwner: 1
         });
-    },
+    }
+
     update(id, item) {
         const storeItem = this.get(id);
         storeItem.updateData(item);
@@ -68,7 +73,13 @@ const Store = declare([ESPRequest.Store], {
                 }
             });
         }
-    },
+    }
+
+    remove(id) {
+        super.remove(id);
+        delete _logicalFiles[id];
+    }
+
     preProcessRow(item, request, query, options) {
         lang.mixin(item, {
             __hpcc_id: createID(item.NodeGroup, item.Name),
@@ -77,11 +88,12 @@ const Store = declare([ESPRequest.Store], {
             StateID: 0,
             State: ""
         });
-    },
+    }
+
     mayHaveChildren(object) {
         return object.__hpcc_isDir;
     }
-});
+}
 
 const TreeStore = declare(null, {
     idProperty: "__hpcc_id",
@@ -224,9 +236,10 @@ const LogicalFile = declare([ESPUtil.Singleton], {    // jshint ignore:line
         this.set("DFUFileParts", DFUFileParts);
     },
     _CompressedFileSizeSetter(CompressedFileSize) {
-        this.CompressedFileSize = "";
+        this.CompressedFileSize = undefined;
         if (CompressedFileSize) {
-            this.CompressedFileSize = CompressedFileSize.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+            this.CompressedFileSize = CompressedFileSize;
+            this.set("CompressedFileSizeString", CompressedFileSize.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","));
         }
     },
     _StatSetter(Stat) {
@@ -419,7 +432,7 @@ const LogicalFile = declare([ESPUtil.Singleton], {    // jshint ignore:line
     }
 });
 
-export function Get(Cluster, Name, data) {
+export function Get(Cluster, Name, data?) {
     if (!Name) {
         throw new Error("Invalid Logical File ID");
     }
@@ -438,10 +451,10 @@ export function Get(Cluster, Name, data) {
 
 export function CreateLFQueryStore(options) {
     const store = new Store(options);
-    return Observable(store);
+    return new Observable(store);
 }
 
 export function CreateLFQueryTreeStore(options) {
     const store = new TreeStore(options);
-    return Observable(store);
+    return new Observable(store);
 }

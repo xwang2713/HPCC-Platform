@@ -1151,7 +1151,7 @@ IHqlExpression * JoinOrderSpotter::doTraverseStripSelect(IHqlExpression * expr, 
         if (max != 0)
         {
             HqlExprArray args;
-            args.ensure(max);
+            args.ensureCapacity(max);
 
             unsigned idx;
             bool same = true;
@@ -2096,6 +2096,12 @@ void unwindHintAttrs(HqlExprArray & args, IHqlExpression * expr)
     }
 }
 
+bool getHintBool(IHqlExpression * expr, IAtom * name, bool dft)
+{
+    IHqlExpression * match = queryHint(expr, name);
+    return getBoolAttributeValue(match, dft);
+}
+
 //---------------------------------------------------------------------------
 
 IHqlExpression * createCompare(node_operator op, IHqlExpression * l, IHqlExpression * r)
@@ -2294,9 +2300,19 @@ unsigned getNumActivityArguments(IHqlExpression * expr)
     case no_compound:
     case no_addfiles:
     case no_map:
-        return expr->numChildren();
+        {
+            unsigned max = expr->numChildren();
+            while (max && expr->queryChild(max-1)->isAttribute())
+                max--;
+            return max;
+        }
     case no_case:
-        return expr->numChildren()-1;
+    {
+        unsigned max = expr->numChildren();
+        while (max > 1 && expr->queryChild(max-1)->isAttribute())
+            max--;
+        return max-1;
+    }
     case no_forcelocal:
         return 0;
     default:
@@ -6081,7 +6097,7 @@ extern HQL_API bool containsVirtualField(IHqlExpression * record, IAtom * kind)
 IHqlExpression * removeVirtualFields(IHqlExpression * record)
 {
     HqlExprArray args;
-    args.ensure(record->numChildren());
+    args.ensureCapacity(record->numChildren());
     ForEachChild(i, record)
     {
         IHqlExpression * cur = record->queryChild(i);
@@ -10324,7 +10340,7 @@ static IFieldFilter * createIfBlockFilter(IRtlFieldTypeDeserializer &deserialize
     OwnedHqlExpr mappedCondition = replaceSelector(cond, querySelfReference(), dummyDataset);
     Owned <IErrorReceiver> errorReceiver = createThrowingErrorReceiver();
 
-    FilterExtractor extractor(*errorReceiver, dummyDataset, rowRecord->numChildren(), true, true);
+    FilterExtractor extractor(*errorReceiver, dummyDataset, rowRecord->numChildren(), true, true, false);
     OwnedHqlExpr extraFilter;
     extractor.extractFilters(mappedCondition, extraFilter);
 
@@ -10570,76 +10586,3 @@ const RtlTypeInfo *buildRtlType(IRtlFieldTypeDeserializer &deserializer, ITypeIn
 
     return deserializer.addType(info, type);
 }
-
-extern HQL_API IHqlExpression *checkSignature(unsigned fileSize, const char *fileContents)
-{
-    Owned<IPipeProcess> pipe = createPipeProcess();
-    if (!pipe->run("gpg", "gpg --verify -", ".", true, false, true, 0, false))
-        throw makeStringException(0, "Signature could not be checked because gpg was not found");
-    pipe->write(fileSize, fileContents);
-    pipe->closeInput();
-    unsigned retcode = pipe->wait();
-
-    StringBuffer buf;
-    Owned<ISimpleReadStream> pipeReader = pipe->getErrorStream();
-    readSimpleStream(buf, *pipeReader);
-    DBGLOG("GPG %d %s", retcode, buf.str());
-    if (retcode)
-    {
-        StringArray allErrs;
-        allErrs.appendList(buf, "\n");
-        ForEachItemInRev(idx, allErrs)
-        {
-            if (strlen(allErrs.item(idx)))
-                throw makeStringExceptionV(0, "gpg error: gpg returned %d: %s", retcode, allErrs.item(idx));
-        }
-        throw makeStringExceptionV(0, "gpg error: gpg returned %d", retcode);
-    }
-    else
-    {
-        const char * sigprefix = "Good signature from \"";
-        const char * const s = buf.str();
-        const char * match = strstr(s, sigprefix);
-        if (match)
-        {
-            match += strlen(sigprefix);
-            const char * const end = strchr(match, '\"');
-            if (end)
-            {
-                buf.setLength(end-s);
-                const char * sig = buf.str() + (match-s);
-                return createExprAttribute(_signed_Atom,createConstant(sig));
-            }
-        }
-        throw makeStringExceptionV(0, "gpg error: gpg response not recognised");
-    }
-}
-
-extern HQL_API StringBuffer &stripSignature(StringBuffer &out, const char *fileContents)
-{
-    assertex(startsWith(fileContents, "-----BEGIN PGP SIGNED MESSAGE-----"));
-    // Look for first blank line
-    const char *head = fileContents;
-    while ((head = strchr(head, '\n')) != nullptr)
-    {
-        head++;
-        if (*head=='\n')
-        {
-            head++;
-            break;
-        }
-        else if (*head=='\r' && head[1]=='\n')
-        {
-            head += 2;
-            break;
-        }
-    }
-    if (!head)
-        throw makeStringException(0, "End of PGP header not found");
-    // Now look for signature
-    const char *tail = strstr(head, "-----BEGIN PGP SIGNATURE-----");
-    if (!tail)
-        throw makeStringException(0, "PGP signature not found");
-    return out.append(tail-head, head);
-}
-

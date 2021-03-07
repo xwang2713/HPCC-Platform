@@ -29,6 +29,7 @@
 #endif
 #include "referencedfilelist.hpp"
 #include "ws_wuresult.hpp"
+#include "jsmartsock.ipp"
 
 #define UFO_DIRTY                                0x01
 #define UFO_RELOAD_TARGETS_CHANGED_PMID          0x02
@@ -221,8 +222,6 @@ public:
         CWsWorkunits::setContainer(container);
         m_sched.setContainer(container);
     }
-    void refreshValidClusters();
-    bool isValidCluster(const char *cluster);
     void deploySharedObjectReq(IEspContext &context, IEspWUDeployWorkunitRequest & req, IEspWUDeployWorkunitResponse & resp, const char *dir, const char *xml=NULL);
     unsigned getGraphIdsByQueryId(const char *target, const char *queryId, StringArray& graphIds);
     bool getQueryFiles(IEspContext &context, const char* wuid, const char* query, const char* target, StringArray& logicalFiles, IArrayOf<IEspQuerySuperFile> *superFiles);
@@ -314,8 +313,11 @@ public:
     bool onWUDetailsMeta(IEspContext &context, IEspWUDetailsMetaRequest &req, IEspWUDetailsMetaResponse &resp);
 
     void setPort(unsigned short _port){port=_port;}
-
+#ifndef _CONTAINERIZED
     bool isQuerySuspended(const char* query, IConstWUClusterInfo *clusterInfo, unsigned wait, StringBuffer& errorMessage);
+#else
+    bool isQuerySuspended(const char* query, const char* target, unsigned wait, StringBuffer& errorMessage);
+#endif
     bool onWUCreateZAPInfo(IEspContext &context, IEspWUCreateZAPInfoRequest &req, IEspWUCreateZAPInfoResponse &resp);
     bool onWUGetZAPInfo(IEspContext &context, IEspWUGetZAPInfoRequest &req, IEspWUGetZAPInfoResponse &resp);
     bool onWUCheckFeatures(IEspContext &context, IEspWUCheckFeaturesRequest &req, IEspWUCheckFeaturesResponse &resp);
@@ -408,8 +410,6 @@ private:
     Owned<WUArchiveCache> wuArchiveCache;
     StringAttr sashaServerIp;
     unsigned short sashaServerPort;
-    BoolHash validClusters;
-    CriticalSection crit;
     WUSchedule m_sched;
     unsigned short port;
     Owned<IPropertyTree> directories;
@@ -422,6 +422,7 @@ private:
 
 public:
     QueryFilesInUse filesInUse;
+    MapStringToMyClass<ISmartSocketFactory> roxieConnMap;
     StringAttr zapEmailTo, zapEmailFrom, zapEmailServer;
     unsigned zapEmailMaxAttachmentSize = 0;
     unsigned zapEmailServerPort = 0;

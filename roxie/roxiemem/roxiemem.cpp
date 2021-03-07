@@ -348,7 +348,8 @@ static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, 
                     //If we notify heapBlockSize items at a time it will always be a multiple of hugePageSize so shouldn't trigger defragmentation
                     heapNotifyUnusedEachBlock = !retainMemory;
                 }
-                DBGLOG("Transparent huge pages used for roxiemem heap");
+                if (memTraceLevel)
+                    DBGLOG("Transparent huge pages used for roxiemem heap");
             }
         }
         else
@@ -356,21 +357,29 @@ static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, 
             if (!allowTransparentHugePages)
             {
                 madvise(heapBase,memsize,MADV_NOHUGEPAGE);
-                DBGLOG("Transparent huge pages disabled in configuration by user.");
+                if (memTraceLevel)
+                    DBGLOG("Transparent huge pages disabled in configuration by user.");
             }
-            else
+            else if (memTraceLevel)
                 DBGLOG("Transparent huge pages unsupported or disabled by system.");
         }
 #else
-        DBGLOG("Transparent huge pages are not supported on this kernel.  Requires kernel version > 2.6.38.");
+        if (memTraceLevel)
+            DBGLOG("Transparent huge pages are not supported on this kernel.  Requires kernel version > 2.6.38.");
 #endif
     }
 #endif
 
     if (heapNotifyUnusedEachFree)
-        DBGLOG("Memory released to OS on each %uk 'page'", (unsigned)(HEAP_ALIGNMENT_SIZE/1024));
+    {
+        if (memTraceLevel)
+            DBGLOG("Memory released to OS on each %uk 'page'", (unsigned)(HEAP_ALIGNMENT_SIZE/1024));
+    }
     else if (heapNotifyUnusedEachBlock)
-        DBGLOG("Memory released to OS in %uk blocks", (unsigned)(HEAP_ALIGNMENT_SIZE*HEAP_BITS/1024));
+    {
+        if (memTraceLevel)
+            DBGLOG("Memory released to OS in %uk blocks", (unsigned)(HEAP_ALIGNMENT_SIZE*HEAP_BITS/1024));
+    }
     else
     {
         DBGLOG("MEMORY WILL NOT BE RELEASED TO OS");
@@ -6619,13 +6628,13 @@ extern IDataBufferManager *createDataBufferManager(size32_t size)
 
 extern void setDataAlignmentSize(unsigned size)
 {
-    if (memTraceLevel >= 3) 
+    if (memTraceLevel)
         DBGLOG("RoxieMemMgr: setDataAlignmentSize to %u", size); 
 
     if ((size == 0) || ((HEAP_ALIGNMENT_SIZE % size) != 0))
         throw MakeStringException(ROXIEMM_INVALID_MEMORY_ALIGNMENT, "setDataAlignmentSize %u must be a factor of %u", size, (unsigned)HEAP_ALIGNMENT_SIZE);
 
-    if (size==0x400 || size==0x2000)
+    if (size>=0x400 && size<=0x2000)
         DATA_ALIGNMENT_SIZE = size;
     else
         throw MakeStringException(ROXIEMM_INVALID_MEMORY_ALIGNMENT, "Invalid parameter to setDataAlignmentSize %u", size);
@@ -9157,7 +9166,7 @@ protected:
     void createRows(IRowManager * rowManager, size_t numRows, ConstPointerArray & target, bool shuffle)
     {
         Owned<IFixedRowHeap> heap = rowManager->createFixedRowHeap(tuningAllocSize, 0, RHFpacked);
-        target.ensure(numTuningRows);
+        target.ensureSpace(numTuningRows);
         for (size_t i = 0; i < numRows; i++)
             target.append(heap->allocate());
 

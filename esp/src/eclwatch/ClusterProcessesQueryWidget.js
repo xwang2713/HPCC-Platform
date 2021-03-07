@@ -82,7 +82,7 @@ define([
             var currSel = this.getSelectedChild();
             if (currSel && !currSel.initalized) {
                 if (currSel.id === this.id + "_Grid") {
-                    this.refreshGrid()
+                    this.refreshGrid();
                 } else if (currSel.id === this.legacyClustersProcessesIframeWidget.id && !this.legacyClustersProcessesIframeWidget.initalized) {
                     this.legacyClustersProcessesIframeWidget.init({
                         src: ESPRequest.getBaseURL("WsTopology") + "/TpClusterQuery?Type=ROOT"
@@ -112,7 +112,7 @@ define([
                 columns: {
                     col1: selector({
                         width: 20,
-                        selectorType: 'checkbox',
+                        selectorType: "checkbox",
                         disabled: function (item) {
                             return item.type === "clusterProcess";
                         }
@@ -126,7 +126,7 @@ define([
                         sortable: false,
                         formatter: function (clusterType) {
                             if (clusterType === true) {
-                                return "<a href='#' />" + Utility.getImageHTML("configuration.png", context.i18n.Configuration) + "</a>";
+                                return "<a href='#' onClick='return false;' />" + Utility.getImageHTML("configuration.png", context.i18n.Configuration) + "</a>";
                             }
                             return "";
                         }
@@ -140,7 +140,7 @@ define([
                                 name = row.Type + " - " + _name;
                             } if (row.type === "machine") {
                                 img = Utility.getImageHTML("machine.png");
-                                name = "<a href='#' class='dgrid-row-url'>" + row.Netaddress + " - " + _name + "</a>";
+                                name = "<a href='#' onClick='return false;' class='dgrid-row-url'>" + row.Netaddress + " - " + _name + "</a>";
                             }
                             return img + "&nbsp;" + name;
                         },
@@ -199,7 +199,7 @@ define([
             });
 
             retVal.on(".dgrid-cell:click", function (evt) {
-                var cell = retVal.cell(evt)
+                var cell = retVal.cell(evt);
             });
 
             retVal.on("dgrid-select", function (event) {

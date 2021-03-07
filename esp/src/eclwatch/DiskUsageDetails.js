@@ -4,9 +4,10 @@ define([
 
     "dijit/registry",
 
-    "hpcc/_Widget",
+    "hpcc/_TabContainerWidget",
     "src/ESPUtil",
     "src/DiskUsage",
+    "hpcc/DelayLoadWidget",
 
     "dojo/text!../templates/DiskUsageDetails.html",
 
@@ -24,17 +25,19 @@ define([
 
 ], function (declare, nlsHPCCMod,
     registry,
-    _Widget, ESPUtil, DiskUsage,
+    _TabContainerWidget, ESPUtil, DiskUsage, DelayLoadWidget,
     template) {
 
     var nlsHPCC = nlsHPCCMod.default;
-    return declare("DiskUsageDetails", [_Widget, ESPUtil.FormHelper], {
+    return declare("DiskUsageDetails", [_TabContainerWidget, ESPUtil.FormHelper], {
         templateString: template,
         baseClass: "DiskUsageDetails",
         i18n: nlsHPCC,
 
         postCreate: function (args) {
             this.inherited(arguments);
+            this.mainTab = registry.byId(this.id + "_Main");
+
             var context = this;
 
             this._diskSummaryPane = registry.byId(this.id + "DiskSummaryCP");
@@ -47,7 +50,7 @@ define([
                         .lazyRender()
                         ;
                 }
-            }
+            };
         },
 
         resize: function (args) {
@@ -69,6 +72,8 @@ define([
             if (this.inherited(arguments))
                 return;
 
+            this.mainTab.set("title", params.name);
+
             var context = this;
             this._diskSummary = new DiskUsage.Summary(params.name)
                 .target(this.id + "DiskSummary")
@@ -76,8 +81,13 @@ define([
                 .refresh()
                 ;
 
+            var context = this;
             this._diskUsage = new DiskUsage.Details(params.name)
                 .target(this.id + "DiskUsageGrid")
+                .on("componentClick", function (component) {
+                    var newTab = context.ensurePane(component, component, { component });
+                    context.selectChild(newTab);
+                })
                 .render()
                 .refresh()
                 ;
@@ -92,9 +102,37 @@ define([
                         .lazyRender()
                         ;
                 }
-            }
+            };
 
             this.widget.BorderContainer.resize();
+        },
+
+        initTab: function () {
+            var currSel = this.getSelectedChild();
+            if (currSel && !currSel.initalized) {
+                if (currSel.id === this.mainTab.id) {
+                } else {
+                    if (!currSel.initalized) {
+                        currSel.init(currSel.params);
+                    }
+                }
+            }
+        },
+
+        ensurePane: function (id, title, params) {
+            id = this.createChildTabID(id);
+            var retVal = registry.byId(id);
+            if (!retVal) {
+                retVal = new DelayLoadWidget({
+                    id: id,
+                    title: title,
+                    closable: true,
+                    delayWidget: "ComponentUsageDetails",
+                    params: params
+                });
+                this.addChild(retVal, 1);
+            }
+            return retVal;
         },
 
         refreshGrid: function (clearSelection) {
