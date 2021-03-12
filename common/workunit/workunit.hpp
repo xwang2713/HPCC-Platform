@@ -35,6 +35,7 @@
 #include "jstats.h"
 #include "jutil.hpp"
 #include "jprop.hpp"
+#include "jmisc.hpp"
 #include "wuattr.hpp"
 #include <vector>
 #include <list>
@@ -46,7 +47,7 @@
 
 #define CHEAP_UCHAR_DEF
 #ifdef _WIN32
-typedef wchar_t UChar;
+typedef char16_t UChar;
 #else //_WIN32
 typedef unsigned short UChar;
 #endif //_WIN32
@@ -1714,7 +1715,10 @@ extern WORKUNIT_API const char * getWorkunitActionStr(WUAction action);
 extern WORKUNIT_API WUAction getWorkunitAction(const char * actionStr);
 
 extern WORKUNIT_API void addTimeStamp(IWorkUnit * wu, StatisticScopeType scopeType, const char * scope, StatisticKind kind, unsigned wfid=0);
-extern WORKUNIT_API cost_type calculateThorCost(unsigned __int64 ms, unsigned clusterWidth);
+extern WORKUNIT_API double getMachineCostRate();
+extern WORKUNIT_API double getThorManagerRate();
+extern WORKUNIT_API double getThorWorkerRate();
+extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned clusterWidth);
 
 extern WORKUNIT_API IPropertyTree * getWUGraphProgress(const char * wuid, bool readonly);
 
@@ -1743,7 +1747,7 @@ inline bool isGlobalScope(const char * scope) { return scope && (streq(scope, GL
 extern WORKUNIT_API bool isValidPriorityValue(const char * priority);
 extern WORKUNIT_API bool isValidMemoryValue(const char * memoryUnit);
 
-inline cost_type calcCost(cost_type ratePerHour, unsigned __int64 ms) { return ratePerHour * ms / 1000 / 3600; }
+inline double calcCost(double ratePerHour, unsigned __int64 ms) { return ratePerHour * ms / 1000 / 3600; }
 
 extern WORKUNIT_API void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IPropertyTree &config);
 

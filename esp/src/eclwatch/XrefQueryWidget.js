@@ -66,7 +66,7 @@ define([
                                 request: {
                                     Cluster: selections[i].Name
                                 }
-                            })
+                            });
                         }
                     }
                     context.refreshGrid();
@@ -81,7 +81,7 @@ define([
                     if (confirm(context.i18n.CancelAllMessage)) {
                         WsDFUXref.DFUXRefBuildCancel({
                             request: {}
-                        })
+                        });
                     }
                     context.refreshGrid();
                 },
@@ -96,13 +96,13 @@ define([
                 columns: {
                     col1: selector({
                         width: 10,
-                        selectorType: 'checkbox',
+                        selectorType: "checkbox",
                         label: ""
                     }),
                     Name: {
                         label: this.i18n.Name, width: 100, sortable: false,
                         formatter: function (Name, idx) {
-                            return "<a href='#' class='dgrid-row-url'>" + Name + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + Name + "</a>";
                         }
                     },
                     Modified: { label: this.i18n.LastRun, width: 30, sortable: false },

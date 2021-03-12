@@ -23,6 +23,11 @@
 #else
     #define graph_decl DECL_IMPORT
 #endif
+#ifdef GRAPHSLAVE_EXPORTS
+    #define graphslave_decl DECL_EXPORT
+#else
+    #define graphslave_decl DECL_IMPORT
+#endif
 
 #undef barrier
 
@@ -610,6 +615,7 @@ protected:
     unsigned counter;
     CReplyCancelHandler graphCancelHandler;
     bool loopBodySubgraph;
+    Owned<IPropertyTree> sourceActDependents;
 
 public:
     IMPLEMENT_IINTERFACE_USING(CGraphStub);
@@ -744,7 +750,8 @@ public:
     }
     IThorGraphIterator *getChildGraphIterator() const; // retrieves original child graphs
     IThorGraphStubIterator *getChildStubIterator() const; // retrieves child graph stubs, which redirect to parallel instances
-
+    void noteDependency(CGraphElementBase *targetActivity, CGraphElementBase *sourceActivity, unsigned controlId, bool interGraph);
+    unsigned queryDependents(unsigned sourceActId);
     void executeChildGraphs(size32_t parentExtractSz, const byte *parentExtract);
     void doExecute(size32_t parentExtractSz, const byte *parentExtract, bool checkDependencies);
     void doExecuteChild(size32_t parentExtractSz, const byte *parentExtract);
@@ -1193,8 +1200,6 @@ interface IThorFileCache : extends IInterface
     virtual bool remove(const char *filename, unsigned crc) = 0;
     virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilenae, IPartDescriptor &partDesc, IExpander *expander=nullptr) = 0;
 };
-
-extern graph_decl IDelayedFile *createDelayedFile(IFileIO *iFileIO);
 
 class graph_decl CThorResourceBase : implements IThorResource, public CInterface
 {

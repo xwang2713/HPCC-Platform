@@ -1150,11 +1150,13 @@ public:
 // === Transactions
 class CDFAction: public CInterface
 {
-    unsigned locked;
+    unsigned locked = 0;
+    unsigned timeoutCount = 0;
 protected:
-    IDistributedFileTransactionExt *transaction;
+    IDistributedFileTransactionExt *transaction = nullptr;
     IArrayOf<IDistributedFile> lockedFiles;
-    DFTransactionState state;
+    DFTransactionState state = TAS_NONE;
+    StringBuffer tracing;
     void addFileLock(IDistributedFile *file)
     {
         // derived's prepare must call this before locking
@@ -1174,7 +1176,13 @@ protected:
                 if (SDSExcpt_LockTimeout != e->errorCode())
                     throw;
                 e->Release();
-                PROGLOG("CDFAction lock timed out on %s",lockedFiles.item(i).queryLogicalName());
+                PROGLOG("CDFAction[%s] lock timed out on %s", tracing.str(), lockedFiles.item(i).queryLogicalName());
+
+                /* Can be v. useful to know what call stack is if stuck..
+                 * Trace after 30 timeouts (each timeout period ~60s)
+                 */
+                if (0 == (++timeoutCount % 30))
+                    PrintStackReport();
                 return false;
             }
             locked++;
@@ -1189,9 +1197,8 @@ protected:
         lockedFiles.kill();
     }
 public:
-    CDFAction() : locked(0), state(TAS_NONE)
+    CDFAction()
     {
-        transaction = NULL;
     }
     // Clear all locked files (when re-using transaction on auto-commit mode)
     virtual ~CDFAction()
@@ -3215,6 +3222,20 @@ public:
     virtual bool getAccessedTime(CDateTime &dt) = 0;                            // get date and time last accessed (returns false if not set)
     virtual void setAccessedTime(const CDateTime &dt) = 0;                      // set date and time last accessed
     virtual bool isExternal() const { return external; }
+
+    virtual int getExpire()
+    {
+        return queryAttributes().getPropInt("@expireDays", -1);
+    }
+
+    virtual void setExpire(int expireDays)
+    {
+        DistributedFilePropertyLock lock(this);
+        if (expireDays == -1)
+            queryAttributes().removeProp("@expireDays"); // Never expire
+        else
+            queryAttributes().setPropInt("@expireDays", expireDays);
+    }
 };
 
 class CDistributedFile: public CDistributedFileBase<IDistributedFile>
@@ -3399,6 +3420,10 @@ protected:
             maxSkew = (unsigned)(10000.0 * (((double)maxPartSz-avgPartSz)/avgPartSz));
             minSkew = (unsigned)(10000.0 * ((avgPartSz-(double)minPartSz)/avgPartSz));
         }
+
+        // +1 because published part number references are 1 based.
+        maxSkewPart++;
+        minSkewPart++;
 
         return true;
     }
@@ -4705,6 +4730,7 @@ class CDistributedSuperFile: public CDistributedFileBase<IDistributedSuperFile>
         cAddSubFileAction(const char *_parentlname,const char *_subfile,bool _before,const char *_other)
             : parentlname(_parentlname), subfile(_subfile), before(_before), other(_other)
         {
+            tracing.appendf("AddSubFile: %s, to super: %s", _subfile, _parentlname);
         }
         virtual bool prepare()
         {
@@ -4780,6 +4806,7 @@ class CDistributedSuperFile: public CDistributedFileBase<IDistributedSuperFile>
         cRemoveSubFileAction(const char *_parentlname,const char *_subfile,bool _remsub=false)
             : parentlname(_parentlname), subfile(_subfile), remsub(_remsub)
         {
+            tracing.appendf("RemoveSubFile: %s, from super: %s", _subfile, _parentlname);
         }
         virtual bool prepare()
         {
@@ -4871,6 +4898,7 @@ class CDistributedSuperFile: public CDistributedFileBase<IDistributedSuperFile>
         cRemoveOwnedSubFilesAction(IDistributedFileTransaction *_transaction, const char *_parentlname,bool _remsub=false)
             : parentlname(_parentlname), remsub(_remsub)
         {
+            tracing.appendf("RemoveOwnedSubFiles: super: %s", _parentlname);
         }
         virtual bool prepare()
         {
@@ -4953,6 +4981,7 @@ class CDistributedSuperFile: public CDistributedFileBase<IDistributedSuperFile>
         cSwapFileAction(const char *_super1Name, const char *_super2Name)
             : super1Name(_super1Name), super2Name(_super2Name)
         {
+            tracing.appendf("SwapFile: super1: %s, super2: %s", _super1Name, _super2Name);
         }
         virtual bool prepare()
         {
@@ -5059,6 +5088,8 @@ protected:
             {
                 CDfsLogicalFileName subfn;
                 subfn.set(name);
+                if (subfn.isForeign() || subfn.isExternal())
+                    continue; // can't be owned by a super in this environment, no locking
                 CFileLock fconnlockSub;
                 // JCSMORE - this is really not right, but consistent with previous version
                 // MORE: Use CDistributedSuperFile::linkSuperOwner(false) - ie. unlink
@@ -6990,7 +7021,7 @@ public:
 #define GROUP_CACHE_INTERVAL (1000*60)
 #define GROUP_EXCEPTION_CACHE_INTERVAL (1000*60*10)
 
-static GroupType translateGroupType(const char *groupType)
+GroupType translateGroupType(const char *groupType)
 {
     if (!groupType)
         return grp_unknown;
@@ -7932,6 +7963,7 @@ public:
                            bool _interleaved)
         : parent(_parent), user(_user), created(false), interleaved(_interleaved)
     {
+        tracing.appendf("CreateSuperFile: super: %s", _flname);
         logicalname.set(_flname);
     }
     IDistributedSuperFile *getSuper()
@@ -8065,6 +8097,7 @@ public:
                            bool _delSub)
         : user(_user), delSub(_delSub)
     {
+        tracing.appendf("RemoveSuperFile: super: %s", _flname);
         logicalname.set(_flname);
     }
     virtual bool prepare()
@@ -8136,6 +8169,7 @@ public:
                       const char *_newname)
         : user(_user), parent(_parent)
     {
+        tracing.appendf("RenameFile: name: %s, newname: %s", _flname, _newname);
         fromName.set(_flname);
         // Basic consistency checking
         toName.set(_newname);
@@ -10034,7 +10068,7 @@ public:
             }
             else
             {
-                VStringBuffer msg("Active cluster '%s' group layout does not match stroageplane definition", name);
+                VStringBuffer msg("Active cluster '%s' group layout does not match storageplane definition", name);
                 UWARNLOG("%s", msg.str());                                                                        \
                 messages.append(msg).newline();
             }
@@ -10103,12 +10137,12 @@ void initClusterAndStoragePlaneGroups(bool force, IPropertyTree *oldEnvironment,
     StringBuffer response;
     init.constructGroups(force, response, oldEnvironment);
     if (response.length())
-        PROGLOG("DFS group initialization : %s", response.str()); // should this be a syslog?
+        MLOG("DFS group initialization : %s", response.str()); // should this be a syslog?
 
     response.clear();
     init.constructStorageGroups(false, response);
     if (response.length())
-        PROGLOG("StoragePlane group initialization : %s", response.str()); // should this be a syslog?
+        MLOG("StoragePlane group initialization : %s", response.str()); // should this be a syslog?
 }
 
 bool resetClusterGroup(const char *clusterName, const char *type, bool spares, StringBuffer &response, unsigned timems)

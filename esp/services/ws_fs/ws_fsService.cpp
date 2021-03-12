@@ -533,7 +533,7 @@ bool CFileSprayEx::ParseLogicalPath(const char * pLogicalPath, const char* group
                     // MORE - should extend to systems with higher redundancy
                     break;
                 case grp_hthor:
-                    getConfigurationDirectory(directories, "data", "hthor", cluster, defaultFolder);
+                    getConfigurationDirectory(directories, "data", "eclagent", cluster, defaultFolder);
                     break;
                 case grp_thor:
                 default:
@@ -724,19 +724,8 @@ bool CFileSprayEx::GetArchivedDFUWorkunits(IEspContext &context, IEspGetDFUWorku
     StringBuffer user;
     context.getUserID(user);
 
-    StringBuffer sashaAddress;
-    IArrayOf<IConstTpSashaServer> sashaservers;
-    CTpWrapper dummy;
-    dummy.getTpSashaServers(sashaservers);
-    ForEachItemIn(i, sashaservers)
-    {
-        IConstTpSashaServer& sashaserver = sashaservers.item(i);
-        IArrayOf<IConstTpMachine> &sashaservermachine = sashaserver.getTpMachines();
-        sashaAddress.append(sashaservermachine.item(0).getNetaddress());
-    }
-
     SocketEndpoint ep;
-    ep.set(sashaAddress,DEFAULT_SASHA_PORT);
+    getSashaServiceEP(ep, "sasha-dfuwu-archiver", true);
     Owned<INode> sashaserver = createINode(ep);
 
     __int64 count=req.getPageSize();
@@ -752,8 +741,8 @@ bool CFileSprayEx::GetArchivedDFUWorkunits(IEspContext &context, IEspGetDFUWorku
     cmd->setOnline(false);
     cmd->setArchived(true);
     cmd->setDFU(true);
-   cmd->setLimit((int) count+1);
-   cmd->setStart((int)begin);
+    cmd->setLimit((int) count+1);
+    cmd->setStart((int)begin);
     if(req.getCluster() && *req.getCluster())
         cmd->setCluster(req.getCluster());
     if(req.getOwner() && *req.getOwner())
@@ -805,8 +794,8 @@ bool CFileSprayEx::GetArchivedDFUWorkunits(IEspContext &context, IEspGetDFUWorku
 
     resp.setPageStartFrom(begin+1);
     resp.setNextPage(-1);
-   if(count < actualCount)
-   {
+    if(count < actualCount)
+    {
         if (results.length() > count)
         {
             results.pop();
@@ -828,7 +817,7 @@ bool CFileSprayEx::GetArchivedDFUWorkunits(IEspContext &context, IEspGetDFUWorku
             resp.setPrevPage(0);
     }
 
-   resp.setPageSize(count);
+    resp.setPageSize(count);
     resp.setResults(results);
 
     StringBuffer basicQuery;
@@ -878,7 +867,11 @@ bool CFileSprayEx::getOneDFUWorkunit(IEspContext& context, const char* wuid, IEs
     const char* clusterName = wu->getClusterName(cluster).str();
     if (clusterName && *clusterName)
     {
-        Owned<IStringIterator> targets = getTargetClusters(NULL, clusterName);
+#ifdef _CONTAINERIZED
+        Owned<IStringIterator> targets = getContainerTargetClusters(nullptr, clusterName);
+#else
+        Owned<IStringIterator> targets = getTargetClusters(nullptr, clusterName);
+#endif
         if (!targets->first())
             resultWU->setClusterName(clusterName);
         else
@@ -1232,7 +1225,7 @@ void CFileSprayEx::getInfoFromSasha(IEspContext &context, const char *sashaServe
     cmd->setAction(SCA_GET);
     cmd->setArchived(true);
     cmd->setDFU(true);
-    SocketEndpoint ep(sashaServer, DEFAULT_SASHA_PORT);
+    SocketEndpoint ep(sashaServer);
     Owned<INode> node = createINode(ep);
     if (!cmd->send(node,1*60*1000))
     {
@@ -1337,22 +1330,9 @@ bool CFileSprayEx::getArchivedWUInfo(IEspContext &context, IEspGetDFUWorkunit &r
     const char *wuid = req.getWuid();
     if (wuid && *wuid)
     {
-        StringBuffer sashaAddress;
-        IArrayOf<IConstTpSashaServer> sashaservers;
-        CTpWrapper dummy;
-        dummy.getTpSashaServers(sashaservers);
-        ForEachItemIn(i, sashaservers)
-        {
-            IConstTpSashaServer& sashaserver = sashaservers.item(i);
-            IArrayOf<IConstTpMachine> &sashaservermachine = sashaserver.getTpMachines();
-            sashaAddress.append(sashaservermachine.item(0).getNetaddress());
-        }
-        if (sashaAddress.length() < 1)
-        {
-            throw MakeStringException(ECLWATCH_ARCHIVE_SERVER_NOT_FOUND,"Archive server not found.");
-        }
-
-        getInfoFromSasha(context, sashaAddress.str(), wuid, &resp.updateResult());
+        StringBuffer serviceEndpoint;
+        getSashaService(serviceEndpoint, "sasha-dfuwu-archiver", true);
+        getInfoFromSasha(context, serviceEndpoint, wuid, &resp.updateResult());
         return true;
     }
 
@@ -2324,6 +2304,24 @@ void CFileSprayEx::getDropZoneInfoByIP(double clientVersion, const char* ip, con
     }
 }
 
+static StringBuffer & expandLogicalAsPhysical(StringBuffer & target, const char * name, const char * separator)
+{
+    const char * cur = name;
+    for (;;)
+    {
+        const char * colon = strstr(cur, "::");
+        if (!colon)
+            break;
+
+        //MORE: Process special characters?
+        target.append(colon - cur, cur);
+        target.append(separator);
+        cur = colon + 2;
+    }
+
+    return target.append(cur);
+}
+
 bool CFileSprayEx::onDespray(IEspContext &context, IEspDespray &req, IEspDesprayResponse &resp)
 {
     try
@@ -2338,6 +2336,7 @@ bool CFileSprayEx::onDespray(IEspContext &context, IEspDespray &req, IEspDespray
         double version = context.getClientVersion();
         const char* destip = req.getDestIP();
         StringBuffer destPath;
+        StringBuffer implicitDestFile;
         const char* destfile = getStandardPosixPath(destPath, req.getDestPath()).str();
 
         MemoryBuffer& dstxml = (MemoryBuffer&)req.getDstxml();
@@ -2345,8 +2344,13 @@ bool CFileSprayEx::onDespray(IEspContext &context, IEspDespray &req, IEspDespray
         {
             if(!destip || !*destip)
                 throw MakeStringException(ECLWATCH_INVALID_INPUT, "Destination network IP not specified.");
+
+            //If the destination filename is not provided, calculate a relative filename from the logical filename
             if(!destfile || !*destfile)
-                throw MakeStringException(ECLWATCH_INVALID_INPUT, "Destination file not specified.");
+            {
+                expandLogicalAsPhysical(implicitDestFile, srcname, "/");
+                destfile = implicitDestFile;
+            }
         }
 
         StringBuffer srcTitle;
@@ -2363,6 +2367,7 @@ bool CFileSprayEx::onDespray(IEspContext &context, IEspDespray &req, IEspDespray
         IDFUfileSpec *source = wu->queryUpdateSource();
         IDFUfileSpec *destination = wu->queryUpdateDestination();
         IDFUoptions *options = wu->queryUpdateOptions();
+        bool preserveFileParts = req.getWrap();
 
         source->setLogicalName(srcname);
 
@@ -2375,6 +2380,10 @@ bool CFileSprayEx::onDespray(IEspContext &context, IEspDespray &req, IEspDespray
 
             StringBuffer destfileWithPath, umask;
             getDropZoneInfoByIP(version, destip, destfile, destfileWithPath, umask);
+            //Ensure the filename is dependent on the file part if parts are being preserved
+            if (preserveFileParts && !strstr(destfileWithPath, "$P$"))
+                destfileWithPath.append("._$P$_of_$N$");
+
             rfn.setPath(ep, destfileWithPath.str());
             if (umask.length())
                 options->setUMask(umask.str());
@@ -2415,7 +2424,7 @@ bool CFileSprayEx::onDespray(IEspContext &context, IEspDespray &req, IEspDespray
         if(req.getNorecover())
             options->setNoRecover(true);
 
-        if (req.getWrap()) {
+        if (preserveFileParts) {
             options->setPush();             // I think needed for a despray
             destination->setWrap(true);
         }
@@ -2977,9 +2986,9 @@ bool CFileSprayEx::onDropZoneFileSearch(IEspContext &context, IEspDropZoneFileSe
         if (!directory.length())
             throw MakeStringException(ECLWATCH_INVALID_INPUT, "DropZone Directory not found for %s.", dropZoneName);
 
-        IpAddress ipToMatch;
-        ipToMatch.ipset(dropZoneServerReq);
-        if (ipToMatch.isNull())
+        IpAddress ipAddress;
+        ipAddress.ipset(dropZoneServerReq);
+        if (ipAddress.isNull())
             throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invalid server %s specified.", dropZoneServerReq);
 
         double version = context.getClientVersion();
@@ -2995,12 +3004,11 @@ bool CFileSprayEx::onDropZoneFileSearch(IEspContext &context, IEspDropZoneFileSe
             if (server.isEmpty())
                 throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invalid server for dropzone %s.", dropZoneName);
 
-            IpAddress ipAddr;
-            ipAddr.ipset(server.str());
-            if (ipAddr.ipequals(ipToMatch))
+            //Do string compare here because the server could be a pseudo-host name.
+            if (strieq(dropZoneServerReq, server))
             {
                 serverFound = true;
-                searchDropZoneFiles(context, ipAddr, directory.str(), nameFilter, files, filesFound);
+                searchDropZoneFiles(context, ipAddress, directory.str(), nameFilter, files, filesFound);
                 break;
             }
         }
@@ -3178,13 +3186,13 @@ bool CFileSprayEx::onDropZoneFiles(IEspContext &context, IEspDropZoneFilesReques
     {
         context.ensureFeatureAccess(FILE_SPRAY_URL, SecAccess_Read, ECLWATCH_FILE_SPRAY_ACCESS_DENIED, "Permission denied.");
 
-        IpAddress ipToMatch;
         const char* netAddress = req.getNetAddress();
         if (!isEmptyString(netAddress))
         {
-            ipToMatch.ipset(netAddress);
-            if (ipToMatch.isNull())
-                throw MakeStringException(ECLWATCH_INVALID_INPUT, "Invalid server %s specified.", netAddress);
+            IpAddress ipToCheck;
+            ipToCheck.ipset(netAddress);
+            if (ipToCheck.isNull())
+                throw makeStringExceptionV(ECLWATCH_INVALID_INPUT, "Invalid server %s specified.", netAddress);
         }
 
         bool filesFromALinux = false;
@@ -3218,19 +3226,15 @@ bool CFileSprayEx::onDropZoneFiles(IEspContext &context, IEspDropZoneFilesReques
                 if (name.isEmpty() || server.isEmpty())
                     continue;
 
-                IpAddress ipAddr;
-                ipAddr.ipset(server.str());
-                ipAddr.getIpText(networkAddress);
-
                 Owned<IEspDropZone> aDropZone = createDropZone();
                 aDropZone->setName(dropZoneName.str());
                 aDropZone->setComputer(name.str());
-                aDropZone->setNetAddress(networkAddress.str());
+                aDropZone->setNetAddress(server);
 
                 aDropZone->setPath(directory.str());
                 if (isLinux)
                     aDropZone->setLinux("true");
-                if (!isEmptyString(netAddress) && ipAddr.ipequals(ipToMatch))
+                if (!isEmptyString(netAddress) && strieq(netAddress, server))
                     filesFromALinux = isLinux;
 
                 dropZoneList.append(*aDropZone.getClear());

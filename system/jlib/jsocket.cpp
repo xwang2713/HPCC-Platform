@@ -481,9 +481,14 @@ public:
 
     virtual ~CSocket();
 
-    unsigned OShandle()
+    virtual unsigned OShandle() const
     {
         return (unsigned)sock;
+    }
+
+    virtual bool isValid() const
+    {
+        return sock != INVALID_SOCKET;
     }
 
 private:
@@ -1610,9 +1615,7 @@ int CSocket::logPollError(unsigned revents, const char *rwstr)
     }
     else if (revents & POLLNVAL)
     {
-        StringBuffer errStr;
-        errStr.appendf("%s POLLNVAL", rwstr);
-        LOGERR2(999,3,errStr.str());
+        // These are typically expected - when closing a socket in order to interrupt a thread that waits on it, for example
     }
     else
     {
@@ -3149,6 +3152,23 @@ inline bool isIp4(const unsigned *netaddr)
             return true; // null address
     // maybe should get loopback here
     return false;
+}
+
+void IpAddress::setIP4(unsigned ip)
+{
+    netaddr[0] = 0;
+    netaddr[1] = 0;
+    if (ip)
+        netaddr[2] = 0xffff0000;
+    else
+        netaddr[2] = 0;
+    netaddr[3] = ip;
+}
+
+unsigned IpAddress::getIP4() const
+{
+    assertex(isIp4());
+    return netaddr[3];
 }
 
 bool IpAddress::isIp4() const

@@ -413,6 +413,8 @@ interface IDistributedFile: extends IInterface
     virtual void resetHistory() = 0;
     virtual bool isExternal() const = 0;
     virtual bool getSkewInfo(unsigned &maxSkew, unsigned &minSkew, unsigned &maxSkewPart, unsigned &minSkewPart, bool calculateIfMissing) = 0;
+    virtual int  getExpire() = 0;
+    virtual void setExpire(int expireDays) = 0;
 };
 
 
@@ -813,6 +815,8 @@ extern da_decl IDistributedFileTransaction *createDistributedFileTransaction(IUs
 extern da_decl const char *normalizeLFN(const char *s, StringBuffer &normalized);
 
 extern da_decl IDFAttributesIterator *createSubFileFilter(IDFAttributesIterator *_iter,IUserDescriptor* _user, bool includesub, unsigned timems=INFINITE); // takes ownership of iter
+
+extern da_decl GroupType translateGroupType(const char *groupType);
 
 #define DFS_REPLICATE_QUEUE "dfs_replicate_queue"
 #define DRQ_STOP 0

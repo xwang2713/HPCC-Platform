@@ -1000,7 +1000,7 @@ void ImplicitProjectInfo::addActiveSelects(const SelectUsedArray & src)
     if (selectsUsed.ordinality() == 0)
     {
         //No need to check for pre-existence, can be significant
-        selectsUsed.ensure(numSrc);
+        selectsUsed.ensureCapacity(numSrc);
         for (unsigned i=0; i < numSrc; i++)
             selectsUsed.append(src.item(i));
     }
@@ -3253,6 +3253,7 @@ IHqlExpression * ImplicitProjectTransformer::process(IHqlExpression * expr)
     OwnedHqlExpr ret = transformRoot(expr);
     //cycle_t time6 = msTick();
     //DEBUG_TIMERX(translator.queryTimeReporter(), "EclServer: implicit.transform", time6-time5);
+    sanityCheckTransformation("ImplicitProjectTransformer", expr, ret);
     return ret.getClear();
 }
 

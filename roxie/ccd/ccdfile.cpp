@@ -755,6 +755,7 @@ public:
 private:
     static StringBuffer &appendRange(StringBuffer &ret, offset_t start, offset_t end, bool diskCache)
     {
+        ret.append(' ');
         if (!diskCache)
             ret.append('*');
         if (start==end)
@@ -783,6 +784,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
     bool closePending[2];
     StringAttrMapping fileErrorList;
 #ifdef _CONTAINERIZED
+    bool cidtActive = false;
     Semaphore cidtStarted;
 #endif
     Semaphore bctStarted;
@@ -1257,6 +1259,7 @@ public:
         {
             cidt.start();
             cidtStarted.wait();
+            cidtActive = true;
         }
 #endif
     }
@@ -1425,14 +1428,14 @@ public:
             toClose.interrupt();
             bct.join(timeout);
             hct.join(timeout);
-#ifdef _CONTAINERIZED
-            if (activeCacheReportingBuffer && cacheReportPeriodSeconds)
-            {
-                cidtSleep.interrupt();
-                cidt.join(timeout);
-            }
-#endif
         }
+#ifdef _CONTAINERIZED
+        if (cidtActive && activeCacheReportingBuffer && cacheReportPeriodSeconds)
+        {
+            cidtSleep.interrupt();
+            cidt.join(timeout);
+        }
+#endif
     }
 
     virtual void wait()
@@ -1444,14 +1447,14 @@ public:
             toClose.signal();
             bct.join();
             hct.join();
-#ifdef _CONTAINERIZED
-            if (activeCacheReportingBuffer && cacheReportPeriodSeconds)
-            {
-                cidtSleep.signal();
-                cidt.join();
-            }
-#endif
         }
+#ifdef _CONTAINERIZED
+        if (cidtActive && activeCacheReportingBuffer && cacheReportPeriodSeconds)
+        {
+            cidtSleep.signal();
+            cidt.join();
+        }
+#endif
     }
 
     virtual CFPmode onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize)
@@ -1704,7 +1707,7 @@ public:
             // We are parsing lines that look like:
             // <channel>|<filename>|<pagelist>
             //
-            // Where pagelist is a space-separated list of page numers or (inclusive) ranges.
+            // Where pagelist is a space-separated list of page numbers or (inclusive) ranges.
             // A page number or range prefixed by a * means that the page(s) was found in the jhtree cache.
             //
             // For example,
@@ -2732,6 +2735,8 @@ public:
                     {
                         if (formatCrcs.item(idx) && expectedFormatCrc && (formatCrcs.item(idx) != expectedFormatCrc))
                             DBGLOG("Overriding stored record layout reading file %s", subname);
+
+                        thisFormatCrc = expectedFormatCrc;
                     }
                     else
                     {
@@ -3539,7 +3544,7 @@ private:
                 throw MakeStringException(0, "Cluster %s occupies node already specified while writing file %s",
                         cluster, dFile->queryLogicalName());
             SocketEndpointArray eps;
-            SocketEndpoint me(0, myNode.getNodeAddress());
+            SocketEndpoint me(0, myNode.getIpAddress());
             eps.append(me);
             localCluster.setown(createIGroup(eps));
             StringBuffer clusterName(cluster);

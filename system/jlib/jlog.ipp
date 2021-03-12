@@ -253,47 +253,6 @@ private:
     bool                      localFlag;
 };
 
-// Implementations of filters using job info
-
-class JobLogMsgFilter : public CLogMsgFilter
-{
-public:
-    JobLogMsgFilter(LogMsgJobId _job, bool local) : job(_job), localFlag(local) {}
-    JobLogMsgFilter(MemoryBuffer & in) { in.read(job); in.read(localFlag); }
-    JobLogMsgFilter(IPropertyTree * tree) { job = tree->getPropInt64("@job", UnknownJob); localFlag = tree->hasProp("@local"); }
-
-    bool                      includeMessage(const LogMsg & msg) const { if(localFlag && msg.queryRemoteFlag()) return false; return msg.queryJobInfo().queryJobID() == job; }
-    bool                      mayIncludeCategory(const LogMsgCategory & cat) const { return true; }
-    unsigned                  queryAudienceMask() const { return MSGAUD_all; }
-    unsigned                  queryClassMask() const { return MSGCLS_all; }
-    LogMsgDetail              queryMaxDetail() const { return TopDetail; }
-    void                      serialize(MemoryBuffer & out, bool preserveLocal) const { out.append(MSGFILTER_job).append(job).append(localFlag && preserveLocal); }
-    void                      addToPTree(IPropertyTree * tree) const;
-    bool                      queryLocalFlag() const { return localFlag; }
-private:
-    LogMsgJobId               job;
-    bool                      localFlag;
-};
-
-class UserLogMsgFilter : public CLogMsgFilter
-{
-public:
-    UserLogMsgFilter(LogMsgUserId _user, bool local) : user(_user), localFlag(local) {}
-    UserLogMsgFilter(MemoryBuffer & in) { in.read(user); in.read(localFlag); }
-    UserLogMsgFilter(IPropertyTree * tree) { user = tree->getPropInt64("@user", UnknownUser); localFlag = tree->hasProp("@local"); }
-
-    bool                      includeMessage(const LogMsg & msg) const { if(localFlag && msg.queryRemoteFlag()) return false; return msg.queryJobInfo().queryUserID() == user; }
-    bool                      mayIncludeCategory(const LogMsgCategory & cat) const { return true; }
-    unsigned                  queryAudienceMask() const { return MSGAUD_all; }
-    unsigned                  queryClassMask() const { return MSGCLS_all; }
-    LogMsgDetail              queryMaxDetail() const { return TopDetail; }
-    void                      serialize(MemoryBuffer & out, bool preserveLocal) const { out.append(MSGFILTER_user).append(user).append(localFlag && preserveLocal); }
-    void                      addToPTree(IPropertyTree * tree) const;
-    bool                      queryLocalFlag() const { return localFlag; }
-private:
-    LogMsgUserId              user;
-    bool                      localFlag;
-};
 
 // Implementation of filter using component
 
@@ -665,7 +624,6 @@ protected:
     OwnedIFileIO              fio;
     OwnedIFileIOStream        fstr;
     mutable MemoryBuffer      mbuff;
-    mutable size32_t              msglen;
     mutable CriticalSection   crit;
 };
 
@@ -715,6 +673,8 @@ class DropLogMsg;
 
 // Implementation of logging manager
 
+typedef MapBetween<LogMsgJobId, LogMsgJobId, StringAttr, const char *> MapLogMsgJobIdToStr;
+
 class CLogMsgManager : public ILogMsgManager, public CInterface
 {
 private:
@@ -743,6 +703,7 @@ private:
         Mutex pullCycleMutex;
     };
     Owned<MsgProcessor> processor;
+
     friend class MsgProcessor;
     friend class DropLogMsg;
 
@@ -757,6 +718,10 @@ public:
     bool                      flushQueue(unsigned timeout) { if(processor) return processor->flush(timeout); else return true; }
     void                      report(const LogMsgCategory & cat, const char * format, ...) __attribute__((format(printf,3,4)));
     void                      report_va(const LogMsgCategory & cat, const char * format, va_list args) __attribute__((format(printf,3,0)));
+    void                      mreport_direct(unsigned compo, const LogMsgCategory & cat, const LogMsgJobInfo & job, const char * msg);
+    void                      mreport_direct(const LogMsgCategory & cat, const LogMsgJobInfo & job, const char * msg);
+    void                      mreport_va(unsigned compo, const LogMsgCategory & cat, const LogMsgJobInfo & job, const char * format, va_list args) __attribute__((format(printf,5,0)));
+    void                      mreport_va(const LogMsgCategory & cat, const LogMsgJobInfo & job, const char * format, va_list args) __attribute__((format(printf,4,0)));
     void                      report(const LogMsgCategory & cat, LogMsgCode code, const char * format, ...) __attribute__((format(printf,4,5)));
     void                      report_va(const LogMsgCategory & cat, LogMsgCode code, const char * format, va_list args) __attribute__((format(printf,4,0)));
     void                      report(const LogMsgCategory & cat, const IException * e, const char * prefix = NULL);
@@ -803,7 +768,10 @@ public:
     LogMsgSessionId           querySession() const { return session; }
     bool                      rejectsCategory(const LogMsgCategory & cat) const;
     virtual offset_t          getLogPosition(StringBuffer &logFileName, const ILogMsgHandler * handler) const;
+    virtual LogMsgJobId       addJobId(const char *job);
+    virtual void              removeJobId(LogMsgJobId);
 
+    const char *              queryJobId(LogMsgJobId id) const;
 private:
     void                      sendFilterToChildren(bool locked = false) const;
     aindex_t                  find(const ILogMsgHandler * handler) const;
@@ -812,6 +780,9 @@ private:
     void                      doReport(const LogMsg & msg) const;
     void                      panic(char const * reason) const;
     aindex_t                  findChild(ILogMsgLinkToChild * child) const;
+
+    void                      doAddJobId(LogMsgJobId id, const char *job) const;
+    void                      doRemoveJobId(LogMsgJobId) const;
 
 private:
     CIArrayOf<LogMsgMonitor>  monitors;
@@ -824,6 +795,9 @@ private:
     unsigned                  port;
     LogMsgSessionId           session;
     CriticalSection           modeLock;
+    std::atomic<LogMsgJobId>  nextJobId = { 0 };
+    mutable MapLogMsgJobIdToStr jobIds;
+    mutable CriticalSection   jobIdLock;
 };
 
 // Message indicating messages have been dropped
@@ -872,5 +846,8 @@ extern PassNoneLogMsgFilter * thePassNoneFilter;
 extern HandleLogMsgHandlerTable * theStderrHandler;
 extern CLogMsgManager * theManager;
 extern CSysLogEventLogger * theSysLogEventLogger;
+
+// Reset logging-related thread-local variables, when a threadpool starts
+extern void resetThreadLogging();
 
 #endif

@@ -7,7 +7,7 @@ define([
     "dojo/dom-attr",
     "dojo/dom-class",
     "dojo/dom-form",
-    "dojo/store/Memory",
+    "src/Memory",
     "dojo/store/Observable",
     "dojo/promise/all",
 
@@ -37,7 +37,7 @@ define([
     "dijit/form/DropDownButton",
     "dijit/form/ToggleButton",
     "dijit/TitlePane"
-], function (exports, declare, nlsHPCCMod, arrayUtil, dom, domAttr, domClass, domForm, Memory, Observable, all,
+], function (exports, declare, nlsHPCCMod, arrayUtil, dom, domAttr, domClass, domForm, MemoryMod, Observable, all,
     registry,
     selector,
     _TabContainerWidget,
@@ -63,7 +63,7 @@ define([
             this.inherited(arguments);
             this.copyForm = registry.byId(this.id + "CopyForm");
             this.copyTargetSelect = registry.byId(this.id + "CopyTargetSelect");
-            this.CopyTargetRetainSuperfileStructure = registry.byId(this.id + "CopyTargetRetainSuperfileStructure")
+            this.CopyTargetRetainSuperfileStructure = registry.byId(this.id + "CopyTargetRetainSuperfileStructure");
             this.summaryWidget = registry.byId(this.id + "_Summary");
             this.deleteBtn = registry.byId(this.id + "Delete");
             this.removeBtn = registry.byId(this.id + "Remove");
@@ -165,22 +165,19 @@ define([
 
             if (this.logicalFile.isSuperfile === true && this.logicalFile.NumOfSubfiles > 1 && this.logicalFile.KeyType !== undefined) {
                 this.CopyTargetRetainSuperfileStructure.readOnly = true;
-                this.CopyTargetRetainSuperfileStructure.setAttribute('title', nlsHPCC.RetainSuperfileStructureReason);
+                this.CopyTargetRetainSuperfileStructure.setAttribute("title", nlsHPCC.RetainSuperfileStructureReason);
             }
         },
 
         initSubfilesGrid: function () {
             var context = this;
-            var store = new Memory({
-                idProperty: "Name",
-                data: []
-            });
-            this.subfilesStore = Observable(store);
+            var store = new MemoryMod.Memory("Name");
+            this.subfilesStore = new Observable(store);
             this.subfilesGrid = new declare([ESPUtil.Grid(false, true)])({
                 columns: {
                     sel: selector({
                         width: 27,
-                        selectorType: 'checkbox'
+                        selectorType: "checkbox"
                     }),
                     IsCompressed: {
                         width: 25, sortable: false,
@@ -221,7 +218,7 @@ define([
                     Name: {
                         label: this.i18n.LogicalName,
                         formatter: function (name, row) {
-                            return "<a href='#' class='dgrid-row-url'>" + name + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + name + "</a>";
                         }
                     },
                     Owner: { label: this.i18n.Owner, width: 72 },
@@ -327,7 +324,7 @@ define([
                 all(dataPromise).then(function (logicalFiles) {
                     context.subfilesStore.setData(data);
                     context.subfilesGrid.refresh();
-                })
+                });
             } else if (name === "StateID") {
                 this.summaryWidget.set("iconClass", this.logicalFile.getStateIconClass());
                 domClass.remove(this.id + "StateIdImage");

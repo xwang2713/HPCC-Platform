@@ -357,7 +357,6 @@ void CWsWorkunitsEx::init(IPropertyTree *cfg, const char *process, const char *s
     DBGLOG("Initializing %s service [process = %s]", service, process);
 
     checkUpdateQuerysetLibraries();
-    refreshValidClusters();
 
     daliServers.set(cfg->queryProp("Software/EspProcess/@daliServers"));
     const char *computer = cfg->queryProp("Software/EspProcess/@computer");
@@ -438,6 +437,9 @@ void CWsWorkunitsEx::init(IPropertyTree *cfg, const char *process, const char *s
     getConfigurationDirectory(directories, "data", "esp", process, dataDirectory);
     wuFactory.setown(getWorkUnitFactory());
 
+#ifdef _CONTAINERIZED
+    initContainerRoxieTargets(roxieConnMap);
+#endif
     m_sched.start();
     filesInUse.subscribe();
 
@@ -446,52 +448,6 @@ void CWsWorkunitsEx::init(IPropertyTree *cfg, const char *process, const char *s
     Owned<CClusterQueryStateThreadFactory> threadFactory = new CClusterQueryStateThreadFactory();
     clusterQueryStatePool.setown(createThreadPool("CheckAndSetClusterQueryState Thread Pool", threadFactory, NULL,
             cfg->getPropInt(xpath.str(), CHECK_QUERY_STATUS_THREAD_POOL_SIZE)));
-}
-
-void CWsWorkunitsEx::refreshValidClusters()
-{
-    validClusters.kill();
-#ifdef _CONTAINERIZED
-    // discovered from generated cluster names
-    Owned<IPropertyTreeIterator> iter = queryComponentConfig().getElements("queues");
-    ForEach(*iter)
-    {
-        IPropertyTree &queue = iter->query();
-        const char *qName = queue.queryProp("@name");
-        bool* found = validClusters.getValue(qName);
-        if (!found || !*found)
-        {
-            validClusters.setValue(qName, true);
-            PROGLOG("adding valid cluster: %s", qName);
-        }
-    }
-#else
-    Owned<IStringIterator> it = getTargetClusters(NULL, NULL);
-    ForEach(*it)
-    {
-        SCMStringBuffer s;
-        IStringVal &val = it->str(s);
-        bool* found = validClusters.getValue(val.str());
-        if (!found || !*found)
-            validClusters.setValue(val.str(), true);
-    }
-#endif
-}
-
-bool CWsWorkunitsEx::isValidCluster(const char *cluster)
-{
-    if (!cluster || !*cluster)
-        return false;
-    CriticalBlock block(crit);
-    bool* found = validClusters.getValue(cluster);
-    if (found && *found)
-        return true;
-    if (validateTargetClusterName(cluster))
-    {
-        refreshValidClusters();
-        return true;
-    }
-    return false;
 }
 
 bool CWsWorkunitsEx::onWUCreate(IEspContext &context, IEspWUCreateRequest &req, IEspWUCreateResponse &resp)
@@ -586,8 +542,7 @@ bool CWsWorkunitsEx::onWUUpdate(IEspContext &context, IEspWUUpdateRequest &req, 
         {
             if (origValueChanged(req.getClusterSelection(), req.getClusterOrig(), s.clear(), false))
             {
-                if (!isValidCluster(s.str()))
-                    throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", s.str());
+                validateTargetName(s);
                 if (req.getState() == WUStateBlocked)
                     switchWorkUnitQueue(wu.get(), s.str());
                 else if ((req.getState() != WUStateSubmitted) && (req.getState() != WUStateRunning) && (req.getState() != WUStateDebugPaused) && (req.getState() != WUStateDebugRunning))
@@ -863,7 +818,7 @@ bool CWsWorkunitsEx::onWUResubmit(IEspContext &context, IEspWUResubmitRequest &r
                 if(!cw)
                     throw MakeStringException(ECLWATCH_CANNOT_OPEN_WORKUNIT,"Cannot open workunit %s.",wuid.str());
 
-                WsWuHelpers::submitWsWorkunit(context, cw, NULL, NULL, 0, req.getRecompile(), req.getResetWorkflow(), false);
+                WsWuHelpers::submitWsWorkunit(context, cw, nullptr, nullptr, 0, 0, req.getRecompile(), req.getResetWorkflow(), false, nullptr, nullptr, nullptr, nullptr);
 
                 if (version < 1.40)
                     continue;
@@ -946,10 +901,7 @@ bool CWsWorkunitsEx::onWUSchedule(IEspContext &context, IEspWUScheduleRequest &r
         WsWuHelpers::checkAndTrimWorkunit("WUSchedule", wuid);
 
         const char* cluster = req.getCluster();
-        if (isEmpty(cluster))
-             throw MakeStringException(ECLWATCH_INVALID_INPUT,"No Cluster defined.");
-        if (!isValidCluster(cluster))
-            throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", cluster);
+        validateTargetName(cluster);
 
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
         WorkunitUpdate wu(factory->updateWorkUnit(wuid.str()));
@@ -1001,10 +953,7 @@ bool CWsWorkunitsEx::onWUSubmit(IEspContext &context, IEspWUSubmitRequest &req, 
         WsWuHelpers::checkAndTrimWorkunit("WUSubmit", wuid);
 
         const char *cluster = req.getCluster();
-        if (isEmpty(cluster))
-            throw MakeStringException(ECLWATCH_INVALID_INPUT,"No Cluster defined.");
-        if (!isValidCluster(cluster))
-            throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", cluster);
+        validateTargetName(cluster);
 
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
         Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid.str());
@@ -1024,7 +973,7 @@ bool CWsWorkunitsEx::onWUSubmit(IEspContext &context, IEspWUSubmitRequest &req, 
             WsWuHelpers::runWsWuQuery(context, cw, info.queryset.str(), info.query.str(), cluster, NULL);
         }
         else
-            WsWuHelpers::submitWsWorkunit(context, cw, cluster, req.getSnapshot(), req.getMaxRunTime(), true, false, false);
+            WsWuHelpers::submitWsWorkunit(context, cw, cluster, req.getSnapshot(), req.getMaxRunTime(), req.getMaxCost(), true, false, false, nullptr, nullptr, nullptr, nullptr);
 
         PROGLOG("WUSubmit: %s", wuid.str());
         if (req.getBlockTillFinishTimer() != 0)
@@ -1061,8 +1010,8 @@ bool CWsWorkunitsEx::onWURun(IEspContext &context, IEspWURunRequest &req, IEspWU
     try
     {
         const char *cluster = req.getCluster();
-        if (notEmpty(cluster) && !isValidCluster(cluster))
-            throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", cluster);
+        if (!isEmptyString(cluster))
+            validateTargetName(cluster);
 
         StringBuffer wuidStr(req.getWuid());
         const char* runWuid = wuidStr.trim().str();
@@ -1082,7 +1031,7 @@ bool CWsWorkunitsEx::onWURun(IEspContext &context, IEspWURunRequest &req, IEspWU
                     &req.getDebugValues(), &req.getApplicationValues());
             else
             {
-                WsWuHelpers::submitWsWorkunit(context, runWuid, cluster, NULL, 0, false, true, true, req.getInput(),
+                WsWuHelpers::submitWsWorkunit(context, runWuid, cluster, NULL, 0, 0, false, true, true, req.getInput(),
                     &req.getVariables(), &req.getDebugValues(), &req.getApplicationValues());
                 wuid.set(runWuid);
             }
@@ -1282,7 +1231,7 @@ bool CWsWorkunitsEx::onWUSyntaxCheckECL(IEspContext &context, IEspWUSyntaxCheckR
         wu->commit();
         wu.clear();
 
-        WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), req.getSnapshot(), 0, true, false, false);
+        WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), req.getSnapshot(), 0, 0, true, false, false, nullptr, nullptr, nullptr, nullptr);
         waitForWorkUnitToComplete(wuid.str(), req.getTimeToWait());
 
         Owned<IConstWorkUnit> cw(factory->openWorkUnit(wuid.str()));
@@ -1351,7 +1300,7 @@ bool CWsWorkunitsEx::onWUCompileECL(IEspContext &context, IEspWUCompileECLReques
 
         StringAttr wuid(wu->queryWuid());  // NB queryWuid() not valid after workunit,clear()        StringAttr wuid(wu->queryWuid());
 
-        WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), req.getSnapshot(), 0, true, false, false);
+        WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), req.getSnapshot(), 0, 0, true, false, false, nullptr, nullptr, nullptr, nullptr);
         waitForWorkUnitToComplete(wuid.str(),req.getTimeToWait());
 
         Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid.str());
@@ -1447,7 +1396,7 @@ bool CWsWorkunitsEx::onWUGetDependancyTrees(IEspContext& context, IEspWUGetDepen
         wu->commit();
         wu.clear();
 
-        WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), req.getSnapshot(), 0, true, false, false);
+        WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), req.getSnapshot(), 0, 0, true, false, false, nullptr, nullptr, nullptr, nullptr);
 
         int state = waitForWorkUnitToComplete(wuid.str(), timeMilliSec);
         Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid.str());
@@ -1555,7 +1504,8 @@ void getArchivedWUInfo(IEspContext &context, const char* sashaServerIP, unsigned
     if (sashaServerIP && *sashaServerIP)
         ep.set(sashaServerIP, sashaServerPort);
     else
-        getSashaNode(ep);
+        getSashaServiceEP(ep, "sasha-wu-archiver", true);
+
     if (getWsWuInfoFromSasha(context, ep, wuid, &resp.updateWorkunit()))
     {
         resp.setCanCompile(false);
@@ -1963,6 +1913,8 @@ void doWUQueryWithSort(IEspContext &context, IEspWUQueryRequest & req, IEspWUQue
         // info.setSnapshot(cw->getSnapshot(s).str());
         info->setStateID(cw.getState());
         info->setState(cw.queryStateDesc());
+        info->setAction(cw.getAction());
+        info->setActionEx(cw.queryActionDesc());
         unsigned totalThorTimeMS = cw.getTotalThorTime();
         StringBuffer totalThorTimeStr;
         formatDuration(totalThorTimeStr, totalThorTimeMS);
@@ -2452,7 +2404,8 @@ public:
         if (sashaServerIP && *sashaServerIP)
             ep.set(sashaServerIP, sashaServerPort);
         else
-            getSashaNode(ep);
+            getSashaServiceEP(ep, "sasha-wu-archiver", true);
+
         Owned<INode> sashaserver = createINode(ep);
 
         Owned<ISashaCommand> cmd = createSashaCommand();
@@ -2764,7 +2717,7 @@ void getCSVHeaders(const IResultSetMetaData& metaIn, CommonCSVWriter* writer, un
     }
 }
 
-unsigned getResultCSV(IStringVal& ret, INewResultSet* result, const char* name, __int64 start, unsigned& count)
+unsigned getResultCSV(IStringVal& ret, INewResultSet* result, const char* name, __int64 start, unsigned& count, IAbortRequestCallback* abortCheck)
 {
     unsigned headerLayer = 0;
     CSVOptions csvOptions;
@@ -2777,12 +2730,12 @@ unsigned getResultCSV(IStringVal& ret, INewResultSet* result, const char* name, 
     writer->finishCSVHeaders();
 
     Owned<IResultSetCursor> cursor = result->createCursor();
-    count = writeResultCursorXml(*writer, cursor, name, start, count, NULL);
+    count = writeResultCursorXml(*writer, cursor, name, start, count, nullptr, nullptr, false, abortCheck);
     ret.set(writer->str());
     return count;
 }
 
-void appendResultSet(MemoryBuffer& mb, INewResultSet* result, const char *name, __int64 start, unsigned& count, __int64& total, bool bin, bool xsd, ESPSerializationFormat fmt, const IProperties *xmlns)
+void appendResultSet(IEspContext &context, MemoryBuffer& mb, INewResultSet* result, const char *name, __int64 start, unsigned& count, __int64& total, bool bin, bool xsd, ESPSerializationFormat fmt, const IProperties *xmlns)
 {
     if (!result)
         return;
@@ -2806,12 +2759,13 @@ void appendResultSet(MemoryBuffer& mb, INewResultSet* result, const char *name, 
             MemoryBuffer & buffer;
         } adaptor(mb);
 
+        CESPAbortRequestCallback abortCallback(&context);
         if (fmt==ESPSerializationCSV)
-            count = getResultCSV(adaptor, result, name, (unsigned) start, count);
+            count = getResultCSV(adaptor, result, name, (unsigned) start, count, &abortCallback);
         else if (fmt==ESPSerializationJSON)
-            count = getResultJSON(adaptor, result, name, (unsigned) start, count, (xsd) ? "myschema" : NULL);
+            count = getResultJSON(adaptor, result, name, (unsigned) start, count, (xsd) ? "myschema" : NULL, &abortCallback);
         else
-            count = getResultXml(adaptor, result, name, (unsigned) start, count, (xsd) ? "myschema" : NULL, xmlns);
+            count = getResultXml(adaptor, result, name, (unsigned) start, count, (xsd) ? "myschema" : NULL, xmlns, &abortCallback);
     }
 }
 
@@ -2927,12 +2881,12 @@ void CWsWorkunitsEx::getWsWuResult(IEspContext &context, const char *wuid, const
                                        wuid, wuResultMaxSize/0x100000);
         }
 
-        appendResultSet(mb, rs, name, start, count, total, bin, xsd, context.getResponseFormat(), result->queryResultXmlns());
+        appendResultSet(context, mb, rs, name, start, count, total, bin, xsd, context.getResponseFormat(), result->queryResultXmlns());
     }
     else
     {
         Owned<INewResultSet> filteredResult = createFilteredResultSet(rs, filterBy);
-        appendResultSet(mb, filteredResult, name, start, count, total, bin, xsd, context.getResponseFormat(), result->queryResultXmlns());
+        appendResultSet(context, mb, filteredResult, name, start, count, total, bin, xsd, context.getResponseFormat(), result->queryResultXmlns());
     }
 
     wuState = cw->getState();
@@ -3177,7 +3131,7 @@ bool CWsWorkunitsEx::onWUFile(IEspContext &context,IEspWULogFileRequest &req, IE
 IPropertyTree *getArchivedWorkUnitProperties(const char *wuid, bool dfuWU)
 {
     SocketEndpoint ep;
-    getSashaNode(ep);
+    getSashaServiceEP(ep, "sasha-wu-archiver", true);
     Owned<INode> node = createINode(ep);
     if (!node)
         throw MakeStringException(ECLWATCH_INODE_NOT_FOUND, "INode not found.");
@@ -3213,35 +3167,44 @@ void getWorkunitCluster(IEspContext &context, const char *wuid, SCMStringBuffer 
     if (isEmpty(wuid))
         return;
 
-    if ('W' == wuid[0])
+    try
     {
-        Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
-        Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid);
-        if (cw)
-            cluster.set(cw->queryClusterName());
-        else if (checkArchiveWUs)
+        if ('W' == wuid[0])
         {
-            Owned<IPropertyTree> wuProps = getArchivedWorkUnitProperties(wuid, false);
-            if (wuProps)
-                cluster.set(wuProps->queryProp("@clusterName"));
+            Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
+            Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid);
+            if (cw)
+                cluster.set(cw->queryClusterName());
+            else if (checkArchiveWUs)
+            {
+                Owned<IPropertyTree> wuProps = getArchivedWorkUnitProperties(wuid, false);
+                if (wuProps)
+                    cluster.set(wuProps->queryProp("@clusterName"));
+            }
+        }
+        else
+        {
+            Owned<IDFUWorkUnitFactory> factory = getDFUWorkUnitFactory();
+            Owned<IConstDFUWorkUnit> cw = factory->openWorkUnit(wuid, false);
+            if(cw)
+            {
+                StringBuffer tmp;
+                if (cw->getClusterName(tmp).length()!=0)
+                    cluster.set(tmp.str());
+            }
+            else if (checkArchiveWUs)
+            {
+                Owned<IPropertyTree> wuProps = getArchivedWorkUnitProperties(wuid, true);
+                if (wuProps)
+                    cluster.set(wuProps->queryProp("@clusterName"));
+            }
         }
     }
-    else
+    catch (IException * e)
     {
-        Owned<IDFUWorkUnitFactory> factory = getDFUWorkUnitFactory();
-        Owned<IConstDFUWorkUnit> cw = factory->openWorkUnit(wuid, false);
-        if(cw)
-        {
-            StringBuffer tmp;
-            if (cw->getClusterName(tmp).length()!=0)
-                cluster.set(tmp.str());
-        }
-        else if (checkArchiveWUs)
-        {
-            Owned<IPropertyTree> wuProps = getArchivedWorkUnitProperties(wuid, true);
-            if (wuProps)
-                cluster.set(wuProps->queryProp("@clusterName"));
-        }
+        //Catch exception if the sasha server has not be configured
+        DBGLOG(e, "GetWorkunitCluster");
+        e->Release();
     }
 }
 
@@ -3262,13 +3225,13 @@ void CWsWorkunitsEx::getFileResults(IEspContext &context, const char *logicalNam
                                        logicalName, wuResultMaxSize/0x100000);
         }
     
-        appendResultSet(buf, result, resname.str(), start, count, total, bin, xsd, context.getResponseFormat(), NULL);
+        appendResultSet(context, buf, result, resname.str(), start, count, total, bin, xsd, context.getResponseFormat(), nullptr);
     }
     else
     {
         // NB: this could be still be very big, appendResultSet should be changed to ensure filtered result doesn't grow bigger than wuResultMaxSize
         Owned<INewResultSet> filteredResult = createFilteredResultSet(result, filterBy);
-        appendResultSet(buf, filteredResult, resname.str(), start, count, total, bin, xsd, context.getResponseFormat(), NULL);
+        appendResultSet(context, buf, filteredResult, resname.str(), start, count, total, bin, xsd, context.getResponseFormat(), nullptr);
     }
 }
 
@@ -3744,20 +3707,28 @@ bool CWsWorkunitsEx::onWUShowScheduled(IEspContext &context, IEspWUShowScheduled
         if(notEmpty(req.getPushEventText()))
             resp.setPushEventText(req.getPushEventText());
 
+        unsigned i = 0;
+        IArrayOf<IEspServerInfo> servers;
+#ifdef _CONTAINERIZED
+        Owned<IStringIterator> targets = getContainerTargetClusters(nullptr, nullptr);
+        ForEach(*targets)
+        {
+            SCMStringBuffer target;
+            targets->str(target);
+            const char *iclusterName = target.str();
+#else
         Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
         Owned<IConstEnvironment> environment = factory->openEnvironment();
         Owned<IPropertyTree> root = &environment->getPTree();
 
-        unsigned i = 0;
         Owned<IPropertyTreeIterator> ic = root->getElements("Software/Topology/Cluster");
-        IArrayOf<IEspServerInfo> servers;
         ForEach(*ic)
         {
             IPropertyTree &cluster = ic->query();
             const char *iclusterName = cluster.queryProp("@name");
             if (isEmpty(iclusterName))
                 continue;
-
+#endif
             if (filters.cluster.isEmpty())
                 getScheduledWUs(context, &filters, iclusterName, results);
             else if (strieq(filters.cluster, iclusterName))
@@ -4642,7 +4613,7 @@ void deployEclOrArchive(IEspContext &context, IEspWUDeployWorkunitRequest & req,
     wu->commit();
     wu.clear();
 
-    WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), NULL, 0, true, false, false, NULL, NULL, &req.getDebugValues());
+    WsWuHelpers::submitWsWorkunit(context, wuid.str(), req.getCluster(), nullptr, 0, 0, true, false, false, nullptr, nullptr, &req.getDebugValues(), nullptr);
     waitForWorkUnitToCompile(wuid.str(), req.getWait());
 
     WsWuInfo winfo(context, wuid.str());
@@ -4833,8 +4804,8 @@ bool CWsWorkunitsEx::onWUDeployWorkunit(IEspContext &context, IEspWUDeployWorkun
     {
         ensureWsCreateWorkunitAccess(context);
 
-        if (notEmpty(req.getCluster()) && !isValidCluster(req.getCluster()))
-            throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", req.getCluster());
+        if (!isEmptyString(req.getCluster()))
+            validateTargetName(req.getCluster());
         if (!type || !*type)
             throw MakeStringExceptionDirect(ECLWATCH_INVALID_INPUT, "WUDeployWorkunit unspecified object type.");
         if (strieq(type, "archive")|| strieq(type, "ecl_text"))
@@ -5347,7 +5318,7 @@ void CWsWorkunitsEx::checkEclDefinitionSyntax(IEspContext &context, const char *
     wu->commit();
     wu.clear();
 
-    WsWuHelpers::submitWsWorkunit(context, wuid.str(), target, nullptr, 0, true, false, false);
+    WsWuHelpers::submitWsWorkunit(context, wuid.str(), target, nullptr, 0, 0, true, false, false, nullptr, nullptr, nullptr, nullptr);
     waitForWorkUnitToComplete(wuid.str(), msToWait);
 
     Owned<IConstWorkUnit> cw(factory->openWorkUnit(wuid.str()));

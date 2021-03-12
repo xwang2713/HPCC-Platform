@@ -1,4 +1,5 @@
 ldap:
+   resourcesBasedn: ou=SMC,ou=EspServices,ou=ecl
    root_access:
       resource: SmcAccess
       required: Read
@@ -145,9 +146,15 @@ ldap:
          -  path: ConfigAccess
             resource: ConfigAccess
             description: Access to super computer environment
+      ws_resources:
+         Feature:
+         -  path: ResourceQueryAccess
+            resource: ResourceQueryAccess
+            description: Access to resources
       WsPackageProcess: []
       ws_account: []
       ws_access: []
       ws_esdlconfig: []
       ws_elk: []
       ws_store: []
+      WSDali: []

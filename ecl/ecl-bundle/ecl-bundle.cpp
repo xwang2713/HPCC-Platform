@@ -50,7 +50,6 @@
 
 
 static bool optVerbose;
-static StringBuffer eclccpath;
 
 /*
  * Version comparison code.
@@ -751,7 +750,7 @@ public:
         const char *name = bundle->queryCleanName();
         const char *version = bundle->queryCleanVersion();
         VStringBuffer redirect("IMPORT %s.%s.%s.%s as _%s; EXPORT %s := _%s;", VERSION_SUBDIR, name, version, name, name, name, name);
-        Owned<IFileIO> rfile = redirector->open(IFOcreaterw);
+        Owned<IFileIO> rfile = redirector->open(IFOcreate);
         rfile->write(0, redirect.length(), redirect.str());
         bundle->setActive(true);
     }

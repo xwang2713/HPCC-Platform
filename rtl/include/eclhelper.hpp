@@ -37,7 +37,11 @@ if the supplied pointer was not from the roxiemem heap. Usually an OwnedRoxieStr
 #ifdef _USE_ICU
 #include "unicode/utf.h"
 #else
+#ifdef _WIN32
+typedef char16_t UChar;
+#else //_WIN32
 typedef unsigned short UChar;
+#endif //_WIN32
 #endif
 #endif
 #include "rtlconst.hpp"
@@ -169,7 +173,6 @@ interface IRecordSize : public IInterface
 interface IXmlWriter : public IInterface
 {
 public:
-    virtual void flushContent(bool close) = 0;
     virtual void outputQuoted(const char *text) = 0;
     virtual void outputString(unsigned len, const char *field, const char *fieldname) = 0;
     virtual void outputBool(bool field, const char *fieldname) = 0;
@@ -192,6 +195,7 @@ public:
     virtual void outputInlineXml(const char *text) = 0; //for appending raw xml content
     virtual void outputXmlns(const char *name, const char *uri) = 0;
     inline void outputCString(const char *field, const char *fieldname) { outputString((size32_t)strlen(field), field, fieldname); }
+    virtual void flushContent(bool close) = 0;
 };
 
 interface IFieldProcessor : public IInterface
@@ -2961,6 +2965,9 @@ protected:
     Owned<IColumnProviderIterator> iter;
     Owned<IColumnProvider> cur;
 };
+
+constexpr unsigned daliResultOutputMax = 2000; // MB
+constexpr unsigned futureResultOutputMax = 100; // MB
 
 #ifdef STARTQUERY_EXPORTS
 #define STARTQUERY_API DECL_EXPORT

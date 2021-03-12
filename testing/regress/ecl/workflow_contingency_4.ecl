@@ -22,7 +22,6 @@ optParallel := #IFDEFINED(root.parallel, false);
 
 #option ('parallelWorkflow', optParallel);
 #option('numWorkflowThreads', 5);
-#onwarning(5102, ignore);
 
 Import sleep from std.System.Debug;
 
@@ -32,7 +31,7 @@ display(String thisString) := FUNCTION
 END;
 
 //this tests that items are aborted once the workflow fails
-b := SEQUENTIAL(display('b'), FAIL(5103)) : independent;
+b := SEQUENTIAL(display('b'), FAIL(101)) : independent;
 
 c0 := sleep(2000) : independent;
 c1 := sleep(2001) : independent;

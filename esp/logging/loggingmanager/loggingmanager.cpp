@@ -20,6 +20,9 @@
 #include "loggingmanager.hpp"
 #include "compressutil.hpp"
 
+#include "logconfigptree.hpp"
+using namespace LogConfigPTree;
+
 CLoggingManager::~CLoggingManager(void)
 {
     for (unsigned int x = 0; x < loggingAgentThreads.size(); x++)
@@ -41,13 +44,13 @@ bool CLoggingManager::init(IPropertyTree* cfg, const char* service)
     }
 
     StringAttr failSafeLogsDir;
-    decoupledLogging = cfg->getPropBool(PropDecoupledLogging, false);
-    oneTankFile = cfg->getPropBool("FailSafe", true);
+    decoupledLogging = getConfigValue<bool>(cfg, PropDecoupledLogging, false);
+    oneTankFile = getConfigValue<bool>(cfg, "FailSafe", true);
     if (decoupledLogging)
     {   //Only set the failSafeLogsDir for decoupledLogging.
         //The failSafeLogsDir tells a logging agent to work as a decoupledLogging agent,
         //as well as where to read the tank file.
-        const char* logsDir = cfg->queryProp(PropFailSafeLogsDir);
+        const char* logsDir = queryConfigValue(cfg, PropFailSafeLogsDir);
         if (!isEmptyString(logsDir))
             failSafeLogsDir.set(logsDir);
         else
@@ -78,6 +81,12 @@ bool CLoggingManager::init(IPropertyTree* cfg, const char* service)
         }
         loggingAgent->init(agentName, agentType, &loggingAgentTree, service);
         loggingAgent->initVariants(&loggingAgentTree);
+        if (loggingAgent->hasService(LGSTGetTransactionID))
+            setServiceMaskService(LGSTGetTransactionID);
+        if (loggingAgent->hasService(LGSTGetTransactionSeed))
+            setServiceMaskService(LGSTGetTransactionSeed);
+        if (loggingAgent->hasService(LGSTUpdateLOG))
+            setServiceMaskService(LGSTUpdateLOG);
         IUpdateLogThread* logThread = createUpdateLogThread(&loggingAgentTree, service, agentName, failSafeLogsDir.get(), loggingAgent);
         if(!logThread)
             throw MakeStringException(-1, "Failed to create update log thread for %s", agentName);
@@ -108,6 +117,11 @@ IEspLogAgent* CLoggingManager::loadLoggingAgent(const char* name, const char* dl
 IEspLogEntry* CLoggingManager::createLogEntry()
 {
     return new CEspLogEntry();
+}
+
+bool CLoggingManager::hasService(LOGServiceType service) const
+{
+    return ((serviceMask & (1 << service)) != 0);
 }
 
 bool CLoggingManager::updateLog(IEspLogEntry* entry, StringBuffer& status)
@@ -180,6 +194,10 @@ bool CLoggingManager::updateLog(IEspContext* espContext, const char* option, IPr
         Owned<IPropertyTree> espContextTree;
         if (espContext)
         {
+            double responseTime = (msTick() - espContext->queryCreationTime()) / 1000.0;
+            CDateTime when;
+            when.setNow();
+
             espContextTree.setown(createPTree("ESPContext"));
 
             short port;
@@ -197,7 +215,16 @@ bool CLoggingManager::updateLog(IEspContext* espContext, const char* option, IPr
             if (userId && *userId)
                 espContextTree->addProp("UserName", userId);
 
-            espContextTree->addProp("ResponseTime", VStringBuffer("%.4f", (msTick()-espContext->queryCreationTime())/1000.0));
+            espContextTree->addProp("ResponseTime", VStringBuffer("%.4f", responseTime));
+            StringBuffer whenStr;
+            when.getString(whenStr);
+            espContextTree->addProp("TransactionEnd", whenStr);
+            if (responseTime > 1.0)
+            {
+                when.adjustTimeSecs(-int(responseTime));
+                when.getString(whenStr.clear());
+            }
+            espContextTree->addProp("TransactionStart", whenStr);
         }
         Owned<IEspUpdateLogRequestWrap> req =  new CUpdateLogRequestWrap(nullptr, option, espContextTree.getClear(), LINK(userContext), LINK(userRequest),
             backEndReq, backEndResp, userResp, logDatasets);

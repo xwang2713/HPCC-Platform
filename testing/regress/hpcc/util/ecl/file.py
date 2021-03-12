@@ -25,7 +25,7 @@ import re
 import xml.etree.ElementTree as ET
 import unicodedata
 
-from ...util.util import isPositiveIntNum, getConfig, PrintException
+from ...util.util import isPositiveIntNum, getConfig, printException
 from ...common.error import Error
 
 logger = logging.getLogger('RegressionTestEngine')
@@ -75,7 +75,7 @@ class ECLFile:
         self.ecl = self.baseEcl
         self.xml_e = self.baseXml
         self.xml_r = self.baseXml
-        self.xml_a = 'archive_' + self.baseXml
+        self.xml_a = 'archive_' + self.cluster + '_' + self.baseXml
         self.jobname = self.basename
         self.diff = ''
         self.aborted = False
@@ -86,7 +86,7 @@ class ECLFile:
         self.isVersions=False
         self.version=''
         self.versionId=0
-        self.timeout = int(args.timeout)
+        self.timeout = self.checkFileTimeout(int(args.timeout))
         self.args = args
         self.eclccWarning = ''
         self.eclccWarningChanges = ''
@@ -146,6 +146,18 @@ class ECLFile:
             pass
 
         self.mergeHashToStrArray(self.optXHash,  self.optX)
+
+        # Process setupExtraD parameters if any
+        self.optD =[]
+        self.optDHash={}
+        if 'setupExtraD' in args:
+            for extraDName, extraDVal in args.setupExtraD.items():
+                extraDVal = extraDVal.strip()
+                optDs = ["-D"+extraDName+"='"+extraDVal+"'"]
+                self.processKeyValPairs(optDs,  self.optDHash)
+            pass
+
+        self.mergeHashToStrArray(self.optDHash,  self.optD)
         pass
 
         self.optF =[]
@@ -245,7 +257,7 @@ class ECLFile:
         #print("ECLFile.getArchiveName()")
         logger.debug("%3d. getArchiveName(isVersions:'%s')", self.taskId, self.isVersions )
         if self.isVersions:
-            dynamicFilename='archive_' + self.basename
+            dynamicFilename='archive_' + self.cluster + '_' + self.basename
             dynamicFilename+= '_v'+ str(self.versionId)
             dynamicFilename += '.xml'
             return os.path.join(self.dir_a, dynamicFilename)
@@ -451,30 +463,29 @@ class ECLFile:
     def setVersionId(self,  id):
         self.versionId=id
 
-    def getTimeout(self):
-        timeout = 0
-        if  self.timeout == 0:
-            # Standard string has a problem with unicode characters
-            # use byte arrays and binary file open instead
-            tag = '//timeout'
-            logger.debug("%3d. getTimeout (ecl:'%s', tag:'%s')", self.taskId,  self.ecl, tag)
-            eclText = open(self.getEcl(), 'rb')
-            for line in eclText:
-                try:
-                    line = line.decode("utf-8")
-                except UnicodeDecodeError:
-                    line = str(line)
-                if tag in line:
-                    timeoutParts = line.split()
-                    if len(timeoutParts) == 2:
-                        if (timeoutParts[1] == '-1') or isPositiveIntNum(timeoutParts[1]) :
-                            timeout = int(timeoutParts[1])
-                            self.timeout = timeout
-                    break
-        else:
-            timeout = self.timeout
+    def checkFileTimeout(self,  timeout):
+        timeout = timeout
+        # Standard string has a problem with unicode characters
+        # use byte arrays and binary file open instead
+        tag = '//timeout'
+        logger.debug("%3d. checkFileTimeout (ecl:'%s', tag:'%s')", self.taskId,  self.ecl, tag)
+        eclText = open(self.getEcl(), 'rb')
+        for line in eclText:
+            try:
+                line = line.decode("utf-8")
+            except UnicodeDecodeError:
+                line = str(line)
+            if tag in line:
+                timeoutParts = line.split()
+                if len(timeoutParts) == 2:
+                    if (timeoutParts[1] == '-1') or isPositiveIntNum(timeoutParts[1]) :
+                        timeout = int(timeoutParts[1])
+                break
         logger.debug("%3d. Timeout is :%d sec",  self.taskId,  timeout)
         return timeout
+
+    def getTimeout(self):
+        return self.timeout
 
     def setTimeout(self,  timeout):
         self.timeout = timeout
@@ -515,7 +526,7 @@ class ECLFile:
                     else:
                         diffLines = repr(diffLines)
                 except Exception as e:
-                    PrintException(repr(e) + " runQuery() end")
+                    printException(repr(e) + " runQuery() end")
                     
                     
                 self.diff += str(diffLines)
@@ -594,6 +605,9 @@ class ECLFile:
     def getFParameters(self):
         return self.optF
 
+    def getExtraDParameters(self):
+        return self.optD
+
     # Set -D parameter(s) (and generate version string for logger)
     def setDParameters(self,  param):
         self.setJobnameVersion(param)
@@ -634,6 +648,7 @@ class ECLFile:
                 open(expectedKeyPath, 'w').write("\n".join(self.eclccWarning))
                 pass
         try:
+            logger.debug("%3d.  self.eclccWarning: " +  self.eclccWarning,  self.taskId )
             diffLines = ''
             d = list(difflib.unified_diff(eclccKeyContent, self.eclccWarning, fromfile=expectedKeyPath, tofile="eclcc warning",  lineterm = ""))
             diffLines = "\n".join(d)
@@ -644,8 +659,8 @@ class ECLFile:
                 self.eclccWarningChanges += "\tEclcc generated warning changed\n"
                 logger.debug( "type(diffLines) is %s: ",  repr(type(diffLines)), extra={'taskId':self.taskId})
                 if type(diffLines) == type(' '):
-                    diffLines = unicodedata.normalize('NFKD', diffLines).encode('ascii','ignore').replace('\'','').replace('\\u', '\\\\u')
-                    diffLines = str(diffLines)
+                    diffLines = unicodedata.normalize('NFKD', diffLines).encode('ascii','ignore') #.replace('\'','').replace('\\u', '\\\\u')
+                    diffLines = str(diffLines).replace('\'','').replace('\\u', '\\\\u')
                 else:
                     diffLines = str(diffLines)
                 self.eclccWarningChanges += str(diffLines)

@@ -40,12 +40,19 @@ while [ "$#" -gt 0 ]; do
       p) shift
          PERSIST=$1
          ;;
+      c) DEP_UPDATE_ARG="--dependency-update"
+         ;;
       h) echo "Usage: startall.sh [options]"
          echo "    -d <docker-repo>   Docker repository to fetch images from"
          echo "    -l                 Build image label to use"
-         echo "    -u                 Use "upgrade" rather than "install"
-         echo "    -p <location>      Use local persistent data
+         echo "    -u                 Use "upgrade" rather than "install""
+         echo "    -t                 Generate templates instead of starting the system"
+         echo "    -c                 Update chart dependencies"
+         echo "    -p <location>      Use local persistent data"
          exit
+         ;;
+      t) CMD="template"
+         restArgs+="--debug"
          ;;
       *) restArgs+=(${arg})
          ;;
@@ -56,19 +63,44 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+if [[ -n "${DEP_UPDATE_ARG}" ]]; then
+  if [[ "${CMD}" = "upgrade" ]]; then
+    echo "Chart dependencies cannot be updated whilst performing a helm upgrade"
+    DEP_UPDATE_ARG=""
+  fi
+else
+  missingDeps=0
+  while IFS= read -r line
+  do
+    echo "${line}"
+    if echo "${line}" | egrep -q 'missing$'; then
+      let "missingDeps++"
+    fi
+  done < <(helm dependency list ${scriptdir}/../helm/hpcc)
+  if [[ ${missingDeps} -gt 0 ]]; then
+    echo "Some of the chart dependencies are missing."
+    echo "Either issue a 'helm dependency update ${scriptdir}/../helm/hpcc' to fetch them,"
+    echo "or rerun $0 with option -c to auto update them."
+    exit 0
+  fi
+fi
+
 [[ -n ${INPUT_DOCKER_REPO} ]] && DOCKER_REPO=${INPUT_DOCKER_REPO}
 [[ -z ${LABEL} ]] && LABEL=$(docker image ls | fgrep "${DOCKER_REPO}/platform-core" | head -n 1 | awk '{print $2}')
 
 if [[ -n ${PERSIST} ]] ; then
-  mkdir -p ${PERSIST}/dlls
-  mkdir -p ${PERSIST}/dali
-  mkdir -p ${PERSIST}/data
+  PERSIST=$(realpath -q $PERSIST || echo $PERSIST)
+  PERSIST_PATH=$(echo $PERSIST | sed 's/\\//g')
+  mkdir -p ${PERSIST_PATH}/dlls
+  mkdir -p ${PERSIST_PATH}/dali
+  mkdir -p ${PERSIST_PATH}/data
   helm ${CMD} localfile $scriptdir/../helm/examples/local/hpcc-localfile --set common.hostpath=${PERSIST} | grep -A100 storage > localstorage.yaml && \
-  helm ${CMD} mycluster $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL --set global.privileged=true -f localstorage.yaml ${restArgs[@]}
+  helm ${CMD} mycluster $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL --set global.privileged=true -f localstorage.yaml $DEP_UPDATE_ARG ${restArgs[@]}
 else
-  helm ${CMD} mycluster $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL --set global.privileged=true ${restArgs[@]}
+  helm ${CMD} mycluster $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL --set global.privileged=true $DEP_UPDATE_ARG ${restArgs[@]}
 fi
 
-sleep 1
-kubectl get pods
-
+if [ ${CMD} != "template" ] ; then
+  sleep 1
+  kubectl get pods
+fi

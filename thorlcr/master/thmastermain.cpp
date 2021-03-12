@@ -265,7 +265,7 @@ public:
         LOG(MCdebugProgress, thorJob, "Waiting for %d slaves to register", slaves);
 
         IPointerArrayOf<INode> connectedSlaves;
-        connectedSlaves.ensure(slaves);
+        connectedSlaves.ensureCapacity(slaves);
         unsigned remaining = slaves;
         INode *_sender = nullptr;
         CMessageBuffer msg;
@@ -886,9 +886,6 @@ int main( int argc, const char *argv[]  )
         CSDSServerStatus &serverStatus = openThorServerStatus();
 
         Owned<CRegistryServer> registry = new CRegistryServer();
-        StringBuffer thorEpStr;
-        LOG(MCdebugProgress, thorJob, "ThorMaster version %d.%d, Started on %s", THOR_VERSION_MAJOR,THOR_VERSION_MINOR,thorEp.getUrlStr(thorEpStr).str());
-        LOG(MCdebugProgress, thorJob, "Thor name = %s, queue = %s, nodeGroup = %s",thorname,queueName.str(),nodeGroup.str());
 
         serverStatus.queryProperties()->setProp("@thorname", thorname);
         serverStatus.queryProperties()->setProp("@cluster", nodeGroup.str()); // JCSMORE rename
@@ -911,6 +908,10 @@ int main( int argc, const char *argv[]  )
             throw makeStringException(0, "missing --workunit");
         if (isEmptyString(graphName))
             throw makeStringException(0, "missing --graphName");
+        setDefaultJobId(workunit);
+        StringBuffer thorEpStr;
+        LOG(MCdebugProgress, thorJob, "ThorMaster version %d.%d, Started on %s", THOR_VERSION_MAJOR,THOR_VERSION_MINOR,thorEp.getUrlStr(thorEpStr).str());
+        LOG(MCdebugProgress, thorJob, "Thor name = %s, queue = %s, nodeGroup = %s",thorname,queueName.str(),nodeGroup.str());
 
         if (!globals->hasProp("@numWorkers"))
             throw makeStringException(0, "Default number of workers not defined (numWorkers)");
@@ -936,6 +937,9 @@ int main( int argc, const char *argv[]  )
 
         applyK8sYaml("thorworker", workunit, cloudJobName, "jobspec", { { "graphName", graphName}, { "master", myEp.str() }, { "%numWorkers", std::to_string(numWorkers)} }, false);
 #else
+        StringBuffer thorEpStr;
+        LOG(MCdebugProgress, thorJob, "ThorMaster version %d.%d, Started on %s", THOR_VERSION_MAJOR,THOR_VERSION_MINOR,thorEp.getUrlStr(thorEpStr).str());
+        LOG(MCdebugProgress, thorJob, "Thor name = %s, queue = %s, nodeGroup = %s",thorname,queueName.str(),nodeGroup.str());
         unsigned localThorPortInc = globals->getPropInt("@localThorPortInc", DEFAULT_SLAVEPORTINC);
         unsigned slaveBasePort = globals->getPropInt("@slaveport", DEFAULT_THORSLAVEPORT);
         Owned<IGroup> rawGroup = getClusterNodeGroup(thorname, "ThorCluster");
@@ -1008,10 +1012,11 @@ int main( int argc, const char *argv[]  )
 
             writeSentinelFile(sentinelFile);
 
+#ifndef _CONTAINERIZED
             unsigned pinterval = globals->getPropInt("@system_monitor_interval",1000*60);
             if (pinterval)
                 startPerformanceMonitor(pinterval, PerfMonStandard, nullptr);
-
+#endif
             // NB: workunit/graphName only set in one-shot mode (if isCloud())
             thorMain(logHandler, workunit, graphName);
             LOG(MCauditInfo, ",Progress,Thor,Terminate,%s,%s,%s",thorname,nodeGroup.str(),queueName.str());
@@ -1044,7 +1049,9 @@ int main( int argc, const char *argv[]  )
     thorEndHandler->start(30);
 
     PROGLOG("Thor closing down 5");
+#ifndef _CONTAINERIZED
     stopPerformanceMonitor();
+#endif
     disconnectLogMsgManagerFromDali();
     closeThorServerStatus();
     PROGLOG("Thor closing down 4");

@@ -187,6 +187,10 @@ public:
     {
         ctx->checkAbort();
     }
+    virtual unsigned checkInterval() const
+    {
+        return ctx->checkInterval();
+    }
     virtual void notifyAbort(IException *E) 
     {
         ctx->notifyAbort(E);
@@ -595,11 +599,6 @@ public:
         return graph.getClear();
     }
 
-    virtual IRoxieServerSideCache *queryServerSideCache() const
-    {
-        return NULL; // Activities that wish to support server-side caching will need to do better....
-    }
-
     virtual void getXrefInfo(IPropertyTree &reply, const IRoxieContextLogger &logctx) const
     {
         // Most activities have nothing to say...
@@ -615,6 +614,10 @@ public:
     virtual bool isActivityCodeSigned() const
     {
         return isCodeSigned;
+    }
+    virtual RecordTranslationMode getEnableFieldTranslation() const
+    {
+        return CActivityFactory::getEnableFieldTranslation();
     }
 };
 
@@ -817,8 +820,10 @@ public:
 
     virtual bool isSink() const
     {
+        //If an internal result has as many dependencies (within the graph) as uses (which includes from outside the graph) then don't execute it unconditionally.
+        bool internalSpillAllUsesWithinGraph = (isInternal && dependentCount && dependentCount==usageCount);
         //only a sink if a root activity
-        return isRoot && !(isInternal && dependentCount && dependentCount==usageCount); // MORE - it's possible for this to get the answer wrong still, since usageCount does not include references from main procedure. Gavin?
+        return isRoot && !internalSpillAllUsesWithinGraph;
     }
 
     virtual void getEdgeProgressInfo(unsigned idx, IPropertyTree &edge) const
@@ -838,7 +843,7 @@ const char *queryStateText(activityState state)
     case STATEreset: return "reset";
     case STATEstarted: return "started";
     case STATEstopped: return "stopped";
-    case STATEstarting: return "starting";
+    case STATEstarting: return "starting";   // Used by a splitter to indicate it has seen a stop but not yet seen a start(), nor has it seen stop() on all output adaptors
     default: return "unknown";
     }
 }
@@ -1453,11 +1458,25 @@ public:
             {
                 if (state==STATEstarted || state==STATEstarting)
                 {
+                    VStringBuffer err("STATE: activity %d reset without stop", activityId);
+                    ctx->queryCodeContext()->addWuException(err.str(), ROXIE_INTERNAL_ERROR, SeverityError, "roxie");
                     if (ctx->queryOptions().failOnLeaks)
                         throw makeStringExceptionV(ROXIE_INTERNAL_ERROR, "STATE: activity %d reset without stop", activityId);
-                    if (traceStartStop || traceLevel > 2)
-                        CTXLOG("STATE: activity %d reset without stop", activityId);
-                    stop();
+                    try
+                    {
+                        stop();
+                    }
+                    catch (IException *E)
+                    {
+                        EXCLOG(E, "Unexpected exception in stop() called from reset()");
+                        printStackReport();
+                        ::Release(E);
+                    }
+                    catch (...)
+                    {
+                        DBGLOG("Unexpected unknown exception in stop() called from reset()");
+                        printStackReport();
+                    }
                 }
                 state = STATEreset;
 #ifdef TRACE_STARTSTOP
@@ -1624,11 +1643,6 @@ public:
     {
     }
 
-    virtual IRoxieServerSideCache *queryServerSideCache() const
-    {
-        return factory->queryServerSideCache();
-    }
-
     virtual const IRoxieServerActivityFactory *queryFactory() const
     {
         return factory;
@@ -1673,7 +1687,7 @@ public:
 protected:
     RecordTranslationMode getEnableFieldTranslation() const
     {
-        return factory->queryQueryFactory().queryOptions().enableFieldTranslation;
+        return factory->getEnableFieldTranslation();
     }
 };
 
@@ -1715,7 +1729,17 @@ public:
         IFinalRoxieInput *saveInput = input;
         Owned<IStrandJunction> saveJunction = junction.getClear();
         input = NULL;   // Make sure parent does not start the chain yet
-        CRoxieServerActivity::start(parentExtractSize, parentExtract, paused);
+        try
+        {
+            CRoxieServerActivity::start(parentExtractSize, parentExtract, paused);
+        }
+        catch (...)
+        {
+            // Make sure we restore these even if there is an exception thrown during start
+            input = saveInput;
+            junction.setown(saveJunction.getClear());
+            throw;
+        }
         input = saveInput;
         junction.setown(saveJunction.getClear());
     }
@@ -2088,7 +2112,16 @@ public:
     {
         IFinalRoxieInput *save = input;
         input = NULL;   // Make sure parent does not start the chain yet - but we do want to do the dependencies (because the decision about whether to start may depend on them)
-        CRoxieServerActivity::start(parentExtractSize, parentExtract, paused);
+        try
+        {
+            CRoxieServerActivity::start(parentExtractSize, parentExtract, paused);
+        }
+        catch (...)
+        {
+            // Make sure we restore these even if there is an exception thrown during start
+            input = save;
+            throw;
+        }
         input = save;
     }
 
@@ -2163,7 +2196,8 @@ protected:
     IEngineRowStream *inputStream;
     IRecordPullerCallback *helper;
     Semaphore started;                      // MORE: GH->RKC I'm pretty sure this can be deleted, since handled by RestartableThread
-    bool groupAtOnce, eof, eog;
+    bool groupAtOnce, eog;
+    std::atomic<bool> eof;
     CriticalSection crit;
 
 public:
@@ -2256,6 +2290,7 @@ public:
             CriticalBlock c(crit); // stop is called on our consumer's thread. We need to take care calling stop for our input to make sure it is not in mid-nextRow etc etc.
             if (inputStream)
                 inputStream->stop();
+            eof = true;
         }
         RestartableThread::join();
     }
@@ -2297,12 +2332,13 @@ public:
     {
         if (eof)
             return false;
-        while (preload)
+        while (preload && !eof)
         {
-            const void * row;
+            const void * row = nullptr;
             {
                 CriticalBlock c(crit); // See comments in stop for why this is needed
-                row = inputStream->nextRow();
+                if (!eof)
+                    row = inputStream->nextRow();
             }
             if (row)
             {
@@ -2331,10 +2367,11 @@ public:
         unsigned rowsDone = 0;
         while (preload && !eof)
         {
-            const void *row;
+            const void *row = nullptr;
             {
                 CriticalBlock c(crit);
-                row = inputStream->nextRow();
+                if (!eof)
+                    row = inputStream->nextRow();
             }
             if (row)
             {
@@ -2730,6 +2767,15 @@ public:
             return NULL;
     }
 
+    virtual void stop() override
+    {
+        for (unsigned idx = 0; idx < numStreams; idx++)
+        {
+            streamArray[idx]->stop();
+        }
+        CRoxieServerActivity::stop();
+    }
+
     virtual void reset()
     {
         for (unsigned i = 0; i < numInputs; i++)
@@ -2947,10 +2993,6 @@ public:
     {
         return result != NULL;
     }
-    virtual bool hasContinuation() const 
-    {
-        return continuation != NULL;
-    }
     virtual void setDelayed(bool _delayed)
     {
         delayed = _delayed;
@@ -3064,189 +3106,6 @@ public:
         _stopAfter = stopAfter;
         return true;
     }
-};
-
-class CRoxieServerSideCache : implements IRoxieServerSideCache, implements ILRUChain
-{
-protected:
-    unsigned cacheTableSize;
-    unsigned cacheTableSpace;
-    IRoxieServerQueryPacket **cacheTable;
-    mutable ILRUChain *prev;
-    mutable ILRUChain *next;
-    mutable CriticalSection crit;
-
-    virtual ILRUChain *queryPrev() const { return prev; }
-    virtual ILRUChain *queryNext() const { return next; }
-    virtual void setPrev(ILRUChain *p) { prev = p; }
-    virtual void setNext(ILRUChain *n) { next = n; }
-    virtual void unchain()
-    {
-        prev->setNext(next);
-        next->setPrev(prev);
-        next = NULL;
-        prev = NULL;
-    }
-
-    void moveToHead(IRoxieServerQueryPacket *mru)
-    {
-        mru->unchain();
-
-        mru->setNext(next);
-        next->setPrev(mru);
-        mru->setPrev(this);
-        next = mru;
-    }
-
-    IRoxieServerQueryPacket *removeLRU()
-    {
-        if (next==this)
-            assertex(next != this);
-        IRoxieServerQueryPacket *goer = (IRoxieServerQueryPacket *) next;
-        goer->unchain(); // NOTE - this will modify the value of next
-        return goer;
-    }
-
-    void removeEntry(IRoxieServerQueryPacket *goer)
-    {
-        unsigned v = goer->queryHash() % cacheTableSize;
-        for (;;)
-        {
-            IRoxieServerQueryPacket *found = cacheTable[v];
-            assertex(found);
-            if (found == goer)
-            {
-                cacheTable[v] = NULL;
-                unsigned vn = v;
-                for (;;)
-                {
-                    vn++;
-                    if (vn==cacheTableSize) vn = 0;
-                    IRoxieServerQueryPacket *found2 = cacheTable[vn];
-                    if (!found2)
-                        break;
-                    unsigned vm = found2->queryHash() % cacheTableSize;
-                    if (((vn+cacheTableSize-vm) % cacheTableSize)>=((vn+cacheTableSize-v) % cacheTableSize))  // diff(vn,vm)>=diff(vn,v)
-                    {
-                        cacheTable[v] = found2;
-                        v = vn;
-                        cacheTable[v] = NULL;
-                    }
-                }
-                cacheTableSpace++;
-                break;
-            }
-            v++;
-            if (v==cacheTableSize)
-                v = 0;
-        }
-        goer->Release();
-    }
-
-public:
-    CRoxieServerSideCache(unsigned _cacheSize)
-    {
-        cacheTableSize = (_cacheSize*4)/3;
-        cacheTable = new IRoxieServerQueryPacket *[cacheTableSize];
-        memset(cacheTable, 0, cacheTableSize * sizeof(IRoxieServerQueryPacket *));
-        cacheTableSpace = _cacheSize;
-        prev = this;
-        next = this;
-    }
-    ~CRoxieServerSideCache()
-    {
-        for (unsigned i = 0; i < cacheTableSize; i++)
-        {
-            ::Release(cacheTable[i]);
-        }
-        delete [] cacheTable;
-    }
-
-    virtual IRoxieServerQueryPacket *findCachedResult(const IRoxieContextLogger &logctx, IRoxieQueryPacket *p) const
-    {
-        unsigned hash = p->hash();
-        unsigned et = hash % cacheTableSize;
-        if (traceServerSideCache)
-        {
-            StringBuffer s; 
-            logctx.CTXLOG("CRoxieServerSideCache::findCachedResult hash %x slot %d %s", hash, et, p->queryHeader().toString(s).str());
-        }
-        CriticalBlock b(crit);
-        for (;;)
-        {
-            IRoxieServerQueryPacket *found = cacheTable[et];
-            if (!found)
-                return NULL;
-            if (found->queryHash() == hash && found->queryPacket()->cacheMatch(p))
-            {
-                const_cast<CRoxieServerSideCache *>(this)->moveToHead(found);
-                if (traceServerSideCache)
-                    logctx.CTXLOG("CRoxieServerSideCache::findCachedResult cache hit");
-                logctx.noteStatistic(StNumServerCacheHits, 1);
-                return NULL;
-                // Because IMessageResult cannot be replayed, this scheme is flawed. I'm leaving the code here just as a stats gatherer to see how useful it would have been....
-                //IRoxieServerQueryPacket *ret = new CRoxieServerQueryPacket(p);
-                //ret->setResult(found->getResult());
-                //return ret;
-            }
-            et++;
-            if (et == cacheTableSize)
-                et = 0;
-        }
-    }
-
-    virtual void noteCachedResult(IRoxieServerQueryPacket *out, IMessageResult *in)
-    {
-        if (true) //!in->getLength()) // MORE - separate caches for hits and nohits
-        {
-            unsigned hash = out->queryPacket()->hash();
-            out->setHash(hash);
-            unsigned et = hash % cacheTableSize;
-            if (traceServerSideCache)
-            {
-                StringBuffer s; 
-                DBGLOG("CRoxieServerSideCache::noteCachedResult hash %x slot %d %s", hash, et, out->queryPacket()->queryHeader().toString(s).str());
-            }
-            CriticalBlock b(crit);
-            for (;;)
-            {
-                IRoxieServerQueryPacket *found = cacheTable[et];
-                if (!found)
-                {
-                    if (cacheTableSpace)
-                    {
-                        out->setResult(LINK(in)); 
-                        cacheTable[et] = LINK(out);
-                        cacheTableSpace--;
-                        moveToHead(out);
-                        break;
-                    }
-                    else
-                    {
-                        IRoxieServerQueryPacket *goer = removeLRU();
-                        removeEntry(goer);
-                        et = hash % cacheTableSize;
-                        continue;
-                    }
-                }
-                else if (found->queryHash()==hash && found->queryPacket()->cacheMatch(out->queryPacket()))
-                {
-                    moveToHead(found);
-                    return; // already in the cache. Because we don't cache until we have result, this can happen where 
-                    // multiple copies of a agent query are in-flight at once.
-                }
-                et++;
-                if (et == cacheTableSize)
-                    et = 0;
-            }
-        }
-        // MORE - do we need to worry about the attachment between the MessageUnpacker and the current row manager. May all fall out ok...
-        // Can I easily spot a null result? Do I want to cache null results separately? only?
-    }
-
-    // Note that this caching mechanism (unlike the old keyed-join specific one) does not common up cases where multiple 
-    // identical queries are in-flight at the same time. But if we can make it persistent between queries that will
-    // more than make up for it
 };
 
 class CRowArrayMessageUnpackCursor : implements IMessageUnpackCursor, public CInterface
@@ -3778,19 +3637,8 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
 
     };
 
-    IRoxieServerQueryPacket *createRoxieServerQueryPacket(IRoxieQueryPacket *p, bool &cached)
+    IRoxieServerQueryPacket *createRoxieServerQueryPacket(IRoxieQueryPacket *p)
     {
-        if (serverSideCache && !debugContext)
-        {
-            IRoxieServerQueryPacket *ret = serverSideCache->findCachedResult(activity.queryLogCtx(), p);
-            if (ret)
-            {
-                p->Release();
-                cached = true;
-                return ret;
-            }
-        }
-        cached = false;
         return new CRoxieServerQueryPacket(p);
     }
 
@@ -4048,7 +3896,6 @@ private:
     IHThorArg *colocalArg;
     IArrayOf<IRoxieServerQueryPacket> pending;
     CriticalSection pendingCrit;
-    IRoxieServerSideCache *serverSideCache;
     unsigned sentSequence;
     Owned<IOutputRowDeserializer> deserializer;
     Owned<IEngineRowAllocator> rowAllocator;
@@ -4211,7 +4058,6 @@ public:
         sentSequence = 0;
         resendSequence = 0;
         totalCycles = 0;
-        serverSideCache = activity.queryServerSideCache();
         bufferStream.setown(createMemoryBufferSerialStream(tempRowBuffer));
         rowSource.setStream(bufferStream);
         timeActivities = defaultTimeActivities;
@@ -4278,8 +4124,7 @@ public:
 
             if (p->queryHeader().channel)
             {
-                bool cached = false;
-                IRoxieServerQueryPacket *rsqp = createRoxieServerQueryPacket(p, cached);
+                IRoxieServerQueryPacket *rsqp = createRoxieServerQueryPacket(p);
                 if (deferredStart)
                     rsqp->setDelayed(true);
                 rsqp->setSequence(sentSequence++);
@@ -4289,8 +4134,7 @@ public:
                 }
                 if (!deferredStart)
                 {
-                    if (!cached)
-                        ROQ->sendPacket(p, activity.queryLogCtx());
+                    ROQ->sendPacket(p, activity.queryLogCtx());
                     sentsome.signal();
                 }
             }
@@ -4299,14 +4143,10 @@ public:
                 // Care is needed here. If I send the packet before I add to the pending there is a danger that I'll get results that I discard 
                 // Need to add first, then send
                 unsigned i;
-                bool allCached = true;
                 for (i = 1; i <= numChannels; i++)
                 {
                     IRoxieQueryPacket *q = p->clonePacket(i);
-                    bool thisChannelCached;
-                    IRoxieServerQueryPacket *rsqp = createRoxieServerQueryPacket(q, thisChannelCached);
-                    if (!thisChannelCached)
-                        allCached = false;
+                    IRoxieServerQueryPacket *rsqp = createRoxieServerQueryPacket(q);
                     rsqp->setSequence(sentSequence++);
                     if (deferredStart)
                     {
@@ -4319,7 +4159,7 @@ public:
                     if (!deferredStart)
                             sentsome.signal();
                 }
-                if (!allCached && !deferredStart)
+                if (!deferredStart)
                     ROQ->sendPacket(p, activity.queryLogCtx());
                 buffers[0]->signal(); // since replies won't come back on that channel...
                 p->Release();
@@ -4723,18 +4563,24 @@ public:
     {
         mu.clear();
         unsigned ctxTraceLevel = activity.queryLogCtx().queryTraceLevel();
+        unsigned timeout = remoteId.isSLAPriority() ? slaTimeout : (remoteId.isHighPriority() ? highTimeout : lowTimeout);
+        unsigned checkInterval = activity.queryContext()->checkInterval();
+        if (checkInterval > timeout)
+            checkInterval = timeout;
+        unsigned lastActivity = msTick();
         for (;;)
         {
             checkDelayed();
-            unsigned timeout = remoteId.isSLAPriority() ? slaTimeout : (remoteId.isHighPriority() ? highTimeout : lowTimeout);
             activity.queryContext()->checkAbort();
             bool anyActivity;
             if (ctxTraceLevel > 5)
-                activity.queryLogCtx().CTXLOG("Calling getNextUnpacker(%d)", timeout);
-            mr.setown(mc->getNextResult(timeout, anyActivity));
+                activity.queryLogCtx().CTXLOG("Calling getNextUnpacker(%d)", checkInterval);
+            mr.setown(mc->getNextResult(checkInterval, anyActivity));
             if (ctxTraceLevel > 6)
-                activity.queryLogCtx().CTXLOG("Called getNextUnpacker(%d), activity=%d", timeout, anyActivity);
+                activity.queryLogCtx().CTXLOG("Called getNextUnpacker(%d), activity=%d", checkInterval, anyActivity);
             activity.queryContext()->checkAbort();
+            if (anyActivity)
+                lastActivity = msTick();
             if (mr)
             {
                 unsigned roxieHeaderLen;
@@ -4986,8 +4832,8 @@ public:
 
                             MemoryBuffer nextQuery;
                             nextQuery.append(sizeof(RoxiePacketHeader), &header);
-                            nextQuery.append(metaLen, metaData);
                             nextQuery.append(op->getTraceLength(), op->queryTraceInfo());
+                            nextQuery.append(metaLen, metaData);
                             nextQuery.append(op->getContextLength(), op->queryContextData());
                             if (resendSequence == CONTINUESEQUENCE_MAX)
                             {
@@ -5011,12 +4857,6 @@ public:
                                 ROQ->sendPacket(resend, activity.queryLogCtx());
                                 sentsome.signal();
                             }
-                            // Note that we don't attempt to cache results that have continuation records - too tricky !
-                        }
-                        else
-                        {
-                            if (serverSideCache)
-                                serverSideCache->noteCachedResult(original, mr);
                         }
                         unsigned channel = header.channel;
                         {
@@ -5032,7 +4872,7 @@ public:
             }
             else
             {
-                if (!anyActivity && !localAgent)
+                if (!anyActivity && !localAgent && lastActivity-msTick() >= timeout)
                 {
                     activity.queryLogCtx().CTXLOG("Input has stalled - retry required?");
                     retryPending();
@@ -5294,6 +5134,17 @@ public:
     CRoxieServerNullSinkActivity(IRoxieAgentContext *_ctx, const IRoxieServerActivityFactory *_factory, IProbeManager *_probeManager)
         : CRoxieServerInternalSinkActivity(_ctx, _factory, _probeManager, 0)
     {
+    }
+
+    //override execute() to ensure that start is nevr called on any input activities.
+    virtual void execute(unsigned parentExtractSize, const byte * parentExtract) override
+    {
+        CriticalBlock b(ecrit);
+        if (!executed)
+        {
+            executed = true;
+            stop();
+        }
     }
 
     virtual void onExecute() override
@@ -9031,24 +8882,12 @@ public:
     } *adaptors;
     bool *used;
 
-    unsigned nextFreeOutput()
-    {
-        unsigned i = numOutputs;
-        while (i)
-        {
-            i--;
-            if (!used[i])
-                return i;
-        }
-        throwUnexpected();
-    }
-
     unsigned minIndex(unsigned exceptOid)
     {
         // MORE - yukky code (and slow). Could keep them heapsorted by idx or something
         // this is trying to determine whether any of the adaptors will in the future read a given record
         unsigned minIdx = (unsigned) -1;
-        for (unsigned i = 0; i < numOutputs; i++)
+        for (unsigned i = 0; i < numOriginalOutputs; i++)
         {
             if (i != exceptOid && used[i] && adaptors[i].idx < minIdx)
                 minIdx = adaptors[i].idx;
@@ -9058,7 +8897,7 @@ public:
 
     inline bool isLastTailReader(unsigned exceptOid)
     {
-        for (unsigned i = 0; i < numOutputs; i++)
+        for (unsigned i = 0; i < numOriginalOutputs; i++)
         {
             if (i != exceptOid && adaptors[i].idx == tailIdx && used[i])
                 return false;
@@ -9298,8 +9137,6 @@ public:
 
     virtual IFinalRoxieInput *queryOutput(unsigned idx)
     {
-        if (idx==(unsigned)-1)
-            idx = nextFreeOutput(); // MORE - what is this used for?
         assertex(idx < numOriginalOutputs);
         assertex(!used[idx]);
         used[idx] = true;
@@ -9706,10 +9543,7 @@ private:
         catch (IException *e)
         {
             // NB: the original exception is probably a IPipeProcessException, but because InterruptableSemaphore rethrows it, we must catch it as an IException
-            if (QUERYINTERFACE(e, IPipeProcessException))
-                pipeException.setown(e);
-            else
-                throw;
+            pipeException.setown(e);
         }
         verifyPipe();
         if (pipeException) // NB: verifyPipe may throw error based on pipe prog. output 1st.
@@ -9819,7 +9653,7 @@ public:
 
     virtual void onExecute()
     {
-        Owned<IPipeProcessException> pipeException;
+        Owned<IException> pipeException;
         try
         {
             for (;;)
@@ -9840,7 +9674,7 @@ public:
             if (!recreate)
                 closePipe();
         }
-        catch (IPipeProcessException *e)
+        catch (IException *e)
         {
             pipeException.setown(e);
         }
@@ -11738,7 +11572,7 @@ protected:
         }
         else
         {
-            if (isContainerized())
+            if (isContainerized() && fileNameServiceDali)
             {
                 StringBuffer nasGroupName;
                 queryNamedGroupStore().getNasGroupName(nasGroupName, 1);
@@ -11845,7 +11679,7 @@ public:
 
     virtual void reset()
     {
-        CRoxieServerActivity::reset();
+        CRoxieServerInternalSinkActivity::reset();
         diskout.clear();
         outSeq.clear();
         writer.clear();
@@ -12228,7 +12062,7 @@ class CRoxieServerIndexWriteActivity : public CRoxieServerInternalSinkActivity, 
 
         if (!clusters.length())
         {
-            if (isContainerized())
+            if (isContainerized() && fileNameServiceDali)
             {
                 StringBuffer nasGroupName;
                 queryNamedGroupStore().getNasGroupName(nasGroupName, 1);
@@ -20741,6 +20575,8 @@ public:
     {
         CRoxieServerActivity::start(parentExtractSize, parentExtract, paused);
         cond = helper.getCondition();
+        if (traceStartStop)
+            DBGLOG("IfActivity::start %d - cond = %d", activityId, (int) cond);
         if (cond)
         {
             if (inputTrue)
@@ -20988,7 +20824,7 @@ public:
     {
     }
 
-    virtual void doExecuteAction(unsigned parentExtractSize, const byte * parentExtract) 
+    virtual void doExecuteAction(unsigned parentExtractSize, const byte * parentExtract) override
     {
         bool cond;
         {
@@ -20997,6 +20833,19 @@ public:
         }
         stopDependencies(parentExtractSize, parentExtract, cond ? 2 : 1);
         executeDependencies(parentExtractSize, parentExtract, cond ? 1 : 2);
+    }
+
+    virtual void stop() override
+    {
+        if (state != STATEstopped)
+        {
+            ForEachItemIn(idx, dependencies)
+            {
+                if (dependencyControlIds.item(idx) != 0)
+                    dependencies.item(idx).stop();
+            }
+        }
+        CRoxieServerActionBaseActivity::stop();
     }
 
 };
@@ -21092,8 +20941,17 @@ public:
     virtual void doExecuteAction(unsigned parentExtractSize, const byte * parentExtract) 
     {
         unsigned numBranches = helper.numBranches();
-        for (unsigned branch=1; branch <= numBranches; branch++)
-            executeDependencies(parentExtractSize, parentExtract, branch);
+        try
+        {
+            for (unsigned branch=1; branch <= numBranches; branch++)
+                executeDependencies(parentExtractSize, parentExtract, branch);
+        }
+        catch (...)
+        {
+            for (unsigned branch=1; branch <= numBranches; branch++)
+                stopDependencies(parentExtractSize, parentExtract, branch);
+            throw;
+        }
     }
 
 };
@@ -21512,7 +21370,7 @@ public:
             }
         }
         size32_t outputLimitBytes = 0;
-        IConstWorkUnit *workunit = serverContext->queryWorkUnit();
+        IConstWorkUnit *workunit = sequence == ResultSequenceInternal ? nullptr : serverContext->queryWorkUnit();
         if (workunit)
         {
             size32_t outputLimit;
@@ -21523,8 +21381,8 @@ public:
                 // In absense of OPT_OUTPUTLIMIT check pre 5.2 legacy name OPT_OUTPUTLIMIT_LEGACY
                 outputLimit = workunit->getDebugValueInt(OPT_OUTPUTLIMIT, workunit->getDebugValueInt(OPT_OUTPUTLIMIT_LEGACY, defaultDaliResultLimit));
             }
-            if (outputLimit>defaultDaliResultOutputMax)
-                throw MakeStringException(0, "Dali result outputs are restricted to a maximum of %d MB, the current limit is %d MB. A huge dali result usually indicates the ECL needs altering.", defaultDaliResultOutputMax, defaultDaliResultLimit);
+            if (outputLimit>daliResultOutputMax)
+                throw MakeStringException(0, "Dali result outputs are restricted to a maximum of %d MB, the current limit is %d MB. A huge dali result usually indicates the ECL needs altering.", daliResultOutputMax, defaultDaliResultLimit);
             assertex(outputLimit<=0x1000); // 32bit limit because MemoryBuffer/CMessageBuffers involved etc.
             outputLimitBytes = outputLimit * 0x100000;
         }
@@ -21630,6 +21488,7 @@ public:
 class CRoxieServerWorkUnitWriteActivityFactory : public CRoxieServerInternalSinkFactory
 {
     bool isReread;
+    bool isUnused = false;
 
 public:
     CRoxieServerWorkUnitWriteActivityFactory(unsigned _id, unsigned _subgraphId, IQueryFactory &_queryFactory, HelperFactory *_helperFactory, ThorActivityKind _kind, IPropertyTree &_graphNode, unsigned _usageCount, bool _isRoot)
@@ -21638,11 +21497,25 @@ public:
         isReread = usageCount > 0;
         Owned<IHThorWorkUnitWriteArg> helper = (IHThorWorkUnitWriteArg *) helperFactory();
         isInternal = (helper->getSequence()==ResultSequenceInternal);
+        isUnused = isInternal && (usageCount == 0);
     }
 
     virtual IRoxieServerActivity *createActivity(IRoxieAgentContext *_ctx, IProbeManager *_probeManager) const
     {
+        if (isUnused && !CRoxieServerInternalSinkFactory::isSink())
+        {
+            if (_ctx->queryTraceLevel() > 2)
+                DBGLOG("Workunit write %u is unused - create null activity", id);
+            //Create a null sink activity that is always executed to ensure that stop() is called on the input.
+            return createRoxieServerNullSinkActivity(_ctx, this, _probeManager);
+        }
+
         return new CRoxieServerWorkUnitWriteActivity(_ctx, this, _probeManager, isReread, usageCount);
+    }
+
+    virtual bool isSink() const
+    {
+        return isUnused || CRoxieServerInternalSinkFactory::isSink();
     }
 
 };
@@ -21755,12 +21628,15 @@ public:
 
     virtual IRoxieServerActivity *createActivity(IRoxieAgentContext *_ctx, IProbeManager *_probeManager) const
     {
-        return new CRoxieServerRemoteResultActivity(_ctx, this, _probeManager, usageCount);
+        if (dependentCount==0 && !CRoxieServerInternalSinkFactory::isSink())
+            return new CRoxieServerNullSinkActivity(_ctx, this, _probeManager);
+        else
+            return new CRoxieServerRemoteResultActivity(_ctx, this, _probeManager, usageCount);
     }
 
     virtual bool isSink() const override
     {
-        return CRoxieServerInternalSinkFactory::isSink() || dependentCount == 0;  // Codegen normally optimizes these away, but if it doesn't we need to treat as a sink rather than a dependency or upstream activities are not stopped properly
+        return CRoxieServerInternalSinkFactory::isSink() || dependentCount == 0;  // Codegen normally optimizes these away, but if it doesn't we need to treat as a (null) sink rather than a dependency or upstream activities are not stopped properly
     }
 
 };
@@ -23030,8 +22906,6 @@ public:
     unsigned maxSeekLookahead;
     Owned<const IResolvedFile> indexfile;
 
-    CRoxieServerSideCache *cache;
-
     CRoxieServerBaseIndexActivityFactory(unsigned _id, unsigned _subgraphId, IQueryFactory &_queryFactory, HelperFactory *_helperFactory, ThorActivityKind _kind, IPropertyTree &_graphNode, const RemoteActivityId &_remoteId)
         : CRoxieServerActivityFactory(_id, _subgraphId, _queryFactory, _helperFactory, _kind, _graphNode), remoteId(_remoteId)
     {
@@ -23064,14 +22938,7 @@ public:
             if (thisBase->numParts()==1 && !thisBase->queryPart(0)->isTopLevelKey() && !_queryFactory.queryOptions().disableLocalOptimizations)
                 isSimple = true;
         }
-        int cacheSize = _graphNode.getPropInt("hint[@name='cachehits']/@value", serverSideCacheSize);
-        cache = cacheSize ? new CRoxieServerSideCache(cacheSize) : NULL;
         maxSeekLookahead = _graphNode.getPropInt("hint[@name='maxseeklookahead']/@value", 0);
-    }
-
-    ~CRoxieServerBaseIndexActivityFactory()
-    {
-        delete cache;
     }
 
     virtual void getXrefInfo(IPropertyTree &reply, const IRoxieContextLogger &logctx) const
@@ -23094,11 +22961,6 @@ public:
     virtual void setInput(unsigned idx, unsigned source, unsigned sourceidx)
     {
         throw MakeStringException(ROXIE_SET_INPUT, "Internal error: setInput() should not be called for indexread activity");
-    }
-
-    virtual IRoxieServerSideCache *queryServerSideCache() const
-    {
-        return cache;
     }
 
     virtual const StatisticsMapping &queryStatsMapping() const
@@ -24799,8 +24661,8 @@ class CRoxieServerIndexNormalizeActivity : public CRoxieServerIndexReadBaseActiv
 
 public:
     CRoxieServerIndexNormalizeActivity(IRoxieAgentContext *_ctx, const CRoxieServerBaseIndexActivityFactory *_factory, IProbeManager *_probeManager, const RemoteActivityId &_remoteId,
-                                       bool _sorted, bool _isLocal)
-        : CRoxieServerIndexReadBaseActivity(_ctx, _factory, _probeManager, _remoteId, _sorted, _isLocal, false),
+                                       bool _sorted, bool _isLocal, bool _maySkip)
+        : CRoxieServerIndexReadBaseActivity(_ctx, _factory, _probeManager, _remoteId, _sorted, _isLocal, _maySkip),
           readHelper((IHThorIndexNormalizeArg &)basehelper)
     {
         limitTransformExtra = &readHelper;
@@ -24897,11 +24759,6 @@ public:
         }
     }
 
-    virtual const void *createLimitFailRow(bool isKeyed)
-    {
-        UNIMPLEMENTED;
-    }
-
 };
 
 class CRoxieServerIndexNormalizeActivityFactory : public CRoxieServerBaseIndexActivityFactory
@@ -24917,7 +24774,7 @@ public:
         if (!variableFileName && (keySet==NULL || keySet->length()==0))
             return new CRoxieServerNullActivity(_ctx, this, _probeManager);
         else
-            return new CRoxieServerIndexNormalizeActivity(_ctx, this, _probeManager, remoteId, sorted, isLocal);
+            return new CRoxieServerIndexNormalizeActivity(_ctx, this, _probeManager, remoteId, sorted, isLocal, maySkip);
     }
 };
 
@@ -26950,9 +26807,59 @@ public:
     virtual void checkForAbort() { checkAbort(); }
 };
 
+class CRoxieServerSoapActionBase : public CRoxieServerSoapActivityBase
+{
+public:
+    CRoxieServerSoapActionBase(IRoxieAgentContext *_ctx, const IRoxieServerActivityFactory *_factory, IProbeManager *_probeManager)
+        : CRoxieServerSoapActivityBase(_ctx, _factory, _probeManager)
+    {
+    }
+
+    virtual void execute(unsigned parentExtractSize, const byte * parentExtract)
+    {
+        CriticalBlock b(ecrit);
+        if (exception)
+            throw(exception.getLink());
+        if (!executed)
+        {
+            try
+            {
+                executed = true;
+                start(parentExtractSize, parentExtract, false);
+                {
+                    ActivityTimer t(activityStats, timeActivities); // unfortunately this is not really best place for seeing in debugger.
+                    onExecute();
+                }
+                stop();
+            }
+            catch (IException *E)
+            {
+                E = makeWrappedException(E);
+                ctx->notifyAbort(E);
+                exception.set(E);
+                abort();
+                throw E;
+            }
+        }
+    }
+
+    virtual void onExecute() = 0;
+
+    virtual void reset() override
+    {
+        executed = false;
+        exception.clear();
+        CRoxieServerSoapActivityBase::reset();
+    }
+
+protected:
+    bool executed = false;
+    Linked<IException> exception;
+    CriticalSection ecrit;
+};
 //---------------------------------------------------------------------------
 
-class CRoxieServerSoapRowCallActivity : public CRoxieServerSoapActivityBase 
+class CRoxieServerSoapRowCallActivity : public CRoxieServerSoapActivityBase
 {
     IHThorSoapCallArg & callHelper;
 
@@ -26974,23 +26881,30 @@ public:
         ActivityTimer t(activityStats, timeActivities);
         if(eof) return NULL;
 
-        if (soaphelper == NULL)
+        try
         {
-            if (factory->getKind()==TAKhttp_rowdataset)
-                soaphelper.setown(createHttpCallHelper(this, rowAllocator, authToken.str(), SCrow, pClientCert, *this, this));
-            else
-                soaphelper.setown(createSoapCallHelper(this, rowAllocator, authToken.str(), SCrow, pClientCert, *this, this));
-            soaphelper->start();
-        }
+            if (soaphelper == NULL)
+            {
+                if (factory->getKind()==TAKhttp_rowdataset)
+                    soaphelper.setown(createHttpCallHelper(this, rowAllocator, authToken.str(), SCrow, pClientCert, *this, this));
+                else
+                    soaphelper.setown(createSoapCallHelper(this, rowAllocator, authToken.str(), SCrow, pClientCert, *this, this));
+                soaphelper->start();
+            }
 
-        OwnedConstRoxieRow ret = soaphelper->getRow();
-        if (!ret)
-        {
-            eof = true;
-            return NULL;
+            OwnedConstRoxieRow ret = soaphelper->getRow();
+            if (!ret)
+            {
+                eof = true;
+                return NULL;
+            }
+            ++processed;
+            return ret.getClear();
         }
-        ++processed;
-        return ret.getClear();
+        catch (IException *E)
+        {
+            throw makeWrappedException(E);
+        }
     }
 };
 
@@ -27020,16 +26934,15 @@ IRoxieServerActivityFactory *createRoxieServerSoapRowCallActivityFactory(unsigne
 
 //---------------------------------------------------------------------------
 
-class CRoxieServerSoapRowActionActivity : public CRoxieServerSoapActivityBase 
+class CRoxieServerSoapRowActionActivity : public CRoxieServerSoapActionBase
 {
 public:
     CRoxieServerSoapRowActionActivity(IRoxieAgentContext *_ctx, const IRoxieServerActivityFactory *_factory, IProbeManager *_probeManager)
-        : CRoxieServerSoapActivityBase(_ctx, _factory, _probeManager)
+        : CRoxieServerSoapActionBase(_ctx, _factory, _probeManager)
     {}
 
-    virtual void execute(unsigned parentExtractSize, const byte * parentExtract)
+    virtual void onExecute() override
     {
-        //MORE: parentExtract not passed to start - although shouldn't be a problem.
         soaphelper.setown(createSoapCallHelper(this, NULL, ctx->queryAuthToken(), SCrow, pClientCert, *this, this));
         soaphelper->start();
         soaphelper->waitUntilDone();
@@ -27110,20 +27023,27 @@ public:
         ActivityTimer t(activityStats, timeActivities);
         if(eof) return NULL;
 
-        if (soaphelper == NULL)
+        try
         {
-            soaphelper.setown(createSoapCallHelper(this, rowAllocator, authToken.str(), SCdataset, pClientCert, *this, this));
-            soaphelper->start();
-        }
+            if (soaphelper == NULL)
+            {
+                soaphelper.setown(createSoapCallHelper(this, rowAllocator, authToken.str(), SCdataset, pClientCert, *this, this));
+                soaphelper->start();
+            }
 
-        OwnedConstRoxieRow ret = soaphelper->getRow();
-        if (!ret)
-        {
-            eof = true;
-            return NULL;
+            OwnedConstRoxieRow ret = soaphelper->getRow();
+            if (!ret)
+            {
+                eof = true;
+                return NULL;
+            }
+            ++processed;
+            return ret.getClear();
         }
-        ++processed;
-        return ret.getClear();
+        catch (IException *E)
+        {
+            throw makeWrappedException(E);
+        }
     }
 };
 
@@ -27153,11 +27073,11 @@ IRoxieServerActivityFactory *createRoxieServerSoapDatasetCallActivityFactory(uns
 
 //---------------------------------------------------------------------------
 
-class CRoxieServerSoapDatasetActionActivity : public CRoxieServerSoapActivityBase 
+class CRoxieServerSoapDatasetActionActivity : public CRoxieServerSoapActionBase
 {
 public:
     CRoxieServerSoapDatasetActionActivity(IRoxieAgentContext *_ctx, const IRoxieServerActivityFactory *_factory, IProbeManager *_probeManager)
-        : CRoxieServerSoapActivityBase(_ctx, _factory, _probeManager)
+        : CRoxieServerSoapActionBase(_ctx, _factory, _probeManager)
     {}
 
     virtual const void *getNextRow()
@@ -27169,34 +27089,15 @@ public:
         return nextrec;
     }
 
-    virtual void execute(unsigned parentExtractSize, const byte * parentExtract)
+    virtual void onExecute() override
     {
-        try
-        {
-            start(parentExtractSize, parentExtract, false);
-            soaphelper.setown(createSoapCallHelper(this, NULL, ctx->queryAuthToken(), SCdataset, pClientCert, *this, this));
-            soaphelper->start();
-            soaphelper->waitUntilDone();
-            IException *e = soaphelper->getError();
-            soaphelper.clear();
-            if (e)
-                throw e;
-            stop();
-        }
-        catch (IException *E)
-        {
-            ctx->notifyAbort(E);
-            abort();
-            throw;
-        }
-        catch(...)
-        {
-            Owned<IException> E = MakeStringException(ROXIE_INTERNAL_ERROR, "Unknown exception caught at %s:%d", sanitizeSourceFile(__FILE__), __LINE__);
-            ctx->notifyAbort(E);
-            abort();
-            throw;
-
-        }
+        soaphelper.setown(createSoapCallHelper(this, NULL, ctx->queryAuthToken(), SCdataset, pClientCert, *this, this));
+        soaphelper->start();
+        soaphelper->waitUntilDone();
+        IException *e = soaphelper->getError();
+        soaphelper.clear();
+        if (e)
+            throw e;
     }
 
     virtual IFinalRoxieInput *queryOutput(unsigned idx)

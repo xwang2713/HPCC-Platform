@@ -3,7 +3,7 @@ define([
     "dojo/_base/lang",
     "src/nlsHPCC",
     "dojo/_base/array",
-    "dojo/store/Memory",
+    "src/Memory",
     "dojo/dom-class",
     "dojo/dom-style",
     "dojo/has",
@@ -17,7 +17,7 @@ define([
 
     "dojox/treemap/TreeMap"
 ],
-    function (declare, lang, nlsHPCCMod, arrayUtil, Memory, domClass, domStyle, has,
+    function (declare, lang, nlsHPCCMod, arrayUtil, MemoryMod, domClass, domStyle, has,
         registry,
         _Widget, ESPWorkunit,
         template) {
@@ -59,7 +59,7 @@ define([
                 }
                 var computedStyle = domStyle.getComputedStyle(elm);
                 elmHeight = parseFloat(computedStyle.getPropertyValue("height"));
-                elmMargin = parseFloat(computedStyle.getPropertyValue('margin-top')) + parseInt(computedStyle.getPropertyValue('margin-bottom'));
+                elmMargin = parseFloat(computedStyle.getPropertyValue("margin-top")) + parseInt(computedStyle.getPropertyValue("margin-bottom"));
                 return elmHeight + elmMargin;
             },
 
@@ -232,10 +232,8 @@ define([
                         }, timers[i]));
                     }
                 }
-                this.store = new Memory({
-                    idProperty: "__hpcc_id",
-                    data: timerData
-                });
+                this.store = new MemoryMod.Memory("__hpcc_id");
+                this.store.setData(timerData);
 
                 var context = this;
                 this.treeMap.set("store", this.store);

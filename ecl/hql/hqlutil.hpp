@@ -45,6 +45,7 @@ extern HQL_API void gatherHints(HqlExprCopyArray & target, IHqlExpression * expr
 extern HQL_API IHqlExpression * queryHint(IHqlExpression * expr, IAtom * name);
 extern HQL_API IHqlExpression * queryHintChild(IHqlExpression * expr, IAtom * name, unsigned idx);
 extern HQL_API void unwindHintAttrs(HqlExprArray & args, IHqlExpression * expr);
+extern HQL_API bool getHintBool(IHqlExpression * expr, IAtom * name, bool dft);
 
 extern HQL_API IHqlExpression * replaceChildDataset(IHqlExpression * expr, IHqlExpression * newChild, unsigned whichChild);
 extern HQL_API IHqlExpression * insertChildDataset(IHqlExpression * expr, IHqlExpression * newChild, unsigned whichChild);
@@ -250,30 +251,6 @@ extern HQL_API bool isProjectableCall(IHqlExpression *expr);
 extern HQL_API IHqlExpression * createTransformForField(IHqlExpression * field, IHqlExpression * value);
 extern HQL_API IHqlExpression * convertScalarToRow(IHqlExpression * value, ITypeInfo * fieldType);
 extern HQL_API bool splitResultValue(SharedHqlExpr & dataset, SharedHqlExpr & attribute, IHqlExpression * value);
-
-/**
- * Check whether GPG signed file is valid.
- *
- * @param fileSize      Size of file contents
- * @param fileContents  File contents
- *
- * @return             _signed_ attribute containing signature
- *
- * Will throw exception if signature cannot be verified.
- */
-
-extern HQL_API IHqlExpression * checkSignature(unsigned fileSize, const char *fileContents);
-
-/**
- * Strip GPG signature from file
- *
- * @param fileContents  File contents
- * @param out           Buffer for returned value
- *
- * @return              Reference to out
- */
-
-extern HQL_API StringBuffer &stripSignature(StringBuffer &out, const char *fileContents);
 
 //Is 'expr' really dependent on a parameter - expr->isFullyBound() can give false negatives.
 extern HQL_API bool isDependentOnParameter(IHqlExpression * expr);

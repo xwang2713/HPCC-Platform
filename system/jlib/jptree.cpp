@@ -217,6 +217,11 @@ public:
             elems.append(iter.get());
         elems.sort(compare);
     }
+    CPTArrayIterator(IArrayOf<IPropertyTree> & ownedElems, TreeCompareFunc compare) : ArrayIIteratorOf<IArrayOf<IPropertyTree>, IPropertyTree, IPropertyTreeIterator>(elems)
+    {
+        elems.swapWith(ownedElems);
+        elems.sort(compare);
+    }
 };
 IPropertyTreeIterator * createSortedIterator(IPropertyTreeIterator & iter)
 {
@@ -226,6 +231,10 @@ IPropertyTreeIterator * createSortedIterator(IPropertyTreeIterator & iter, TreeC
 {
     return new CPTArrayIterator(iter, compare);
 }
+IPropertyTreeIterator * createSortedIterator(IArrayOf<IPropertyTree> & ownedElems, TreeCompareFunc compare)
+{
+    return new CPTArrayIterator(ownedElems, compare);
+}
 //////////////////
 
 unsigned ChildMap::getHashFromElement(const void *e) const
@@ -234,7 +243,7 @@ unsigned ChildMap::getHashFromElement(const void *e) const
     return elem.queryHash();
 }
 
-unsigned ChildMap::numChildren()
+unsigned ChildMap::numChildren() const
 {
     SuperHashIteratorOf<IPropertyTree> iter(*this);
     if (!iter.first()) return 0;
@@ -1463,8 +1472,10 @@ aindex_t PTree::getChildMatchPos(const char *xpath)
     if (!childIter->first())
         return (aindex_t)-1;
     IPropertyTree &childMatch = childIter->query();
+#ifdef _DEBUG
     if (childIter->next())
         AMBIGUOUS_PATH("addPropX", xpath);
+#endif
 
     if (value)
         if (value->isArray())
@@ -1501,7 +1512,9 @@ void PTree::resolveParentChild(const char *xpath, IPropertyTree *&parent, IPrope
         if (this != &pathIter->query())
         {
             IPropertyTree *currentPath = NULL;
+#ifdef _DEBUG
             bool multiplePaths = false;
+#endif
             bool multipleChildMatches = false;
             for (;;)
             {
@@ -1511,21 +1524,30 @@ void PTree::resolveParentChild(const char *xpath, IPropertyTree *&parent, IPrope
                 if (childIter->first())
                 {
                     child = &childIter->query();
+#ifdef _DEBUG
                     if (parent)
                         AMBIGUOUS_PATH("resolveParentChild", xpath);
+#endif
                     if (!multipleChildMatches && childIter->next())
                         multipleChildMatches = true;
 
                     parent = currentPath;
                 }
                 if (pathIter->next())
+                {
+#ifdef _DEBUG
                     multiplePaths = true;
-                else break;
+#endif
+                }
+                else
+                    break;
             }
             if (!parent)
             {
+#ifdef _DEBUG
                 if (multiplePaths) // i.e. no unique path to child found and multiple parent paths
                     AMBIGUOUS_PATH("resolveParentChild", xpath);
+#endif
                 parent = currentPath;
             }
             if (multipleChildMatches)
@@ -1832,8 +1854,10 @@ bool PTree::renameProp(const char *xpath, const char *newName)
             if (!iter->first())
                 return false;
             IPropertyTree &branch = iter->query();
+#ifdef _DEBUG
             if (iter->next())
                 AMBIGUOUS_PATH("renameProp", xpath);
+#endif
             return branch.renameProp(prop, newName);
         }
         else
@@ -1959,8 +1983,11 @@ IPropertyTree *PTree::queryPropTree(const char *xpath) const
     if (iter->first())
     {
         element = &iter->query();
+#ifdef _DEBUG
+        //The following call can double the cost of finding a match from an IPropertyTree
         if (iter->next())
             AMBIGUOUS_PATH("getProp",xpath);
+#endif
     }
     return element;
 }
@@ -2041,8 +2068,10 @@ bool PTree::isArray(const char *xpath) const
                 if (!iter->first())
                     return false;
                 IPropertyTree &branch = iter->query();
+#ifdef _DEBUG
                 if (iter->next())
                     AMBIGUOUS_PATH("isArray", xpath);
+#endif
                 return branch.isArray(prop);
             }
             else
@@ -2706,13 +2735,13 @@ void PTree::localizeElements(const char *xpath, bool allTail)
     // null action for local ptree
 }
 
-unsigned PTree::numChildren()
+unsigned PTree::numChildren() const
 {
     if (!checkChildren()) return 0;
     return children->numChildren();
 }
 
-unsigned PTree::getCount(const char *xpath)
+unsigned PTree::getCount(const char *xpath) const
 {
     unsigned c=0;
     Owned<IPropertyTreeIterator> iter = getElements(xpath);
@@ -3132,6 +3161,7 @@ void PTree::addLocal(size32_t l, const void *data, bool _binary, int pos)
         IPropertyTree *element1 = detach();
         array = new CPTArray();
         addingNewElement(*element1, ANE_APPEND);
+        static_cast<PTree *>(element1)->setOwner(array);
         array->addElement(element1);
         value = array;
     }
@@ -3857,7 +3887,7 @@ bool CAtomPTree::removeAttribute(const char *key)
 ///////////////////
 
 
-bool isEmptyPTree(IPropertyTree *t)
+bool isEmptyPTree(const IPropertyTree *t)
 {
     if (!t)
         return true;
@@ -4273,12 +4303,15 @@ void mergePTree(IPropertyTree *target, IPropertyTree *toMerge)
     }
 }
 
-void _synchronizePTree(IPropertyTree *target, IPropertyTree *source, bool removeTargetsNotInSource)
+void _synchronizePTree(IPropertyTree *target, const IPropertyTree *source, bool removeTargetsNotInSource)
 {
     Owned<IAttributeIterator> aiter = target->getAttributes();
     StringArray targetAttrs;
-    ForEach (*aiter)
-        targetAttrs.append(aiter->queryName());
+    if (removeTargetsNotInSource)
+    {
+        ForEach (*aiter)
+            targetAttrs.append(aiter->queryName());
+    }
 
     aiter.setown(source->getAttributes());
     ForEach (*aiter)
@@ -4298,7 +4331,8 @@ void _synchronizePTree(IPropertyTree *target, IPropertyTree *source, bool remove
             else if (NULL == tValue ||0 != strcmp(sValue, tValue))
                 target->setProp(attr, sValue);
 
-            targetAttrs.zap(attr);
+            if (removeTargetsNotInSource)
+                targetAttrs.zap(attr);
         }
     }
 
@@ -4409,7 +4443,7 @@ void _synchronizePTree(IPropertyTree *target, IPropertyTree *source, bool remove
  * presevers ordering of matching elements.
  * If removeTargetsNotInSource = true (default) elements in the target not present in the source will be removed
  */
-void synchronizePTree(IPropertyTree *target, IPropertyTree *source, bool removeTargetsNotInSource, bool rootsMustMatch)
+void synchronizePTree(IPropertyTree *target, const IPropertyTree *source, bool removeTargetsNotInSource, bool rootsMustMatch)
 {
     if (rootsMustMatch)
     {
@@ -4514,7 +4548,7 @@ public:
     CommonReaderBase(ISimpleReadStream &_stream, IPTreeNotifyEvent &_iEvent, PTreeReaderOptions _readerOptions, size32_t _bufSize=0) :
         bufSize(_bufSize), readerOptions(_readerOptions), iEvent(&_iEvent)
     {
-        if (!bufSize) bufSize = 0x8000;
+        if (!bufSize) bufSize = 0x20000;
         buf = new byte[bufSize];
         bufRemaining = 0;
         curOffset = 0;
@@ -6956,7 +6990,7 @@ class COrderedPTree : public BASE_PTREE
         COrderedChildMap<BASECHILDMAP>() : BASECHILDMAP() { }
         ~COrderedChildMap<BASECHILDMAP>() { SELF::kill(); }
 
-        virtual unsigned numChildren() override { return order.ordinality(); }
+        virtual unsigned numChildren() const override { return order.ordinality(); }
         virtual IPropertyTreeIterator *getIterator(bool sort) override
         {
             class CPTArrayIterator : public ArrayIIteratorOf<IArrayOf<IPropertyTree>, IPropertyTree, IPropertyTreeIterator>
@@ -7283,35 +7317,34 @@ public:
     {
         offset_t startOffset = curOffset;
         StringBuffer value;
-        if (readValue(value)==elementTypeNull)
-            return;
-
-        if ('@'==*name)
+        if (readValue(value)!=elementTypeNull)
         {
-            if (!skipAttributes)
-                iEvent->newAttribute(name, value.str());
-            return;
-        }
-        else if ('#'==*name)
-        {
-            dbgassertex(retValue && isValueBinary);
-            *isValueBinary = false;
-            if (0 == strncmp(name+1, "value", 5)) // this is a special IPT JSON prop name, representing a 'complex' value
+            if ('@'==*name)
             {
-                if ('\0' == *(name+6)) // #value
+                if (!skipAttributes)
+                    iEvent->newAttribute(name, value.str());
+                return;
+            }
+            else if ('#'==*name)
+            {
+                dbgassertex(retValue && isValueBinary);
+                *isValueBinary = false;
+                if (0 == strncmp(name+1, "value", 5)) // this is a special IPT JSON prop name, representing a 'complex' value
                 {
-                    retValue->swapWith(value);
-                    return;
-                }
-                else if (streq(name+6, "bin")) // #valuebin
-                {
-                    *isValueBinary = true;
-                    JBASE64_Decode(value.str(), *retValue);
-                    return;
+                    if ('\0' == *(name+6)) // #value
+                    {
+                        retValue->swapWith(value);
+                        return;
+                    }
+                    else if (streq(name+6, "bin")) // #valuebin
+                    {
+                        *isValueBinary = true;
+                        JBASE64_Decode(value.str(), *retValue);
+                        return;
+                    }
                 }
             }
         }
-
         iEvent->beginNode(name, false, startOffset);
         iEvent->beginNodeContent(name);
         iEvent->endNode(name, value.length(), value.str(), false, curOffset);
@@ -8244,11 +8277,14 @@ static IPropertyTree *ensureMergeConfigTarget(IPropertyTree &target, const char 
     return match;
 }
 
-void mergeConfiguration(IPropertyTree & target, IPropertyTree & source, const char *altNameAttribute)
+void mergeConfiguration(IPropertyTree & target, const IPropertyTree & source, const char *altNameAttribute, bool overwriteAttr)
 {
     Owned<IAttributeIterator> aiter = source.getAttributes();
     ForEach(*aiter)
-        target.addProp(aiter->queryName(), aiter->queryValue());
+    {
+        if (overwriteAttr || !target.hasProp(aiter->queryName()))
+            target.addProp(aiter->queryName(), aiter->queryValue());
+    }
 
     StringAttr seqname;
     Owned<IPropertyTreeIterator> iter = source.getElements("*");
@@ -8273,12 +8309,11 @@ void mergeConfiguration(IPropertyTree & target, IPropertyTree & source, const ch
             target.removeProp(tag);
 
         IPropertyTree * match = ensureMergeConfigTarget(target, tag, altname ? altNameAttribute : "@name", name, sequence);
-        mergeConfiguration(*match, child, altNameAttribute);
+        mergeConfiguration(*match, child, altNameAttribute, overwriteAttr);
     }
 
     const char * sourceValue = source.queryProp("");
-    if (sourceValue)
-        target.setProp("", sourceValue);
+    target.setProp("", sourceValue);
 }
 
 /*
@@ -8526,20 +8561,26 @@ jlib_decl IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, con
         {
             outputConfig = true;
         }
-#ifdef _DEBUG
         else
         {
-            const char *matchHold = extractOption("--hold", cur);
-            if (matchHold)
+            matchConfig = extractOption("--componentTag", cur);
+            if (matchConfig)
+                componentTag = matchConfig;
+#ifdef _DEBUG
+            else
             {
-                if (strToBool(matchHold))
+                const char *matchHold = extractOption("--hold", cur);
+                if (matchHold)
                 {
-                    held = true;
-                    holdLoop();
+                    if (strToBool(matchHold))
+                    {
+                        held = true;
+                        holdLoop();
+                    }
                 }
             }
-        }
 #endif
+        }
     }
 
     Owned<IPropertyTree> delta;
@@ -8913,7 +8954,7 @@ static int yaml_write_iiostream(void *data, unsigned char *buffer, size_t size)
     IIOStream *out = (IIOStream *) data;
     out->write(size, (void *)buffer);
     out->flush();
-    return 0;
+    return 1;
 }
 
 class YAMLEmitter

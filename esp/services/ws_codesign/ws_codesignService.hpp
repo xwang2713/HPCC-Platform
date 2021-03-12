@@ -24,7 +24,6 @@ class Cws_codesignEx : public Cws_codesign
 {
 private:
     Owned<IPropertyTree> m_serviceCfg;
-    void clearPassphrase(const char* key);
 public:
     IMPLEMENT_IINTERFACE
 
@@ -33,6 +32,7 @@ public:
     virtual void init(IPropertyTree *cfg, const char *process, const char *service);
     virtual bool onSign(IEspContext &context, IEspSignRequest &req, IEspSignResponse &resp);
     virtual bool onListUserIDs(IEspContext &context, IEspListUserIDsRequest &req, IEspListUserIDsResponse &resp);
+    virtual bool onVerify(IEspContext &context, IEspVerifyRequest &req, IEspVerifyResponse &resp);
 };
 
 #endif // _WS_CODESIGNSERVICE_HPP_

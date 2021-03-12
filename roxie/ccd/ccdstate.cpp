@@ -1854,8 +1854,6 @@ private:
 
 class CRoxiePackageSetManager : implements IRoxieQueryPackageManagerSet, implements ISafeSDSSubscription, public CInterface
 {
-    Owned<IDaliPackageWatcher> pSetsNotifier;
-    Owned<IDaliPackageWatcher> pMapsNotifier;
 public:
     IMPLEMENT_IINTERFACE;
     CRoxiePackageSetManager(const IQueryDll *_standAloneDll) :
@@ -1876,6 +1874,10 @@ public:
     {
         autoReloadThread.stop();
         autoReloadThread.join();
+        if (pSetsNotifier)
+            daliHelper->releaseSubscription(pSetsNotifier);
+        if (pMapsNotifier)
+            daliHelper->releaseSubscription(pMapsNotifier);
     }
 
     virtual ISafeSDSSubscription *linkIfAlive() override { return isAliveAndLink() ? this : nullptr; }
@@ -1959,6 +1961,8 @@ private:
     Owned<const IQueryDll> standAloneDll;
     Owned<CRoxieDebugSessionManager> debugSessionManager;
     Owned<IRoxieDaliHelper> daliHelper;
+    Owned<IDaliPackageWatcher> pSetsNotifier;
+    Owned<IDaliPackageWatcher> pMapsNotifier;
     mutable ReadWriteLock packageCrit;
     InterruptableSemaphore controlSem;
     Owned<CRoxiePackageSetWatcher> allQueryPackages;
@@ -2739,12 +2743,16 @@ private:
             }
             else if (stricmp(queryName, "control:systemMonitor")==0)
             {
+#ifndef _CONTAINERIZED
                 unsigned interval = control->getPropInt("@interval", 60000);
                 bool enable = control->getPropBool("@enable", true);
                 if (enable)
                     startPerformanceMonitor(interval, PerfMonStandard, perfMonHook);
                 else
                     stopPerformanceMonitor();
+#else
+                UNIMPLEMENTED; //better than ignoring 'control:systemMonitor' in containerized mode
+#endif
             }
             //MORE: control:stats??
             else
@@ -2775,17 +2783,25 @@ private:
             {
                 toXML(topology, reply);
             }
+            else if (stricmp(queryName, "control:toposerver")==0)
+            {
+                if (control->hasProp("@freeze"))
+                {
+                    freezeTopology(control->getPropBool("@freeze"));
+                }
+                else
+                {
+                    reply.append("<Toposerver>");
+                    getTopology()->report(reply);
+                    reply.append("</Toposerver>");
+                }
+            }
             else if (stricmp(queryName, "control:trace")==0)
             {
                 traceLevel = control->getPropInt("@level", 0);
                 if (traceLevel > MAXTRACELEVEL)
                     traceLevel = MAXTRACELEVEL;
                 topology->setPropInt("@traceLevel", traceLevel);
-            }
-            else if (stricmp(queryName, "control:traceServerSideCache")==0)
-            {
-                traceServerSideCache = control->getPropBool("@val", true);
-                topology->setPropInt("@traceServerSideCache", traceServerSideCache);
             }
             else if (stricmp(queryName, "control:traceSmartStepping")==0)
             {

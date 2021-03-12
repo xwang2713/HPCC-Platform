@@ -364,9 +364,10 @@ CEspConfig::CEspConfig(IProperties* inputs, IPropertyTree* envpt, IPropertyTree*
         const unsigned dafilesrvConnectTimeout = m_cfg->getPropInt("@dafilesrvConnectTimeout", 10)*1000;
         const unsigned dafilesrvReadTimeout = m_cfg->getPropInt("@dafilesrvReadTimeout", 10)*1000;
         setRemoteFileTimeouts(dafilesrvConnectTimeout, dafilesrvReadTimeout);
-
+#ifndef _CONTAINERIZED
 #ifndef _DEBUG
         startPerformanceMonitor(m_cfg->getPropInt("@perfReportDelay", 60)*1000);
+#endif
 #endif
 
         IPropertyTreeIterator *pt_iter = NULL;
@@ -725,7 +726,7 @@ void CEspConfig::loadService(srv_cfg &xcfg)
     if (xproc)
         xcfg.srv.setown(xproc(xcfg.name.str(), xcfg.type.str(), m_envpt.get(), m_process.str()));
     else
-        throw MakeStringException(-1, "procedure esp_service_factory can't be loaded");
+        throw MakeStringException(-1, "procedure esp_service_factory can't be loaded from %s", xcfg.plugin.str());
 }
 
 void CEspConfig::loadServices()

@@ -34,8 +34,15 @@ do
    helm lint $hpccchart ${options} --values $file > results.txt 2> errors.txt
    if [ $? -eq 0 ]
    then
-      echo $file should have failed
-      failed=1
+      helm template $hpccchart ${options} --values $file > results.txt 2> errors.txt
+      if [ $? -eq 0 ]
+      then
+         echo $file should have failed
+         failed=1
+      else
+         echo "$file failed - correctly"
+         cat errors.txt
+      fi
    else
       echo "$file failed - correctly"
       cat results.txt
@@ -57,7 +64,12 @@ fi
 if type kube-score >/dev/null 2> /dev/null; then
    echo Running kube-score...
    # Note we force all replicas to be > 1 as some checks are not done on replicas=1 cases e.g. antiaffinity
-   helm template $hpccchart ${options} | sed "s/replicas: 1/replicas: 2/" | kube-score score --output-format ci - >results.txt 2>errors.txt
+   helm template $hpccchart ${options} | sed "s/replicas: 1/replicas: 2/" | \
+     kube-score score --output-format ci \
+        --ignore-container-cpu-limit \
+        --ignore-container-memory-limit \
+        --ignore-test deployment-has-poddisruptionbudget \
+        - >results.txt 2>errors.txt
    if [ $? -ne 0 ]
    then
       echo $file failed

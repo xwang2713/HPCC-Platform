@@ -184,8 +184,6 @@ static IPropertyTree *getSecMgrPluginPropTree(const IPropertyTree *configTree)
  */
 static bool populateAllowListFromEnvironment(IAllowListWriter &writer)
 {
-    if (isContainerized())
-        return false;
     Owned<IRemoteConnection> conn = querySDS().connect("/Environment", 0, 0, INFINITE);
     assertex(conn);
     if (!conn->queryRoot()->hasProp("Software/DaliServerProcess"))
@@ -653,10 +651,10 @@ int main(int argc, const char* argv[])
 
         unsigned short myport = epa.item(myrank).port;
         startMPServer(DCR_DaliServer, myport, true, true);
+#ifndef _CONTAINERIZED
         Owned<IMPServer> mpServer = getMPServer();
         Owned<IAllowListHandler> allowListHandler = createAllowListHandler(populateAllowListFromEnvironment, formatDaliRole);
         mpServer->installAllowListCallback(allowListHandler);
-#ifndef _CONTAINERIZED
         setMsgLevel(fileMsgHandler, serverConfig->getPropInt("SDS/@msgLevel", 100));
 #endif
         startLogMsgChildReceiver();
@@ -674,7 +672,7 @@ int main(int argc, const char* argv[])
             lf->setLogDirSubdir("audit");//add to tail of config log dir
             lf->setName("DaAudit");//override default filename
             lf->setCreateAliasFile(false);
-            lf->setMsgFields(MSGFIELD_timeDate | MSGFIELD_code);
+            lf->setMsgFields(MSGFIELD_timeDate | MSGFIELD_code | MSGFIELD_job);
             lf->setMsgAudiences(MSGAUD_audit);
             lf->setMaxDetail(TopDetail);
             lf->beginLogging();
@@ -687,7 +685,10 @@ int main(int argc, const char* argv[])
             UseSysLogForOperatorMessages();
         AddServers(auditDir.str());
         addAbortHandler(actionOnAbort);
+
+#ifndef _CONTAINERIZED
         startPerformanceMonitor(serverConfig->getPropInt("Coven/@perfReportDelay", DEFAULT_PERF_REPORT_DELAY)*1000);
+#endif
         StringBuffer absPath;
         makeAbsolutePath(dataPath.str(), absPath);
         setPerformanceMonitorPrimaryFileSystem(absPath.str());
@@ -710,7 +711,9 @@ int main(int argc, const char* argv[])
         {
             EXCLOG(e, "Failed whilst starting servers");
             stopServer();
+#ifndef _CONTAINERIZED
             stopPerformanceMonitor();
+#endif
             throw;
         }
         try {
@@ -730,7 +733,9 @@ int main(int argc, const char* argv[])
         catch (IException *e) {
             EXCLOG(e, "LDAP initialization error");
             stopServer();
+#ifndef _CONTAINERIZED
             stopPerformanceMonitor();
+#endif
             throw;
         }
         PROGLOG("DASERVER[%d] starting - listening to port %d",myrank,queryMyNode()->endpoint().port);
@@ -753,9 +758,10 @@ int main(int argc, const char* argv[])
             covenMain();
             removeAbortHandler(actionOnAbort);
         }
-        stopLogMsgListener();
         stopServer();
+#ifndef _CONTAINERIZED
         stopPerformanceMonitor();
+#endif
     }
     catch (IException *e) {
         EXCLOG(e, "Exception");

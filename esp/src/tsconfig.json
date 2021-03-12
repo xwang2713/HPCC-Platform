@@ -22,7 +22,6 @@
         "jsx": "react",
         "lib": [
             "dom",
-            "es5",
             "es2015"
         ],
         "typeRoots": [],
@@ -36,6 +35,6 @@
     },
     "include": [
         "src/**/*",
-        "eclwatch/nls/**/*"
+        "src-react/**/*"
     ]
 }

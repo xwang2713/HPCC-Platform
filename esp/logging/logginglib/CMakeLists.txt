@@ -20,6 +20,7 @@ project( logginglib )
 include(${HPCC_SOURCE_DIR}/esp/scm/espscm.cmake)
 
 include_directories (
+    ${HPCC_SOURCE_DIR}/rtl/include                  #eclhelper.hpp for IXmlWriter
     ${HPCC_SOURCE_DIR}/system/include
     ${HPCC_SOURCE_DIR}/system/jlib
     ${HPCC_SOURCE_DIR}/system/xmllib
@@ -42,6 +43,7 @@ set ( SRCS
     ${HPCC_SOURCE_DIR}/esp/logging/logginglib/LogSerializer.cpp
     ${HPCC_SOURCE_DIR}/esp/logging/logginglib/LogFailSafe.cpp
     ${HPCC_SOURCE_DIR}/esp/logging/logginglib/logthread.cpp
+    ${HPCC_SOURCE_DIR}/esp/logging/logginglib/modularlogagent.cpp
 )
 
 HPCC_ADD_LIBRARY( logginglib SHARED ${SRCS} )

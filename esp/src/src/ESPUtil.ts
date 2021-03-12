@@ -12,7 +12,7 @@ import * as json from "dojo/json";
 import * as on from "dojo/on";
 import * as query from "dojo/query";
 import * as Stateful from "dojo/Stateful";
-import * as Memory from "dojo/store/Memory";
+import { Memory } from "./Memory";
 
 // @ts-ignore
 import * as ColumnResizer from "dgrid/extensions/ColumnResizer";
@@ -29,7 +29,6 @@ import * as OnDemandGrid from "dgrid/OnDemandGrid";
 // @ts-ignore
 import * as Selection from "dgrid/Selection";
 
-import { declareDecorator } from "./DeclareDecorator";
 import nlsHPCC from "./nlsHPCC";
 import { userKeyValStore } from "./KeyValStore";
 import { Pagination } from "./Pagination";
@@ -369,9 +368,9 @@ export const IdleWatcher = dojo.declare([Evented], {
 export const Singleton = SingletonData;
 
 export const FormHelper = declare(null, {
-    getISOString(dateField, timeField) {
+    getISOString(dateField, timeField?) {
         const d = registry.byId(this.id + dateField).attr("value");
-        const t = registry.byId(this.id + timeField).attr("value");
+        const t = timeField && registry.byId(this.id + timeField).attr("value");
         if (d) {
             if (t) {
                 d.setHours(t.getHours() - d.getTimezoneOffset() / 60);
@@ -381,26 +380,27 @@ export const FormHelper = declare(null, {
             return d.toISOString();
         }
         return "";
+    },
+    getISOTime(dateField) {
+        const d = registry.byId(this.id + dateField).attr("value");
+        if (d) {
+            return d.toISOString().split("T")[1];
+        }
+        return undefined;
+    },
+    getTime(dateField) {
+        const t = this.getISOTime(dateField);
+        if (t) {
+            return t.split("Z")[0];
+        }
+        return t;
     }
 });
 
-type Memory = {
-    data: any[];
-    queryEngine: any;
-    setData(data: any);
-    query(query: any, options: any): any;
-};
+export class UndefinedMemory extends Memory {
 
-export interface UndefinedMemoryBase extends Memory {
-}
-
-@declareDecorator("UndefinedMemoryBase", Memory)
-export class UndefinedMemoryBase { }
-
-export class UndefinedMemory extends UndefinedMemoryBase {
-
-    constructor() {
-        super();
+    constructor(idProperty: string = "id") {
+        super(idProperty);
     }
 
     query(query: any, options: any) {
@@ -431,9 +431,9 @@ export class UndefinedMemory extends UndefinedMemoryBase {
     }
 }
 
-export function Grid(pagination?, selection?, overrides?, compoundColumns?, gridName?) {
+export function Grid(pagination?, selection?, overrides?: object, compoundColumns?, gridName?) {
     let baseClass = [];
-    const params = {};
+    const params = overrides || {};
     const rows = Number(localStorage.getItem(gridName));
 
     if (pagination) {

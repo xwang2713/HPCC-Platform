@@ -134,12 +134,12 @@ define([
                 WsPackageMaps.AddPackage({
                     request: {
                         Info: this.addPackageMapContent.value,
-                        PackageMap: this.addProcessMapId.get('value'),
-                        Process: this.addPackageProcessSelect.get('value'),
-                        Target: this.addPackageTargetSelect.get('value'),
-                        Activate: this.addProcessMapActivate.get('checked'),
-                        OverWrite: this.addProcessMapOverWrite.get('checked'),
-                        DaliIp: this.addProcessMapDaliIp.get('value')
+                        PackageMap: this.addProcessMapId.get("value"),
+                        Process: this.addPackageProcessSelect.get("value"),
+                        Target: this.addPackageTargetSelect.get("value"),
+                        Activate: this.addProcessMapActivate.get("checked"),
+                        OverWrite: this.addProcessMapOverWrite.get("checked"),
+                        DaliIp: this.addProcessMapDaliIp.get("value")
                     }
                 }).then(function (response) {
                     if (lang.exists("AddPackageResponse.status", response)) {
@@ -271,7 +271,7 @@ define([
                 } else if (currSel.id === this.validateTab.id) {
                     currSel.init({
                         targets: this.targetSelect.options
-                    })
+                    });
                 } else {
                     if (!currSel.initalized) {
                         currSel.init(currSel.params);
@@ -289,14 +289,14 @@ define([
                 columns: {
                     col1: selector({
                         width: 27,
-                        selectorType: 'checkbox'
+                        selectorType: "checkbox"
                     }),
                     Id: {
                         width: "40%",
                         sortable: false,
                         label: this.i18n.PackageMap,
                         formatter: function (Id, idx) {
-                            return "<a href='#' class='dgrid-row-url'>" + Id + "</a>";
+                            return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + Id + "</a>";
                         }
                     },
                     Target: {

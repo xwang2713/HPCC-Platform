@@ -429,7 +429,16 @@ private:
 public:
     CVaultManager()
     {
-        IPropertyTree *config = queryComponentConfig().queryPropTree("vaults");
+        IPropertyTree *config = nullptr;
+        try
+        {
+            config = queryComponentConfig().queryPropTree("vaults");
+        }
+        catch (IException * e)
+        {
+            EXCLOG(e);
+            e->Release();
+        }
         if (!config)
             return;
         Owned<IPropertyTreeIterator> iter = config->getElements("*");
@@ -557,7 +566,7 @@ static IPropertyTree *loadLocalSecret(const char *category, const char * name)
         if (!validateXMLTag(name))
             continue;
         MemoryBuffer content;
-        Owned<IFileIO> io = entries->get().open(IFOread);
+        Owned<IFileIO> io = entries->query().open(IFOread);
         read(io, 0, (size32_t)-1, content);
         if (!content.length())
             continue;

@@ -1,22 +1,37 @@
 import { Connection } from "@hpcc-js/comms";
 import * as arrayUtil from "dojo/_base/array";
-import * as declare from "dojo/_base/declare";
 import * as Deferred from "dojo/_base/Deferred";
 import * as lang from "dojo/_base/lang";
-import * as Evented from "dojo/Evented";
-import * as Memory from "dojo/store/Memory";
 import * as Observable from "dojo/store/Observable";
 import * as QueryResults from "dojo/store/util/QueryResults";
+import * as on from "dojo/on";
+import * as aspect from "dojo/aspect";
 
 import * as ESPRequest from "./ESPRequest";
 import * as Utility from "./Utility";
+import { Memory } from "src/Memory";
 
 declare const dojoConfig;
 
-const TpLogFileStore = declare([Memory, Evented], {
+class TpLogFileStore extends Memory {
+
     constructor() {
-        this.idProperty = "__hpcc_id";
-    },
+        super("__hpcc_id");
+    }
+
+    //  Evented  ---
+    on(type, listener) {
+        return on.parse(this, type, listener, function (target, type) {
+            return aspect.after(target, "on" + type, listener, true);
+        });
+    }
+
+    emit(type, event?) {
+        const args = [this];
+        args.push.apply(args, arguments);
+        return on.emit.apply(on, args);
+    }
+    //  --- --- ---
 
     query(query, options) {
         const deferredResults = new Deferred();
@@ -25,7 +40,8 @@ const TpLogFileStore = declare([Memory, Evented], {
         function nextItem(itemParts) {
             let part = "";
             while (itemParts.length && part.trim() === "") {
-                part = itemParts[0]; itemParts.shift();
+                part = itemParts[0];
+                itemParts.shift();
             }
             return part;
         }
@@ -34,6 +50,7 @@ const TpLogFileStore = declare([Memory, Evented], {
             deferredResults.resolve([]);
             deferredResults.total.resolve(0);
         } else {
+            this.emit("preFetch");
             TpLogFile({
                 request: lang.mixin({}, query, {
                     PageNumber: options.start / options.count,
@@ -42,7 +59,7 @@ const TpLogFileStore = declare([Memory, Evented], {
             }).then(lang.hitch(this, function (response) {
                 const data = [];
                 if (lang.exists("TpLogFileResponse.LogData", response)) {
-                    const columns = response.TpLogFileResponse.LogFieldNames.Item;
+                    const columns = response.TpLogFileResponse.LogFieldNames.Item.map(col => Utility.removeSpecialCharacters(col));
                     this.lastPage = response.TpLogFileResponse.LogData;
                     this.emit("pageLoaded", this.lastPage);
                     arrayUtil.forEach(response.TpLogFileResponse.LogData.split("\n"), function (item, idx) {
@@ -54,7 +71,7 @@ const TpLogFileStore = declare([Memory, Evented], {
                             };
 
                             for (let i = 0; i < columns.length; ++i) {
-                                const cleanName = Utility.removeSpecialCharacters(columns[i]);
+                                const cleanName = columns[i];
                                 let value = "";
 
                                 if ((i + 1) === columns.length) {
@@ -64,8 +81,8 @@ const TpLogFileStore = declare([Memory, Evented], {
                                 }
 
                                 tempObj[cleanName] = value;
-                                data.push(tempObj);
                             }
+                            data.push(tempObj);
                         }
                     }, this);
                 }
@@ -76,12 +93,17 @@ const TpLogFileStore = declare([Memory, Evented], {
                     deferredResults.total.resolve(data.length);
                 }
                 return deferredResults.resolve(this.data);
+            })).then(lang.hitch(this, function (response) {
+                this.emit("postFetch");
+                return response;
+            })).catch(lang.hitch(this, function (e) {
+                this.emit("postFetch");
             }));
         }
 
         return QueryResults(deferredResults);
     }
-});
+}
 
 export function TpServiceQuery(params) {
     lang.mixin(params.request, {
@@ -159,7 +181,14 @@ export function TpTargetClusterQuery(params) {
 export function TpGroupQuery(params) {
     return ESPRequest.send("WsTopology", "TpGroupQuery", params);
 }
-export function TpLogicalClusterQuery(params?) {
+
+export enum RoxieQueueFilter {
+    All = "All",
+    QueriesOnly = "QueriesOnly",
+    WorkunitsOnly = "WorkunitsOnly"
+}
+
+export function TpLogicalClusterQuery(params?: { EclServerQueue?: string, RoxieQueueFilter?: RoxieQueueFilter }) {
     return ESPRequest.send("WsTopology", "TpLogicalClusterQuery", params).then(function (response) {
         let best = null;
         let hthor = null;
@@ -207,7 +236,7 @@ export function TpLogFile(params) {
 }
 export function CreateTpLogFileStore() {
     const store = new TpLogFileStore();
-    return Observable(store);
+    return new Observable(store);
 }
 export function TpGetServerVersion() {
     const connection = new Connection({ baseUrl: "/esp", type: "get" });

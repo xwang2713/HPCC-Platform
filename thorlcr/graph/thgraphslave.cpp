@@ -872,6 +872,7 @@ void CSlaveGraph::init(MemoryBuffer &mb)
     waitBarrier = queryJobChannel().createBarrier(waitBarrierTag);
     if (doneBarrierTag != TAG_NULL)
         doneBarrier = queryJobChannel().createBarrier(doneBarrierTag);
+    sourceActDependents.setown(createPTree(mb));
     unsigned subCount;
     mb.read(subCount);
     while (subCount--)
@@ -1750,7 +1751,7 @@ void CJobSlave::reportGraphEnd(graph_id gid)
         getSocketStatistics(stats);
         StringBuffer s;
         getSocketStatisticsString(stats,s);
-        LOG(MCthorDetailedDebugInfo, thorJob, "Graph[%" GIDPF "u] - Socket statistics : %s\n", gid, s.str());
+        MLOG(MCthorDetailedDebugInfo, thorJob, "Graph[%" GIDPF "u] - Socket statistics : %s\n", gid, s.str());
     }
     resetSocketStatistics();
 }

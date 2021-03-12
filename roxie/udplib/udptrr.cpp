@@ -23,6 +23,7 @@
 #include "jlog.hpp"
 #include "jisem.hpp"
 #include "jsocket.hpp"
+#include "jencrypt.hpp"
 #include "udplib.hpp"
 #include "udptrr.hpp"
 #include "udptrs.hpp"
@@ -46,6 +47,11 @@ using roxiemem::DataBuffer;
 using roxiemem::IRowManager;
 
 unsigned udpRetryBusySenders = 0; // seems faster with 0 than 1 in my testing on small clusters and sustained throughput
+
+static byte key[32] = {
+    0xf7, 0xe8, 0x79, 0x40, 0x44, 0x16, 0x66, 0x18, 0x52, 0xb8, 0x18, 0x6e, 0x76, 0xd1, 0x68, 0xd3,
+    0x87, 0x47, 0x01, 0xe6, 0x66, 0x62, 0x2f, 0xbe, 0xc1, 0xd5, 0x9f, 0x4a, 0x53, 0x27, 0xae, 0xa1,
+};
 
 class CReceiveManager : implements IReceiveManager, public CInterface
 {
@@ -171,7 +177,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                 if (udpTraceLevel > 1)
                 {
                     StringBuffer ipStr;
-                    DBGLOG("UdpReceiver: sending ok_to_send %d msg to node=%s", maxTransfer, returnAddress.getIpText(ipStr).str());
+                    DBGLOG("UdpReceiver: sending ok_to_send %d msg to node=%s", maxTransfer, dest.getIpText(ipStr).str());
                 }
                 flowSocket->write(&msg, sizeof(UdpPermitToSendMsg));
             }
@@ -269,7 +275,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                     unsigned int res;
                     sniff_msg msg;
                     sniffer_socket->read(&msg, 1, sizeof(msg), res, 5);
-                    update(msg.nodeIp.getNodeAddress(), msg.cmd == sniffType::busy);
+                    update(msg.nodeIp.getIpAddress(), msg.cmd == sniffType::busy);
                 }
                 catch (IException *e) 
                 {
@@ -336,7 +342,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                     pendingRequests = requester;
                 lastPending = requester;
             }
-            requester->requestToSend(0, myNode.getNodeAddress());  // Acknowledge receipt of the request
+            requester->requestToSend(0, myNode.getIpAddress());  // Acknowledge receipt of the request
         }
 
         unsigned okToSend(UdpSenderEntry *requester)
@@ -347,7 +353,8 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                 max_transfer = maxSlotsPerSender;
             unsigned timeout = ((max_transfer * DATA_PAYLOAD) / 100) + 10; // in ms assuming mtu package size with 100x margin on 100 Mbit network // MORE - hideous!
             currentRequester = requester;
-            requester->requestToSend(max_transfer, myNode.getNodeAddress());
+            requester->requestToSend(max_transfer, myNode.getIpAddress());
+            assert(timeout >= 10 && timeout <= 20000);
             return timeout;
         }
 
@@ -369,6 +376,8 @@ class CReceiveManager : implements IReceiveManager, public CInterface
         unsigned timedOut(UdpSenderEntry *requester)
         {
             // MORE - this will retry indefinitely if agent in question is dead
+            // As coded, this rescinds the permission to send that just timed out and tells the next person to have a go
+            // Thus leading to "Received completed message is not from current sender" messages the the send was in flight
             currentRequester = nullptr;
             if (requester->retryOnTimeout())
                 enqueueRequest(requester);
@@ -484,29 +493,29 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                     else
                     {
                         flow_socket->readtms(&msg, l, l, res, timeoutExpires-now);
-                        now = msTick();
+                        unsigned newTimeout = 0;
                         assert(res==l);
                         if (udpTraceLevel > 5)
                         {
                             StringBuffer ipStr;
                             DBGLOG("UdpReceiver: received %s msg from node=%s", flowType::name(msg.cmd), msg.sourceNode.getTraceText(ipStr).str());
                         }
-                        UdpSenderEntry *sender = &parent.sendersTable[msg.sourceNode.getNodeAddress()];
+                        UdpSenderEntry *sender = &parent.sendersTable[msg.sourceNode];
                         switch (msg.cmd)
                         {
                         case flowType::request_to_send:
                             if (pendingRequests || currentRequester)
-                                enqueueRequest(sender);   // timeoutExpires does not change - there's still an active request
+                                enqueueRequest(sender);   // timeoutExpires does not change - there's still an active request. We have not given a new permission
                             else
-                                timeoutExpires = now + okToSend(sender);
+                                newTimeout = okToSend(sender);
                             break;
 
                         case flowType::send_completed:
                             parent.inflight += msg.packets;
-                            if (noteDone(sender) && pendingRequests)
-                                timeoutExpires = now + sendNextOk();
+                            if (noteDone(sender) && pendingRequests)   // This && looks wrong - noteDone returning false should mean we haven't seen the completed we wanted - so current timeout still applies. Or the one below is wrong...
+                                newTimeout = sendNextOk();
                             else
-                                timeoutExpires = now + 5000;
+                                newTimeout = 5000;
                             break;
 
                         case flowType::request_to_send_more:
@@ -516,16 +525,18 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                                 if (pendingRequests)
                                 {
                                     enqueueRequest(sender);
-                                    timeoutExpires = now + sendNextOk();
+                                    newTimeout = sendNextOk();
                                 }
                                 else
-                                    timeoutExpires = now + okToSend(sender);
+                                    newTimeout = okToSend(sender);
                             }
                             break;
 
                         default:
                             DBGLOG("UdpReceiver: received unrecognized flow control message cmd=%i", msg.cmd);
                         }
+                        if (newTimeout)
+                            timeoutExpires = msTick() + newTimeout;
                     }
                 }
                 catch (IException *e)
@@ -601,13 +612,27 @@ class CReceiveManager : implements IReceiveManager, public CInterface
         #endif
             DataBuffer *b = NULL;
             started.signal();
+            MemoryBuffer encryptData;
+            size32_t max_payload = DATA_PAYLOAD;
+            void *encryptedBuffer = nullptr;
+            if (parent.encrypted)
+            {
+                max_payload = DATA_PAYLOAD+16;  // AES function may add up to 16 bytes of padding
+                encryptedBuffer = encryptData.reserveTruncate(max_payload);
+            }
             while (running) 
             {
                 try 
                 {
                     unsigned int res;
                     b = bufferManager->allocate();
-                    receive_socket->read(b->data, 1, DATA_PAYLOAD, res, 5);
+                    if (parent.encrypted)
+                    {
+                        receive_socket->read(encryptedBuffer, 1, max_payload, res, 5);
+                        res = aesDecrypt(key, sizeof(key), encryptedBuffer, res, b->data, DATA_PAYLOAD);
+                    }
+                    else
+                        receive_socket->read(b->data, 1, DATA_PAYLOAD, res, 5);
                     parent.inflight--;
                     // MORE - reset it to zero if we fail to read data, or if avail_read returns 0.
                     UdpPacketHeader &hdr = *(UdpPacketHeader *) b->data;
@@ -681,6 +706,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
     int                  data_port;
 
     std::atomic<bool> running = { false };
+    bool encrypted = false;
 
     typedef std::map<ruid_t, CMessageCollator*> uid_map;
     uid_map         collators;
@@ -717,12 +743,13 @@ class CReceiveManager : implements IReceiveManager, public CInterface
 
     public:
     IMPLEMENT_IINTERFACE;
-    CReceiveManager(int server_flow_port, int d_port, int client_flow_port, int snif_port, const IpAddress &multicast_ip, int queue_size, int m_slot_pr_client)
-        : collatorThread(*this), sendersTable([client_flow_port](const IpAddress &ip) { return new UdpSenderEntry(ip, client_flow_port);})
+    CReceiveManager(int server_flow_port, int d_port, int client_flow_port, int snif_port, const IpAddress &multicast_ip, int queue_size, int m_slot_pr_client, bool _encrypted)
+        : collatorThread(*this), sendersTable([client_flow_port](const ServerIdentifier &ip) { return new UdpSenderEntry(ip.getIpAddress(), client_flow_port);})
     {
 #ifndef _WIN32
         setpriority(PRIO_PROCESS, 0, -15);
 #endif
+        encrypted = _encrypted;
         receive_flow_port = server_flow_port;
         data_port = d_port;
         input_queue_size = queue_size;
@@ -838,10 +865,11 @@ class CReceiveManager : implements IReceiveManager, public CInterface
 
 IReceiveManager *createReceiveManager(int server_flow_port, int data_port, int client_flow_port,
                                       int sniffer_port, const IpAddress &sniffer_multicast_ip,
-                                      int udpQueueSize, unsigned maxSlotsPerSender)
+                                      int udpQueueSize, unsigned maxSlotsPerSender,
+                                      bool encrypted)
 {
     assertex (maxSlotsPerSender <= (unsigned) udpQueueSize);
-    return new CReceiveManager(server_flow_port, data_port, client_flow_port, sniffer_port, sniffer_multicast_ip, udpQueueSize, maxSlotsPerSender);
+    return new CReceiveManager(server_flow_port, data_port, client_flow_port, sniffer_port, sniffer_multicast_ip, udpQueueSize, maxSlotsPerSender, encrypted);
 }
 
 /*

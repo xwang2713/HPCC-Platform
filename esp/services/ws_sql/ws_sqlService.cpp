@@ -30,8 +30,6 @@ void CwssqlEx::init(IPropertyTree *_cfg, const char *_process, const char *_serv
         throw MakeStringException(-1, "ws_sqlEx: Problem initiating ECLFunctions structure");
     }
 
-    refreshValidClusters();
-
     setWsSqlBuildVersion(BUILD_TAG);
 }
 
@@ -63,10 +61,14 @@ bool CwssqlEx::onGetDBMetaData(IEspContext &context, IEspGetDBMetaDataRequest &r
     if (includeStoredProcs)
     {
         const char * querysetfilter = req.getQuerySet();
-        Owned<IStringIterator> targets = getTargetClusters(NULL, NULL);
-
+#ifdef _CONTAINERIZED
+        ESPLOG(LogNormal, "WsSQL: getting containerTargetClusters...");
+        Owned<IStringIterator> targets = getContainerTargetClusters(nullptr, nullptr);
+#else
+        ESPLOG(LogNormal, "WsSQL-legacy: getting targetClusters...");
+        Owned<IStringIterator> targets = getTargetClusters(nullptr, nullptr);
+#endif
         IArrayOf<IEspHPCCQuerySet> pquerysets;
-
         SCMStringBuffer target;
         ForEach(*targets)
         {
@@ -200,19 +202,29 @@ bool CwssqlEx::onGetDBMetaData(IEspContext &context, IEspGetDBMetaDataRequest &r
     {
         try
         {
-
+            StringArray dfuclusters;
+#ifdef _CONTAINERIZED
+            ESPLOG(LogNormal, "WsSQL: getting containerTargetClusters...");
+            Owned<IStringIterator> targets = getContainerTargetClusters(nullptr, nullptr);
+            SCMStringBuffer target;
+            ForEach(*targets)
+            {
+                const char *setname = targets->str(target).str();
+                ESPLOG(LogNormal, "WsSQL: found containerTargetClusters: %s", setname);
+                dfuclusters.append(setname);
+            }
+#else
+            ESPLOG(LogNormal, "WsSQL-legacy: getting getTargetClusterList...");
             CTpWrapper topologyWrapper;
             IArrayOf<IEspTpLogicalCluster> clusters;
             topologyWrapper.getTargetClusterList(clusters, req.getClusterType(), NULL);
-
-            StringArray dfuclusters;
 
             ForEachItemIn(k, clusters)
             {
                 IEspTpLogicalCluster& cluster = clusters.item(k);
                 dfuclusters.append(cluster.getName());
             }
-
+#endif
             resp.setClusterNames(dfuclusters);
         }
         catch(IException* e)
@@ -817,8 +829,7 @@ void CwssqlEx::processMultipleClusterOption(StringArray & clusters, const char  
         hashoptions.appendf("\n#OPTION('AllowedClusters', '%s", targetcluster);
         ForEachItemIn(i,clusters)
         {
-            if (!isValidCluster(clusters.item(i)))
-                throw MakeStringException(-1, "Invalid alternate cluster name: %s", clusters.item(i));
+            validateTargetName(clusters.item(i));
 
             hashoptions.appendf(",%s", clusters.item(i));
         }
@@ -932,11 +943,7 @@ bool CwssqlEx::onExecuteSQL(IEspContext &context, IEspExecuteSQLRequest &req, IE
         if (compiledwuid.length()==0)
         {
             {
-                if (isEmpty(cluster))
-                    throw MakeStringException(-1,"Target cluster not set.");
-
-                if (!isValidCluster(cluster))
-                    throw MakeStringException(-1, "Invalid cluster name: %s", cluster);
+                validateTargetName(cluster);
 
                 if (querytype == SQLTypeCreateAndLoad)
                     clonable = false;
@@ -979,7 +986,7 @@ bool CwssqlEx::onExecuteSQL(IEspContext &context, IEspExecuteSQLRequest &req, IE
                 wu.clear();
 
                 context.addTraceSummaryTimeStamp(LogNormal, "strtWUCompile");
-                WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, NULL, 0, true, false, false, NULL, NULL, NULL);
+                WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, nullptr, 0, 0, true, false, false, nullptr, nullptr, nullptr, nullptr);
                 waitForWorkUnitToCompile(compiledwuid.str(), req.getWait());
                 context.addTraceSummaryTimeStamp(LogNormal, "endWUCompile");
             }
@@ -1004,8 +1011,8 @@ bool CwssqlEx::onExecuteSQL(IEspContext &context, IEspExecuteSQLRequest &req, IE
                 createWUXMLParams(xmlparams, parsedSQL, NULL, cw);
             else if (querytype == SQLTypeSelect)
             {
-                if (notEmpty(cluster) && !isValidCluster(cluster))
-                    throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", cluster);
+                if (!isEmptyString(cluster))
+                    validateTargetName(cluster);
 
                 createWUXMLParams(xmlparams, parsedSQL->getParamList());
             }
@@ -1023,7 +1030,7 @@ bool CwssqlEx::onExecuteSQL(IEspContext &context, IEspExecuteSQLRequest &req, IE
             else
             {
                 context.addTraceSummaryTimeStamp(LogNormal, "StartWUSubmit");
-                WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, NULL, 0, false, true, true, NULL, NULL, NULL);
+                WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, nullptr, 0, 0, false, true, true, nullptr, nullptr, nullptr, nullptr);
                 context.addTraceSummaryTimeStamp(LogNormal, "EndWUSubmit");
                 runningwuid.set(compiledwuid.str());
                 if (cacheeligible)
@@ -1218,8 +1225,8 @@ bool CwssqlEx::onExecutePreparedSQL(IEspContext &context, IEspExecutePreparedSQL
        context.ensureFeatureAccess(WSSQLACCESS, SecAccess_Write, -1, "WsSQL::ExecutePreparedSQL: Permission denied.");
 
        const char *cluster = req.getTargetCluster();
-       if (notEmpty(cluster) && !isValidCluster(cluster))
-           throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", cluster);
+       if (!isEmptyString(cluster))
+           validateTargetName(cluster);
 
        Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
 
@@ -1428,7 +1435,7 @@ bool CwssqlEx::onPrepareSQL(IEspContext &context, IEspPrepareSQLRequest &req, IE
 //                    wu->commit();
 //                    wu.clear();
 //
-//                    WsWuProcess::submitWsWorkunit(context, newwuid.str(), req.getTargetCluster(), NULL, 0, true, false, false, xmlparams.str(), NULL, NULL);
+//                    WsWuProcess::submitWsWorkunit(context, newwuid.str(), req.getTargetCluster(), NULL, 0, 0, true, false, false, xmlparams.str(), NULL, NULL);
 //                    waitForWorkUnitToCompile(newwuid.str(), req.getWait());
 //
 //                    wuid.s.set(newwuid.str());
@@ -1436,11 +1443,7 @@ bool CwssqlEx::onPrepareSQL(IEspContext &context, IEspPrepareSQLRequest &req, IE
             }
             else
             {
-                if (isEmpty(cluster))
-                    throw MakeStringException(1,"Target cluster not set.");
-
-                if (!isValidCluster(cluster))
-                    throw MakeStringException(-1/*ECLWATCH_INVALID_CLUSTER_NAME*/, "Invalid cluster name: %s", cluster);
+                validateTargetName(cluster);
 
                 ECLEngine::generateECL(parsedSQL, ecltext);
                 if (hashoptions.length() > 0)
@@ -1470,7 +1473,7 @@ bool CwssqlEx::onPrepareSQL(IEspContext &context, IEspPrepareSQLRequest &req, IE
                 wu->commit();
                 wu.clear();
 
-                WsWuHelpers::submitWsWorkunit(context, wuid.str(), cluster, NULL, 0, true, false, false, xmlparams.str(), NULL, NULL);
+                WsWuHelpers::submitWsWorkunit(context, wuid.str(), cluster, nullptr, 0, 0, true, false, false, xmlparams.str(), nullptr, nullptr, nullptr);
                 success = waitForWorkUnitToCompile(wuid.str(), req.getWait());
             }
 
@@ -1672,8 +1675,8 @@ bool CwssqlEx::onCreateTableAndLoad(IEspContext &context, IEspCreateTableAndLoad
         throw MakeStringException(-1, "WsSQL::CreateTableAndLoad: Error: Target TableName is invalid: %s.", targetTableName);
 
     const char * cluster = req.getTargetCluster();
-    if (notEmpty(cluster) && !isValidCluster(cluster))
-        throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "WsSQL::CreateTableAndLoad: Invalid cluster name: %s", cluster);
+    if (!isEmptyString(cluster))
+        validateTargetName(cluster);
 
     IConstDataSourceInfo & datasource = req.getDataSource();
 
@@ -1872,7 +1875,7 @@ bool CwssqlEx::onCreateTableAndLoad(IEspContext &context, IEspCreateTableAndLoad
     wu.clear();
 
     ESPLOG(LogMax, "WsSQL: compiling WU...");
-    WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, NULL, 0, true, false, false, NULL, NULL, NULL);
+    WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, nullptr, 0, 0, true, false, false, nullptr, nullptr, nullptr, nullptr);
     waitForWorkUnitToCompile(compiledwuid.str(), req.getWait());
 
     ESPLOG(LogMax, "WsSQL: finish compiling WU...");
@@ -1894,7 +1897,7 @@ bool CwssqlEx::onCreateTableAndLoad(IEspContext &context, IEspCreateTableAndLoad
     else
     {
         ESPLOG(LogMax, "WsSQL: executing WU(%s)...", compiledwuid.str());
-        WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, NULL, 0, false, true, true, NULL, NULL, NULL);
+        WsWuHelpers::submitWsWorkunit(context, compiledwuid.str(), cluster, nullptr, 0, 0, false, true, true, nullptr, nullptr, nullptr, nullptr);
 
         ESPLOG(LogMax, "WsSQL: waiting on WU(%s)...", compiledwuid.str());
         waitForWorkUnitToComplete(compiledwuid.str(), req.getWait());
@@ -1965,34 +1968,6 @@ bool CwssqlEx::onGetResults(IEspContext &context, IEspGetResultsRequest &req, IE
     return success;
 }
 
-void CwssqlEx::refreshValidClusters()
-{
-    validClusters.kill();
-    Owned<IStringIterator> it = getTargetClusters(NULL, NULL);
-    ForEach(*it)
-    {
-        SCMStringBuffer s;
-        IStringVal &val = it->str(s);
-        if (!validClusters.getValue(val.str()))
-            validClusters.setValue(val.str(), true);
-    }
-}
-
-bool CwssqlEx::isValidCluster(const char *cluster)
-{
-    if (!cluster || !*cluster)
-        return false;
-    CriticalBlock block(crit);
-    if (validClusters.getValue(cluster))
-        return true;
-    if (validateTargetClusterName(cluster))
-    {
-        refreshValidClusters();
-        return true;
-    }
-    return false;
-}
-
 bool CwssqlEx::publishWorkunit(IEspContext &context, const char * queryname, const char * wuid, const char * targetcluster)
 {
     Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
@@ -2001,7 +1976,7 @@ bool CwssqlEx::publishWorkunit(IEspContext &context, const char * queryname, con
         throw MakeStringException(ECLWATCH_CANNOT_OPEN_WORKUNIT,"Cannot find the workunit %s", wuid);
 
     SCMStringBuffer queryName;
-    if (notEmpty(queryname))
+    if (!isEmptyString(queryname))
         queryName.set(queryname);
     else
         queryName.set(cw->queryJobName());
@@ -2010,15 +1985,12 @@ bool CwssqlEx::publishWorkunit(IEspContext &context, const char * queryname, con
         throw MakeStringException(ECLWATCH_MISSING_PARAMS, "Query/Job name not defined for publishing workunit %s", wuid);
 
     SCMStringBuffer target;
-    if (notEmpty(targetcluster))
+    if (!isEmptyString(targetcluster))
         target.set(targetcluster);
     else
         target.set(cw->queryClusterName());
 
-    if (!target.length())
-        throw MakeStringException(ECLWATCH_MISSING_PARAMS, "Cluster name not defined for publishing workunit %s", wuid);
-    if (!isValidCluster(target.str()))
-        throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Invalid cluster name: %s", target.str());
+    validateTargetName(target.str());
     //RODRIGO this is needed:
     //copyQueryFilesToCluster(context, cw, "", target.str(), queryName.str(), false);
 
