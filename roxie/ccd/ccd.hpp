@@ -49,6 +49,8 @@
 #define UDP_QUEUE_SIZE 100
 #define UDP_SEND_QUEUE_SIZE 50
 
+#define NUM_DALI_CRITS 64
+
 #define ROXIE_STATEFILE_VERSION 2
 
 // Have not yet tested impact of new IBYTI handling in non-containerized systems
@@ -405,6 +407,8 @@ extern unsigned defaultHeapFlags;
 
 extern bool defaultCheckingHeap;
 extern bool defaultDisableLocalOptimizations;
+
+extern unsigned continuationCompressThreshold;
 
 extern unsigned agentQueryReleaseDelaySeconds;
 extern unsigned coresPerQuery;

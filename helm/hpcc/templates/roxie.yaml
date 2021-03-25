@@ -10,23 +10,40 @@ data:
   {{ .me.name }}.yaml: |
     version: 1.0
     roxie:
-{{ toYaml ( omit .me "logging") | indent 6 }}
+{{ toYaml ( omit .me "logging" "topoServer") | indent 6 }}
       numChannels: {{ .numChannels }}
       topologyServers: "{{ .toponame }}:{{ .topoport }}"
       resolveLocally: false
 {{- include "hpcc.generateLoggingConfig" (dict "root" .root "me" .me) | indent 6 }}
-{{ include "hpcc.generateVaultConfig" (dict "root" .root "categories" (list "storage" "ecl" "ecl-user" ) ) | indent 6 }}
+{{ include "hpcc.generateVaultConfig" . | indent 6 }}
     global:
 {{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
 {{- end -}}
 
+{{- define "hpcc.roxieTopoConfigMap" -}}
+apiVersion: v1
+metadata:
+  name: {{ .toponame }}-configmap
+data:
+  {{ .toponame }}.yaml: |
+    version: 1.0
+    toposerver:
+      port: {{ .topoport }}
+      traceLevel: {{ .toposerver.traceLevel | default 1 }}
+{{- include "hpcc.generateLoggingConfig" (dict "root" .root "me" .toposerver) | indent 6 }}
+{{- end -}}
+
 {{ range $roxie := $.Values.roxie -}}
 {{- if not $roxie.disabled -}}
-{{- $commonCtx := dict "root" $ "me" $roxie }}
+{{- $secretsCategories := list "system" "ecl-user" "ecl" "storage" }}
+{{- $toposerver := ($roxie.topoServer | default dict) -}}
+{{- $commonCtx := dict "root" $ "me" $roxie "secretsCategories" $secretsCategories "toposerver" $toposerver }}
 {{- $_ := set $commonCtx "toponame" (printf "%s-toposerver" $roxie.name) -}}
 {{- $_ := set $commonCtx "numChannels" ($roxie.numChannels | int | default 1) -}}
-{{- $_ := set $commonCtx "topoport" ($roxie.topoport | int | default 9004) -}}
+{{- $_ := set $commonCtx "topoport" ($toposerver.port | int | default 9004) -}}
+{{- $_ := set $toposerver "name" $commonCtx.toponame -}}
 {{- $configSHA := include "hpcc.roxieConfigMap" $commonCtx | sha256sum }}
+{{- $topoconfigSHA := include "hpcc.roxieTopoConfigMap" $commonCtx | sha256sum }}
 {{- include "hpcc.checkDefaultStoragePlane" $commonCtx }}
 {{- if not $roxie.localAgent -}}
 {{- $_ := set $roxie "localAgent" false -}}
@@ -37,7 +54,7 @@ kind: Deployment
 metadata:
   name: {{ $commonCtx.toponame | quote }}
 spec:
-  replicas: {{ $roxie.topoReplicas | default 1 }}
+  replicas: {{ $toposerver.replicas | default 1 }}
   selector:
     matchLabels:
       run: {{ $commonCtx.toponame | quote }}
@@ -47,13 +64,13 @@ spec:
         run: {{ $commonCtx.toponame | quote }}
         roxie-cluster: {{ $roxie.name | quote }}
       annotations:
-        checksum/config: {{ $configSHA }}
+        checksum/config: {{ $topoconfigSHA }}
     spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" $commonCtx.toponame "target" $roxie.name "type" "roxie") | indent 6 }}
       serviceAccountName: "hpcc-default"
       containers:
       - name: {{ $commonCtx.toponame | quote }}
-{{ include "hpcc.addSentinelProbes" $roxie | indent 8 }}
+{{ include "hpcc.addSentinelProbes" $toposerver | indent 8 }}
 {{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
 {{- if not $.Values.global.privileged }}
 {{- include "hpcc.addStubResources" . | indent 8 }}
@@ -61,10 +78,13 @@ spec:
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         workingDir: /var/lib/HPCCSystems
         command: [ toposerver ] 
+        args: [ 
+                {{ include "hpcc.configArg" $toposerver }}
+              ]
         volumeMounts:
-{{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
+{{ include "hpcc.addConfigMapVolumeMount" $toposerver | indent 8 }}
       volumes:
-{{ include "hpcc.addConfigMapVolume" . | indent 6 }}
+{{ include "hpcc.addConfigMapVolume" $toposerver | indent 6 }}
 ---
 
 {{- range $service := $roxie.services }}
@@ -129,6 +149,9 @@ spec:
 kind: ConfigMap 
 {{ include "hpcc.roxieConfigMap" $commonCtx }}
 ---
+kind: ConfigMap 
+{{ include "hpcc.roxieTopoConfigMap" $commonCtx }}
+---
 
 {{ if $roxie.serverReplicas -}}
 apiVersion: apps/v1
@@ -183,12 +206,12 @@ spec:
 {{ include "hpcc.addConfigMapVolumeMount" $roxie | indent 8 }}
 {{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
 {{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addSecretVolumeMounts" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 8 }}
+{{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" $roxie | indent 6 }}
 {{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
 {{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addSecretVolumes" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 6 }}
+{{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 ---
 
 {{ end -}}
@@ -253,12 +276,12 @@ spec:
 {{ include "hpcc.addConfigMapVolumeMount" $roxie | indent 8 }}
 {{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
 {{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addSecretVolumeMounts" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 8 }}
+{{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" $roxie | indent 6 }}
 {{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
 {{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addSecretVolumes" (dict "root" $ "categories" (list "system" "ecl" "storage" ) ) | indent 6 }}
+{{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 
 ---
 

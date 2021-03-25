@@ -220,6 +220,10 @@
                 "postJobCommand": {
                   "description": "Execute this command when a K8s Job launched by a deployment ends, either gracefully or when terminated externally causing a preStop event",
                   "type": "string"
+                },
+                "postJobCommandViaSidecar": {
+                  "description": "Causes shareProcessNamespace to be enabled, and the postJobCommand to execute via a sidecar",
+                  "type": "boolean"
                 }
               }
             },
@@ -356,6 +360,11 @@
         },
         "replication": {
           "description": "which planes (if any) the data is replicated onto (primarily bare metal)",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "labels": {
+          "description": "a list of labels associated with this plane, e.g. lz, data. NB: if blank/unset, treated as if 'data'",
           "type": "array",
           "items": { "type": "string" }
         }
@@ -631,6 +640,9 @@
         "image": {
           "$ref": "#/definitions/image"
         },
+        "topoServer": {
+          "$ref": "#/definitions/toposerver"
+        },
         "logging": {
           "$ref": "#/definitions/logging"
         },
@@ -652,6 +664,23 @@
         },
         "channelResources": {
           "$ref": "#/definitions/resources"
+        }
+      }
+    },
+    "toposerver": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer"
+        },
+        "traceLevel": {
+          "type": "integer"
+        },
+        "replicas": {
+          "type": "integer"
+        },
+        "logging": {
+          "$ref": "#/definitions/logging"
         }
       }
     },

@@ -26,6 +26,7 @@
 
 #include "udplib.hpp"
 #include "udptopo.hpp"
+#include "udpsha.hpp"
 #include "ccd.hpp"
 #include "ccddebug.hpp"
 #include "ccdquery.hpp"
@@ -527,19 +528,19 @@ public:
         {
             if (data->continueSequence & ~CONTINUE_SEQUENCE_SKIPTO)
             {
-                assertex(lengthRemaining >= (int) sizeof(unsigned short));
-                continuationLength = *(unsigned short *) finger;
-                continuationData = finger + sizeof(unsigned short);
+                assertex(lengthRemaining >= (int) sizeof(unsigned));
+                continuationLength = *(unsigned *) finger;
+                continuationData = finger + sizeof(unsigned);
                 finger = continuationData + continuationLength;
-                lengthRemaining -= continuationLength + sizeof(unsigned short);
+                lengthRemaining -= continuationLength + sizeof(unsigned);
             }
             if (data->continueSequence & CONTINUE_SEQUENCE_SKIPTO)
             {
-                assertex(lengthRemaining >= (int) sizeof(unsigned short));
-                smartStepInfoLength = *(unsigned short *) finger;
-                smartStepInfoData = finger + sizeof(unsigned short);
+                assertex(lengthRemaining >= (int) sizeof(unsigned));
+                smartStepInfoLength = *(unsigned *) finger;
+                smartStepInfoData = finger + sizeof(unsigned);
                 finger = smartStepInfoData + smartStepInfoLength;
-                lengthRemaining -= smartStepInfoLength + sizeof(unsigned short);
+                lengthRemaining -= smartStepInfoLength + sizeof(unsigned);
             }
         }
         assertex(lengthRemaining >= 0);
@@ -606,18 +607,18 @@ public:
     {
         assertex((data->continueSequence & CONTINUE_SEQUENCE_SKIPTO) == 0); // Should not already be any skipto info in the source packet
 
-        unsigned newDataSize = data->packetlength + sizeof(unsigned short) + skipDataLen;
+        unsigned newDataSize = data->packetlength + sizeof(unsigned) + skipDataLen;
         char *newdata = (char *) malloc(newDataSize);
         unsigned headSize = sizeof(RoxiePacketHeader);
         if (traceLength)
             headSize += traceLength;
         if (data->continueSequence & ~CONTINUE_SEQUENCE_SKIPTO)
-            headSize += sizeof(unsigned short) + continuationLength;
+            headSize += sizeof(unsigned) + continuationLength;
         memcpy(newdata, data, headSize); // copy in leading part of old data
         ((RoxiePacketHeader *) newdata)->continueSequence |= CONTINUE_SEQUENCE_SKIPTO; // set flag indicating new data is present
-        *(unsigned short *) (newdata + headSize) = skipDataLen; // add length field for new data
-        memcpy(newdata + headSize + sizeof(unsigned short), skipData, skipDataLen); // copy in new data
-        memcpy(newdata + headSize + sizeof(unsigned short) + skipDataLen, ((char *) data) + headSize, data->packetlength - headSize); // copy in remaining old data
+        *(unsigned *) (newdata + headSize) = skipDataLen; // add length field for new data
+        memcpy(newdata + headSize + sizeof(unsigned), skipData, skipDataLen); // copy in new data
+        memcpy(newdata + headSize + sizeof(unsigned) + skipDataLen, ((char *) data) + headSize, data->packetlength - headSize); // copy in remaining old data
         return createRoxiePacket(newdata, newDataSize);
     }
 
@@ -2832,9 +2833,9 @@ class RoxieUdpSocketQueueManager : public RoxieSocketQueueManager
 public:
     RoxieUdpSocketQueueManager(unsigned snifferChannel, unsigned _numWorkers, bool encryptionInTransit) : RoxieSocketQueueManager(_numWorkers)
     {
-        int udpQueueSize = topology->getPropInt("@udpQueueSize", UDP_QUEUE_SIZE);
-        int udpSendQueueSize = topology->getPropInt("@udpSendQueueSize", UDP_SEND_QUEUE_SIZE);
-        int udpMaxSlotsPerClient = topology->getPropInt("@udpMaxSlotsPerClient", 0x7fffffff);
+        unsigned udpQueueSize = topology->getPropInt("@udpQueueSize", UDP_QUEUE_SIZE);
+        unsigned udpSendQueueSize = topology->getPropInt("@udpSendQueueSize", UDP_SEND_QUEUE_SIZE);
+        unsigned udpMaxSlotsPerClient = topology->getPropInt("@udpMaxSlotsPerClient", 0x7fffffff);
         if (topology->getPropInt("@sendMaxRate", 0))
         {
             unsigned sendMaxRate = topology->getPropInt("@sendMaxRate");
@@ -2847,6 +2848,8 @@ public:
         getChannelIp(snifferIp, snifferChannel);
         if (udpMaxSlotsPerClient > udpQueueSize)
             udpMaxSlotsPerClient = udpQueueSize;
+        if (udpResendEnabled && udpMaxSlotsPerClient > TRACKER_BITS)
+            udpMaxSlotsPerClient = TRACKER_BITS;
         unsigned serverFlowPort = topology->getPropInt("@serverFlowPort", CCD_SERVER_FLOW_PORT);
         unsigned dataPort = topology->getPropInt("@dataPort", CCD_DATA_PORT);
         unsigned clientFlowPort = topology->getPropInt("@clientFlowPort", CCD_CLIENT_FLOW_PORT);
@@ -2860,13 +2863,13 @@ public:
 class RoxieAeronSocketQueueManager : public RoxieSocketQueueManager
 {
 public:
-    RoxieAeronSocketQueueManager(unsigned _numWorkers) : RoxieSocketQueueManager(_numWorkers)
+    RoxieAeronSocketQueueManager(unsigned _numWorkers, bool encryptionInTransit) : RoxieSocketQueueManager(_numWorkers)
     {
         unsigned dataPort = topology->getPropInt("@dataPort", CCD_DATA_PORT);
         SocketEndpoint ep(dataPort, myNode.getIpAddress());
-        receiveManager.setown(createAeronReceiveManager(ep));
+        receiveManager.setown(createAeronReceiveManager(ep, encryptionInTransit));
         assertex(!myNode.getIpAddress().isNull());
-        sendManager.setown(createAeronSendManager(dataPort, fastLaneQueue ? 3 : 2, myNode.getIpAddress()));
+        sendManager.setown(createAeronSendManager(dataPort, fastLaneQueue ? 3 : 2, myNode.getIpAddress(), encryptionInTransit));
     }
 
 };
@@ -3060,6 +3063,14 @@ public:
     virtual unsigned queryBytesReceived() const
     {
         return totalBytesReceived;
+    }
+    virtual unsigned queryDuplicates() const
+    {
+        return 0;
+    }
+    virtual unsigned queryResends() const
+    {
+        return 0;
     }
 };
 
@@ -3263,7 +3274,7 @@ extern IRoxieOutputQueueManager *createOutputQueueManager(unsigned snifferChanne
     if (localAgent)
         return new RoxieLocalQueueManager(numWorkers);
     else if (useAeron)
-        return new RoxieAeronSocketQueueManager(numWorkers);
+        return new RoxieAeronSocketQueueManager(numWorkers, encrypted);
     else
         return new RoxieUdpSocketQueueManager(snifferChannel, numWorkers, encrypted);
 

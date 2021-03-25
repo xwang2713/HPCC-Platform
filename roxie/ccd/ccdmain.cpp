@@ -137,6 +137,8 @@ bool defaultNoSeekBuildIndex = false;
 unsigned parallelLoadQueries = 8;
 bool alwaysFailOnLeaks = false;
 
+unsigned continuationCompressThreshold = 1024;
+
 bool useOldTopology = false;
 
 int backgroundCopyClass = 0;
@@ -654,7 +656,7 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         topology = loadConfiguration(useOldTopology ? nullptr : defaultYaml, argv, "roxie", "ROXIE", topologyFile, nullptr, "@netAddress");
         saveTopology();
         localAgent = topology->getPropBool("@localAgent", topology->getPropBool("@localSlave", false));  // legacy name
-        encryptInTransit = topology->getPropBool("@encryptInTransit", true) && !localAgent;
+        encryptInTransit = topology->getPropBool("@encryptInTransit", false) && !localAgent;
         numChannels = topology->getPropInt("@numChannels", 0);
 #ifdef _CONTAINERIZED
         if (!numChannels)
@@ -767,6 +769,9 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
             traceLevel = MAXTRACELEVEL;
         if (traceLevel && topology->hasProp("logging/@disabled"))
             topology->setPropBool("logging/@disabled", false);
+        udpStatsReportInterval = topology->getPropInt("@udpStatsReportInterval", traceLevel ? 60000 : 0);
+        udpTraceFlow = topology->getPropBool("@udpTraceFlow", false);
+        udpTraceTimeouts = topology->getPropBool("@udpTraceTimeouts", false);
         udpTraceLevel = topology->getPropInt("@udpTraceLevel", runOnce ? 0 : 1);
         roxiemem::setMemTraceLevel(topology->getPropInt("@memTraceLevel", runOnce ? 0 : 1));
         soapTraceLevel = topology->getPropInt("@soapTraceLevel", runOnce ? 0 : 1);
@@ -969,6 +974,12 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
             udpSnifferEnabled = false;
         }
 #endif
+
+        udpResendEnabled = topology->getPropBool("@udpResendEnabled", true);
+        udpResendTimeout = topology->getPropInt("@udpResendTimeout", 10);  // milliseconds
+        udpAssumeSequential = topology->getPropBool("@udpAssumeSequential", false);
+        udpMaxPendingPermits = topology->getPropInt("@udpMaxPendingPermits", 1);
+
         int ttlTmp = topology->getPropInt("@multicastTTL", 1);
         if (ttlTmp < 0)
         {
@@ -1002,6 +1013,7 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         defaultWarnTimeLimit[1] = (unsigned) topology->getPropInt64("@defaultHighPriorityTimeWarning", 0);
         defaultWarnTimeLimit[2] = (unsigned) topology->getPropInt64("@defaultSLAPriorityTimeWarning", 0);
         defaultThorConnectTimeout = (unsigned) topology->getPropInt64("@defaultThorConnectTimeout", 60);
+        continuationCompressThreshold = (unsigned) topology->getPropInt64("@continuationCompressThreshold", 1024);
 
         defaultXmlReadFlags = topology->getPropBool("@defaultStripLeadingWhitespace", true) ? ptr_ignoreWhiteSpace : ptr_none;
         defaultParallelJoinPreload = topology->getPropInt("@defaultParallelJoinPreload", 0);
