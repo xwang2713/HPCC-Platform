@@ -599,7 +599,8 @@ Check dll mount point, using hpcc.changeMountPerms
 */}}
 {{- define "hpcc.checkDllMount" -}}
 {{- if .root.Values.storage.dllStorage.forcePermissions | default false }}
-{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "dllstorage" "volumePath" "/var/lib/HPCCSystems/queries") }}
+{{- $volumeName := (.root.Values.storage.dllStorage.plane | default "dllstorage") -}}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" $volumeName "volumePath" "/var/lib/HPCCSystems/queries") }}
 {{- end }}
 {{- end }}
 
@@ -609,7 +610,8 @@ Pass in a dictionary with root
 */}}
 {{- define "hpcc.checkDataMount" -}}
 {{- if .root.Values.storage.dataStorage.forcePermissions | default false }}
-{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "datastorage" "volumePath" "/var/lib/HPCCSystems/hpcc-data") }}
+{{- $volumeName := printf "%s-pv" .root.Values.storage.dataStorage.plane -}}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" $volumeName "volumePath" "/var/lib/HPCCSystems/hpcc-data") }}
 {{- end }}
 {{- end }}
 
@@ -618,7 +620,19 @@ Check dalistorage mount point, using hpcc.changeMountPerms
 */}}
 {{- define "hpcc.checkDaliMount" -}}
 {{- if .root.Values.storage.daliStorage.forcePermissions | default false }}
-{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" "dalistorage" "volumePath" "/var/lib/HPCCSystems/dalistorage") }}
+{{- $volumeName := (.root.Values.storage.daliStorage.plane | default "dalistorage") -}}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" $volumeName "volumePath" "/var/lib/HPCCSystems/dalistorage") }}
+{{- end }}
+{{- end }}
+
+{{/*
+Check sashastorage mount point, using hpcc.changeMountPerms
+Pass in sashaName
+*/}}
+{{- define "hpcc.checkSashaMount" -}}
+{{- if .me.storage.forcePermissions | default false }}
+{{- $volumeName := (.me.storage.plane | default "sashastorage") -}}
+{{ include "hpcc.changeMountPerms" (dict "root" .root "volumeName" $volumeName "volumePath" "/var/lib/HPCCSystems/sasha") }}
 {{- end }}
 {{- end }}
 
