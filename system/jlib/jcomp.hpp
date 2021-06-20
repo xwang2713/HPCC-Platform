@@ -40,6 +40,7 @@ const char * const compilerTypeText[MaxCompiler] = {"vs6", "gcc" };
 extern jlib_decl void setCompilerPath(const char * path, const char *ipath, const char *lpath, const char * tmpdir, bool verbose);
 extern jlib_decl void setCompilerPath(const char * path, const char *ipath, const char *lpath, const char * tmpdir, CompilerType compiler, bool verbose);
 extern jlib_decl bool fileIsOlder(const char *dest, const char *src);
+extern jlib_decl void extractErrorsFromCppLog(IArrayOf<IError> & errors, const char * cur, bool linkFailed);
 
 interface ICppCompiler : public IInterface
 {
@@ -65,9 +66,13 @@ public:
     virtual void setSaveTemps(bool _save) = 0;
     virtual void setPrecompileHeader(bool _pch) = 0;
     virtual void setAbortChecker(IAbortRequestCallback * abortChecker) = 0;
+    virtual void removeTemporary(const char *fname) = 0;
+    virtual void removeTempDir(const char *fname) = 0;
+    virtual bool reportOnly() const = 0;
+    virtual void finish() = 0;
+
 };
 
-extern jlib_decl ICppCompiler * createCompiler(const char * coreName, const char * sourceDir = NULL, const char * targetDir = NULL, bool verbose = true);
-extern jlib_decl ICppCompiler * createCompiler(const char * coreName, const char * sourceDir, const char * targetDir, CompilerType compiler, bool verbose);
+extern jlib_decl ICppCompiler * createCompiler(const char * coreName, const char * sourceDir, const char * targetDir, CompilerType compiler, bool verbose, const char *compileBatchOut);
 
 #endif

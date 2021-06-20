@@ -236,7 +236,7 @@ ISQLExpression * HPCCSQLTreeWalker::expressionTreeWalker(pANTLR3_BASE_TREE exprA
                                 IArrayOf<HPCCColumnMetaData> * cols = file->getColumns();
                                 ForEachItemIn(colidx, *cols)
                                 {
-                                    HPCCColumnMetaData col = cols->item(colidx);
+                                    HPCCColumnMetaData & col = cols->item(colidx);
                                     Owned<ISQLExpression> fve = new SQLFieldValueExpression(file->getFullname(),col.getColumnName());
                                     tmpexp2->addParams(fve.getLink());
                                 }
@@ -304,7 +304,20 @@ ISQLExpression * HPCCSQLTreeWalker::expressionTreeWalker(pANTLR3_BASE_TREE exprA
             case LIKE_SYM:
             case NOT_LIKE:
                 leftexp.set(expressionTreeWalker((pANTLR3_BASE_TREE)(exprAST->getChild(exprAST, 0)),exprAST));
+                if (leftexp->getLogicType() == NestedDS_LogicType)
+                {
+                    StringBuffer invalidexp;
+                    leftexp->toString(invalidexp, false);
+                    throw makeStringExceptionV(-1, "Cannot apply arithmetic logic to normalized nested column: '%s'!\n", invalidexp.str());
+                }
+
                 rightexp.set(expressionTreeWalker((pANTLR3_BASE_TREE)(exprAST->getChild(exprAST, 1)),exprAST));
+                if (rightexp->getLogicType() == NestedDS_LogicType)
+                {
+                    StringBuffer invalidexp;
+                    rightexp->toString(invalidexp, false);
+                    throw makeStringExceptionV(-1, "Cannot apply arithmetic logic to normalized nested column: '%s'!\n", invalidexp.str());
+                }
 
                 tmpexp.setown( new SQLBinaryExpression(exptype,leftexp, rightexp));
                 if (parameterizeStaticValues)
@@ -336,6 +349,12 @@ ISQLExpression * HPCCSQLTreeWalker::expressionTreeWalker(pANTLR3_BASE_TREE exprA
             case NOT_SYM:
             {
                 tmpexp.setown(new SQLUnaryExpression(expressionTreeWalker((pANTLR3_BASE_TREE)(exprAST->getChild(exprAST, 0)),exprAST), exptype ));
+                if (tmpexp->getLogicType() == NestedDS_LogicType)
+                {
+                    StringBuffer expstr;
+                    tmpexp->toString(expstr, false);
+                    throw makeStringExceptionV(-1, "Cannot apply arithmetic logic to normalized nested column: '%s'!\n", expstr.str());
+                }
                 break;
             }
             //case PARENEXP: ANTLR idiosyncrasy prevented using imaginary token as root node
@@ -1190,7 +1209,7 @@ void HPCCSQLTreeWalker::expandWildCardColumn()
                         IArrayOf<HPCCColumnMetaData> * cols = file->getColumns();
                         ForEachItemIn(colidx, *cols)
                         {
-                            HPCCColumnMetaData col = cols->item(colidx);
+                            HPCCColumnMetaData & col = cols->item(colidx);
                             Owned<ISQLExpression> fve = new SQLFieldValueExpression(file->getFullname(),col.getColumnName());
                             if (tableidx == 0 && colidx == 0)
                             {

@@ -130,6 +130,10 @@ esp_http_decl LogLevel getEspLogLevel();
 esp_http_decl LogRequest getEspLogRequests();
 esp_http_decl bool getEspLogResponses();
 esp_http_decl LogLevel getTxSummaryLevel();
+esp_http_decl const unsigned int getTxSummaryStyle();
+esp_http_decl const unsigned int readTxSummaryStyle(const char* style);
+esp_http_decl const unsigned int getTxSummaryGroup();
+esp_http_decl const unsigned int readTxSummaryGroup(const char* group);
 esp_http_decl bool getTxSummaryResourceReq();
 esp_http_decl unsigned getSlowProcessingTime();
 
@@ -145,7 +149,6 @@ esp_http_decl const char* getCFD();
 esp_http_decl void setBuildVersion(const char* buildVersion);
 esp_http_decl const char* getBuildVersion();
 esp_http_decl void setBuildLevel(const char* buildLevel);
-esp_http_decl const char* getBuildLevel();
 esp_http_decl IEspServer* queryEspServer();
 
 #define SDSSESSION_CONNECT_TIMEOUTMS (180*1000)

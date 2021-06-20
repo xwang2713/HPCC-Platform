@@ -37,7 +37,7 @@ public:
     virtual void getNavigationData(IEspContext &context, IPropertyTree & data)
     {
 #ifdef _USE_OPENLDAP
-        if (queryComponentConfig().getPropBool("@api_only"))
+        if (getComponentConfigSP()->getPropBool("@api_only"))
         {
             CHttpSoapBinding::getNavigationData(context, data);
             return;
@@ -50,7 +50,6 @@ public:
 
         IPropertyTree *folder = ensureNavFolder(data, "My Account", "My Account");
 
-        const char* build_level = getBuildLevel();
         if (!stricmp(m_authType.str(), "none") || !stricmp(m_authType.str(), "local"))
         {
             ensureNavLink(*folder, "My Account", "/Ws_Access/SecurityNotEnabled?form_", "My Account", NULL, NULL, 0, true);//Force the menu to use this setting

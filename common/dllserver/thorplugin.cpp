@@ -24,7 +24,6 @@
 #include "jregexp.hpp"
 #include "jlzw.hpp"
 #include "eclrtl.hpp"
-#include "build-config.h"
 #if defined(__APPLE__)
 #include <mach-o/getsect.h>
 #include <sys/mman.h>
@@ -753,6 +752,9 @@ extern DLLSERVER_API void getAdditionalPluginsPath(StringBuffer &pluginsPath, co
     defaultLocation.append(PATHSEPSTR "plugins");
     StringArray paths;
     paths.appendList(pluginsPath, ENVSEPSTR);
+#ifdef _CONTAINERIZED
+    //MORE: No place to provide additional plugins...
+#else
     if (paths.contains(defaultLocation))
     {
         const char *additional = queryEnvironmentConf().queryProp("additionalPlugins");
@@ -770,6 +772,7 @@ extern DLLSERVER_API void getAdditionalPluginsPath(StringBuffer &pluginsPath, co
             }
         }
     }
+#endif
 }
 
 bool SafePluginMap::addPlugin(const char *path, const char *dllname)
@@ -845,6 +848,40 @@ void SafePluginMap::loadFromList(const char * pluginsList)
             addPlugin(thisPlugin, tail.str());
         }
     }
+}
+
+bool SafePluginMap::loadNamed(const char * pluginDirectories, const char * plugin)
+{
+    const char *pluginDir = pluginDirectories;
+    for (;*pluginDir;)
+    {
+        StringBuffer thisFile;
+        while (*pluginDir && *pluginDir != ENVSEPCHAR)
+            thisFile.append(*pluginDir++);
+        if(*pluginDir)
+            pluginDir++;
+
+        if(!thisFile.length())
+            continue;
+        Owned<IFile> dir = createIFile(thisFile);
+        if (dir->isDirectory() == fileBool::foundYes)
+        {
+            Owned<IFile> file = createIFile(addPathSepChar(thisFile).append(plugin));
+            if (file->exists())
+            {
+                if (addPlugin(thisFile, plugin))
+                    return true;
+            }
+        }
+        else if (dir->isFile() == fileBool::foundYes)
+        {
+            StringBuffer tail;
+            splitFilename(thisFile, NULL, NULL, &tail, &tail);
+            if (streq(tail, plugin) && addPlugin(thisFile, plugin))
+                return true;
+        }
+    }
+    return false;
 }
 
 void SafePluginMap::loadFromDirectory(const char * pluginDirectory)

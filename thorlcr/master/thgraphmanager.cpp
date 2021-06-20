@@ -15,12 +15,12 @@
     limitations under the License.
 ############################################################################## */
 
-#include "build-config.h"
 #include "platform.h"
 #include "jarray.hpp"
 #include "jfile.hpp"
 #include "jmutex.hpp"
 #include "jlog.hpp"
+#include "jsecrets.hpp"
 #include "rmtfile.hpp"
 
 #include "portlist.h"
@@ -46,6 +46,7 @@
 #include "thdemonserver.hpp"
 #include "thgraphmanager.hpp"
 #include "roxiehelper.hpp"
+#include "securesocket.hpp"
 #include "environment.hpp"
 
 class CJobManager : public CSimpleInterface, implements IJobManager, implements IExceptionHandler
@@ -60,7 +61,7 @@ class CJobManager : public CSimpleInterface, implements IJobManager, implements 
     Owned<IException> exitException;
 
     Owned<IDeMonServer> demonServer;
-    atomic_t            activeTasks;
+    std::atomic<unsigned> activeTasks;
     StringAttr          currentWuid;
     ILogMsgHandler *logHandler;
 
@@ -176,6 +177,7 @@ class CJobManager : public CSimpleInterface, implements IJobManager, implements 
                 try
                 {
                     Owned<ISocket> client = sock->accept(true);
+                    // TLS TODO: secure_accept() on Thor debug socket if globally configured for mtls ...
                     if (client)
                     {
                         client->set_linger(-1);
@@ -260,7 +262,7 @@ CJobManager::CJobManager(ILogMsgHandler *_logHandler) : logHandler(_logHandler)
         demonServer.setown(createDeMonServer());
     else
         globals->setPropBool("@watchdogProgressEnabled", false);
-    atomic_set(&activeTasks, 0);
+    activeTasks = 0;
     setJobManager(this);
     debugListener.setown(new CThorDebugListener(*this));
 }
@@ -331,6 +333,7 @@ void CJobManager::fatal(IException *e)
 
 void CJobManager::updateWorkUnitLog(IWorkUnit &workunit)
 {
+#ifndef _CONTAINERIZED
     StringBuffer log, logUrl, slaveLogPattern;
     logHandler->getLogName(log);
     createUNCFilename(log, logUrl, false);
@@ -341,8 +344,8 @@ void CJobManager::updateWorkUnitLog(IWorkUnit &workunit)
     Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(workunit.queryClusterName());
     unsigned numberOfSlaves = clusterInfo->getNumberOfSlaveLogs();
     workunit.addProcess("Thor", globals->queryProp("@name"), 0, numberOfSlaves, slaveLogPattern, false, logUrl.str());
+#endif
 }
-
 
 
 
@@ -484,11 +487,13 @@ void CJobManager::run()
 #endif
     querySoCache.init(soPath.str(), DEFAULT_QUERYSO_LIMIT, soPattern);
 
+#ifndef _CONTAINERIZED
     SCMStringBuffer _queueNames;
     const char *thorName = globals->queryProp("@name");
     if (!thorName) thorName = "thor";
     getThorQueueNames(_queueNames, thorName);
     queueName.set(_queueNames.str());
+#endif
 
     jobq.setown(createJobQueue(queueName.get()));
     struct cdynprio: public IDynamicPriority
@@ -652,7 +657,13 @@ void CJobManager::run()
                                 {
                                     SocketEndpoint ep = _item->queryEndpoint();
                                     ep.port = _item->getPort();
-                                    Owned<IConversation> acceptconv = createSingletonSocketConnection(ep.port,&ep);
+                                    Owned<IConversation> acceptconv;
+#if defined(_USE_OPENSSL)
+                                    if (queryMtls())
+                                        acceptconv.setown(createSingletonSecureSocketConnection(ep.port,&ep));
+                                    else
+#endif
+                                        acceptconv.setown(createSingletonSocketConnection(ep.port,&ep));
                                     if (acceptconv->connect(60*1000)) // shouldn't need that long
                                     {
                                         acceptconv->set_keep_alive(true);
@@ -907,7 +918,7 @@ bool CJobManager::executeGraph(IConstWorkUnit &workunit, const char *graphName, 
     timestamp_type startTs = getTimeStampNowValue();
     {
         Owned<IWorkUnit> wu = &workunit.lock();
-        wu->setTracingValue("ThorBuild", BUILD_TAG);
+        wu->setTracingValue("ThorBuild", hpccBuildInfo.buildTag);
 #ifndef _CONTAINERIZED
         updateWorkUnitLog(*wu);
 #endif
@@ -974,9 +985,9 @@ bool CJobManager::executeGraph(IConstWorkUnit &workunit, const char *graphName, 
     {
         struct CounterBlock
         {
-            atomic_t &counter;
-            CounterBlock(atomic_t &_counter) : counter(_counter) { atomic_inc(&counter); }
-            ~CounterBlock() { atomic_dec(&counter); }
+            std::atomic<unsigned> &counter;
+            CounterBlock(std::atomic<unsigned> &_counter) : counter(_counter) { ++counter; }
+            ~CounterBlock() { --counter; }
         } cBlock(activeTasks);
 
         {

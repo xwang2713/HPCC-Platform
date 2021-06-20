@@ -198,7 +198,7 @@ static void appendServerAddress(StringBuffer &s, IPropertyTree &env, IPropertyTr
 
 void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap)
 {
-    Owned<IPropertyTreeIterator> services = queryComponentConfig().getElements("services[@type='roxie']");
+    Owned<IPropertyTreeIterator> services = getGlobalConfigSP()->getElements("services[@type='roxie']");
     ForEach(*services)
     {
         IPropertyTree &service = services->query();
@@ -216,6 +216,7 @@ void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap)
     }
 }
 
+#ifndef _CONTAINERIZED
 void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap, IPropertyTree *serviceTree, const char *daliAddress)
 {
     IPropertyTree *vips = serviceTree->queryPropTree("VIPS");
@@ -281,6 +282,8 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
         }
     }
 }
+#endif
+
 bool CWsEclService::init(const char * name, const char * type, IPropertyTree * cfg, const char * process)
 {
     StringBuffer xpath;
@@ -363,7 +366,7 @@ void CWsEclBinding::getNavigationData(IEspContext &context, IPropertyTree & data
 static IStringIterator *getContainerTargetClusters()
 {
     Owned<CStringArrayIterator> ret = new CStringArrayIterator;
-    Owned<IPropertyTreeIterator> queues = queryComponentConfig().getElements("queues");
+    Owned<IPropertyTreeIterator> queues = getComponentConfigSP()->getElements("queues");
     ForEach(*queues)
     {
         IPropertyTree &queue = queues->query();
@@ -371,7 +374,7 @@ static IStringIterator *getContainerTargetClusters()
         if (!isEmptyString(qName))
             ret->append_unique(qName);
     }
-    Owned<IPropertyTreeIterator> services = queryComponentConfig().getElements("services[@type='roxie']");
+    Owned<IPropertyTreeIterator> services = getGlobalConfigSP()->getElements("services[@type='roxie']");
     ForEach(*services)
     {
         IPropertyTree &service = services->query();
@@ -1533,8 +1536,12 @@ int CWsEclBinding::getGenForm(IEspContext &context, CHttpRequest* request, CHttp
     xform->setParameter("includeSoapTest", "1");
     xform->setParameter("useTextareaForStringArray", "1");
 
+#ifdef _CONTAINERIZED
+    bool isRoxie = wsecl->connMap.getValue(wuinfo.qsetname) != nullptr;
+#else
     Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(wuinfo.qsetname);
     bool isRoxie = clusterInfo && (clusterInfo->getPlatform() == RoxieCluster);
+#endif
     xform->setParameter("includeRoxieOptions", isRoxie ? "1" : "0");
 
     // set the prop noDefaultValue param

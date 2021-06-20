@@ -25,7 +25,6 @@
 #include <stdio.h> 
 #include <stdlib.h> 
 
-#include "build-config.h"
 #include "jlib.hpp"
 #include "jdebug.hpp"
 #include "jexcept.hpp"
@@ -170,10 +169,10 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
         const char *_masterBuildTag = globals->queryProp("@masterBuildTag");
         const char *masterBuildTag = _masterBuildTag?_masterBuildTag:"no build tag";
         PROGLOG("Master build: %s", masterBuildTag);
-        if (!_masterBuildTag || 0 != strcmp(BUILD_TAG, _masterBuildTag))
+        if (!_masterBuildTag || 0 != strcmp(hpccBuildInfo.buildTag, _masterBuildTag))
         {
             StringBuffer errStr("Thor master/slave build mismatch, master = ");
-            errStr.append(masterBuildTag).append(", slave = ").append(BUILD_TAG);
+            errStr.append(masterBuildTag).append(", slave = ").append(hpccBuildInfo.buildTag);
             OERRLOG("%s", errStr.str());
 #ifndef _DEBUG
             replyError(TE_FailedToRegisterSlave, errStr.str());
@@ -300,7 +299,7 @@ ILogMsgHandler *startSlaveLog()
     logHandler = queryStderrLogMsgHandler();
 #endif
     //setupContainerizedStorageLocations();
-    LOG(MCdebugProgress, thorJob, "Build %s", BUILD_TAG);
+    LOG(MCdebugProgress, thorJob, "Build %s", hpccBuildInfo.buildTag);
     return logHandler;
 }
 
@@ -327,16 +326,9 @@ void setSlaveAffinity(unsigned processOnNode)
 
 int main( int argc, const char *argv[]  )
 {
-    // If using systemd, we will be using daemon code, writing own pid
-    for (unsigned i=0;i<(unsigned)argc;i++) {
-        if (streq(argv[i],"--daemon") || streq(argv[i],"-d")) {
-            if (daemon(1,0) || write_pidfile(argv[++i])) {
-                perror("Failed to daemonize");
-                return EXIT_FAILURE;
-            }
-            break;
-        }
-    }
+    if (!checkCreateDaemon(argc, argv))
+        return EXIT_FAILURE;
+
 #if defined(WIN32) && defined(_DEBUG)
     int tmpFlag = _CrtSetDbgFlag( _CRTDBG_REPORT_FLAG );
     tmpFlag |= _CRTDBG_LEAK_CHECK_DF;
@@ -371,7 +363,7 @@ int main( int argc, const char *argv[]  )
         }
         cmdArgs = argv+1;
 #ifdef _CONTAINERIZED
-        globals.setown(loadConfiguration(thorDefaultConfigYaml, argv, "thor", "THOR", nullptr, nullptr));
+        globals.setown(loadConfiguration(thorDefaultConfigYaml, argv, "thor", "THOR", nullptr, nullptr, nullptr, false));
 #else
         loadArgsIntoConfiguration(globals, cmdArgs);
 #endif

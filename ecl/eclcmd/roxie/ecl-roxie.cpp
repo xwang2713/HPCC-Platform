@@ -19,8 +19,6 @@
 #include "jfile.hpp"
 #include "jargv.hpp"
 
-#include "build-config.h"
-
 #include "ws_smc.hpp"
 
 #include "eclcmd.hpp"
@@ -31,9 +29,7 @@
 #include "ws_dfu.hpp"
 
 #define INIFILE "ecl.ini"
-#define SYSTEMCONFDIR CONFIG_DIR
 #define DEFAULTINIFILE "ecl.ini"
-#define SYSTEMCONFFILE ENV_CONF_FILE
 
 //=========================================================================================
 
@@ -565,7 +561,7 @@ public:
 
 static int doMain(int argc, const char *argv[])
 {
-    EclRoxieCMDShell processor(argc, argv, createEclRoxieCommand, BUILD_TAG);
+    EclRoxieCMDShell processor(argc, argv, createEclRoxieCommand, hpccBuildInfo.buildTag);
     return processor.run();
 }
 

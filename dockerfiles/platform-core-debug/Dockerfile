@@ -28,7 +28,7 @@ ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en  
 ENV LC_ALL en_US.UTF-8     
 
-RUN apt-get install -y libcap2-bin zip
+RUN apt-get install -y libcap2-bin zip libarchive13
 RUN setcap cap_sys_ptrace+eip /usr/bin/gdb
 
 ENV PATH="/opt/HPCCSystems/bin:${PATH}"
@@ -37,4 +37,6 @@ ENV HPCC_DLLSERVER_PATH=/var/lib/HPCCSystems/queries
 
 USER hpcc
 WORKDIR /var/lib/HPCCSystems
-RUN eclcc -pch && rm eclcc.log
+ARG BUILD_TAG_OVERRIDE
+ENV HPCC_BUILD_TAG=${BUILD_TAG_OVERRIDE}
+RUN eclcc -pch

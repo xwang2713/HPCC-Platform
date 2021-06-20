@@ -48,6 +48,7 @@ test multiclusteradd with replicate
 #include "dfurun.hpp"
 #include "eventqueue.hpp"
 #include "wujobq.hpp"
+#include "dameta.hpp"
 
 #define SDS_CONNECT_TIMEOUT (5*60*100)
 
@@ -458,10 +459,23 @@ class CDFUengine: public CInterface, implements IDFUengine
         if ((isDotDotString != nullptr) || (isDotString != nullptr))
             throwError3(DFTERR_InvalidFilePath, pfilePath, dotDotString, dotString);
 
-        Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
-        Owned<IConstEnvironment> env = factory->openEnvironment();
         StringBuffer netaddress;
         filename.queryIP().getIpText(netaddress);
+#ifdef _CONTAINERIZED
+        Owned<IPropertyTreeIterator> planes = getDropZonePlanesIterator();
+        ForEach(*planes)
+        {
+            IPropertyTree & plane = planes->query();
+            const char * fullDropZoneDir = plane.queryProp("@prefix");
+            assertex(fullDropZoneDir);
+            // note: for bare-metal drop-zones, will need to compare ip address
+            if (startsWith(pfilePath, fullDropZoneDir))
+                return;
+        }
+        throwError1(DFTERR_NoMatchingDropzonePlane, pfilePath);
+#else
+        Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
+        Owned<IConstEnvironment> env = factory->openEnvironment();
 
         Owned<IConstDropZoneInfo> dropZone = env->getDropZoneByAddressPath(netaddress.str(), pfilePath);
         if (!dropZone)
@@ -482,6 +496,7 @@ class CDFUengine: public CInterface, implements IDFUengine
                 , (dropZone->isECLWatchVisible() ? "" : "not ")
                 );
         }
+#endif
 #endif
     }
 
@@ -518,7 +533,7 @@ class CDFUengine: public CInterface, implements IDFUengine
 
     CriticalSection monitorsect;
     CriticalSection subcopysect;
-    atomic_t runningflag;
+    std::atomic<unsigned> runningflag;
 
 public:
     IMPLEMENT_IINTERFACE;
@@ -526,7 +541,7 @@ public:
     CDFUengine()
     {
         defaultTransferBufferSize = 0;
-        atomic_set(&runningflag,1);
+        runningflag = 1;
         eventpusher.setown(getScheduleEventPusher());
     }
 
@@ -1054,20 +1069,22 @@ public:
         // only clear cache when nothing running (bit of a kludge)
         class CenvClear
         {
-            atomic_t &running;
+            std::atomic<unsigned> &running;
         public:
-            CenvClear(atomic_t &_running)
+            CenvClear(std::atomic<unsigned> &_running)
                 : running(_running)
             {
-                if (atomic_dec_and_test(&running)) {
+                if (--running == 0) {
+#ifndef _CONTAINERIZED
                     Owned<IEnvironmentFactory> envf = getEnvironmentFactory(false);
                     Owned<IConstEnvironment> env = envf->openEnvironment();
                     env->clearCache();
+#endif
                 }
             }
             ~CenvClear()
             {
-                atomic_inc(&running);
+                ++running;
             }
         } cenvclear(runningflag);
         Owned<IDFUWorkUnitFactory> factory = getDFUWorkUnitFactory();
@@ -1248,6 +1265,9 @@ public:
                     {
                         if (options->getPush())
                         {
+#ifdef _CONTAINERIZED
+                            UNIMPLEMENTED_X("CONTAINERIZED(ForeignFileCopy:push)");
+#else
                             // need to set ftslave location
                             StringBuffer progpath;
                             StringBuffer workdir;
@@ -1256,6 +1276,7 @@ public:
                             {
                                 opttree->setProp("@slave",progpath.str());
                             }
+#endif
                         }
                     }
                     if (destination->getMultiCopy()&&!destination->getWrap())
@@ -1299,6 +1320,16 @@ public:
                                 };
                             }
                         }
+#ifdef _CONTAINERIZED
+                        StringBuffer clusterName;
+                        destination->getGroupName(0, clusterName);
+                        Owned<IPropertyTree> plane = getDropZonePlane(clusterName);
+                        if (plane)
+                        {
+                            if (plane->hasProp("@defaultSprayParts"))
+                                destination->setNumPartsOverride(plane->getPropInt("@defaultSprayParts"));
+                        }
+#endif
                         if (destination->getWrap())
                         {
                             Owned<IFileDescriptor> fdesc = source?source->getFileDescriptor():NULL;
@@ -1632,7 +1663,7 @@ public:
                                 if (!mspec.isReplicated())
                                     needrep = false;
                             }
-#ifndef _DEBUG
+#if !defined(_DEBUG) &&  !defined(_CONTAINERIZED)
                             StringBuffer gname;
                             if (!destination->getRemoteGroupOverride()&&!testLocalCluster(destination->getGroupName(0,gname).str())) {
                                 throw MakeStringException(-1,"IMPORT cluster %s is not recognized locally",gname.str());

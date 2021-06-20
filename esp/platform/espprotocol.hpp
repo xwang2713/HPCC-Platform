@@ -32,19 +32,18 @@
 #include <algorithm>
 #include <string>
 #include <map>
+#include <atomic>
+
 using namespace std;
 
+//A helper class for tracking the number of active requests
 class ActiveRequests
 {
 public:
+    ActiveRequests();
+    ~ActiveRequests();
 
-    ActiveRequests() { inc(); }
-    ~ActiveRequests()  { dec(); }
-
-    void inc();
-    void dec();
-
-    static long getCount();
+    static unsigned getCount();
 };
 
 class CEspBindingEntry : public CInterface, implements IInterface

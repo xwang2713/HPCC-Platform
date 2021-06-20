@@ -25,6 +25,7 @@ ESPStruct HPCCColumn
 {
    string Name;
    string Type;
+   [min_ver("3.06")] ESParray<ESPstruct HPCCColumn, Column> Columns;
 };
 
 ESPStruct HPCCTable
@@ -327,7 +328,7 @@ ESPresponse CreateTableAndLoadResponse
     ESPstruct ECLWorkunit Workunit;
 };
 
-ESPservice [version("3.05"), default_client_version("3.05"), auth_feature("DEFERRED"), exceptions_inline("./smc_xslt/exceptions.xslt")] wssql
+ESPservice [version("3.06"), default_client_version("3.06"), auth_feature("DEFERRED"), exceptions_inline("./smc_xslt/exceptions.xslt")] wssql
 {
     ESPmethod [min_ver("3.03")] CreateTableAndLoad(CreateTableAndLoadRequest, CreateTableAndLoadResponse);
     ESPmethod [min_ver("3.02")] SetRelatedIndexes(SetRelatedIndexesRequest, SetRelatedIndexesResponse);

@@ -7267,6 +7267,28 @@ void WorkflowTransformer::analyseAll(const HqlExprArray & in)
 }
 
 
+//Is there a single null action with a single workflow dependency, if so return it, else 0.
+unsigned WorkflowTransformer::querySingleRootWfid(const HqlExprArray & transformed)
+{
+    unsigned wfid = 0;
+    ForEachItemIn(i, transformed)
+    {
+        IHqlExpression & cur = transformed.item(i);
+        if (!isNullAction(&cur))
+            return 0;
+        UnsignedArray const & dependencies = queryBodyExtra(&cur)->queryDependencies();
+        if (dependencies.ordinality() > 1)
+            return 0;
+        if (dependencies.ordinality() == 1)
+        {
+            if (wfid)
+                return 0;
+            wfid = dependencies.item(0);
+        }
+    }
+    return wfid;
+}
+
 void WorkflowTransformer::transformRoot(const HqlExprArray & in, WorkflowArray & out)
 {
     wfidCount = translator.queryMaxWfid();
@@ -7276,8 +7298,7 @@ void WorkflowTransformer::transformRoot(const HqlExprArray & in, WorkflowArray &
     {
         OwnedHqlExpr ret = transform(&in.item(idx));
         copyDependencies(queryBodyExtra(ret), &globalInfo);
-        //ignore results that do nothing, but still collect the dependencies...
-        if (ret->getOperator() != no_null)
+        if ((ret->getOperator() != no_null) || queryBodyExtra(ret)->queryDependencies().ordinality())
             transformed.append(*ret.getClear());
     }
 
@@ -7301,9 +7322,10 @@ void WorkflowTransformer::transformRoot(const HqlExprArray & in, WorkflowArray &
     UnsignedArray const & dependencies = globalInfo.queryDependencies();
     if(transformed.ordinality() || dependencies.ordinality())
     {
-        if ((transformed.ordinality() == 0) && (dependencies.ordinality() == 1))
+        unsigned rootWfid = querySingleRootWfid(transformed);
+        if (rootWfid)
         {
-            Owned<IWorkflowItem> wf = lookupWorkflowItem(dependencies.item(0));
+            Owned<IWorkflowItem> wf = lookupWorkflowItem(rootWfid);
             wf->setScheduledNow();
         }
         else
@@ -11308,6 +11330,24 @@ IHqlExpression * AnnotationNormalizerTransformer::createTransformed(IHqlExpressi
 
     OwnedHqlExpr transformed = NewHqlTransformer::createTransformed(expr);
     return queryLocationIndependentExtra(body)->cloneAnnotations(transformed);
+}
+
+void AnnotationNormalizerTransformer::setTransformed(IHqlExpression * expr, IHqlExpression * transformed)
+{
+    NewHqlTransformer::setTransformed(expr, transformed);
+
+    //All derived expressions map to the same transformed expressions => override the default behaviour in
+    //NewHqlTransformer::transform which uses transformed->queryBody(true) for body
+    IHqlExpression * body = expr->queryBody(true);
+    while (body != expr)
+    {
+        //If child body is already mapped then don't remap it, otherwise tree can become inconsistent
+        if (queryAlreadyTransformed(body))
+            break;
+        NewHqlTransformer::setTransformed(body, transformed);
+        expr = body;
+        body = body->queryBody(true);
+    }
 }
 
 AnnotationTransformInfo * AnnotationNormalizerTransformer::queryLocationIndependentExtra(IHqlExpression * expr)

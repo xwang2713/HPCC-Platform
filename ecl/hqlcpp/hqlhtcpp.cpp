@@ -24,7 +24,6 @@
 #include "jdebug.hpp"
 #include "rtldynfield.hpp"
 
-#include "build-config.h"
 #include "hql.hpp"
 #include "hqlthql.hpp"
 #include "hqlmeta.hpp"
@@ -3951,8 +3950,10 @@ unsigned HqlCppTranslator::buildRtlIfBlockField(StringBuffer & instanceName, IHq
 
         bool isComplex = extraFilter || !extractor.isSingleMatchCondition();
         const char * baseClass = isComplex ? "RtlComplexIfBlockTypeInfo" : "RtlSimpleIfBlockTypeInfo";
-        if (isComplex)
-            fieldType |= RFTMnoserialize;
+        //Currently interpreted ifblocks() are far too inefficient to be used remotely, so unconditionally mark it as noserialize
+        //change when HPCC-25794 is fixed
+        //if (isComplex)
+        fieldType |= RFTMnoserialize;
 
         //The ifblock needs a unique instance of the class to evaluate the test
         BuildCtx fieldclassctx(declarectx);
@@ -6067,7 +6068,7 @@ bool HqlCppTranslator::buildCpp(IHqlCppInstance & _code, HqlQueryContext & query
 
     try
     {
-        wu()->setCodeVersion(ACTIVITY_INTERFACE_VERSION,BUILD_TAG,LANGUAGE_VERSION);
+        wu()->setCodeVersion(ACTIVITY_INTERFACE_VERSION,hpccBuildInfo.buildTag,LANGUAGE_VERSION);
         cacheOptions();
 
         if (options.obfuscateOutput)
@@ -17964,7 +17965,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySOAP(BuildCtx & ctx, IHqlExpre
 
     IHqlExpression * namespaceAttr = expr->queryAttribute(namespaceAtom);
     IHqlExpression * responseAttr = expr->queryAttribute(responseAtom);
-    IHqlExpression * logText = NULL;
+    HqlExprArray logTextArray;
     bool logMin = false;
     bool logXml = false;
     ForEachChildFrom(i, expr, 1)
@@ -17976,7 +17977,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySOAP(BuildCtx & ctx, IHqlExpre
             if (!opt)
                 logXml = true;
             else if (!opt->isAttribute())
-                logText = opt;
+                unwindChildren(logTextArray, cur);
             else if (opt->queryName() == minAtom)
                 logMin = true;
         }
@@ -18004,7 +18005,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySOAP(BuildCtx & ctx, IHqlExpre
             doBuildVarStringFunction(instance->startctx, "getNamespaceVar", namespaceAttr->queryChild(1));
     }
 
-    if (logText)
+    if (logTextArray.length())
     {
         MemberFunction func(*this, instance->startctx, "virtual void getLogText(size32_t & __lenResult, char * & __result, const void * _left) override");
         if (dataset)
@@ -18013,8 +18014,21 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySOAP(BuildCtx & ctx, IHqlExpre
             bindTableCursor(func.ctx, dataset, "left");
             bindTableCursor(func.ctx, dataset, "left", no_left, selSeq);
         }
-        doBuildFunctionReturn(func.ctx, unknownStringType, logText);
+        doBuildFunctionReturn(func.ctx, unknownStringType, &logTextArray.item(0));
     }
+
+    if (logTextArray.length()>1)
+    {
+        MemberFunction func(*this, instance->startctx, "virtual void getLogTailText(size32_t & __lenResult, char * & __result, const void * _left) override");
+        if (dataset)
+        {
+            func.ctx.addQuotedLiteral("const unsigned char * left = (const unsigned char *) _left;");
+            bindTableCursor(func.ctx, dataset, "left");
+            bindTableCursor(func.ctx, dataset, "left", no_left, selSeq);
+        }
+        doBuildFunctionReturn(func.ctx, unknownStringType, &logTextArray.item(1));
+    }
+
     bool usesContents = false;
     bool hasXpathHints = false;
     if (!isSink)
@@ -18081,8 +18095,10 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySOAP(BuildCtx & ctx, IHqlExpre
             flags.append("|SOAPFpreserveSpace");
         if (logMin)
             flags.append("|SOAPFlogmin");
-        if (logText)
+        if (logTextArray.length())
             flags.append("|SOAPFlogusermsg");
+        if (logTextArray.length()>1)
+            flags.append("|SOAPFlogusertail");
         if (expr->hasAttribute(httpHeaderAtom))
             flags.append("|SOAPFhttpheaders");
         if (usesContents)
@@ -18157,7 +18173,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityHTTP(BuildCtx & ctx, IHqlExpre
         doBuildVarStringFunction(instance->startctx, "queryOutputIteratorPath", separator->queryChild(0));
 
     IHqlExpression * namespaceAttr = expr->queryAttribute(namespaceAtom);
-    IHqlExpression * logText = NULL;
+    HqlExprArray logTextArray;
     bool logMin = false;
     bool logXml = false;
     ForEachChildFrom(i, expr, 1)
@@ -18169,7 +18185,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityHTTP(BuildCtx & ctx, IHqlExpre
             if (!opt)
                 logXml = true;
             else if (!opt->isAttribute())
-                logText = opt;
+                unwindCommaCompound(logTextArray, opt);
             else if (opt->queryName() == minAtom)
                 logMin = true;
         }
@@ -18197,10 +18213,16 @@ ABoundActivity * HqlCppTranslator::doBuildActivityHTTP(BuildCtx & ctx, IHqlExpre
             doBuildVarStringFunction(instance->startctx, "getNamespaceVar", namespaceAttr->queryChild(1));
     }
 
-    if (logText)
+    if (logTextArray.length())
     {
         MemberFunction func(*this, instance->startctx, "virtual void getLogText(size32_t & __lenResult, char * & __result, const void * _left) override");
-        doBuildFunctionReturn(func.ctx, unknownStringType, logText);
+        doBuildFunctionReturn(func.ctx, unknownStringType, &logTextArray.item(0));
+    }
+
+    if (logTextArray.length()>1)
+    {
+        MemberFunction func(*this, instance->startctx, "virtual void getLogTailText(size32_t & __lenResult, char * & __result, const void * _left) override");
+        doBuildFunctionReturn(func.ctx, unknownStringType, &logTextArray.item(1));
     }
 
     bool usesContents = false;
@@ -18240,8 +18262,10 @@ ABoundActivity * HqlCppTranslator::doBuildActivityHTTP(BuildCtx & ctx, IHqlExpre
             flags.append("|SOAPFnamespace");
         if (logMin)
             flags.append("|SOAPFlogmin");
-        if (logText)
+        if (logTextArray.length())
             flags.append("|SOAPFlogusermsg");
+        if (logTextArray.length()>1)
+            flags.append("|SOAPFlogusertail");
         if (expr->hasAttribute(httpHeaderAtom))
             flags.append("|SOAPFhttpheaders");
         if (usesContents)

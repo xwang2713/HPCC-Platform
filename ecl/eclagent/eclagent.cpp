@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#include "build-config.h"
 #include "jlib.hpp"
 #include "jmisc.hpp"
 #include "jdebug.hpp"
@@ -232,6 +231,7 @@ public:
         while (running)
         {
             ISocket *client = socket->accept(true);
+            // TLS TODO: secure_accept() on hThor debug socket if globally configured for mtls ...
             if (client)
             {
                 client->set_linger(-1);
@@ -561,7 +561,7 @@ EclAgent::EclAgent(IConstWorkUnit *wu, const char *_wuid, bool _checkVersion, bo
     agentMachineCost = getMachineCostRate();
     if (agentMachineCost > 0.0)
     {
-        IPropertyTree *costs = queryCostsConfiguration();
+        Owned<const IPropertyTree> costs = getCostsConfiguration();
         if (costs)
         {
             double softCostLimit = costs->getPropReal("@limit");
@@ -620,7 +620,7 @@ const char *EclAgent::queryTempfilePath()
 
 StringBuffer & EclAgent::getTempfileBase(StringBuffer & buff)
 {
-    return buff.append(queryTempfilePath()).append(PATHSEPCHAR).append(wuid);
+    return buff.append(queryTempfilePath()).append(PATHSEPCHAR).appendLower(wuid);
 }
 
 const char *EclAgent::queryTemporaryFile(const char *fname)
@@ -1395,7 +1395,12 @@ ILocalOrDistributedFile *EclAgent::resolveLFN(const char *fname, const char *err
     }
     if (expandedlfn)
         *expandedlfn = lfn;
-    Owned<ILocalOrDistributedFile> ldFile = createLocalOrDistributedFile(lfn.str(), queryUserDescriptor(), resolveFilesLocally, !resolveFilesLocally, isWrite, isPrivilegedUser);
+    /*
+     * NB: this code and ILocalOrDistributedFile should be revisited when DFS is refactored
+     * hthor doesn't use it to write, but instead uses createClusterWriteHandler to handle cluster writing.
+     * See code in e.g.: CHThorDiskWriteActivity::resolve
+     */
+    Owned<ILocalOrDistributedFile> ldFile = createLocalOrDistributedFile(lfn.str(), queryUserDescriptor(), resolveFilesLocally, !resolveFilesLocally, isWrite, isPrivilegedUser, nullptr);
     if (ldFile)
     {
         IDistributedFile * dFile = ldFile->queryDistributedFile();
@@ -1858,7 +1863,7 @@ void EclAgent::doProcess()
             LOG(MCrunlock, unknownJob, "Obtained workunit lock");
             if (w->hasDebugValue("traceLevel"))
                 traceLevel = w->getDebugValueInt("traceLevel", 10);
-            w->setTracingValue("EclAgentBuild", BUILD_TAG);
+            w->setTracingValue("EclAgentBuild", hpccBuildInfo.buildTag);
             if (agentTopology->hasProp("@name"))
                 w->addProcess("EclAgent", agentTopology->queryProp("@name"), GetCurrentProcessId(), 0, nullptr, false, logname.str());
 
@@ -2220,10 +2225,72 @@ void EclAgentWorkflowMachine::begin()
     if(agent.queryWorkUnit()->getDebugValueBool("prelockpersists", false))
         prelockPersists();
 }
+
+IRemoteConnection *EclAgentWorkflowMachine::startPersist(const char * logicalName)
+{
+    CriticalBlock block(finishPersistCritSec);
+    IRemoteConnection * persistLock;
+    if(persistsPrelocked)
+    {
+        persistLock = persistCache.getValue(logicalName);
+        persistCache.setValue(logicalName, NULL);
+        LOG(MCrunlock, unknownJob, "Decached persist read lock for %s", logicalName);
+    }
+    else
+        persistLock = agent.startPersist(logicalName);
+    return persistLock;
+}
+
+void EclAgentWorkflowMachine::finishPersist(const char * persistName, IRemoteConnection *persistLock)
+{
+    //this protects lock list from race conditions
+    CriticalBlock block(finishPersistCritSec);
+    agent.finishPersist(persistName, persistLock);
+}
+
+void EclAgentWorkflowMachine::deleteLRUPersists(const char *logicalName, unsigned keep)
+{
+    agent.deleteLRUPersists(logicalName, keep);
+}
+
+void EclAgentWorkflowMachine::updatePersist(IRemoteConnection *persistLock, const char * logicalName, unsigned eclCRC, unsigned __int64 allCRC)
+{
+    agent.updatePersist(persistLock, logicalName, eclCRC, allCRC);
+}
+
+bool EclAgentWorkflowMachine::checkFreezePersists(const char *logicalName, unsigned eclCRC)
+{
+    bool freeze = agent.arePersistsFrozen();
+    if (freeze)
+        agent.checkPersistMatches(logicalName, eclCRC);
+    return freeze;
+}
+
+bool EclAgentWorkflowMachine::isPersistUptoDate(Owned<IRemoteConnection> &persistLock, IRuntimeWorkflowItem & item, const char * logicalName, unsigned eclCRC, unsigned __int64 allCRC, bool isFile)
+{
+    return agent.isPersistUptoDate(persistLock, item, logicalName, eclCRC, allCRC, isFile);
+}
+
+void EclAgentWorkflowMachine::checkPersistSupported()
+{
+    if (agent.isStandAloneExe)
+    {
+        throw MakeStringException(0, "PERSIST not supported when running standalone");
+    }
+}
+
+bool EclAgentWorkflowMachine::isPersistAlreadyLocked(const char * logicalName)
+{
+    //this makes sure that the lock array is up to date
+    CriticalBlock thisBlock(finishPersistCritSec);
+    return agent.alreadyLockedPersist(logicalName);
+}
+
 bool EclAgentWorkflowMachine::getParallelFlag() const
 {
     return agent.queryWorkUnit()->getDebugValueBool("parallelWorkflow", false);
 }
+
 unsigned EclAgentWorkflowMachine::getThreadNumFlag() const
 {
     return agent.queryWorkUnit()->getDebugValueInt("numWorkflowThreads", 4);
@@ -2993,7 +3060,7 @@ char * EclAgent::getGroupName()
 #ifdef _CONTAINERIZED
     // in a containerized setup, the group is moving..
     return strdup("unknown");
-#endif
+#else
     StringBuffer groupName;
     if (!isStandAloneExe)
     {
@@ -3037,6 +3104,7 @@ char * EclAgent::getGroupName()
         }
     }
     return groupName.detach();
+#endif
 }
 
 char * EclAgent::queryIndexMetaData(char const * lfn, char const * xpath)
@@ -3064,7 +3132,7 @@ char * EclAgent::queryIndexMetaData(char const * lfn, char const * xpath)
                 rfn.getPath(remotePath);
                 unsigned crc;
                 part->getCrc(crc);
-                key.setown(createKeyIndex(remotePath.str(), crc, false, false));
+                key.setown(createKeyIndex(remotePath.str(), crc, false));
                 break;
             }
         }
@@ -3427,7 +3495,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
         }
         try
         {
-            agentTopology.setown(loadConfiguration(defaultYaml, argv, "hthor", "ECLAGENT", "agentexec.xml", nullptr));
+            agentTopology.setown(loadConfiguration(defaultYaml, argv, "hthor", "ECLAGENT", "agentexec.xml", nullptr, nullptr, false));
         }
         catch (IException *E)
         {
@@ -3436,7 +3504,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
         }
     }
     else
-        agentTopology.setown(loadConfiguration(defaultYaml, argv, "hthor", "ECLAGENT", nullptr, nullptr));
+        agentTopology.setown(loadConfiguration(defaultYaml, argv, "hthor", "ECLAGENT", nullptr, nullptr, nullptr, false));
 
     installDefaultFileHooks(agentTopology);
 
@@ -3474,7 +3542,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
     if (traceLevel)
     {
         printStart(argc, argv);
-        DBGLOG("Build %s", BUILD_TAG);
+        DBGLOG("Build %s", hpccBuildInfo.buildTag);
     }
 
     // Extract any params into stored - primarily for standalone case but handy for debugging eclagent sometimes too
@@ -3591,6 +3659,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
             startLogMsgParentReceiver();
             connectLogMsgManagerToDali();
 
+#ifndef _CONTAINERIZED
             StringBuffer baseDir;
             if (getConfigurationDirectory(agentTopology->queryPropTree("Directories"),"data","eclagent",agentTopology->queryProp("@name"),baseDir.clear()))
                 setBaseDirectory(baseDir.str(), false);
@@ -3599,6 +3668,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
 
             if (agentTopology->getPropBool("@useNASTranslation", true))
                 envInstallNASHooks();
+#endif
 
             if (standAloneWorkUnit)
             {
@@ -3662,7 +3732,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], StringBuffer * 
             wuid.set(uid);
         }
         setDefaultJobId(wuid.str());
-        LOG(MCoperatorInfo, "hthor build %s", BUILD_TAG);
+        LOG(MCoperatorInfo, "hthor build %s", hpccBuildInfo.buildTag);
 
 #ifdef MONITOR_ECLAGENT_STATUS
         if (serverstatus)

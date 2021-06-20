@@ -25,8 +25,6 @@
 #include "jerror.hpp"
 #include "jsecrets.hpp"
 
-#include "build-config.h"
-
 //including cpp-httplib single header file REST client
 //  doesn't work with format-nonliteral as an error
 //
@@ -44,6 +42,10 @@
 
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
+
+#ifdef _USE_OPENSSL
+#include <openssl/x509v3.h>
 #endif
 
 #include <vector>
@@ -68,11 +70,16 @@ interface IVaultManager : extends IInterface
 
 static CriticalSection secretCacheCS;
 static Owned<IPropertyTree> secretCache;
+static CriticalSection mtlsInfoCacheCS;
+static Owned<IPropertyTree> mtlsInfoCache;
 static Owned<IVaultManager> vaultManager;
+static MemoryAttr udpKey;
+static bool udpKeyInitialized = false;
 
 MODULE_INIT(INIT_PRIORITY_SYSTEM)
 {
     secretCache.setown(createPTree());
+    mtlsInfoCache.setown(createPTree());
     return true;
 }
 
@@ -80,6 +87,8 @@ MODULE_EXIT()
 {
     vaultManager.clear();
     secretCache.clear();
+    mtlsInfoCache.clear();
+    udpKey.clear();
 }
 
 static void splitUrlAddress(const char *address, size_t len, StringBuffer &host, StringBuffer *port)
@@ -429,10 +438,10 @@ private:
 public:
     CVaultManager()
     {
-        IPropertyTree *config = nullptr;
+        Owned<const IPropertyTree> config;
         try
         {
-            config = queryComponentConfig().queryPropTree("vaults");
+            config.setown(getComponentConfigSP()->getPropTree("vaults"));
         }
         catch (IException * e)
         {
@@ -548,10 +557,15 @@ static const char *ensureSecretDirectory()
     return secretDirectory;
 }
 
+static StringBuffer &buildSecretPath(StringBuffer &path, const char *category, const char * name)
+{
+    return addPathSepChar(path.append(ensureSecretDirectory())).append(category).append(PATHSEPCHAR).append(name).append(PATHSEPCHAR);
+}
+
 static IPropertyTree *loadLocalSecret(const char *category, const char * name)
 {
     StringBuffer path;
-    addPathSepChar(path.append(ensureSecretDirectory())).append(category).append(PATHSEPCHAR).append(name).append(PATHSEPCHAR);
+    buildSecretPath(path, category, name);
     Owned<IDirectoryIterator> entries = createDirectoryIterator(path);
     if (!entries || !entries->first())
         return nullptr;
@@ -713,3 +727,140 @@ extern jlib_decl bool getSecretValue(StringBuffer & result, const char *category
     return true;
 }
 
+void initSecretUdpKey()
+{
+    if (udpKeyInitialized)
+        return;
+
+//can find alternatives for old openssl in the future if necessary
+#if defined(_USE_OPENSSL) && (OPENSSL_VERSION_NUMBER >= 0x10100000L)
+    StringBuffer path;
+    BIO *in = BIO_new_file(buildSecretPath(path, "certificates", "udp").append("tls.key"), "r");
+    if (in == nullptr)
+        return;
+    EC_KEY *eckey = PEM_read_bio_ECPrivateKey(in, nullptr, nullptr, nullptr);
+    if (eckey)
+    {
+        unsigned char *priv = NULL;
+        size_t privlen = EC_KEY_priv2buf(eckey, &priv);
+        if (privlen != 0)
+        {
+            udpKey.set(privlen, priv);
+            OPENSSL_clear_free(priv, privlen);
+        }
+        EC_KEY_free(eckey);
+    }
+    BIO_free(in);
+#endif
+    udpKeyInitialized = true;
+}
+
+const MemoryAttr &getSecretUdpKey(bool required)
+{
+    if (!udpKeyInitialized)
+        throw makeStringException(-1, "UDP Key not initialized.");
+    if (required && !udpKey.length())
+        throw makeStringException(-1, "UDP Key not found, cert-manager integration/configuration required.");
+    return udpKey;
+}
+
+IPropertyTree *queryMtlsSecretInfo(const char *name)
+{
+    if (isEmptyString(name))
+        return nullptr;
+    CriticalBlock block(mtlsInfoCacheCS);
+    IPropertyTree *info = mtlsInfoCache->queryPropTree(name);
+    if (info)
+        return info;
+
+    StringBuffer filepath;
+    StringBuffer secretpath;
+
+    buildSecretPath(secretpath, "certificates", name);
+
+    filepath.set(secretpath).append("tls.crt");
+    if (!checkFileExists(filepath))
+        return nullptr;
+
+    info = mtlsInfoCache->setPropTree(name);
+    info->setProp("certificate", filepath.str());
+    filepath.set(secretpath).append("tls.key");
+    if (checkFileExists(filepath))
+        info->setProp("privatekey", filepath.str());
+    IPropertyTree *verify = ensurePTree(info, "verify");
+    if (verify)
+    {
+        filepath.set(secretpath).append("ca.crt");
+        if (checkFileExists(filepath))
+        {
+            IPropertyTree *ca = ensurePTree(verify, "ca_certificates");
+            if (ca)
+                ca->setProp("@path", filepath.str());
+        }
+        // TLS TODO: do we want to always require verify, even if no ca ?
+        verify->setPropBool("@enable", true);
+        verify->setPropBool("@address_match", false);
+        verify->setPropBool("@accept_selfsigned", false);
+        verify->setProp("trusted_peers", "anyone");
+    }
+    return info;
+}
+
+enum UseMTLS { UNINIT, DISABLED, ENABLED };
+static UseMTLS useMtls = UNINIT;
+
+static CriticalSection queryMtlsCS;
+
+jlib_decl bool queryMtls()
+{
+    CriticalBlock block(queryMtlsCS);
+    if (useMtls == UNINIT)
+    {
+        useMtls = DISABLED;
+#if defined(_USE_OPENSSL)
+# ifdef _CONTAINERIZED
+        // check component setting first, but default to global
+        if (getComponentConfigSP()->getPropBool("@mtls", getGlobalConfigSP()->getPropBool("@mtls")))
+            useMtls = ENABLED;
+# else
+        if (queryMtlsBareMetalConfig())
+        {
+            useMtls = ENABLED;
+            const char *cert = nullptr;
+            const char *pubKey = nullptr;
+            const char *privKey = nullptr;
+            const char *passPhrase = nullptr;
+            if (queryHPCCPKIKeyFiles(&cert, &pubKey, &privKey, &passPhrase))
+            {
+                if ( (!isEmptyString(cert)) && (!isEmptyString(privKey)) )
+                {
+                    if (checkFileExists(cert) && checkFileExists(privKey))
+                    {
+                        CriticalBlock block(mtlsInfoCacheCS);
+                        if (mtlsInfoCache)
+                        {
+                            IPropertyTree *info = mtlsInfoCache->queryPropTree("local");
+                            if (!info)
+                                info = mtlsInfoCache->setPropTree("local");
+                            if (info)
+                            {   // always update
+                                info->setProp("certificate", cert);
+                                info->setProp("privatekey", privKey);
+                                if ( (!isEmptyString(pubKey)) && (checkFileExists(pubKey)) )
+                                    info->setProp("publickey", pubKey);
+                                if (!isEmptyString(passPhrase))
+                                    info->setProp("passphrase", passPhrase); // encrypted
+                            }
+                        }
+                    }
+                }
+            }
+        }
+# endif
+#endif
+    }
+    if (useMtls == ENABLED)
+        return true;
+    else
+        return false;
+}

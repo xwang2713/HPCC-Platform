@@ -7,8 +7,9 @@ import * as Utility from "src/Utility";
 import nlsHPCC from "src/nlsHPCC";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { pushParams } from "../util/history";
-import { Fields, Filter } from "./Filter";
-import { ShortVerticalDivider } from "./Common";
+import { Fields } from "./forms/Fields";
+import { Filter } from "./forms/Filter";
+import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
 import { DojoGrid, selector } from "./DojoGrid";
 
 const FilterFields: Fields = {
@@ -23,14 +24,20 @@ const FilterFields: Fields = {
     "Activated": { type: "queries-active-state", label: nlsHPCC.Activated }
 };
 
-function formatQuery(filter) {
+function formatQuery(filter: any, wuid?: string) {
+    if (wuid !== undefined) {
+        return {
+            WUID: wuid
+        };
+    }
+    const retVal = { ...filter };
     if (filter.StartDate) {
-        filter.StartDate = new Date(filter.StartDate).toISOString();
+        retVal.StartDate = new Date(filter.StartDate).toISOString();
     }
     if (filter.EndDate) {
-        filter.EndDate = new Date(filter.StartDate).toISOString();
+        retVal.EndDate = new Date(filter.StartDate).toISOString();
     }
-    return filter;
+    return retVal;
 }
 
 const defaultUIState = {
@@ -42,6 +49,7 @@ const defaultUIState = {
 };
 
 interface QueriesProps {
+    wuid?: string;
     filter?: object;
     store?: any;
 }
@@ -49,6 +57,7 @@ interface QueriesProps {
 const emptyFilter = {};
 
 export const Queries: React.FunctionComponent<QueriesProps> = ({
+    wuid,
     filter = emptyFilter,
     store
 }) => {
@@ -106,7 +115,7 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
         },
         { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
-            key: "filter", text: nlsHPCC.Filter, disabled: !!store, iconProps: { iconName: "Filter" },
+            key: "filter", text: nlsHPCC.Filter, disabled: store !== undefined || wuid !== undefined, iconProps: { iconName: "Filter" },
             onClick: () => {
                 setShowFilter(true);
             }
@@ -120,24 +129,12 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
     ];
 
     const rightButtons: ICommandBarItemProps[] = [
-        {
-            key: "copy", text: nlsHPCC.CopyWUIDs, disabled: !uiState.hasSelection || !navigator?.clipboard?.writeText, iconOnly: true, iconProps: { iconName: "Copy" },
-            onClick: () => {
-                const wuids = selection.map(s => s.Wuid);
-                navigator?.clipboard?.writeText(wuids.join("\n"));
-            }
-        },
-        {
-            key: "download", text: nlsHPCC.DownloadToCSV, disabled: !uiState.hasSelection, iconOnly: true, iconProps: { iconName: "Download" },
-            onClick: () => {
-                Utility.downloadToCSV(grid, selection.map(row => ([row.Protected, row.Wuid, row.Owner, row.Jobname, row.Cluster, row.RoxieCluster, row.State, row.TotalClusterTime])), "workunits.csv");
-            }
-        }
+        ...createCopyDownloadSelection(grid, selection, "roxiequeries.csv")
     ];
 
     //  Grid ---
     const gridStore = useConst(store || ESPQuery.CreateQueryStore({}));
-    const gridQuery = useConst(formatQuery(filter));
+    const gridQuery = useConst(formatQuery(filter, wuid));
     const gridSort = useConst([{ attribute: "Id" }]);
     const gridColumns = useConst({
         col1: selector({
@@ -235,7 +232,7 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
     });
 
     const refreshTable = (clearSelection = false) => {
-        grid?.set("query", formatQuery(filter));
+        grid?.set("query", formatQuery(filter, wuid));
         if (clearSelection) {
             grid?.clearSelection();
         }

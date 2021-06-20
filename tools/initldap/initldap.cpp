@@ -16,7 +16,6 @@
 ############################################################################## */
 #include "ldapsecurity.ipp"
 #include "ldapsecurity.hpp"
-#include "build-config.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -58,9 +57,11 @@ bool initLDAP(IPropertyTree * ldapProps)
     StringBuffer ldapAddress;
     ldapProps->getProp("@ldapAddress", ldapAddress);
 
+    bool is389DS = (0 == strcmp(serverType.get(), "389DirectoryServer") ? true : false);
+
     //Get LDAP admin creds from user
     char buff[100];
-    fprintf(stdout, "\nEnter the '%s' LDAP Admin User name on '%s'...",serverType.get(),ldapAddress.str());
+    fprintf(stdout, "\nEnter the '%s' LDAP Admin User name on '%s'.%s..",serverType.get(),ldapAddress.str(),is389DS?" Please include the attribute name prefix such as uid=adminName.":"");
     do
     {
         char * line = fgets(buff, sizeof(buff), stdin);
@@ -179,7 +180,7 @@ int main(int argc, char* argv[])
 
     //execute configgen to query the LDAP Server configuration(s)
     StringBuffer cmd;
-    cmd.appendf("%s%cconfiggen -env %s%c%s -listldapservers", ADMIN_DIR,PATHSEPCHAR,CONFIG_DIR, PATHSEPCHAR, ENV_XML_FILE);
+    cmd.appendf("%s%cconfiggen -env %s%c%s -listldapservers", hpccBuildInfo.adminDir,PATHSEPCHAR,hpccBuildInfo.configDir, PATHSEPCHAR, hpccBuildInfo.envXmlFile);
 
     char * configBuffer = NULL;
 

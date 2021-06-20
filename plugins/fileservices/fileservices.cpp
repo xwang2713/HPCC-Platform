@@ -192,6 +192,7 @@ static void setWorkunitState(ICodeContext * ctx, WUState state, const char * msg
     }
 }
 
+#ifndef _CONTAINERIZED
 static IConstEnvironment * openDaliEnvironment()
 {
     if (daliClientActive())
@@ -208,6 +209,7 @@ static IPropertyTree *getEnvironmentTree(IConstEnvironment * daliEnv)
         return &daliEnv->getPTree(); // No need to clone since daliEnv ensures connection stays alive.
     return getHPCCEnvironment();
 }
+#endif
 
 static void setServerAccess(CClientFileSpray &server, IConstWorkUnit * wu)
 {
@@ -225,6 +227,14 @@ static void addConfiguredWsFSUrl(const char * url)
     availableWsFS.appendUniq(url);
 }
 
+static void setContainerLocalCertificate(IEspClientRpcSettings &rpc)
+{
+#ifdef _CONTAINERIZED
+    //will only affect HTTPS
+    rpc.setMtlsSecretName("local");
+#endif
+}
+
 static bool contactWsFS(const char * espurl, IConstWorkUnit * wu)
 {
     CClientFileSpray server;
@@ -234,6 +244,7 @@ static bool contactWsFS(const char * espurl, IConstWorkUnit * wu)
     try
     {
         Owned<IClientEchoDateTime> req = server.createEchoDateTimeRequest();
+        setContainerLocalCertificate(req->rpc());
         Owned<IClientEchoDateTimeResponse> result = server.EchoDateTime(req);
 
         if (result->getResult())
@@ -278,6 +289,9 @@ static const char *getAccessibleEspServerURL(const char *param, IConstWorkUnit *
     if (param&&*param)
         return param;
 
+#ifdef _CONTAINERIZED
+    UNIMPLEMENTED_X("CONTAINERIZED(getAccessibleEspServerURL)");
+#else
     CriticalBlock b(espURLcrit);
     if (isUrlListEmpty())
     {
@@ -339,6 +353,7 @@ static const char *getAccessibleEspServerURL(const char *param, IConstWorkUnit *
     PROGLOG("FileServices: Targeting ESP WsFileSpray URL: %s", nextWsFSUrl);
 
     return nextWsFSUrl;
+#endif
 }
 
 StringBuffer & constructLogicalName(IConstWorkUnit * wu, const char * partialLogicalName, StringBuffer & result)
@@ -658,6 +673,7 @@ static void blockUntilComplete(const char * label, IClientFileSpray &server, ICo
     {
 
         Owned<IClientGetDFUWorkunit> req = server.createGetDFUWorkunitRequest();
+        setContainerLocalCertificate(req->rpc());
         req->setWuid(wuid);
         Owned<IClientGetDFUWorkunitResponse> result = server.GetDFUWorkunit(req);
 
@@ -721,6 +737,7 @@ static void blockUntilComplete(const char * label, IClientFileSpray &server, ICo
         if (aborting)
         {
             Owned<IClientAbortDFUWorkunit> abortReq = server.createAbortDFUWorkunitRequest();
+            setContainerLocalCertificate(abortReq->rpc());
             abortReq->setWuid(wuid);
             Linked<IClientAbortDFUWorkunitResponse> abortResp = server.AbortDFUWorkunit(abortReq);
 
@@ -765,6 +782,7 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayFixed(ICodeContext *ctx,
     setServerAccess(server, wu);
 
     Owned<IClientSprayFixed> req = server.createSprayFixedRequest();
+    setContainerLocalCertificate(req->rpc());
     StringBuffer logicalName;
     constructLogicalName(wu, destinationLogicalName, logicalName);
 
@@ -866,6 +884,7 @@ static char * implementSprayVariable(ICodeContext *ctx, const char * sourceIP, c
     setServerAccess(server, wu);
 
     Owned<IClientSprayVariable> req = server.createSprayVariableRequest();
+    setContainerLocalCertificate(req->rpc());
     StringBuffer logicalName;
     constructLogicalName(wu, destinationLogicalName, logicalName);
 
@@ -1017,6 +1036,7 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayXml(ICodeContext *ctx, c
     setServerAccess(server, wu);
 
     Owned<IClientSprayVariable> req = server.createSprayVariableRequest();
+    setContainerLocalCertificate(req->rpc());
     StringBuffer logicalName;
     constructLogicalName(wu, destinationLogicalName, logicalName);
 
@@ -1126,6 +1146,7 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayJson(ICodeContext *ctx, 
     setServerAccess(server, wu);
 
     Owned<IClientSprayVariable> req = server.createSprayVariableRequest();
+    setContainerLocalCertificate(req->rpc());
     StringBuffer logicalName;
     constructLogicalName(wu, destinationLogicalName, logicalName);
 
@@ -1220,6 +1241,7 @@ FILESERVICES_API char * FILESERVICES_CALL fsfDespray(ICodeContext *ctx, const ch
         setServerAccess(server, wu);
 
     Owned<IClientDespray> req = server.createDesprayRequest();
+    setContainerLocalCertificate(req->rpc());
     StringBuffer logicalName;
     constructLogicalName(wu, sourceLogicalName, logicalName);
 
@@ -1265,6 +1287,7 @@ FILESERVICES_API char * FILESERVICES_CALL implementCopy(ICodeContext *ctx, const
     setServerAccess(server, wu);
 
     Owned<IClientCopy> req = server.createCopyRequest();
+    setContainerLocalCertificate(req->rpc());
     if (asSuperfile)
         req->setSuperCopy(true);
 
@@ -1363,6 +1386,7 @@ FILESERVICES_API char * FILESERVICES_CALL fsfReplicate(ICodeContext *ctx, const 
     setServerAccess(server, wu);
 
     Owned<IClientReplicate> req = server.createReplicateRequest();
+    setContainerLocalCertificate(req->rpc());
     StringBuffer logicalName;
     constructLogicalName(wu, sourceLogicalName, logicalName);
 
@@ -1894,6 +1918,7 @@ FILESERVICES_API void FILESERVICES_CALL fslAbortDfuWorkunit(ICodeContext *ctx, c
     server.addServiceUrl(getAccessibleEspServerURL(espServerIpPort,wu));
     setServerAccess(server, wu);
     Owned<IClientAbortDFUWorkunit> abortReq = server.createAbortDFUWorkunitRequest();
+    setContainerLocalCertificate(abortReq->rpc());
     abortReq->setWuid(wuid);
     Linked<IClientAbortDFUWorkunitResponse> abortResp = server.AbortDFUWorkunit(abortReq);
     StringBuffer s("DFU Workunit Abort Requested for ");
@@ -1917,6 +1942,7 @@ FILESERVICES_API char *  FILESERVICES_CALL fsfMonitorLogicalFileName(ICodeContex
     if (shotcount == 0)
         shotcount = -1;
     Owned<IClientDfuMonitorRequest> req = server.createDfuMonitorRequest();
+    setContainerLocalCertificate(req->rpc());
     req->setEventName(eventname);
     req->setLogicalName(lfn);
     req->setShotLimit(shotcount);
@@ -1946,6 +1972,7 @@ FILESERVICES_API char *  FILESERVICES_CALL fsfMonitorFile(ICodeContext *ctx, con
         shotcount = -1;
 
     Owned<IClientDfuMonitorRequest> req = server.createDfuMonitorRequest();
+    setContainerLocalCertificate(req->rpc());
     req->setEventName(eventname);
     req->setIp(ip);
     req->setFilename(filename);
@@ -2233,6 +2260,7 @@ FILESERVICES_API char * FILESERVICES_CALL fsfRemotePull_impl(ICodeContext *ctx,
     setServerAccess(server, wu);
 
     Owned<IClientCopy> req = server.createCopyRequest();
+    setContainerLocalCertificate(req->rpc());
     if (asSuperfile)
         req->setSuperCopy(true);
 
@@ -2875,48 +2903,46 @@ FILESERVICES_API void FILESERVICES_CALL fsDfuPlusExec(ICodeContext * ctx,const c
 FILESERVICES_API char * FILESERVICES_CALL fsGetEspURL(const char *username, const char *userPW)
 {
 #ifdef _CONTAINERIZED
-    const char *defaultEsp = queryComponentConfig().queryProp("@defaultEsp");
-    if (isEmptyString(defaultEsp))
-        defaultEsp = queryGlobalConfig().queryProp("@defaultEsp");
-    if (isEmptyString(defaultEsp))
+    const IPropertyTree *match = nullptr;
+    const char *espService = getComponentConfigSP()->queryProp("@defaultEsp");
+    Owned<IPropertyTree> globalConfig = getGlobalConfig();
+    if (isEmptyString(espService))
+        espService = globalConfig->queryProp("@defaultEsp");
+    if (!isEmptyString(espService))
     {
-        Owned<IPropertyTreeIterator> esps = queryGlobalConfig().getElements("esp");
-        ForEach(*esps)
+        VStringBuffer service("services[@name='%s']", espService);
+        match = globalConfig->queryPropTree(service.str());
+    }
+    if (!match)
+    {
+        // Look for 'eclservices' esp service, fallback to 'eclwatch' service.
+        Owned<IPropertyTreeIterator> iter = globalConfig->getElements("services");
+        ForEach(*iter)
         {
-            const char *application = esps->query().queryProp("@application");
-            if (application)
+            const char *type = iter->query().queryProp("@type");
+            if (streq("eclservices", type))
             {
-                if (streq(application, "eclservices"))
-                {
-                    defaultEsp = esps->query().queryProp("@name");
-                    break;
-                }
-                else if (!defaultEsp && streq(application, "eclwatch"))
-                    defaultEsp = esps->query().queryProp("@name");
+                match = &iter->query();
+                break;
             }
+            else if (streq("eclwatch", type))
+                match = &iter->query();
         }
     }
-    if (!isEmptyString(defaultEsp))
+    if (match) // MORE - if not found, we could generate a warning - it implies something misconfigured!
     {
+        if (!espService)
+            espService = match->queryProp("@name");
         StringBuffer credentials;
         if (username && username[0] && userPW && userPW[0])
             credentials.setf("%s:%s@", username, userPW);
         else if (username && username[0])
             credentials.setf("%s@", username);
 
-        VStringBuffer espInfo("esp[@name='%s']", defaultEsp);
-        const char *protocol = "https";
-        unsigned port = 8010;
-        const IPropertyTree *espconfig = queryGlobalConfig().queryPropTree(espInfo);
-        if (espconfig)
-        {
-            if (!espconfig->getPropBool("@tls", true))
-                protocol = "http";
-            port = espconfig->getPropInt("@servicePort", port);
-        }
-        // MORE - if not found, we could generate a warning - it implies something misconfigured!
+        const char *protocol = match->getPropBool("@tls") ? "https" : "http";
+        unsigned port = match->getPropInt("@port", 8010);
 
-        VStringBuffer espURL("%s://%s%s:%u", protocol, credentials.str(), defaultEsp, port);
+        VStringBuffer espURL("mtls:%s://%s%s:%u", protocol, credentials.str(), espService, port);
         return espURL.detach();
     }
 #else
@@ -2984,30 +3010,23 @@ FILESERVICES_API char * FILESERVICES_CALL fsGetEspURL(const char *username, cons
 
 FILESERVICES_API char * FILESERVICES_CALL fsGetDefaultDropZone()
 {
-    Owned<IEnvironmentFactory> envFactory = getEnvironmentFactory(true);
-    Owned<IConstEnvironment> constEnv = envFactory-> openEnvironment();
-    Owned<IConstDropZoneInfoIterator> dropZoneIt = constEnv->getDropZoneIterator();
-    SCMStringBuffer dropZoneDir;
-    if (dropZoneIt->first())
-        dropZoneIt->query().getDirectory(dropZoneDir);
-
-    return strdup(dropZoneDir.str());
+    StringBuffer dropZonePath;
+    Owned<IPropertyTreeIterator> dropZones = getGlobalConfigSP()->getElements("storage/planes[labels='lz']");
+    if (dropZones->first())
+        dropZones->query().getProp("@prefix", dropZonePath);        // Why the directory? seems a very stange choice
+    return strdup(dropZonePath.str());
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsGetDropZones(ICodeContext *ctx, size32_t & __lenResult, void * & __result)
 {
     MemoryBuffer mb;
-    Owned<IEnvironmentFactory> envFactory = getEnvironmentFactory(true);
-    Owned<IConstEnvironment> constEnv = envFactory-> openEnvironment();
-    Owned<IConstDropZoneInfoIterator> dropZoneIt = constEnv->getDropZoneIterator();
-    ForEach(*dropZoneIt)
+    Owned<IPropertyTreeIterator> dropZones = getGlobalConfigSP()->getElements("storage/planes[labels='lz']");
+    ForEach(*dropZones)
     {
-        SCMStringBuffer dropZoneDir;
-        dropZoneIt->query().getDirectory(dropZoneDir);
-        size32_t sz = dropZoneDir.length();
-        mb.append(sz).append(sz,dropZoneDir.str());
+        const char * directory = dropZones->query().queryProp("@prefix");
+        size32_t sz = strlen(directory);
+        mb.append(sz).append(sz,directory);
     }
-
     __lenResult = mb.length();
     __result = mb.detach();
 }

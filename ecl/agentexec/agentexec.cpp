@@ -244,10 +244,11 @@ public:
                 jobSpecName.set("thormanager");
                 processName.set("thormaster_lcr");
             }
-            if (!queryComponentConfig().getPropBool("@useChildProcesses", false))
+            Owned<const IPropertyTree> compConfig = getComponentConfig();
+            if (!compConfig->getPropBool("@useChildProcesses", false))
             {
                 std::list<std::pair<std::string, std::string>> params = { };
-                if (queryComponentConfig().getPropBool("@useThorQueue", true))
+                if (compConfig->getPropBool("@useThorQueue", true))
                     params.push_back({ "queue", queue.get() });
                 StringBuffer jobName(wuid);
                 if (isThorJob)
@@ -260,12 +261,12 @@ public:
             else
             {
                 VStringBuffer exec("%s --workunit=%s --daliServers=%s", processName.get(), wuid.str(), dali.str());
-                if (queryComponentConfig().hasProp("@config"))
+                if (compConfig->hasProp("@config"))
                 {
                     exec.append(" --config=");
-                    queryComponentConfig().getProp("@config", exec);
+                    compConfig->getProp("@config", exec);
                 }
-                if (queryComponentConfig().getPropBool("@useThorQueue", true))
+                if (compConfig->getPropBool("@useThorQueue", true))
                     exec.append(" --queue=").append(queue);
                 if (isThorJob)
                     exec.appendf(" --graphName=%s", graphName.get());
@@ -382,17 +383,9 @@ eclagent:
 
 int main(int argc, const char *argv[]) 
 { 
-#ifndef _CONTAINERIZED
-    for (unsigned i=0;i<(unsigned)argc;i++) {
-        if (streq(argv[i],"--daemon") || streq(argv[i],"-d")) {
-            if (daemon(1,0) || write_pidfile(argv[++i])) {
-                perror("Failed to daemonize");
-                return EXIT_FAILURE;
-            }
-            break;
-        }
-    }
-#endif
+    if (!checkCreateDaemon(argc, argv))
+        return EXIT_FAILURE;
+
     InitModuleObjects();
 
     Owned<IPropertyTree> config;

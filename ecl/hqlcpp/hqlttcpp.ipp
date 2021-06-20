@@ -533,6 +533,7 @@ protected:
 
     void analyseExpr(IHqlExpression * expr);
     void addWorkflowItem(WorkflowItem & item);
+    unsigned querySingleRootWfid(const HqlExprArray & transformed);
 
 protected:
     IWorkUnit *               wu;
@@ -1156,6 +1157,8 @@ public:
     virtual void analyseExpr(IHqlExpression * expr);
     virtual ANewTransformInfo * createTransformInfo(IHqlExpression * expr);
     virtual IHqlExpression * createTransformed(IHqlExpression * expr);
+
+    virtual void setTransformed(IHqlExpression * expr, IHqlExpression * transformed) override;
 
 //  virtual void analyseSelector(IHqlExpression * expr);
 //  virtual IHqlExpression * transformSelector(IHqlExpression * expr);

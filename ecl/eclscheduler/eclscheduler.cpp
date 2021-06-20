@@ -32,7 +32,6 @@
 #include "eventqueue.hpp"
 
 static unsigned traceLevel;
-Owned<IPropertyTree> globals;
 
 //=========================================================================================
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -164,23 +163,30 @@ private:
 
 void openLogFile()
 {
-    Owned<IComponentLogFileCreator> lf = createComponentLogFileCreator(globals, "eclscheduler");
+#ifndef _CONTAINERIZED
+    Owned<IPropertyTree> config = getComponentConfig();
+    Owned<IComponentLogFileCreator> lf = createComponentLogFileCreator(config, "eclscheduler");
     lf->beginLogging();
+#else
+    setupContainerizedLogMsgHandler();
+#endif
 }
 
 //=========================================================================================
 
+static constexpr const char * defaultYaml = R"!!(
+version: "1.0"
+eclscheduler:
+  daliServers: dali
+  enableSysLog: true
+  name: myeclscheduler
+)!!";
+
 int main(int argc, const char *argv[])
 {
-    for (unsigned i=0;i<(unsigned)argc;i++) {
-        if (streq(argv[i],"--daemon") || streq(argv[i],"-d")) {
-            if (daemon(1,0) || write_pidfile(argv[++i])) {
-                perror("Failed to daemonize");
-                return EXIT_FAILURE;
-            }
-            break;
-        }
-    }
+    if (!checkCreateDaemon(argc, argv))
+        return EXIT_FAILURE;
+
     InitModuleObjects();
     initSignals();
     NoQuickEditSection x;
@@ -189,25 +195,32 @@ int main(int argc, const char *argv[])
     // We remove any existing sentinel until we have validated that we can successfully start (i.e. all options are valid...)
     removeSentinelFile(sentinelFile);
 
-    const char *iniFileName;
+    const char *iniFileName = nullptr;
     if (checkFileExists("eclscheduler.xml") )
         iniFileName = "eclscheduler.xml";
     else if (checkFileExists("eclccserver.xml") )
         iniFileName = "eclccserver.xml";
-    else
-    {
-        OERRLOG("Cannot find eclscheduler.xml or eclccserver.xml");
-        return 1;
-    }
+
+    Owned<IPropertyTree> globals;
     try
     {
-        globals.setown(createPTreeFromXMLFile(iniFileName, ipt_caseInsensitive));
+        globals.setown(loadConfiguration(defaultYaml, argv, "eclscheduler", "ECLSCHEDULER", iniFileName, nullptr));
+    }
+    catch (IException * e)
+    {
+        UERRLOG(e);
+        e->Release();
+        return 1;
     }
     catch(...)
     {
-        OERRLOG("Failed to load %s", iniFileName);
+        if (iniFileName)
+            OERRLOG("Failed to load configuration %s", iniFileName);
+        else
+            OERRLOG("Cannot find eclscheduler.xml or eclccserver.xml");
         return 1;
     }
+
     openLogFile();
 
     setStatisticsComponentName(SCThthor, globals->queryProp("@name"), true);
@@ -223,10 +236,22 @@ int main(int argc, const char *argv[])
     try
     {
         initClientProcess(serverGroup, DCR_EclScheduler);
-        Owned <IStringIterator> targetClusters = getTargetClusters("EclSchedulerProcess", globals->queryProp("@name"));
-        if (!targetClusters->first())
-            throw MakeStringException(0, "No clusters found to schedule for");
+
         CIArrayOf<EclScheduler> schedulers;
+
+#ifdef _CONTAINERIZED
+        Owned<IPTreeIterator> queues = globals->getElements("queues");
+        ForEach(*queues)
+        {
+            IPTree &queue = queues->query();
+            const char *qname = queue.queryProp("@name");
+            DBGLOG("Start listening to queue %s", qname);
+            Owned<EclScheduler> scheduler = new EclScheduler(qname);
+            scheduler->start();
+            schedulers.append(*scheduler.getClear());
+        }
+#else
+        Owned <IStringIterator> targetClusters = getTargetClusters("EclSchedulerProcess", globals->queryProp("@name"));
         ForEach (*targetClusters)
         {
             SCMStringBuffer targetCluster;
@@ -235,6 +260,10 @@ int main(int argc, const char *argv[])
             scheduler->start();
             schedulers.append(*scheduler.getClear());
         }
+#endif
+        if (schedulers.empty())
+            throw MakeStringException(0, "No clusters found to schedule for");
+
         // if we got here, eclscheduler is successfully started and all options are good, so create the "sentinel file" for re-runs from the script
         writeSentinelFile(sentinelFile);
         LocalIAbortHandler abortHandler(waiter);

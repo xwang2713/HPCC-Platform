@@ -46,7 +46,7 @@
 #include "eclhelper_dyn.hpp"
 #include "rtldynfield.hpp"
 
-atomic_t numFilesOpen[2];
+std::atomic<unsigned> numFilesOpen[2];
 
 #define MAX_READ_RETRIES 2
 
@@ -206,7 +206,7 @@ public:
         {
             if (current.get()==&failure)
                 return;
-            atomic_dec(&numFilesOpen[remote]);
+            numFilesOpen[remote]--;
             mergeStats(fileStats, current);
             current.set(&failure); 
         }
@@ -314,8 +314,7 @@ public:
                 }
             }
             lastAccess = msTick();
-            atomic_inc(&numFilesOpen[remote]);
-            if ((unsigned) atomic_read(&numFilesOpen[remote]) > maxFilesOpen[remote])
+            if (++numFilesOpen[remote] > maxFilesOpen[remote])
                 queryFileCache().closeExpired(remote); // NOTE - this does not actually do the closing of expired files (which could deadlock, or could close the just opened file if we unlocked crit)
         }
     }
@@ -604,23 +603,47 @@ typedef StringArray *StringArrayPtr;
 
 struct CacheInfoEntry
 {
+    //For convenience the values for PageType match the NodeX enumeration (see noteWarm).
+    //Ensure disk entries sort last so that index nodes take precedence when deduping offsets.
+    enum PageType : unsigned
+    {
+        PageTypeBranch = 0,
+        PageTypeLeaf = 1,
+        PageTypeBlob = 2,
+        PageTypeDisk = 3,
+    };
+
     union
     {
         struct
         {
-            bool diskCache : 1;   // false means it's in the jhtree cache, true means it's only in OS disk cache
-            __uint64 page: 39;
-            unsigned file: 24;
+#ifndef _WIN32
+            unsigned type: 2;    // disk or the kind of index node
+            __uint64 page: 38;   // Support file sizes up to 2^51 i.e. 2PB
+            unsigned file: 24;   // Up to 4 million files
+#else
+//Windows does not like packing bitfields with different base types - fails the statck assert
+            __uint64 type: 2;    // disk or the kind of index node
+            __uint64 page: 38;   // Support file sizes up to 2^51 i.e. 2PB
+            __uint64 file: 24;   // Up to 4 million files
+#endif
         } b;
         __uint64 u;
     };
 
+#ifndef _WIN32
+    static_assert(sizeof(b) == sizeof(u), "Unexpected packing issue in CacheInfoEntry");
+#elif _MSC_VER >= 1900
+    //Older versions of the windows compiler complain CacheInfoEntry::b is not a type name
+    static_assert(sizeof(b) == sizeof(u), "Unexpected packing issue in CacheInfoEntry");
+#endif
+
     inline CacheInfoEntry() { u = 0; }
-    inline CacheInfoEntry(unsigned _file, offset_t _pos, bool _diskCache)
+    inline CacheInfoEntry(unsigned _file, offset_t _pos, PageType pageType)
     {
         b.file = _file;
         b.page = _pos >> pageBits;
-        b.diskCache = _diskCache;
+        b.type = pageType;
     }
     inline bool operator < ( const CacheInfoEntry &l) const { return u < l.u; }
     inline bool operator <= ( const CacheInfoEntry &l) const { return u <= l.u; }
@@ -644,7 +667,9 @@ public:
         recentReadSize = trackSize >> CacheInfoEntry::pageBits;
         if (traceLevel)
             DBGLOG("Creating CacheReportingBuffer with %d elements", recentReadSize);
-        assertex(recentReadSize);
+        if (!recentReadSize)
+            throw makeStringExceptionV(ROXIE_FILE_ERROR, "cacheTrackSize(%u) is the size in bytes it cannot be < %u", (unsigned)trackSize, 1U << CacheInfoEntry::pageBits);
+
         recentReads = new CacheInfoEntry[recentReadSize];
         recentReadHead = 0;
     }
@@ -668,12 +693,12 @@ public:
         recentReadHead = 0;
     }
 
-    void noteRead(unsigned fileIdx, offset_t pos, unsigned len, bool diskCache)
+    void noteRead(unsigned fileIdx, offset_t pos, unsigned len, CacheInfoEntry::PageType pageType)
     {
         if (recentReads && len)
         {
-            CacheInfoEntry start(fileIdx, pos, diskCache);
-            CacheInfoEntry end(fileIdx, pos+len-1, diskCache);
+            CacheInfoEntry start(fileIdx, pos, pageType);
+            CacheInfoEntry end(fileIdx, pos+len-1, pageType);
             for(;start <= end; ++start)
             {
                 recentReads[recentReadHead++ % recentReadSize] = start;
@@ -690,7 +715,7 @@ public:
         else
             sortSize = recentReadHead;
         std::sort(recentReads, recentReads + sortSize);
-        CacheInfoEntry lastPos(-1,-1,false);
+        CacheInfoEntry lastPos(-1,-1,CacheInfoEntry::PageTypeDisk);
         unsigned dest = 0;
         for (unsigned idx = 0; idx < sortSize; idx++)
         {
@@ -711,7 +736,7 @@ public:
         unsigned lastFileIdx = (unsigned) -1;
         offset_t lastPage = (offset_t) -1;
         offset_t startRange = 0;
-        bool lastDiskCache = false;
+        CacheInfoEntry::PageType lastPageType = CacheInfoEntry::PageTypeDisk;
         bool includeFile = false;
         for (unsigned idx = 0; idx < recentReadHead; idx++)
         {
@@ -719,7 +744,7 @@ public:
             if (pos.b.file != lastFileIdx)
             {
                 if (includeFile)
-                    appendRange(ret, startRange, lastPage, lastDiskCache).newline();
+                    appendRange(ret, startRange, lastPage, lastPageType).newline();
                 lastFileIdx = pos.b.file;
                 if (channel==(unsigned) -1 || cacheIndexChannels.item(lastFileIdx)==channel)
                 {
@@ -730,34 +755,37 @@ public:
                     includeFile = false;
                 startRange = pos.b.page;
             }
-            else if ((pos.b.page == lastPage || pos.b.page == lastPage+1) && pos.b.diskCache == lastDiskCache)
+            else if ((pos.b.page == lastPage || pos.b.page == lastPage+1) && pos.b.type == lastPageType)
             {
                 // Still in current range
             }
             else
             {
                 if (includeFile)
-                    appendRange(ret, startRange, lastPage, lastDiskCache);
+                    appendRange(ret, startRange, lastPage, lastPageType);
                 startRange = pos.b.page;
             }
             lastPage = pos.b.page;
-            lastDiskCache = pos.b.diskCache;
+            lastPageType = (CacheInfoEntry::PageType)pos.b.type;
         }
         if (includeFile)
-            appendRange(ret, startRange, lastPage, lastDiskCache).newline();
+            appendRange(ret, startRange, lastPage, lastPageType).newline();
     }
 
-    virtual void noteWarm(unsigned fileIdx, offset_t pos, unsigned len) override
+    virtual void noteWarm(unsigned fileIdx, offset_t pos, unsigned len, NodeType type) override
     {
-        noteRead(fileIdx, pos, len, false);
+        //For convenience the values for PageType match the NodeX enumeration.
+        CacheInfoEntry::PageType pageType = (type <= NodeBlob) ? (CacheInfoEntry::PageType)type : CacheInfoEntry::PageTypeDisk;
+        noteRead(fileIdx, pos, len, pageType);
     }
 
 private:
-    static StringBuffer &appendRange(StringBuffer &ret, offset_t start, offset_t end, bool diskCache)
+    static StringBuffer &appendRange(StringBuffer &ret, offset_t start, offset_t end, CacheInfoEntry::PageType pageType)
     {
         ret.append(' ');
-        if (!diskCache)
-            ret.append('*');
+        if (pageType != CacheInfoEntry::PageTypeDisk)
+            ret.append('*').append("RLB"[pageType]);
+
         if (start==end)
             ret.appendf("%" I64F "x", start);
         else
@@ -772,9 +800,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
     mutable ICopyArrayOf<ILazyFileIO> todo; // Might prefer a queue but probably doesn't really matter.
     InterruptableSemaphore toCopy;
     InterruptableSemaphore toClose;
-#ifdef _CONTAINERIZED
     InterruptableSemaphore cidtSleep;
-#endif
     mutable CopyMapStringToMyClass<ILazyFileIO> files;
     mutable CriticalSection crit;
     CriticalSection cpcrit;
@@ -783,10 +809,8 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
     std::atomic<bool> closing;
     bool closePending[2];
     StringAttrMapping fileErrorList;
-#ifdef _CONTAINERIZED
     bool cidtActive = false;
     Semaphore cidtStarted;
-#endif
     Semaphore bctStarted;
     Semaphore hctStarted;
 
@@ -824,7 +848,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
             return FileNotFound;
     }
 
-#ifdef _CONTAINERIZED
     int runCacheInfoDump()
     {
         cidtStarted.signal();
@@ -887,7 +910,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
             DBGLOG("Cache info dump thread %p exiting", this);
         return 0;
     }
-#endif
 
     unsigned trackCache(const char *filename, unsigned channel)
     {
@@ -902,7 +924,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
     virtual void noteRead(unsigned fileIdx, offset_t pos, unsigned len) override
     {
         if (activeCacheReportingBuffer)
-            activeCacheReportingBuffer->noteRead(fileIdx, pos, len, true);
+            activeCacheReportingBuffer->noteRead(fileIdx, pos, len, CacheInfoEntry::PageTypeDisk);
     }
 
     ILazyFileIO *openFile(const char *lfn, unsigned partNo, unsigned channel, const char *localLocation,
@@ -1188,9 +1210,7 @@ public:
     IMPLEMENT_IINTERFACE;
 
     CRoxieFileCache() :
-#ifdef _CONTAINERIZED
                         cidt(*this),
-#endif
                         bct(*this), hct(*this)
     {
         aborting = false;
@@ -1200,12 +1220,13 @@ public:
         started = false;
         if (!selfTestMode && !allFilesDynamic)
         {
-            offset_t cacheTrackSize = queryComponentConfig().getPropInt64("@cacheTrackSize", (offset_t) -1);
+            Owned<IPropertyTree> compConfig = getComponentConfig();
+            offset_t cacheTrackSize = compConfig->getPropInt64("@cacheTrackSize", (offset_t) -1);
             if (cacheTrackSize == (offset_t) -1)
             {
-                const char *memLimit = queryComponentConfig().queryProp("resources/limits/@memory");
+                const char *memLimit = compConfig->queryProp("resources/limits/@memory");
                 if (!memLimit)
-                    memLimit = queryComponentConfig().queryProp("resources/requests/@memory");
+                    memLimit = compConfig->queryProp("resources/requests/@memory");
                 if (memLimit)
                 {
                     try
@@ -1254,17 +1275,18 @@ public:
 
     virtual void startCacheReporter() override
     {
-#ifdef _CONTAINERIZED
+#ifndef _CONTAINERIZED
+        if (!getenv("HPCC_DLLSERVER_PATH"))
+            return;
+#endif
         if (activeCacheReportingBuffer && cacheReportPeriodSeconds)
         {
             cidt.start();
             cidtStarted.wait();
             cidtActive = true;
         }
-#endif
     }
 
-#ifdef _CONTAINERIZED
     class CacheInfoDumpThread : public Thread
     {
         CRoxieFileCache &owner;
@@ -1276,7 +1298,6 @@ public:
             return owner.runCacheInfoDump();
         }
     } cidt;
-#endif
 
     class BackgroundCopyThread : public Thread
     {
@@ -1633,7 +1654,7 @@ public:
         if (!closePending[remote])
         {
             closePending[remote] = true;
-            DBGLOG("closeExpired %s scheduled - %d files open", remote ? "remote" : "local", (int) atomic_read(&numFilesOpen[remote]));
+            DBGLOG("closeExpired %s scheduled - %d files open", remote ? "remote" : "local", (int) numFilesOpen[remote]);
             toClose.signal();
         }
     }
@@ -1670,7 +1691,13 @@ public:
     void doLoadSavedOsCacheInfo(unsigned channel)
     {
         const char* dllserver_root = getenv("HPCC_DLLSERVER_PATH");
+#ifdef _CONTAINERIZED
         assertex(dllserver_root != nullptr);
+#else
+        //Default behaviour is to not load or saving anything on bare metal
+        if (!dllserver_root)
+            return;
+#endif
         VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", dllserver_root, roxieName.str(), channel);
         StringBuffer cacheInfo;
         try
@@ -1753,6 +1780,8 @@ public:
                 DBGLOG("Failed to open file %s to pre-warm cache (error %d)", fileName.str(), errno);
             }
 #endif
+            // "fileName" is the filename that roxie would use if it copied the file locally.  This may not
+            // match the name of the actual file - e.g. if the file is local but in a different location.
             Owned<ILazyFileIO> localFile = lookupLocalFile(fileName);
             if (localFile)
             {
@@ -1764,8 +1793,20 @@ public:
             for (;;)
             {
                 bool inNodeCache = (*cacheInfo=='*');
+                NodeType nodeType = NodeNone;
                 if (inNodeCache)
+                {
                     cacheInfo++;
+                    switch (*cacheInfo)
+                    {
+                    case 'R': nodeType = NodeBranch; break;
+                    case 'L': nodeType = NodeLeaf; break;
+                    case 'B': nodeType = NodeBlob; break;
+                    default:
+                        throwUnexpectedX("Unknown node type");
+                    }
+                    cacheInfo++;
+                }
                 __uint64 startPage = readPage(cacheInfo);
                 __uint64 endPage;
                 if (*cacheInfo=='-')
@@ -1781,7 +1822,8 @@ public:
                 offset_t endOffset = (endPage+1) << CacheInfoEntry::pageBits;
                 if (inNodeCache && !keyFailed && localFile && !keyIndex)
                 {
-                    keyIndex.setown(createKeyIndex(fileName, localFile->getCrc(), *localFile.get(), fileIdx, false, false));  // MORE - we don't know if it's a TLK, but hopefully it doesn't matter
+                    //Pass false for isTLK - it will be initialised from the index header
+                    keyIndex.setown(createKeyIndex(fileName, localFile->getCrc(), *localFile.get(), fileIdx, false));
                     if (!keyIndex)
                         keyFailed = true;
                 }
@@ -1792,7 +1834,7 @@ public:
                     startOffset = ((startOffset+nodeSize-1)/nodeSize)*nodeSize;
                     do
                     {
-                        bool loaded = keyIndex->prewarmPage(startOffset);
+                        bool loaded = keyIndex->prewarmPage(startOffset, nodeType);
                         if (!loaded)
                             break;
                         preloaded++;
@@ -2918,10 +2960,10 @@ public:
                             if (lazyOpen)
                             {
                                 // We pass the IDelayedFile interface to createKeyIndex, so that it does not open the file immediately
-                                keyset->addIndex(createKeyIndex(part->queryFilename(), crc, *QUERYINTERFACE(part.get(), IDelayedFile), part->getFileIdx(), false, false));
+                                keyset->addIndex(createKeyIndex(part->queryFilename(), crc, *QUERYINTERFACE(part.get(), IDelayedFile), part->getFileIdx(), false));
                             }
                             else
-                                keyset->addIndex(createKeyIndex(part->queryFilename(), crc, *part.get(), part->getFileIdx(), false, false));
+                                keyset->addIndex(createKeyIndex(part->queryFilename(), crc, *part.get(), part->getFileIdx(), false));
                         }
                         else
                             keyset->addIndex(NULL);
@@ -2955,10 +2997,10 @@ public:
                     if (lazyOpen)
                     {
                         // We pass the IDelayedFile interface to createKeyIndex, so that it does not open the file immediately
-                        key.setown(createKeyIndex(pname.str(), crc, *QUERYINTERFACE(keyFile.get(), IDelayedFile), keyFile->getFileIdx(), numParts>1, false));
+                        key.setown(createKeyIndex(pname.str(), crc, *QUERYINTERFACE(keyFile.get(), IDelayedFile), keyFile->getFileIdx(), numParts>1));
                     }
                     else
-                        key.setown(createKeyIndex(pname.str(), crc, *keyFile.get(), keyFile->getFileIdx(), numParts>1, false));
+                        key.setown(createKeyIndex(pname.str(), crc, *keyFile.get(), keyFile->getFileIdx(), numParts>1));
                     keyset->addIndex(LINK(key->queryPart(0)));
                 }
                 else

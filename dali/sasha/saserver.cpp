@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#include "build-config.h"
 #include "platform.h"
 #include "thirdparty.h"
 #include "portlist.h"
@@ -51,14 +50,14 @@ extern void LDStest();
 
 Owned<IPropertyTree> serverConfig;
 static IArrayOf<ISashaServer> servers;
-static atomic_t StopSuspendCount = ATOMIC_INIT(0);
+static std::atomic<unsigned> StopSuspendCount{0};
 static bool stopped = false;
 static Semaphore stopSem;
 
 const char *sashaProgramName;
 
-CSuspendAutoStop::CSuspendAutoStop() { atomic_inc(&StopSuspendCount); }
-CSuspendAutoStop::~CSuspendAutoStop() { atomic_dec(&StopSuspendCount); }
+CSuspendAutoStop::CSuspendAutoStop() { StopSuspendCount++; }
+CSuspendAutoStop::~CSuspendAutoStop() { StopSuspendCount--; }
 
 #ifdef _CONTAINERIZED
 const char *service = nullptr;
@@ -266,7 +265,7 @@ void SashaMain()
                 stopped = true;
             }
             else if (timeout&&(timeout<msTick()-start)) {
-                if (atomic_read(&StopSuspendCount)==0) {
+                if (StopSuspendCount==0) {
                     PROGLOG("Auto Restart");
                     stopped = true;
                 }
@@ -299,23 +298,13 @@ static constexpr const char * defaultYaml = R"!!(
 version: 1.0
 sasha:
   name: sasha
-  logging:
-    detail: 100
 )!!";
 
 int main(int argc, const char* argv[])
 {
-#ifndef _CONTAINERIZED
-    for (unsigned i=0;i<(unsigned)argc;i++) {
-        if (streq(argv[i],"--daemon") || streq(argv[i],"-d")) {
-            if (daemon(1,0) || write_pidfile(argv[++i])) {
-                perror("Failed to daemonize");
-                return EXIT_FAILURE;
-            }
-            break;
-        }
-    }
-#endif
+    if (!checkCreateDaemon(argc, argv))
+        return EXIT_FAILURE;
+
     InitModuleObjects();
     EnableSEHtoExceptionMapping();
 
@@ -369,9 +358,9 @@ int main(int argc, const char* argv[])
     #else
         setupContainerizedLogMsgHandler();
     #endif
-        DBGLOG("Build %s", BUILD_TAG);
+        DBGLOG("Build %s", hpccBuildInfo.buildTag);
 
-        unsigned short port = serverConfig->getPropInt("@port");
+        unsigned short port = serverConfig->getPropInt("service/@port", serverConfig->getPropInt("@port"));
         if (!port)
         {
             if (!stop && !coalescer)

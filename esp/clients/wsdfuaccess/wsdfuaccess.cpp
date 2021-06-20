@@ -50,8 +50,11 @@ static CriticalSection dfuServiceUrlCrit;
 static std::atomic<unsigned> currentDfuServiceUrl{0};
 static std::atomic<bool> dfuServiceUrlsDiscovered{false};
 
-void ensureAccessibleDfuServiceURLList()
+static void ensureAccessibleDfuServiceURLList()
 {
+#ifdef _CONTAINERIZED
+    UNIMPLEMENTED_X("CONTAINERIZED(ensureAccessibleDfuServiceURLList)");
+#else
     bool expected = false;
     if (dfuServiceUrlsDiscovered.compare_exchange_strong(expected, true))
     {
@@ -62,6 +65,7 @@ void ensureAccessibleDfuServiceURLList()
         for (auto &s: dfuServiceUrls)
             s = s + "/WsDfu/";
     }
+#endif
 }
 
 static unsigned getNumDfuServiceURL()
@@ -525,6 +529,8 @@ StringBuffer &encodeDFUFileMeta(StringBuffer &metaInfoBlob, IPropertyTree *metaI
 
         const char *keyPairName = metaInfo->queryProp("keyPairName");
         const char *privateKeyFName = environment->getPrivateKeyPath(keyPairName);
+        if (isEmptyString(privateKeyFName))
+            throw makeStringExceptionV(-1, "Key name '%s' is not found in environment settings: /EnvSettings/Keys/KeyPair.", keyPairName);
         Owned<CLoadedKey> privateKey = loadPrivateKeyFromFile(privateKeyFName, nullptr);
         StringBuffer metaInfoSignature;
         digiSign(metaInfoSignature, metaInfoBlob.length(), metaInfoBlob.bytes(), *privateKey);

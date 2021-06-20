@@ -30,7 +30,7 @@ void CwssqlEx::init(IPropertyTree *_cfg, const char *_process, const char *_serv
         throw MakeStringException(-1, "ws_sqlEx: Problem initiating ECLFunctions structure");
     }
 
-    setWsSqlBuildVersion(BUILD_TAG);
+    setWsSqlBuildVersion(hpccBuildInfo.buildTag);
 }
 
 bool CwssqlEx::onEcho(IEspContext &context, IEspEchoRequest &req, IEspEchoResponse &resp)
@@ -53,7 +53,7 @@ bool CwssqlEx::onGetDBMetaData(IEspContext &context, IEspGetDBMetaDataRequest &r
     if (includetables)
     {
         Owned<HPCCFileCache> tmpHPCCFileCache = HPCCFileCache::createFileCache(username.str(), passwd);
-        tmpHPCCFileCache->populateTablesResponse(resp, req.getTableFilter());
+        tmpHPCCFileCache->populateTablesResponse(resp, req.getTableFilter(), context.getClientVersion() >= 3.06);
         resp.setTableCount(resp.getTables().length());
     }
 

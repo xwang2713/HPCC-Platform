@@ -19,6 +19,9 @@
 #ifndef _PTREE_HPP
 #define _PTREE_HPP
 
+#include <vector>
+#include <functional>
+
 #include "jlib.hpp"
 #include "jexcept.hpp"
 #include "jiter.hpp"
@@ -218,6 +221,9 @@ jlib_decl void synchronizePTree(IPropertyTree *target, const IPropertyTree *sour
 jlib_decl IPropertyTree *ensurePTree(IPropertyTree *root, const char *xpath);
 jlib_decl bool areMatchingPTrees(const IPropertyTree * left, const IPropertyTree * right);
 
+//Similar to ptree->addProp(name, value) except it ensures the appended item is part of a list.  Ensures that YAML is regenerated correctly.
+jlib_decl void addPTreeItem(IPropertyTree *ptree, const char * name, const char * value);
+
 jlib_decl IPropertyTree *createPTree(MemoryBuffer &src, byte flags=ipt_none);
 
 jlib_decl IPropertyTree *createPTree(byte flags=ipt_none);
@@ -303,13 +309,30 @@ inline static bool isValidXPathChr(char c)
 jlib_decl void mergeConfiguration(IPropertyTree & target, const IPropertyTree & source, const char *altNameAttribute=nullptr, bool overwriteAttr=true);
 
 jlib_decl IPropertyTree * loadArgsIntoConfiguration(IPropertyTree *config, const char * * argv, std::initializer_list<const char *> ignoreOptions = {});
-jlib_decl IPropertyTree * loadConfiguration(IPropertyTree * defaultConfig, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr);
-jlib_decl IPropertyTree * loadConfiguration(const char * defaultYaml, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr);
-jlib_decl IPropertyTree * queryCostsConfiguration();
+jlib_decl IPropertyTree * loadConfiguration(IPropertyTree * defaultConfig, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr, bool monitor=true);
+jlib_decl IPropertyTree * loadConfiguration(const char * defaultYaml, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr, bool monitor=true);
+jlib_decl IPropertyTree * getCostsConfiguration();
 
 //The following can only be called after loadConfiguration has been called.  All components must call loadConfiguration().
-jlib_decl IPropertyTree & queryGlobalConfig();
-jlib_decl IPropertyTree & queryComponentConfig();
+jlib_decl IPropertyTree * getGlobalConfig();
+jlib_decl IPropertyTree * getComponentConfig();
+jlib_decl Owned<IPropertyTree> getGlobalConfigSP(); // get smart pointer
+jlib_decl Owned<IPropertyTree> getComponentConfigSP(); // get smart pointer
+
+// ConfigUpdateFunc calls are made in a mutex, but after new confis are swapped in
+typedef std::function<void (const IPropertyTree *oldComponentConfiguration, const IPropertyTree *oldGlobalConfiguration)> ConfigUpdateFunc;
+jlib_decl unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc);
+jlib_decl void removeConfigUpdateHook(unsigned notifyFuncId);
+
+class jlib_decl CConfigUpdateHook
+{
+    std::atomic<unsigned> configCBId{(unsigned)-1};
+    CriticalSection crit;
+public:
+    ~CConfigUpdateHook() { clear(); }
+    void clear();
+    void installOnce(ConfigUpdateFunc callbackFunc, bool callWhenInstalled);
+};
 
 /*
  YAML to PTree support
@@ -361,5 +384,7 @@ jlib_decl void dbglogYAML(const IPropertyTree *tree, unsigned indent = 0, unsign
 
 // Defines the threshold where attribute value maps are created for sibling ptrees for fast lookups
 jlib_decl void setPTreeMappingThreshold(unsigned threshold);
+
+jlib_decl void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropertyTree & source, const char * sourceName);
 
 #endif

@@ -141,6 +141,16 @@ ISocket * spawnRemoteChild(SpawnKind kind, const char * exe, const SocketEndpoin
         return NULL;
     }
 
+    SocketEndpoint connectEP(childEP);
+#ifdef _CONTAINERIZED
+    // TODO: call a service within dafilesrv instead of starting a child process
+    DWORD runcode;
+    if (!invoke_program(cmd.str(), runcode, false))
+        throw makeStringExceptionV(-1,"Error spawning %s", exe);
+
+    //In containerized world all processes are executed locally, so make sure we try and connect to a local instance
+    connectEP.set("localhost");
+#else
     if (SSHusername.isEmpty())
     {
 #if defined(_WIN32)
@@ -162,10 +172,10 @@ ISocket * spawnRemoteChild(SpawnKind kind, const char * exe, const SocketEndpoin
         runssh->init(cmd.str(),SSHidentfilename,SSHusername,SSHpasswordenc,SSHtimeout,SSHretries);
         runssh->exec(childEP,NULL,true); // need workdir? TBD
     }
+#endif
 
     //Have to now try and connect to the child and get back the port it is listening on
     unsigned attempts = 20;
-    SocketEndpoint connectEP(childEP);
     connectEP.port = port;
     LOG(MCdetailDebugInfo, unknownJob, "Start connect to correct slave (%3d)", replyTag);
     IException * error = NULL;
@@ -267,7 +277,7 @@ CRemoteParentInfo::CRemoteParentInfo()
 }
 
 
-bool CRemoteParentInfo::processCommandLine(int argc, char * argv[], StringBuffer &logdir)
+bool CRemoteParentInfo::processCommandLine(int argc, const char * * argv, StringBuffer &logdir)
 {
     if (argc <= 4)
         return false;
@@ -396,12 +406,13 @@ CRemoteSlave::CRemoteSlave(const char * _name, unsigned _tag, unsigned _version,
     version = _version;
 }
 
-void CRemoteSlave::run(int argc, char * argv[])
+void CRemoteSlave::run(int argc, const char * * argv)
 {
     StringBuffer logFile;
     CRemoteParentInfo info;
 
     bool paramsok = info.processCommandLine(argc, argv, logFile);
+#ifndef _CONTAINERIZED
     if (logFile.length()==0) { // not expected! Caller queries logfile location via getConfigurationDirectory
 #ifdef _WIN32
         logFile.append("c:\\HPCCSystems\\logs\\ftslave");
@@ -417,7 +428,9 @@ void CRemoteSlave::run(int argc, char * argv[])
     attachStandardFileLogMsgMonitor(logFile.str(), 0, MSGFIELD_STANDARD, MSGAUD_all, MSGCLS_all, TopDetail, false, true, true);
     queryLogMsgManager()->removeMonitor(queryStderrLogMsgHandler());        // no point logging output to screen if run remote!
     LOG(MCdebugProgress, unknownJob, "Starting %s %s %s %s %s %s %s",slaveName.get(),(argc>1)?argv[1]:"",(argc>2)?argv[2]:"",(argc>3)?argv[3]:"",(argc>4)?argv[4]:"",(argc>5)?argv[5]:"",(argc>6)?argv[6]:"");
-
+#else
+    setupContainerizedLogMsgHandler();
+#endif
 
     if (paramsok)
     {

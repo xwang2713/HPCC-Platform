@@ -63,7 +63,7 @@ typedef enum
     MSGCLS_warning     = 0x04, // Warnings
     MSGCLS_information = 0x08, // Config, environmental and internal status  info
     MSGCLS_progress    = 0x10, // Progress of workunits. Status of file operations
-    MSGCLS_legacy      = 0x20, // Depreciated, TODO: remove
+    MSGCLS_metric      = 0x20, // A metric line
     MSGCLS_addid       = 0x40, // Internal use within log system
     MSGCLS_removeid    = 0x80, // Internal use within log system
     MSGCLS_all         = 0xFF  // Use as a filter to select all messages
@@ -191,8 +191,8 @@ inline const char * LogMsgClassToVarString(LogMsgClass msgClass)
         return("Information");
     case MSGCLS_progress:
         return("Progress");
-    case MSGCLS_legacy:
-        return("Legacy");
+    case MSGCLS_metric:
+        return("Metric");
     default:
         return("UNKNOWN");
     }
@@ -212,6 +212,8 @@ inline const char * LogMsgClassToFixString(LogMsgClass msgClass)
         return("INF ");
     case MSGCLS_progress:
         return("PRO ");
+    case MSGCLS_metric:
+        return("MET ");
     default:
         return("UNK ");
     }
@@ -229,13 +231,15 @@ inline unsigned LogMsgClassFromAbbrev(char const * abbrev)
         return MSGCLS_information;
     if(strnicmp(abbrev, "PRO", 3)==0)
         return MSGCLS_progress;
+    if(strnicmp(abbrev, "MET", 3)==0)
+        return MSGCLS_metric;
     if(strnicmp(abbrev, "ALL", 3)==0)
         return MSGCLS_all;
     return 0;
 }
 
 typedef unsigned LogMsgDetail;
-#define DefaultDetail   100
+#define DefaultDetail   DebugMsgThreshold
 #define TopDetail (LogMsgDetail)-1
 
 /*
@@ -306,7 +310,12 @@ typedef enum
 #define MSGFIELD_STANDARD LogMsgField(MSGFIELD_timeDate | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix | MSGFIELD_audience)
 #define MSGFIELD_LEGACY LogMsgField(MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix)
 #else
+
+#ifdef _CONTAINERIZED
+#define MSGFIELD_STANDARD LogMsgField(MSGFIELD_job | MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_class | MSGFIELD_audience)
+#else
 #define MSGFIELD_STANDARD LogMsgField(MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix | MSGFIELD_audience)
+#endif
 #define MSGFIELD_LEGACY LogMsgField(MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix)
 #endif
 
@@ -721,6 +730,7 @@ interface jlib_decl ILogMsgManager : public ILogMsgListener
     virtual offset_t          getLogPosition(StringBuffer &logFileName, const ILogMsgHandler * handler) const = 0;
     virtual LogMsgJobId       addJobId(const char *job) = 0;
     virtual void              removeJobId(LogMsgJobId) = 0;
+    virtual const char *      queryJobId(LogMsgJobId id) const = 0;
 };
 
 // CONCRETE CLASSES
@@ -845,6 +855,7 @@ constexpr LogMsgCategory MCdebugInfo(MSGAUD_programmer, MSGCLS_information, Debu
 constexpr LogMsgCategory MCauditInfo(MSGAUD_audit, MSGCLS_information, AudMsgThreshold);
 constexpr LogMsgCategory MCstats(MSGAUD_operator, MSGCLS_progress, ProgressMsgThreshold);
 constexpr LogMsgCategory MCoperatorInfo(MSGAUD_operator, MSGCLS_information, InfoMsgThreshold);
+constexpr LogMsgCategory MCmetrics(MSGAUD_operator, MSGCLS_metric, ErrMsgThreshold);
 
 /*
  * Function to determine log level (detail) for exceptions, based on log message class

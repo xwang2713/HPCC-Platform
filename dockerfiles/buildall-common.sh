@@ -1,7 +1,5 @@
 #!/bin/bash
 
-SCRIPT_DIR=$(dirname $BASH_SOURCE)
-
 ##############################################################################
 #
 #    HPCC SYSTEMS software Copyright (C) 2021 HPCC Systems®.
@@ -23,7 +21,7 @@ SCRIPT_DIR=$(dirname $BASH_SOURCE)
 # This script is normally invoked via GitHub actions, whenever a new tag is pushed
 
 BASE_VER=7.12                                   # The docker hub label for the platform-build-base image. Changes rarely.
-BUILD_TAG=$(git describe --exact-match --tags)  # The git tag for the images we are building
+BUILD_TAG=$(git describe --exact-match --tags || true)  # The git tag for the images we are building
 BUILD_LABEL=${BUILD_TAG}                        # The docker hub label for all other components
 BUILD_USER=hpcc-systems                         # The github repo owner
 BUILD_TYPE=                                     # Set to Debug for a debug build, leave blank for default (RelWithDebInfo)
@@ -46,12 +44,7 @@ if [[ -z ${BUILD_TAG} ]] ; then
   exit 2
 fi
 
-set -e
-
 if [[ -z ${INPUT_BUILD_LABEL} ]]; then
-  . ${SCRIPT_DIR}/../cmake_modules/parse_cmake.sh
-  parse_cmake
-  set_tag
   BUILD_LABEL=${HPCC_SHORT_TAG}
 else
   BUILD_LABEL=${INPUT_BUILD_LABEL}
@@ -73,6 +66,7 @@ build_image() {
   local name=$1
   local label=$2
   local buildTag=$3
+  local rest=${@:4}
   [[ -z ${label} ]] && label=$BUILD_LABEL
   [[ -z ${buildTag} ]] && buildTag=$BUILD_TAG
 
@@ -87,7 +81,7 @@ build_image() {
        --build-arg USE_CPPUNIT=${USE_CPPUNIT} \
        --build-arg BUILD_THREADS=${BUILD_THREADS} \
        --build-arg GITHUB_TOKEN=${GITHUB_TOKEN} \
-       ${name}/
+       ${rest} ${name}/
   fi
   push_image $name $label
 }

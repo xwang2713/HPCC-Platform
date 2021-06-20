@@ -32,6 +32,7 @@
 
 #include "dafdesc.hpp"
 #include "dadfs.hpp"
+#include "dameta.hpp"
 
 #define INCLUDE_1_OF_1    // whether to use 1_of_1 for single part files
 
@@ -590,6 +591,7 @@ public:
     Owned<IPropertyTree> attr;
     StringAttr directory;
     StringAttr partmask;
+    FileDescriptorFlags fileFlags = FileDescriptorFlags::none;
     virtual unsigned numParts() = 0;                                            // number of parts
     virtual unsigned numCopies(unsigned partnum) = 0;                           // number of copies
     virtual INode *doQueryNode(unsigned partidx, unsigned copy, unsigned rn) = 0;               // query machine node
@@ -1178,6 +1180,8 @@ class CFileDescriptor:  public CFileDescriptorBase, implements ISuperFileDescrip
                 buf.append(fullpath);
             else
                 buf.swapWith(fullpath);
+            if (FileDescriptorFlags::none != (fileFlags & FileDescriptorFlags::dirperpart))
+                addPathSepChar(buf).append(idx+1); // part subdir 1 based
         }
         return buf;
     }
@@ -1330,6 +1334,7 @@ public:
         attr.setown(createPTree(mb));
         if (!attr)
             attr.setown(createPTree("Attr")); // doubt can happen
+        fileFlags = static_cast<FileDescriptorFlags>(attr->getPropInt("@flags"));
         if (version == SERIALIZATION_VERSION2)
         {
             if (subcounts)
@@ -1373,6 +1378,7 @@ public:
         directory.set(pt.queryProp("@directory"));
         partmask.set(pt.queryProp("@partmask"));
         unsigned np = pt.getPropInt("@numparts");
+        fileFlags = static_cast<FileDescriptorFlags>(pt.getPropInt("@flags"));
         StringBuffer query;
         IPropertyTree **trees = NULL;
         Owned<IPropertyTreeIterator> piter;
@@ -2386,11 +2392,19 @@ static const char * defaultWindowsBaseDirectories[__grp_size][MAX_REPLICATION_LE
     };
 static const char * defaultUnixBaseDirectories[__grp_size][MAX_REPLICATION_LEVELS] =
     {
+#ifdef _CONTAINERIZED
+        { "/var/lib/HPCCSystems/hpcc-data", "/var/lib/HPCCSystems/hpcc-mirror" },
+        { "/var/lib/HPCCSystems/hpcc-data", "/var/lib/HPCCSystems/hpcc-mirror" },
+        { "/var/lib/HPCCSystems/hpcc-data", "/var/lib/HPCCSystems/hpcc-data2", "/var/lib/HPCCSystems/hpcc-data3", "/var/lib/HPCCSystems/hpcc-data4" },
+        { "/var/lib/HPCCSystems/hpcc-data", "/var/lib/HPCCSystems/hpcc-mirror" },
+        { "/var/lib/HPCCSystems/hpcc-data", "/var/lib/HPCCSystems/hpcc-mirror" },
+#else
         { "/var/lib/HPCCSystems/hpcc-data/thor", "/var/lib/HPCCSystems/hpcc-mirror/thor" },
         { "/var/lib/HPCCSystems/hpcc-data/thor", "/var/lib/HPCCSystems/hpcc-mirror/thor" },
         { "/var/lib/HPCCSystems/hpcc-data/roxie", "/var/lib/HPCCSystems/hpcc-data2/roxie", "/var/lib/HPCCSystems/hpcc-data3/roxie", "/var/lib/HPCCSystems/hpcc-data4/roxie" },
         { "/var/lib/HPCCSystems/hpcc-data/eclagent", "/var/lib/HPCCSystems/hpcc-mirror/eclagent" },
         { "/var/lib/HPCCSystems/hpcc-data/unknown", "/var/lib/HPCCSystems/hpcc-mirror/unknown" },
+#endif
     };
 static const char *componentNames[__grp_size] =
     {
@@ -3116,7 +3130,7 @@ static void setupContainerizedStorageLocations()
 {
     try
     {
-        IPropertyTree * storage = queryGlobalConfig().queryPropTree("storage");
+        Owned<IPropertyTree> storage = getGlobalConfigSP()->getPropTree("storage");
         if (storage)
         {
             IPropertyTree * defaults = storage->queryPropTree("default");
@@ -3162,7 +3176,7 @@ public:
     const GroupInformation * container = nullptr;
     unsigned containerOffset = 0;
     GroupType groupType = grp_unknown;
-    bool dropZone = false;
+    unsigned dropZoneIndex = 0;
 };
 
 using GroupInfoArray = CIArrayOf<GroupInformation>;
@@ -3198,45 +3212,41 @@ bool GroupInformation::checkIsSubset(const GroupInformation & other)
 void GroupInformation::createStoragePlane(IPropertyTree * storage, unsigned copy) const
 {
     IPropertyTree * plane = storage->addPropTree("planes");
-    if (copy == 0)
-    {
-        plane->setProp("@name", name);
-    }
-    else
-    {
-        StringBuffer mirrorname;
-        mirrorname.append(name).append("_mirror").append(copy);
-        plane->setProp("@name", mirrorname);
-    }
+    StringBuffer mirrorname;
+    const char * planeName = name;
+    if (copy != 0)
+        planeName = mirrorname.append(name).append("_mirror");
+
+    plane->setProp("@name", planeName);
 
     //URL style drop zones don't generate a host entry, and will have a single device
     if (ordinality() != 0)
     {
         if (container)
         {
-            plane->setProp("@hosts", container->name);
-            if (containerOffset)
-                plane->setPropInt("@start", containerOffset);
-            if (ordinality() != container->ordinality())
-                plane->setPropInt("@size", ordinality());
+            const char * containerName = container->name;
+            if (copy != 0)
+                containerName = mirrorname.clear().append(containerName).append("_mirror");
+            //hosts will be expanded by normalizeHostGroups
+            plane->setProp("@hostGroup", containerName);
         }
         else
-            plane->setProp("@hosts", name);
+        {
+            //Host group has been created that matches the name of the storage plane
+            plane->setProp("@hostGroup", planeName);
+        }
 
         if (ordinality() > 1)
             plane->setPropInt("@numDevices", ordinality());
     }
-
-    if (copy)
-        plane->setPropInt("@offset", copy);
 
     if (dir.length())
         plane->setProp("@prefix", dir);
     else
         plane->setProp("@prefix", queryBaseDirectory(groupType, copy));
 
-    if (dropZone)
-        plane->setPropBool("@dropZone", true);
+    const char * label = (dropZoneIndex != 0) ? "lz" : "data";
+    addPTreeItem(plane, "labels", label);
 
     //MORE: If container is identical to this except for the name we could generate an information tag @alias
 }
@@ -3268,9 +3278,19 @@ static int compareGroupSize(CInterface * const * _left, CInterface * const * _ri
 {
     const GroupInformation * left = static_cast<const GroupInformation *>(*_left);
     const GroupInformation * right = static_cast<const GroupInformation *>(*_right);
+    //Ensure drop zones come after non drop zones, and the drop zone order is preserved
+    if (left->dropZoneIndex || right->dropZoneIndex)
+        return (int)(left->dropZoneIndex - right->dropZoneIndex);
+
     int ret = (int) (right->hosts.ordinality() - left->hosts.ordinality());
     if (ret)
         return ret;
+    //Ensure thor groups come before non thor groups - so that a mirror host group will always be created
+    if (left->groupType == grp_thor)
+        return -1;
+    if (right->groupType == grp_thor)
+        return +1;
+
     return stricmp(left->name, right->name);
 }
 
@@ -3282,6 +3302,9 @@ static void generateHosts(IPropertyTree * storage, GroupInfoArray & groups)
     ForEachItemIn(i, groups)
     {
         GroupInformation & cur = groups.item(i);
+        if (cur.ordinality() == 0)
+            continue;
+
         GroupInformation * container = nullptr;
         for (unsigned j=0; j < i; j++)
         {
@@ -3291,28 +3314,51 @@ static void generateHosts(IPropertyTree * storage, GroupInfoArray & groups)
         }
 
         // No containing hostGroup found, so generate a new entry for this set of hosts
-        if (!cur.container && cur.ordinality())
+        if (!cur.container)
         {
             IPropertyTree * plane = storage->addPropTree("hostGroups");
             plane->setProp("@name", cur.name);
             StringBuffer host;
             ForEachItemIn(i, cur.hosts)
-            {
-                IPropertyTree * entry = plane->addPropTreeArrayItem("hosts", createPTree());
-                entry->setProp("", cur.hosts.item(i));
-            }
+                addPTreeItem(plane, "hosts", cur.hosts.item(i));
+        }
+        else if (cur.containerOffset || cur.ordinality() != cur.container->ordinality())
+        {
+            IPropertyTree * plane = storage->addPropTree("hostGroups");
+            plane->setProp("@name", cur.name);
+            plane->setProp("@hostGroup", cur.container->name);
+            if (cur.containerOffset)
+                plane->setPropInt("@offset", cur.containerOffset);
+            if (cur.ordinality() != cur.container->ordinality())
+                plane->setPropInt("@count", cur.ordinality());
+            cur.container = nullptr;
+        }
+
+        //If this is a thor group, create a host group for the replicas - same list of ips, but offset by 1
+        //If container is not null then there is already a hostGroup for an identical set of ips.  There will
+        //also be a corresponding mirror because thor groups are sorted first.
+        if (cur.groupType == grp_thor && !cur.container)
+        {
+            VStringBuffer mirrorName("%s_mirror", cur.name.str());
+
+            IPropertyTree * plane = storage->addPropTree("hostGroups");
+            plane->setProp("@name", mirrorName);
+            plane->setProp("@hostGroup", cur.name);
+            plane->setPropInt("@delta", 1);
         }
     }
-
 }
 
+static CConfigUpdateHook configUpdateHook;
+static std::atomic<unsigned> normalizeHostGroupUpdateCBId{(unsigned)-1};
 static CriticalSection storageCS;
-void initializeStorageGroups(bool createPlanesFromGroups)
+static void doInitializeStorageGroups(bool createPlanesFromGroups)
 {
     CriticalBlock block(storageCS);
-    IPropertyTree * storage = queryGlobalConfig().queryPropTree("storage");
+    Owned<IPropertyTree> globalConfig = getGlobalConfig();
+    Owned<IPropertyTree> storage = globalConfig->getPropTree("storage");
     if (!storage)
-        storage = queryGlobalConfig().addPropTree("storage");
+        storage.set(globalConfig->addPropTree("storage"));
 
 #ifndef _CONTAINERIZED
     if (createPlanesFromGroups && !storage->hasProp("planes"))
@@ -3343,6 +3389,7 @@ void initializeStorageGroups(bool createPlanesFromGroups)
         Owned<IRemoteConnection> conn = querySDS().connect("/Environment/Software", myProcessSession(), 0, 2000);
         if (conn)
         {
+            unsigned numDropZones = 0;
             Owned<IPropertyTreeIterator> dropzones = conn->queryRoot()->getElements("DropZone");
             ForEach(*dropzones)
             {
@@ -3356,8 +3403,8 @@ void initializeStorageGroups(bool createPlanesFromGroups)
                     const char * ip = cur.queryProp("ServerList[1]/@server");
 
                     next->dir.set(cur.queryProp("@directory"));
-                    next->dropZone= true;
-                    if (ip)
+                    next->dropZoneIndex = ++numDropZones;
+                    if (ip && !strieq(ip, "localhost"))
                         next->hosts.append(ip);
                     appendGroup(allGroups, next.getClear());
                 }
@@ -3383,6 +3430,10 @@ void initializeStorageGroups(bool createPlanesFromGroups)
         //printYAML(storage);
     }
 #endif
+
+
+    //Ensure that host groups that are defined in terms of other host groups are expanded out so they have an explicit list of hosts
+    normalizeHostGroups();
 
     //Groups are case insensitve, so add an extra key to the storage items to allow them to be
     //searched by group name, and also check for duplicates.
@@ -3412,32 +3463,39 @@ void initializeStorageGroups(bool createPlanesFromGroups)
     setupContainerizedStorageLocations();
 }
 
-const char * queryDefaultStoragePlane()
+void initializeStorageGroups(bool createPlanesFromGroups)
+{
+    auto updateFunc = [createPlanesFromGroups](const IPropertyTree *oldComponentConfiguration, const IPropertyTree *oldGlobalConfiguration)
+    {
+        PROGLOG("initializeStorageGroups update");
+        doInitializeStorageGroups(createPlanesFromGroups);
+    };
+    configUpdateHook.installOnce(updateFunc, true);
+}
+
+bool getDefaultStoragePlane(StringBuffer &ret)
 {
     // If the plane is specified for the component, then use that
-    IPropertyTree & config = queryComponentConfig();
-    const char * plane = config.queryProp("storagePlane");
-    if (plane)
-        return plane;
+    if (getComponentConfigSP()->getProp("@storagePlane", ret))
+        return true;
 
     //Otherwise check what the default plane for data storage is configured to be
-    plane = queryGlobalConfig().queryProp("storage/@dataPlane");
-    if (plane)
-        return plane;
+    if (getGlobalConfigSP()->getProp("storage/@dataPlane", ret))
+        return true;
 
 #ifdef _CONTAINERIZED
     throwUnexpectedX("Default data plane not specified"); // The default should always have been configured by the helm charts
 #else
-    return nullptr;
+    return false;
 #endif
 }
 
 //---------------------------------------------------------------------------------------------------------------------
 
-class CStoragePlane : public CInterfaceOf<IStoragePlane>
+class CStoragePlaneInfo : public CInterfaceOf<IStoragePlane>
 {
 public:
-    CStoragePlane(IPropertyTree * _xml) : xml(_xml) {}
+    CStoragePlaneInfo(IPropertyTree * _xml) : xml(_xml) {}
 
     virtual const char * queryPrefix() const override { return xml->queryProp("@prefix"); }
     virtual unsigned numDevices() const override { return xml->getPropInt("@numDevices", 1); }
@@ -3456,7 +3514,7 @@ IStoragePlane * getStoragePlane(const char * name, bool required)
     group.append(name).toLowerCase();
 
     VStringBuffer xpath("storage/planes[@group='%s']", group.str());
-    IPropertyTree * match = queryGlobalConfig().queryPropTree(xpath);
+    Owned<IPropertyTree> match = getGlobalConfigSP()->getPropTree(xpath);
     if (!match)
     {
         if (required)
@@ -3464,5 +3522,5 @@ IStoragePlane * getStoragePlane(const char * name, bool required)
         return nullptr;
     }
 
-    return new CStoragePlane(match);
+    return new CStoragePlaneInfo(match);
 }

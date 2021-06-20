@@ -39,11 +39,13 @@
 #include "dadfs.hpp"
 #include "eclhelper.hpp"
 #include "seclib.hpp"
+#include "dameta.hpp"
 
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
+#include <time.h>
 
 #ifdef _DEBUG
 //#define EXTRA_LOGGING
@@ -173,6 +175,15 @@ const char *normalizeLFN(const char *s,StringBuffer &tmp)
 static IPropertyTree *getEmptyAttr()
 {
     return createPTree("Attr");
+}
+
+static double calcFileCost(const char * cluster, double sizeGB, double fileAgeDays)
+{
+    Owned<IPropertyTree> plane = getStoragePlane(cluster);
+    if (!plane)
+        return 0.0;
+    double storageCostDaily = plane->getPropReal("cost/@storageAtRest", 0.0) * 12 / 365;
+    return storageCostDaily * sizeGB * fileAgeDays;
 }
 
 RemoteFilename &constructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,unsigned copy,ClusterPartDiskMapSpec &mspec,RemoteFilename &rfn)
@@ -3246,6 +3257,7 @@ protected:
     StringAttr directory;
     StringAttr partmask;
     FileClusterInfoArray clusters;
+    FileDescriptorFlags fileFlags = FileDescriptorFlags::none;
 
     void savePartsAttr(bool force) override
     {
@@ -3498,29 +3510,42 @@ public:
 #ifdef EXTRA_LOGGING
         LOGPTREE("CDistributedFile.b root.1",root);
 #endif
-        offset_t totalsize=0;
+        offset_t totalsize = 0;
+        offset_t totalCompressedSize = 0;
         unsigned checkSum = ~0;
         bool useableCheckSum = true;
         MemoryBuffer pmb;
         unsigned n = fdesc->numParts();
-        for (unsigned i=0;i<n;i++) {
+        bool compressed = isCompressed(nullptr);
+        for (unsigned i=0;i<n;i++)
+        {
             IPropertyTree *partattr = &fdesc->queryPart(i)->queryProperties();
             if (!partattr)
             {
-                totalsize = (unsigned)-1;
+                totalsize = (offset_t)-1;
+                totalCompressedSize = (offset_t)-1;
                 useableCheckSum = false;
             }
             else
             {
-                offset_t psz;
-                if (totalsize!=(offset_t)-1) {
-                    psz = (offset_t)partattr->getPropInt64("@size", -1);
+                if (totalsize!=(offset_t)-1)
+                {
+                    offset_t psz = (offset_t)partattr->getPropInt64("@size", -1);
                     if (psz==(offset_t)-1)
                         totalsize = psz;
                     else
                         totalsize += psz;
+                    if (compressed)
+                    {
+                        psz = (offset_t)partattr->getPropInt64("@compressedSize", -1);
+                        if (psz==(offset_t)-1)
+                            totalCompressedSize = psz;
+                        else
+                            totalCompressedSize += psz;
+                    }
                 }
-                if (useableCheckSum) {
+                if (useableCheckSum)
+                {
                     unsigned crc;
                     if (fdesc->queryPart(i)->getCrc(crc))
                         checkSum ^= crc;
@@ -3532,6 +3557,8 @@ public:
         shrinkFileTree(root);
         if (totalsize!=(offset_t)-1)
             queryAttributes().setPropInt64("@size", totalsize);
+        if (totalCompressedSize!=(offset_t)-1)
+            queryAttributes().setPropInt64("@compressedSize", totalCompressedSize);
         if (useableCheckSum)
             queryAttributes().setPropInt64("@checkSum", checkSum);
         setModified();
@@ -3554,6 +3581,11 @@ public:
             conn->rollback();       // changes should always be done in locked properties
         killParts();
         clusters.kill();
+    }
+
+    bool hasDirPerPart() const
+    {
+        return FileDescriptorFlags::none != (fileFlags & FileDescriptorFlags::dirperpart);
     }
 
     IFileDescriptor *getFileDescriptor(const char *_clusterName) override
@@ -3586,21 +3618,23 @@ public:
                 partmask.set(mask);
             }
         }
-        if (!save)
-            return;
-        if (directory.isEmpty())
-            root->removeProp("@directory");
-        else
-            root->setProp("@directory",directory);
-        if (partmask.isEmpty())
-            root->removeProp("@partmask");
-        else
-            root->setProp("@partmask",partmask);
-        IPropertyTree *t = &fdesc->queryProperties();
-        if (isEmptyPTree(t))
-            resetFileAttr();
-        else
-            resetFileAttr(createPTreeFromIPT(t));
+        if (save)
+        {
+            if (directory.isEmpty())
+                root->removeProp("@directory");
+            else
+                root->setProp("@directory",directory);
+            if (partmask.isEmpty())
+                root->removeProp("@partmask");
+            else
+                root->setProp("@partmask",partmask);
+            IPropertyTree *t = &fdesc->queryProperties();
+            if (isEmptyPTree(t))
+                resetFileAttr();
+            else
+                resetFileAttr(createPTreeFromIPT(t));
+        }
+        fileFlags = static_cast<FileDescriptorFlags>(root->getPropInt("Attr/@flags"));
     }
 
     void setClusters(IFileDescriptor *fdesc)
@@ -4688,6 +4722,27 @@ public:
             return calculateSkew(maxSkew, minSkew, maxSkewPart, minSkewPart);
         else
             return false;
+    }
+    virtual double getCost(const char * cluster) override
+    {
+        CDateTime dt;
+        getModificationTime(dt);
+        double fileAgeDays = difftime(time(nullptr), dt.getSimple())/(24*60*60);
+        double sizeGB = getDiskSize(true, false) / ((double)1024 * 1024 * 1024);
+
+        if (isEmptyString(cluster))
+        {
+            StringArray clusterNames;
+            unsigned countClusters = getClusterNames(clusterNames);
+            double totalCost = 0.0;
+            for (unsigned i = 0; i < countClusters; i++)
+                totalCost += calcFileCost(clusterNames[i], sizeGB, fileAgeDays);
+            return totalCost;
+        }
+        else
+        {
+            return calcFileCost(cluster, sizeGB, fileAgeDays);
+        }
     }
 };
 
@@ -6638,6 +6693,18 @@ public:
     {
         return false;
     }
+
+    virtual double getCost(const char * cluster) override
+    {
+        double totalCost = 0.0;
+        CriticalBlock block (sect);
+        ForEachItemIn(i,subfiles)
+        {
+            IDistributedFile &f = subfiles.item(i);
+            totalCost += f.getCost(cluster);
+        }
+        return totalCost;
+    }
 };
 
 // --------------------------------------------------------
@@ -6807,6 +6874,8 @@ StringBuffer &CDistributedFilePart::getPartDirectory(StringBuffer &ret,unsigned 
         parent.adjustClusterDir(partIndex,copy,dir);
         ret.append(dir);
     }
+    if (parent.hasDirPerPart())
+        addPathSepChar(ret).append(partIndex+1); // part subdir 1 based
     return ret;
 }
 
@@ -10045,10 +10114,9 @@ public:
         return createClusterGroup(grp_unknown, hosts, path, nullptr, false, false);
     }
 
-    void ensureStorageGroup(bool force, const char * name, unsigned numDevices, const char * path, StringBuffer & messages)
+    void ensureConsistentStorageGroup(bool force, const char * name, IPropertyTree * newClusterGroup, StringBuffer & messages)
     {
         IPropertyTree *existingClusterGroup = queryExistingGroup(name);
-        Owned<IPropertyTree> newClusterGroup = createStorageGroup(name, numDevices, path);
         bool matchExisting = clusterGroupCompare(newClusterGroup, existingClusterGroup);
         if (!existingClusterGroup || !matchExisting)
         {
@@ -10057,14 +10125,14 @@ public:
                 VStringBuffer msg("New cluster layout for cluster %s", name);
                 UWARNLOG("%s", msg.str());
                 messages.append(msg).newline();
-                addClusterGroup(name, newClusterGroup.getClear(), false);
+                addClusterGroup(name, LINK(newClusterGroup), false);
             }
             else if (force)
             {
                 VStringBuffer msg("Forcing new group layout for storageplane %s", name);
                 UWARNLOG("%s", msg.str());
                 messages.append(msg).newline();
-                addClusterGroup(name, newClusterGroup.getClear(), false);
+                addClusterGroup(name, LINK(newClusterGroup), false);
             }
             else
             {
@@ -10075,12 +10143,19 @@ public:
         }
     }
 
+    void ensureStorageGroup(bool force, const char * name, unsigned numDevices, const char * path, StringBuffer & messages)
+    {
+        Owned<IPropertyTree> newClusterGroup = createStorageGroup(name, numDevices, path);
+        ensureConsistentStorageGroup(force, name, newClusterGroup, messages);
+    }
+
     void constructStorageGroups(bool force, StringBuffer &messages)
     {
-        IPropertyTree & global = queryGlobalConfig();
-        IPropertyTree * storage = global.queryPropTree("storage");
+        Owned<IPropertyTree> storage = getGlobalConfigSP()->getPropTree("storage");
         if (storage)
         {
+            normalizeHostGroups();
+
             Owned<IPropertyTreeIterator> planes = storage->getElements("planes");
             ForEach(*planes)
             {
@@ -10089,25 +10164,45 @@ public:
                 if (isEmptyString(name))
                     continue;
 
-                //Lower case the group name - see CnamedGroupStore::dolookup which lower cases before resolving.
+                //Lower case the group name - see CNamedGroupStore::dolookup which lower cases before resolving.
                 StringBuffer gname;
                 gname.append(name).toLowerCase();
 
                 //Two main type of storage plane - with a host group (bare metal) and without.
-                IPropertyTree *existingGroup = queryExistingGroup(gname);
-                const char * hosts = plane.queryProp("@hosts");
+                const char * hostGroup = plane.queryProp("@hostGroup");
                 const char * prefix = plane.queryProp("@prefix");
-                if (hosts)
+                Owned<IPropertyTree> newClusterGroup;
+                if (hostGroup)
                 {
-                    IPropertyTree *existingClusterGroup = queryExistingGroup(gname);
-                    if (!existingClusterGroup)
-                        UNIMPLEMENTED_X("Bare metal storage planes not yet supported");
+                    Owned<IPropertyTree> match = getHostGroup(hostGroup, true);
+                    std::vector<std::string> hosts;
+                    Owned<IPropertyTreeIterator> hostIter = match->getElements("hosts");
+                    ForEach (*hostIter)
+                        hosts.push_back(hostIter->query().queryProp(nullptr));
+
+                    //A bare-metal storage plane defined in terms of a hostGroup
+                    newClusterGroup.setown(createClusterGroup(grp_unknown, hosts, prefix, nullptr, false, false));
+                }
+                else if (plane.hasProp("hostGroup"))
+                {
+                    throw makeStringExceptionV(-1, "Use 'hosts' rather than 'hostGroup' for inline list of hosts for plane %s", name);
+                }
+                else if (plane.hasProp("hosts"))
+                {
+                    //A bare-metal storage plane defined by an explicit list of ips (useful for landing zones)
+                    std::vector<std::string> hosts;
+                    Owned<IPropertyTreeIterator> iter = plane.getElements("hosts");
+                    ForEach(*iter)
+                        hosts.push_back(iter->query().queryProp(nullptr));
+                    newClusterGroup.setown(createClusterGroup(grp_unknown, hosts, prefix, nullptr, false, false));
                 }
                 else
                 {
+                    //Locally mounted, or url accessed storage plane - no associated hosts, localhost used as a placeholder
                     unsigned numDevices = plane.getPropInt("@numDevices", 1);
-                    ensureStorageGroup(force, gname, numDevices, prefix, messages);
+                    newClusterGroup.setown(createStorageGroup(name, numDevices, prefix));
                 }
+                ensureConsistentStorageGroup(force, name, newClusterGroup, messages);
             }
         }
     }

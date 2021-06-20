@@ -1181,6 +1181,9 @@ bool CWsTopologyEx::onTpListTargetClusters(IEspContext &context, IEspTpListTarge
     {
         context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_TOPOLOGY_ACCESS_DENIED, "WsTopology::TpListTargetClusters: Permission denied.");
 
+#ifdef _CONTAINERIZED
+        UNIMPLEMENTED_X("CONTAINERIZED(CWsTopologyEx::onTpListTargetClusters)");
+#else
         Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
         Owned<IConstEnvironment> env = factory->openEnvironment();
         Owned<IPropertyTree> root = &env->getPTree();
@@ -1256,6 +1259,7 @@ bool CWsTopologyEx::onTpListTargetClusters(IEspContext &context, IEspTpListTarge
             }
         }
         resp.setTargetClusters(clusters);
+#endif
     }
     catch(IException* e)
     {
@@ -1327,7 +1331,7 @@ bool CWsTopologyEx::onTpLogicalClusterQuery(IEspContext &context, IEspTpLogicalC
         if (roxieQueueFilter == RoxieQueueFilter_Undefined)
             roxieQueueFilter = CRoxieQueueFilter_All;
 
-        Owned<IPropertyTreeIterator> iter = queryComponentConfig().getElements("queues");
+        Owned<IPropertyTreeIterator> iter = getComponentConfigSP()->getElements("queues");
         ForEach(*iter)
         {
             IPropertyTree &queue = iter->query();
@@ -1450,28 +1454,29 @@ bool CWsTopologyEx::onTpServiceQuery(IEspContext &context, IEspTpServiceQueryReq
         if (!type || !*type || (strcmp(eqAllServices,type) == 0))
         {
             IEspTpServices& ServiceList = resp.updateServiceList();
-
+            m_TpWrapper.getTpDfuServers( ServiceList.getTpDfuServers() );
+            m_TpWrapper.getTpDropZones(version, nullptr, true, ServiceList.getTpDropZones() );
+#ifndef _CONTAINERIZED
             m_TpWrapper.getTpDaliServers( version, ServiceList.getTpDalis() );
             m_TpWrapper.getTpEclServers( ServiceList.getTpEclServers() );
             m_TpWrapper.getTpEclCCServers( ServiceList.getTpEclCCServers() );
             m_TpWrapper.getTpEclAgents( ServiceList.getTpEclAgents() );
             m_TpWrapper.getTpEspServers( ServiceList.getTpEspServers() );
-            m_TpWrapper.getTpDfuServers( ServiceList.getTpDfuServers() );   
-            m_TpWrapper.getTpSashaServers( ServiceList.getTpSashaServers() );   
+            m_TpWrapper.getTpSashaServers( ServiceList.getTpSashaServers() );
             m_TpWrapper.getTpGenesisServers( ServiceList.getTpGenesisServers() );
             m_TpWrapper.getTpLdapServers( ServiceList.getTpLdapServers() );
-            m_TpWrapper.getTpDropZones(version, nullptr, true, ServiceList.getTpDropZones() );
             m_TpWrapper.getTpFTSlaves( ServiceList.getTpFTSlaves() );
             m_TpWrapper.getTpDkcSlaves( ServiceList.getTpDkcSlaves() );
 
             if (version > 1.15)
-            {       
+            {
                 m_TpWrapper.getTpEclSchedulers( ServiceList.getTpEclSchedulers() );
             }
             if (version >= 1.28)
-            {       
+            {
                 m_TpWrapper.getTpSparkThors(version, nullptr, ServiceList.getTpSparkThors() );
             }
+#endif
         }
 
         resp.setMemThreshold( m_memThreshold );
@@ -1481,15 +1486,15 @@ bool CWsTopologyEx::onTpServiceQuery(IEspContext &context, IEspTpServiceQueryReq
         resp.setDiskThresholdType( m_bDiskThresholdIsPercentage ? "0" : "1");
 
         if (version > 1.06 && m_bEncapsulatedSystem)
-        {       
+        {
             resp.setEncapsulatedSystem( m_bEncapsulatedSystem );
         }
         if (version > 1.07)
-        {       
+        {
             resp.setEnableSNMP(m_enableSNMP);
         }
         if ((version > 1.12) && (m_preflightProcessFilter.length() > 0))
-        {       
+        {
             resp.setPreflightProcessFilter(m_preflightProcessFilter);
         }
         if (version >= 1.20)
@@ -1665,6 +1670,9 @@ bool CWsTopologyEx::onTpGetComponentFile(IEspContext &context, IEspTpGetComponen
         StringAttr      sDirectory;
         if (bCluster && !(netAddress && *netAddress))
         {
+#ifdef _CONTAINERIZED
+            UNIMPLEMENTED_X("CONTAINERIZED(CWsTopologyEx::onTpGetComponentFile)");
+#else
             Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
             Owned<IConstEnvironment> constEnv = factory->openEnvironment();
             Owned<IPropertyTree> pRoot = &constEnv->getPTree();
@@ -1712,6 +1720,7 @@ bool CWsTopologyEx::onTpGetComponentFile(IEspContext &context, IEspTpGetComponen
                     }
                 }
             }
+#endif
         }
 
         if (netAddressStr.length() > 0)

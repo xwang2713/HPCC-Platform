@@ -110,6 +110,7 @@ public:
     bool collectFactoryStatistics;
     bool noSeekBuildIndex;
     bool parallelWorkflow;
+    SinkMode sinkMode;
     unsigned numWorkflowThreads;
 
 private:
@@ -119,6 +120,7 @@ private:
     static void updateFromWorkUnit(unsigned &value, IConstWorkUnit &wu, const char *name);
     static void updateFromWorkUnit(bool &value, IConstWorkUnit &wu, const char *name);
     static void updateFromWorkUnit(RecordTranslationMode &value, IConstWorkUnit &wu, const char *name);
+    static void updateFromWorkUnit(SinkMode &value, IConstWorkUnit &wu, const char *name);
     static void updateFromContextM(memsize_t &val, const IPropertyTree *ctx, const char *name, const char *name2 = NULL); // Needs different name to ensure works in 32-bit where memsize_t and unsigned are same type
     static void updateFromContext(int &val, const IPropertyTree *ctx, const char *name, const char *name2 = NULL);
     static void updateFromContext(unsigned &val, const IPropertyTree *ctx, const char *name, const char *name2 = NULL);
@@ -166,6 +168,8 @@ interface IQueryFactory : extends IInterface
     virtual IQueryFactory *lookupLibrary(const char *libraryName, unsigned expectedInterfaceHash, const IRoxieContextLogger &logctx) const = 0;
     virtual void getQueryInfo(StringBuffer &result, bool full, IArrayOf<IQueryFactory> *agentQueries,const IRoxieContextLogger &logctx) const = 0;
     virtual bool isDynamic() const = 0;
+    virtual unsigned getTimeActResetLastLogged() const = 0;
+    virtual void setTimeActResetLastLogged(unsigned _ntime) const = 0;
     virtual void checkSuspended() const = 0;
     virtual void onTermination(TerminationCallbackInfo *info) const= 0;
 };

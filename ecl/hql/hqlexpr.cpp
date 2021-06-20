@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 #include "platform.h"
-#include "build-config.h"
 
 #include "jlib.hpp"
 #include "jmisc.hpp"
@@ -77,7 +76,8 @@
 #define VERIFY_EXPR_INTEGRITY
 #endif
 
-//#define TRACK_EXPRESSION        // define this and update isTrackingExpression() to monitor expressions through transforms
+//#define TRACK_EXPRESSION          // define this and update isTrackingExpression() to monitor expressions through transforms
+//#define TRACK_MAX_ANNOTATIONS     // define this to investigate very heavily nested annotations
 
 #if defined(SEARCH_NAME1) || defined(SEARCH_NAME2)
 static void debugMatchedName() {}
@@ -560,16 +560,14 @@ MODULE_EXIT()
         }
     }
 
-    printf("op,cnt,clash");
+    printf("op,cnt,clash\n");
     for (unsigned i=0; i < no_last_pseudoop; i++)
     {
-        if (commonUpCount[i])
-            printf("%s,%d,%d\n", getOpString((node_operator)i), commonUpCount[i], commonUpClash[i]);
+        printf("\"%s\",%d,%d\n", getOpString((node_operator)i), commonUpCount[i], commonUpClash[i]);
     }
     for (unsigned j=0; j < annotate_max; j++)
     {
-        if (commonUpAnnCount[j])
-            printf("%d,%d,%d\n", j, commonUpAnnCount[j], commonUpAnnClash[j]);
+        printf("%d,%d,%d\n", j, commonUpAnnCount[j], commonUpAnnClash[j]);
     }
     fflush(stdout);
 }
@@ -1299,7 +1297,7 @@ void HqlParseContext::getCacheBaseFilename(StringBuffer & fullName, StringBuffer
 extern HQL_API IPropertyTree * createAttributeArchive()
 {
     Owned<IPropertyTree> archive = createPTree("Archive");
-    archive->setProp("@build", BUILD_TAG);
+    archive->setProp("@build", hpccBuildInfo.buildTag);
     archive->setProp("@eclVersion", LANGUAGE_VERSION);
     return archive.getClear();
 }
@@ -7066,6 +7064,22 @@ StringBuffer &CHqlRecord::getECLType(StringBuffer & out)
     return out.append(queryTypeName());
 }
 
+#ifdef TRACK_MAX_ANNOTATIONS
+static unsigned numAnnotations(IHqlExpression * expr)
+{
+    unsigned depth = 0;
+    for (;;)
+    {
+        IHqlExpression * body = expr->queryBody(true);
+        if (body == expr)
+            return depth;
+        expr = body;
+        depth++;
+    }
+}
+static unsigned maxAnnotations = 5;
+#endif
+
 //==============================================================================================================
 CHqlAnnotation::CHqlAnnotation(IHqlExpression * _body)
 : CHqlExpression(_body ? _body->getOperator() : no_nobody)
@@ -7073,6 +7087,14 @@ CHqlAnnotation::CHqlAnnotation(IHqlExpression * _body)
     body = _body;
     if (!body)
         body = LINK(cachedNoBody);
+#ifdef TRACK_MAX_ANNOTATIONS
+    if (numAnnotations(body) > maxAnnotations)
+    {
+        maxAnnotations = numAnnotations(body);
+        printf("---------------- depth %u --------------\n", maxAnnotations);
+        EclIR::dump_ir(body);
+    }
+#endif
 }
 
 CHqlAnnotation::~CHqlAnnotation()
@@ -11653,9 +11675,13 @@ inline IHqlExpression * createCallExpression(IHqlExpression * funcdef, HqlExprAr
     IHqlExpression * body = funcdef->queryBody(true);
     if (funcdef != body)
     {
-        if (funcdef->getAnnotationKind() != annotate_symbol)
+        annotate_kind annotationKind = funcdef->getAnnotationKind();
+        if (annotationKind != annotate_symbol)
         {
             OwnedHqlExpr call = createCallExpression(body, resolvedActuals);
+            //MORE: Probably only interested in warnings, possibly locations
+            if (annotationKind == annotate_javadoc)
+                return call.getClear();
             return funcdef->cloneAnnotation(call);
         }
 
@@ -11871,7 +11897,11 @@ protected:
                     HqlDummyLookupContext dummyctx(ctx.errors);
                     IHqlScope * newScope = newModule->queryScope();
                     if (newScope)
-                        return newScope->lookupSymbol(selectedName, makeLookupFlags(true, expr->hasAttribute(ignoreBaseAtom), false), dummyctx);
+                    {
+                        OwnedHqlExpr match = newScope->lookupSymbol(selectedName, makeLookupFlags(true, expr->hasAttribute(ignoreBaseAtom), false), dummyctx);
+                        //This will return a named symbol and be wrapped in a named symbol.  Return body to avoid duplication.
+                        return LINK(match->queryBody(true));
+                    }
                     return ::replaceChild(expr, 1, newModule);
                 }
                 break;

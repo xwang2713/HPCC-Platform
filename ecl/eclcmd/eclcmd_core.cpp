@@ -20,7 +20,6 @@
 #include "jfile.hpp"
 #include "jargv.hpp"
 #include "jflz.hpp"
-#include "build-config.h"
 #include "httpclient.hpp"
 
 #include "workunit.hpp"
@@ -88,7 +87,7 @@ void checkFeatures(IClientWsWorkunits *client, bool &useCompression, int &major,
     }
 }
 
-bool doDeploy(EclCmdWithEclTarget &cmd, IClientWsWorkunits *client, unsigned waitMs, const char *cluster, const char *name, StringBuffer *wuid, StringBuffer *wucluster, bool noarchive, bool displayWuid=true, bool compress=true)
+bool doDeploy(EclCmdWithEclTarget &cmd, IClientWsWorkunits *client, unsigned waitMs, const char *cluster, const char *name, StringBuffer *wuid, StringBuffer *wucluster, bool noarchive, bool displayWuid, bool compress, bool protect)
 {
     int major = 0;
     int minor = 0;
@@ -155,7 +154,8 @@ bool doDeploy(EclCmdWithEclTarget &cmd, IClientWsWorkunits *client, unsigned wai
         req->setDebugValues(cmd.debugValues);
         cmd.debugValues.kill();
     }
-
+    if (protect)
+        req->setProtect(true);
     Owned<IClientWUDeployWorkunitResponse> resp;
     try
     {
@@ -246,8 +246,11 @@ public:
         for (; !iter.done(); iter.next())
         {
             const char *arg = iter.query();
-            if (iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
+            if (iter.matchOption(optName, ECLOPT_JOB_NAME)||iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
                 continue;
+            if (iter.matchFlag(optProtect, ECLOPT_PROTECT))
+                continue;
+
             eclCmdOptionMatchIndicator ind = EclCmdWithEclTarget::matchCommandLineOption(iter, true);
             if (ind != EclCmdOptionMatch)
                 return ind;
@@ -270,7 +273,7 @@ public:
     virtual int processCMD()
     {
         Owned<IClientWsWorkunits> client = createCmdClientExt(WsWorkunits, *this, "?upload_"); //upload_ disables maxRequestEntityLength
-        return doDeploy(*this, client, 0, optTargetCluster.get(), optName.get(), NULL, NULL, optNoArchive) ? 0 : 1;
+        return doDeploy(*this, client, 0, optTargetCluster.get(), optName.get(), NULL, NULL, optNoArchive, true, true, optProtect) ? 0 : 1;
     }
     virtual void usage()
     {
@@ -289,12 +292,14 @@ public:
             "   <archive>              ecl archive to deploy\n"
             "   <so|dll>               workunit dll or shared object to deploy\n"
             " Options:\n"
-            "   -n, --name=<val>       workunit job name\n",
+            "   --job-name=<val>       workunit job name\n"
+            "   --protect              protect workunit from deletion\n",
             stdout);
         EclCmdWithEclTarget::usage();
     }
 private:
     StringAttr optName;
+    bool optProtect=false;
 };
 
 class EclCmdPublish : public EclCmdWithEclTarget
@@ -317,7 +322,12 @@ public:
         {
             if (iter.matchOption(optObj.value, ECLOPT_WUID)||iter.matchOption(optObj.value, ECLOPT_WUID_S))
                 continue;
-            if (iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
+            //no longer documented but support "--name, -n" for backward compatibility
+            if (iter.matchOption(optQueryName, ECLOPT_NAME)||iter.matchOption(optQueryName, ECLOPT_NAME_S))
+                continue;
+            if (iter.matchOption(optQueryName, ECLOPT_QUERY_NAME))
+                continue;
+            if (iter.matchOption(optJobName, ECLOPT_JOB_NAME))
                 continue;
             if (iter.matchOption(optDaliIP, ECLOPT_DALIIP))
                 continue;
@@ -356,6 +366,8 @@ public:
             if (iter.matchFlag(optSuspendPrevious, ECLOPT_SUSPEND_PREVIOUS)||iter.matchFlag(optSuspendPrevious, ECLOPT_SUSPEND_PREVIOUS_S))
                 continue;
             if (iter.matchFlag(optDeletePrevious, ECLOPT_DELETE_PREVIOUS)||iter.matchFlag(optDeletePrevious, ECLOPT_DELETE_PREVIOUS_S))
+                continue;
+            if (iter.matchFlag(optProtect, ECLOPT_PROTECT))
                 continue;
             if (iter.matchFlag(optUpdateDfs, ECLOPT_UPDATE_DFS))
                 continue;
@@ -416,7 +428,7 @@ public:
         StringBuffer wuid;
         if (optObj.type==eclObjWuid)
             wuid.set(optObj.value.get());
-        else if (!doDeploy(*this, client, optMsToWait, optTargetCluster.get(), optName.get(), &wuid, NULL, optNoArchive))
+        else if (!doDeploy(*this, client, optMsToWait, optTargetCluster.get(), optJobName.length() ? optJobName.get() : optQueryName.get(), &wuid, NULL, optNoArchive, true, true, optProtect))
             return 1;
 
         unsigned remaining = 0;
@@ -441,8 +453,15 @@ public:
         else
             req->setActivate(optNoActivate ? CWUQueryActivationMode_NoActivate : CWUQueryActivationMode_Activate);
 
-        if (optName.length())
-            req->setJobName(optName.get());
+        if (optJobName.length())
+            req->setWorkUnitJobName(optJobName);
+        if (optQueryName.length())
+        {
+            //very confusing parameter name, but set for backward compatability
+            //  for old servers... will not override WorkUnit JobName from call to doDeploy above, so that job name will still win
+            req->setJobName(optQueryName);
+            req->setQueryName(optQueryName);
+        }
         if (optTargetCluster.length())
             req->setCluster(optTargetCluster.get());
         req->setRemoteDali(optDaliIP.get());
@@ -505,10 +524,12 @@ public:
             "   <file>                 ECL text file to publish\n"
             "   <so|dll>               workunit dll or shared object to publish\n"
             " Options:\n"
-            "   -n, --name=<val>       query name to use for published workunit\n"
+            "   --query-name=<val>     query name to use for published workunit\n"
+            "   --job-name=<val>       job name to use for the workunit\n"
             "   -A, --activate         Activate query when published (default)\n"
             "   -sp, --suspend-prev    Suspend previously active query\n"
             "   -dp, --delete-prev     Delete previously active query\n"
+            "   --protect              protect workunit from deletion\n"
             "   -A-, --no-activate     Do not activate query when published\n"
             "   --no-reload            Do not request a reload of the (roxie) cluster\n"
             "   --no-files             Do not copy DFS file information for referenced files\n"
@@ -531,7 +552,8 @@ public:
         EclCmdWithEclTarget::usage();
     }
 private:
-    StringAttr optName;
+    StringAttr optQueryName;
+    StringAttr optJobName;
     StringAttr optDaliIP;
     StringAttr optSourceProcess;
     StringAttr optMemoryLimit;
@@ -546,6 +568,7 @@ private:
     bool optDontCopyFiles;
     bool optSuspendPrevious;
     bool optDeletePrevious;
+    bool optProtect = false;
     bool optAllowForeign;
     bool optUpdateDfs;
     bool optUpdateSuperfiles;
@@ -584,7 +607,8 @@ public:
                 continue;
             if (iter.matchOption(optObj.value, ECLOPT_WUID)||iter.matchOption(optObj.value, ECLOPT_WUID_S))
                 continue;
-            if (iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
+            //backward compatable, but "--name, -n" no longer documented in favor of explicit/consistent --job-name parameter
+            if (iter.matchOption(optName, ECLOPT_JOB_NAME)||iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
                 continue;
             if (iter.matchOption(optInput, ECLOPT_INPUT)||iter.matchOption(optInput, ECLOPT_INPUT_S))
                 continue;
@@ -595,6 +619,8 @@ public:
             if (iter.matchFlag(optPoll, ECLOPT_POLL))
                 continue;
             if (iter.matchFlag(optPre64, "--pre64")) //only for troubleshooting, do not document
+                continue;
+            if (iter.matchFlag(optProtect, ECLOPT_PROTECT))
                 continue;
             if (iter.matchOption(optExceptionSeverity, ECLOPT_EXCEPTION_LEVEL))
                 continue;
@@ -931,7 +957,7 @@ public:
         else
         {
             req->setCloneWorkunit(false);
-            if (!doDeploy(*this, client, optWaitTime, optTargetCluster.get(), optName.get(), &wuid, &wuCluster, optNoArchive, optVerbose))
+            if (!doDeploy(*this, client, optWaitTime, optTargetCluster.get(), optName.get(), &wuid, &wuCluster, optNoArchive, optVerbose, true, optProtect))
                 return 1;
             req->setWuid(wuid.str());
             if (optVerbose)
@@ -1047,13 +1073,14 @@ public:
             "   <eclfile>              ECL text file to publish\n"
             "   <so|dll>               workunit dll or shared object to publish\n"
             " Options:\n"
-            "   -n, --name=<val>          job name\n"
+            "   --job-name=<val>          job name\n"
             "   -in,--input=<file|xml>    file or xml content to use as query input\n"
             "   -X<name>=<value>          sets the stored input value (stored('name'))\n"
             "   --wait=<ms>               time to wait for completion\n"
             "   --poll                    poll for results, rather than remain connected\n"
             "   --exception-level=<level> minimum severity level for exceptions\n"
-            "                             values: 'info', 'warning', 'error'\n",
+            "                             values: 'info', 'warning', 'error'\n"
+            "   --protect                 protect workunit from deletion\n",
             stdout);
         EclCmdWithEclTarget::usage();
     }
@@ -1067,6 +1094,7 @@ private:
     bool optNoRoot = false;
     bool optPoll = false;
     bool optPre64 = false;  //only for troubleshooting, do not document
+    bool optProtect = false;
 };
 
 class EclCmdResults : public EclCmdCommon

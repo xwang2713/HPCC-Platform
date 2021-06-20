@@ -75,6 +75,9 @@ ldap:
          -  path: OthersWorkunitsAccess
             resource: OthersWorkunitsAccess
             description: Access to others' workunits
+         -  path: DeployWorkunitsAccess
+            resource: DeployWorkunitsAccess
+            description: Access to deploy workunits
          -  path: EclDirectAccess
             resource: EclDirectAccess
             description: Access to ECL direct service
@@ -86,6 +89,9 @@ ldap:
          -  path: OthersWorkunitsAccess
             resource: OthersWorkunitsAccess
             description: Access to others' workunits
+         -  path: DeployWorkunitsAccess
+            resource: DeployWorkunitsAccess
+            description: Access to deploy workunits
       WsTopology:
          Feature:
          -  path: ClusterTopologyAccess
@@ -129,17 +135,6 @@ ldap:
          -  path: FileIOAccess
             resource: FileIOAccess
             description: Access to files in dropzone
-      ws_machine:
-         Feature:
-         -  path: MachineInfoAccess
-            resource: MachineInfoAccess
-            description: Access to machine information
-         -  path: MetricsAccess
-            resource: MetricsAccess
-            description: Access to SNMP metrics information
-         -  path: ExecuteAccess
-            resource: ExecuteAccess
-            description: Access to remote execution
       ws_config:
          Feature:
          -  path: ConfigAccess

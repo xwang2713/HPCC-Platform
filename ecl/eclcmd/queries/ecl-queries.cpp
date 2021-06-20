@@ -20,8 +20,6 @@
 #include "jargv.hpp"
 #include "jflz.hpp"
 
-#include "build-config.h"
-
 #include "ws_workunits.hpp"
 
 #include "eclcmd.hpp"
@@ -30,9 +28,7 @@
 #include "workunit.hpp"
 
 #define INIFILE "ecl.ini"
-#define SYSTEMCONFDIR CONFIG_DIR
 #define DEFAULTINIFILE "ecl.ini"
-#define SYSTEMCONFFILE ENV_CONF_FILE
 
 //=========================================================================================
 
@@ -445,6 +441,10 @@ public:
                 continue;
             if (iter.matchFlag(optActivate, ECLOPT_ACTIVATE)||iter.matchFlag(optActivate, ECLOPT_ACTIVATE_S))
                 continue;
+            if (iter.matchFlag(optSuspendPrevious, ECLOPT_SUSPEND_PREVIOUS)||iter.matchFlag(optSuspendPrevious, ECLOPT_SUSPEND_PREVIOUS_S))
+                continue;
+            if (iter.matchFlag(optDeletePrevious, ECLOPT_DELETE_PREVIOUS)||iter.matchFlag(optDeletePrevious, ECLOPT_DELETE_PREVIOUS_S))
+                continue;
             if (iter.matchFlag(optNoReload, ECLOPT_NORELOAD))
                 continue;
             if (iter.matchOption(optTargetCluster, ECLOPT_CLUSTER_DEPRECATED)||iter.matchOption(optTargetCluster, ECLOPT_CLUSTER_DEPRECATED_S))
@@ -508,6 +508,16 @@ public:
             fprintf(stderr, "invalid --priority value of %s.\n", optPriority.get());
             return false;
         }
+        if (!optActivate && (optSuspendPrevious || optDeletePrevious))
+        {
+            fputs("invalid --suspend-prev and --delete-prev require --activate.\n", stderr);
+            return false;
+        }
+        if (optSuspendPrevious && optDeletePrevious)
+        {
+            fputs("invalid --suspend-prev and --delete-prev are mutually exclusive options.\n", stderr);
+            return false;
+        }
 
         return true;
     }
@@ -523,7 +533,13 @@ public:
         req->setCluster(optTargetCluster.get());
         req->setDaliServer(optDaliIP.get());
         req->setSourceProcess(optSourceProcess);
-        req->setActivate(optActivate);
+        if (optDeletePrevious)
+            req->setActivate(CWUQueryActivationMode_ActivateDeletePrevious);
+        else if (optSuspendPrevious)
+            req->setActivate(CWUQueryActivationMode_ActivateSuspendPrevious);
+        else
+            req->setActivate(optActivate ? CWUQueryActivationMode_Activate : CWUQueryActivationMode_NoActivate);
+
         req->setOverwrite(optOverwrite);
         req->setUpdateSuperFiles(optUpdateSuperfiles);
         req->setUpdateCloneFrom(optUpdateCloneFrom);
@@ -581,6 +597,8 @@ public:
             "                          (only required if remote environment version < 3.8)\n"
             "   --source-process       Process cluster to copy files from\n"
             "   -A, --activate         Activate the new query\n"
+            "   -sp, --suspend-prev    Suspend previously active query\n"
+            "   -dp, --delete-prev     Delete previously active query\n"
             "   --no-reload            Do not request a reload of the (roxie) cluster\n"
             "   -O, --overwrite        Completely replace existing DFS file information (dangerous)\n"
             "   --update-super-files   Update local DFS super-files if remote DALI has changed\n"
@@ -614,6 +632,8 @@ private:
     unsigned optTimeLimit;
     unsigned optWarnTimeLimit;
     bool optActivate;
+    bool optSuspendPrevious = false;
+    bool optDeletePrevious = false;
     bool optNoReload;
     bool optOverwrite;
     bool optUpdateSuperfiles;
@@ -1561,7 +1581,7 @@ public:
 
 static int doMain(int argc, const char *argv[])
 {
-    EclQueriesCMDShell processor(argc, argv, createEclQueriesCommand, BUILD_TAG);
+    EclQueriesCMDShell processor(argc, argv, createEclQueriesCommand, hpccBuildInfo.buildTag);
     return processor.run();
 }
 

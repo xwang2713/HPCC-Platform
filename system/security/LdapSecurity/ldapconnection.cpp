@@ -162,7 +162,7 @@ public:
         {
             char *copyFullText = strdup(addrlist);
             char *saveptr;
-            char *ip = strtok_r(copyFullText, "|", &saveptr);
+            char *ip = strtok_r(copyFullText, "|,", &saveptr);//multiple LDAP IP separators ("ldapAddress=x.x.x.x,y.y.y.y")
             while (ip != NULL)
             {
                 if (isdigit(*ip))
@@ -192,7 +192,7 @@ public:
                     m_hostArray.append(ip);
                 }
                 DBGLOG("Added ldap server %s", m_hostArray.item(m_hostArray.ordinality()-1));
-                ip = strtok_r(NULL, "|", &saveptr);
+                ip = strtok_r(NULL, "|,", &saveptr);
             }
             free(copyFullText);
 
@@ -557,10 +557,15 @@ public:
                 m_sysuser_dn.append("cn=").append(m_sysuser_commonname.str()).append(",").append(m_sysuser_basedn.str());
             else if(m_serverType == OPEN_LDAP)
             {
-                if (0==strcmp("Directory Manager",m_sysuser_commonname.str()))
-                    m_sysuser_dn.append("cn=").append(m_sysuser_commonname.str()).append(",").append(m_sysuser_basedn.str());
+                if (strstr(m_sysuser_commonname.str(), "Directory Manager"))
+                    m_sysuser_dn.append("cn=Directory Manager");
                 else
-                    m_sysuser_dn.append("uid=").append(m_sysuser_commonname.str()).append(",").append(m_sysuser_basedn.str()).append(",").append(m_basedn.str());
+                {
+                    if (nullptr == strchr(m_sysuser_commonname.str(), '='))
+                        m_sysuser_dn.append("uid=").append(m_sysuser_commonname.str()).append(",").append(m_sysuser_basedn.str()).append(",").append(m_basedn.str());
+                    else
+                        m_sysuser_dn.append(m_sysuser_commonname.str());//includes FQDN prefix, use as is (likely from initldap)
+                }
             }
         }
 
@@ -1551,9 +1556,9 @@ public:
             //Create base LDAP OU tree. Specify PT_ADMINISTRATORS_ONLY to ensure each OU
             //grants access to Administrators only
             createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_DEFAULT), PT_ADMINISTRATORS_ONLY);
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE), PT_ADMINISTRATORS_ONLY);
+            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE), PT_DEFAULT);
             createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_VIEW_SCOPE), PT_ADMINISTRATORS_ONLY);
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_WORKUNIT_SCOPE), PT_ADMINISTRATORS_ONLY);
+            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_WORKUNIT_SCOPE), PT_DEFAULT);
             createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_SUDOERS), PT_ADMINISTRATORS_ONLY);
 
             createLdapBasedn(NULL, m_ldapconfig->getUserBasedn(), PT_ADMINISTRATORS_ONLY);
@@ -5993,6 +5998,9 @@ private:
         if (m_domainPwdsNeverExpire)
             act_ctrl_val |= 0x10000;
 #endif
+
+        // Ensure password required
+        act_ctrl_val &= ~(0x20);// UF_PASSWD_NOTREQD 0x0020
 
         StringBuffer new_act_ctrl;
         new_act_ctrl.append(act_ctrl_val);

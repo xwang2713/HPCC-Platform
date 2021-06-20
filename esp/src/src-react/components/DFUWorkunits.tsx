@@ -8,8 +8,9 @@ import * as Utility from "src/Utility";
 import nlsHPCC from "src/nlsHPCC";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { pushParams } from "../util/history";
-import { Fields, Filter } from "./Filter";
-import { ShortVerticalDivider } from "./Common";
+import { Filter } from "./forms/Filter";
+import { Fields } from "./forms/Fields";
+import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
 import { DojoGrid, selector } from "./DojoGrid";
 
 const FilterFields: Fields = {
@@ -115,19 +116,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
     ];
 
     const rightButtons: ICommandBarItemProps[] = [
-        {
-            key: "copy", text: nlsHPCC.CopyWUIDs, disabled: !uiState.hasSelection || !navigator?.clipboard?.writeText, iconOnly: true, iconProps: { iconName: "Copy" },
-            onClick: () => {
-                const wuids = selection.map(s => s.Wuid);
-                navigator?.clipboard?.writeText(wuids.join("\n"));
-            }
-        },
-        {
-            key: "download", text: nlsHPCC.DownloadToCSV, disabled: !uiState.hasSelection, iconOnly: true, iconProps: { iconName: "Download" },
-            onClick: () => {
-                Utility.downloadToCSV(grid, selection.map(row => ([row.Protected, row.Wuid, row.Owner, row.Jobname, row.Cluster, row.RoxieCluster, row.State, row.TotalClusterTime])), "workunits.csv");
-            }
-        }
+        ...createCopyDownloadSelection(grid, selection, "dfuworkunits.csv")
     ];
 
     //  Grid ---
@@ -198,7 +187,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
 
     React.useEffect(() => {
         refreshTable();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [filter]);
 
     //  Selection  ---

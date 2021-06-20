@@ -1,0 +1,57 @@
+# Overrides for efs storage in hpcc.
+# NB: Using the default "aws-efs" storage class results in automatically
+# provisioned Persistent Volume's with a reclaimPolicy of "Delete"
+
+storage:
+  planes:
+  - name: dali
+    storageSize: 1Gi
+    storageClass: "aws-efs"
+    prefix: "/var/lib/HPCCSystems/dalistorage"
+    labels:
+    - dali
+
+  - name: dll
+    prefix: "/var/lib/HPCCSystems/queries"
+    storageSize: 1Gi
+    storageClass: "aws-efs"
+    labels:
+    - dll
+
+  - name: sasha
+    storageSize: 1Gi
+    storageClass: "aws-efs"
+    prefix: "/var/lib/HPCCSystems/sashastorage"
+    labels:
+    - sasha
+
+  - name: data
+    storageSize: 1Gi
+    storageClass: "aws-efs"
+    prefix: "/var/lib/HPCCSystems/hpcc-data"
+    labels:
+    - data # NB: if not set, this would be the default
+
+  - name: mydropzone
+    storageSize: 1Gi
+    storageClass: "aws-efs"
+    prefix: "/var/lib/HPCCSystems/dropzone"
+    labels:
+    - lz
+
+  daliStorage:
+    plane: dali
+
+  dllStorage:
+    plane: dll
+
+  dataStorage:
+    plane: data
+
+sasha:
+  wu-archiver:
+    storage:
+      plane: sasha
+  dfuwu-archiver:
+    storage:
+      plane: sasha

@@ -19,7 +19,6 @@
 #include "jlog.hpp"
 #include "jfile.hpp"
 #include "jargv.hpp"
-#include "build-config.h"
 
 #include "esdlcmd_common.hpp"
 #include "esdlcmd_core.hpp"
@@ -89,7 +88,7 @@ StringBuffer &getEsdlCmdComponentFilesPath(StringBuffer & path)
 {
     if (getComponentFilesRelPathFromBin(path))
         return path;
-    return path.set(COMPONENTFILES_DIR);
+    return path.set(hpccBuildInfo.componentDir);
 }
 
 class EsdlMonitorTemplateCmd : public EsdlConvertCmd

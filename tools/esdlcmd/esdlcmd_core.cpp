@@ -19,7 +19,6 @@
 #include "jlog.hpp"
 #include "jfile.hpp"
 #include "jargv.hpp"
-#include "build-config.h"
 
 #include "esdlcmd_common.hpp"
 #include "esdlcmd_core.hpp"
@@ -155,7 +154,7 @@ public:
             if (getComponentFilesRelPathFromBin(tmp))
                 optXsltPath.set(tmp.str());
             else
-                optXsltPath.set(COMPONENTFILES_DIR);
+                optXsltPath.set(hpccBuildInfo.componentDir);
         }
 
         fullxsltpath.set(optXsltPath);
@@ -687,7 +686,7 @@ public:
             if (checkFileExists(temp.append(binXsltPath).append(XSLT_ESDL2JAVABASE)))
                 optXsltPath.set(binXsltPath);
             else
-                optXsltPath.set(temp.set(COMPONENTFILES_DIR).append("/xslt/"));
+                optXsltPath.set(temp.set(hpccBuildInfo.componentDir).append("/xslt/"));
         }
         cmdHelper.verbose = optVerbose;
         return true;
@@ -919,7 +918,7 @@ public:
             if (checkFileExists(temp.append(binXsltPath).append(XSLT_ESDL2CPPBASEHPP)))
                 optXsltPath.set(binXsltPath);
             else
-                optXsltPath.set(temp.set(COMPONENTFILES_DIR).append("/xslt/"));
+                optXsltPath.set(temp.set(hpccBuildInfo.componentDir).append("/xslt/"));
         }
         cmdHelper.verbose = optVerbose;
         return true;
@@ -1024,7 +1023,7 @@ public:
         else
         {
             Owned<IProperties> params = createProperties();
-            setXpathQuotedParam(params, "installdir", INSTALL_DIR);
+            setXpathQuotedParam(params, "installdir", hpccBuildInfo.installDir);
             cmdHelper.defHelper->loadTransform( xsltpath, params.get(), EsdlXslToCppCMake);
             cmdHelper.defHelper->toMicroService( *structs, outputBuffer, EsdlXslToCppCMake, NULL, optFlags );
             saveAsFile(sourcedir.str(), "CMakeLists.txt", outputBuffer.str(), NULL);

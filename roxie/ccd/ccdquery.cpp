@@ -334,6 +334,7 @@ QueryOptions::QueryOptions()
     failOnLeaks = alwaysFailOnLeaks;
     collectFactoryStatistics = defaultCollectFactoryStatistics;
     parallelWorkflow = false;
+    sinkMode = defaultSinkMode;
     numWorkflowThreads = 1;
 }
 
@@ -369,6 +370,7 @@ QueryOptions::QueryOptions(const QueryOptions &other)
     collectFactoryStatistics = other.collectFactoryStatistics;
 
     parallelWorkflow = other.parallelWorkflow;
+    sinkMode = other.sinkMode;
     numWorkflowThreads = other.numWorkflowThreads;
 }
 
@@ -414,6 +416,7 @@ void QueryOptions::setFromWorkUnit(IConstWorkUnit &wu, const IPropertyTree *stat
     updateFromWorkUnit(collectFactoryStatistics, wu, "collectFactoryStatistics");
 
     updateFromWorkUnit(parallelWorkflow, wu, "parallelWorkflow");
+    updateFromWorkUnit(sinkMode, wu, "sinkMode");
     updateFromWorkUnit(numWorkflowThreads, wu, "numWorkflowthreads");
 }
 
@@ -443,6 +446,14 @@ void QueryOptions::updateFromWorkUnit(RecordTranslationMode &value, IConstWorkUn
     wu.getDebugValue(name, val);
     if (val.length())
         value = getTranslationMode(val.str(), false);
+}
+
+void QueryOptions::updateFromWorkUnit(SinkMode &value, IConstWorkUnit &wu, const char *name)
+{
+    SCMStringBuffer val;
+    wu.getDebugValue(name, val);
+    if (val.length())
+        value = ::getSinkMode(val.str());
 }
 
 void QueryOptions::setFromContext(const IPropertyTree *ctx)
@@ -552,6 +563,8 @@ protected:
     ClusterType targetClusterType;
     unsigned libraryInterfaceHash;
     hash64_t hashValue;
+
+    mutable unsigned timeActResetLastLogged;
 
     static CriticalSection activeQueriesCrit;
     static CopyMapXToMyClass<hash64_t, hash64_t, CQueryFactory> activeQueries;    // Active queries
@@ -1125,6 +1138,7 @@ public:
         libraryInterfaceHash = 0;
         options.enableFieldTranslation = package.getEnableFieldTranslation();  // NOTE - can be overridden by wu settings
         options.allSortsMaySpill = dynamic;
+        timeActResetLastLogged = 0;
         addToCache();
     }
 
@@ -1647,6 +1661,16 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
     virtual bool isDynamic() const override
     {
         return dynamic;
+    }
+
+    virtual unsigned getTimeActResetLastLogged() const override
+    {
+        return timeActResetLastLogged;
+    }
+
+    virtual void setTimeActResetLastLogged(unsigned _ntime) const override
+    {
+        timeActResetLastLogged = _ntime;
     }
 
 protected:

@@ -63,6 +63,9 @@ private:
 
     void updateUsers()
     {
+#ifdef _CONTAINERIZED
+        IERRLOG("CONTAINERIZED(QueryFilesInUse::updateUsers)");
+#else
         Owned<IStringIterator> clusters = getTargetClusters("RoxieCluster", NULL);
         ForEach(*clusters)
         {
@@ -75,6 +78,7 @@ private:
             roxieUserMap.setValue(target.str(), user);
             roxieUsers.append(*user.getClear());
         }
+#endif
     }
 
 public:
@@ -452,7 +456,7 @@ public:
 
     virtual void getNavigationData(IEspContext &context, IPropertyTree & data)
     {
-        if (queryComponentConfig().getPropBool("@api_only"))
+        if (getComponentConfigSP()->getPropBool("@api_only"))
         {
             CHttpSoapBinding::getNavigationData(context, data);
             return;
@@ -469,7 +473,9 @@ public:
         }
     }
 
+#ifndef _CONTAINERIZED
     int onGetForm(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method);
+#endif
     int onGet(CHttpRequest* request, CHttpResponse* response);
     int onStartUpload(IEspContext& ctx, CHttpRequest* request, CHttpResponse* response, const char* service, const char* method);
 
@@ -489,7 +495,7 @@ private:
     size32_t wuResultDownloadFlushThreshold = defaultWUResultDownloadFlushThreshold;
 };
 
-void deploySharedObject(IEspContext &context, StringBuffer &wuid, const char *filename, const char *cluster, const char *name, const MemoryBuffer &obj, const char *dir, const char *xml=NULL);
+void deploySharedObject(IEspContext &context, StringBuffer &wuid, const char *filename, const char *cluster, const char *name, const MemoryBuffer &obj, const char *dir, const char *xml=NULL, bool protect=false);
 
 class CClusterQueryStateParam : public CInterface
 {

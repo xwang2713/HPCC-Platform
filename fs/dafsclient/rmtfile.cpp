@@ -55,22 +55,21 @@
 
 //#define TEST_DAFILESRV_FOR_UNIX_PATHS     // probably not needed
 
-static class CSecuritySettings
-{
-    unsigned short daliServixPort;
-public:
-    CSecuritySettings()
-    {
-        querySecuritySettings(nullptr, &daliServixPort, nullptr, nullptr, nullptr);
-    }
-
-    unsigned short queryDaliServixPort() { return daliServixPort; }
-} securitySettings;
-
-
+static std::atomic<unsigned> dafilesrvPort{(unsigned)-1};
+static CriticalSection dafilesrvCs;
 unsigned short getDaliServixPort()
 {
-    return securitySettings.queryDaliServixPort();
+    if (dafilesrvPort == (unsigned)-1)
+    {
+        CriticalBlock block(dafilesrvCs);
+        if (dafilesrvPort == (unsigned) -1)
+        {
+            unsigned short daliServixPort;
+            querySecuritySettings(nullptr, &daliServixPort, nullptr, nullptr, nullptr);
+            dafilesrvPort = daliServixPort;
+        }
+    }
+    return dafilesrvPort;
 }
 
 
@@ -1789,12 +1788,14 @@ extern bool clientAsyncCopyFileSection(const char *uuid,
                         offset_t fromOfs,
                         offset_t size,
                         ICopyFileProgress *progress,
-                        unsigned timeout)       // returns true when done
+                        unsigned timeout,
+                        CFflags copyFlags)       // returns true when done
 {
     CRemoteFile *cfile = QUERYINTERFACE(from,CRemoteFile);
-    if (!cfile) {
-        // local - do sync
-        from->copySection(to,toOfs,fromOfs,size,progress);
+    if (!cfile || to.isLocal()) {
+        //local - ensure that the file copy is run locally rather than remote
+        Owned<IFile> dest = createIFile(to);
+        copyFileSection(from,dest,toOfs,fromOfs,size,progress,copyFlags);
         return true;
     }
     return cfile->copySectionAsync(uuid,to,toOfs,fromOfs, size, progress, timeout);
@@ -1808,10 +1809,11 @@ bool asyncCopyFileSection(const char *uuid,                 // from genUUID - mu
                             offset_t fromofs,
                             offset_t size,                      // (offset_t)-1 for all file
                             ICopyFileProgress *progress,
-                            unsigned timeout                    // 0 to start, non-zero to wait
+                            unsigned timeout,                   // 0 to start, non-zero to wait
+                            CFflags copyFlags
                         )
 {
-    return  clientAsyncCopyFileSection(uuid,from,to,toofs,fromofs,size,progress,timeout);
+    return  clientAsyncCopyFileSection(uuid,from,to,toofs,fromofs,size,progress,timeout,copyFlags);
 }
 
 
@@ -2135,15 +2137,21 @@ IDaFileSrvHook *queryDaFileSrvHook()
 
 void enableForceRemoteReads()
 {
+#ifndef _CONTAINERIZED
     const char *forceRemotePattern = queryEnvironmentConf().queryProp("forceRemotePattern");
     if (!isEmptyString(forceRemotePattern))
         queryDaFileSrvHook()->forceRemote(forceRemotePattern);
+#endif
 }
 
 bool testForceRemote(const char *path)
 {
+#ifndef _CONTAINERIZED
     const char *forceRemotePattern = queryEnvironmentConf().queryProp("forceRemotePattern");
     return !isEmptyString(forceRemotePattern) && WildMatch(path, forceRemotePattern, false);
+#else
+    return false;
+#endif
 }
 
 

@@ -80,6 +80,8 @@ EXPORT DG_DictFilename      := filePrefix + 'SerialLibraryDict';
 EXPORT DG_DictKeyFilename   := indexPrefix + 'SerialLibraryKeyDict';
 EXPORT DG_BookKeyFilename   := indexPrefix + 'SerialBookKey';
 
+EXPORT SEQ_Filename              := filePrefix + 'Sequence';
+
 //record structures
 EXPORT DG_FetchRecord := RECORD
   INTEGER8 sequence;
@@ -201,8 +203,20 @@ EXPORT SET OF STRING3 DG_MONTHS := ['JAN','FEB','MAR','APR','MAY','JUN','JUL','A
 
 EXPORT NameWordIndex() := indexPrefix + 'wordIndex' + IF(useLocal, '_Local', '') + IF(useTranslation, '_Trans', '') ;
 EXPORT NameSearchIndex := indexPrefix + 'searchIndex';
+EXPORT NameSearchSource := indexPrefix + 'searchSource';
 EXPORT getWordIndex() := INDEX(TS.textSearchIndex, NameWordIndex());
 EXPORT getSearchIndex() := INDEX(TS.textSearchIndex, NameSearchIndex);
 EXPORT getSearchSuperIndex() := INDEX(TS.textSearchIndex, '{' + NameSearchIndex + ',' + NameWordIndex() + '}');
+EXPORT getSearchSource() := DATASET(NameSearchSource, TS.textSourceRecord, THOR);
+
+EXPORT SeqRecord := { unsigned seq; };
+EXPORT SeqReadRecord :=
+  RECORD(SeqRecord)
+    unsigned8 filepos{virtual(fileposition)};
+    unsigned8 localfilepos{virtual(localfileposition)};
+  END;
+
+EXPORT SeqFile := DATASET(SEQ_Filename, SeqReadRecord, THOR);
+EXPORT SeqDupFile := DATASET('{' + SEQ_Filename + ',' + SEQ_Filename + '}', SeqReadRecord, THOR);
 
 END;

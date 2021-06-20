@@ -8,12 +8,17 @@ import { getStateIconClass } from "src/ESPWorkunit";
 import { WUStatus } from "src/react/index";
 import { useWorkunit } from "../hooks/Workunit";
 import { DojoAdapter } from "../layouts/DojoAdapter";
+import { pivotItemStyle } from "../layouts/pivot";
 import { pushUrl } from "../util/history";
 import { ShortVerticalDivider } from "./Common";
 import { Results } from "./Results";
 import { Variables } from "./Variables";
 import { SourceFiles } from "./SourceFiles";
-import { Details } from "./Details";
+import { TableGroup } from "./forms/Groups";
+import { Helpers } from "./Helpers";
+import { InfoGrid } from "./InfoGrid";
+import { Queries } from "./Queries";
+import { Resources } from "./Resources";
 import { WUXMLSourceEditor } from "./SourceEditor";
 import { Workflows } from "./Workflows";
 
@@ -50,27 +55,6 @@ const classNames = mergeStyleSets({
     }
 });
 
-const pivotItemStyle = (size, padding: number = 4) => {
-    if (isNaN(size.width)) {
-        return { position: "absolute", padding: `${padding}px`, overflow: "auto", zIndex: 0 } as React.CSSProperties;
-    }
-    return { position: "absolute", padding: `${padding}px`, overflow: "auto", zIndex: 0, width: size.width - padding * 2, height: size.height - 45 - padding * 2 } as React.CSSProperties;
-};
-
-interface InfoGridProps {
-    wuid: string;
-    dimensions?: any;
-}
-
-const InfoGrid: React.FunctionComponent<InfoGridProps> = ({
-    wuid,
-    dimensions
-}) => {
-    return <div className="pane-content" style={{ height: dimensions.height }}>
-        <DojoAdapter widgetClassID="InfoGridWidget" params={{ Wuid: wuid }} delayProps={{ showToolbar: true }} />
-    </div>;
-};
-
 interface WorkunitDetailsProps {
     wuid: string;
     tab?: string;
@@ -92,7 +76,7 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
         setProtected(_protected || workunit?.Protected);
 
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [workunit?.Jobname, workunit?.Jobname, workunit?.Jobname]);
+    }, [workunit?.Jobname, workunit?.Description, workunit?.Protected]);
 
     const canSave = workunit && (
         jobname !== workunit.Jobname ||
@@ -130,9 +114,10 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
     const protectedImage = getImageURL(workunit?.Protected ? "locked.png" : "unlocked.png");
     const stateIconClass = getStateIconClass(workunit?.StateID, workunit?.isComplete(), workunit?.Archived);
     const serviceNames = workunit?.ServiceNames?.Item?.join("\n") || "";
+    const resourceCount = workunit?.ResourceURLCount > 1 ? workunit?.ResourceURLCount - 1 : undefined;
 
     return <SizeMe monitorHeight>{({ size }) =>
-        <Pivot overflowBehavior="menu" style={{ height: "100%" }} defaultSelectedKey={tab} onLinkClick={evt => pushUrl(`/workunits/${wuid}/${evt.props.itemKey}`)}>
+        <Pivot overflowBehavior="menu" style={{ height: "100%" }} selectedKey={tab} onLinkClick={evt => pushUrl(`/workunits/${wuid}/${evt.props.itemKey}`)}>
             <PivotItem headerText={wuid} itemKey="summary" style={pivotItemStyle(size)}>
                 <div style={{ height: "100%", position: "relative" }}>
                     <ReflexContainer orientation="horizontal">
@@ -152,7 +137,7 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
                                             <WUStatus wuid={wuid}></WUStatus>
                                         </div>
                                     </Sticky>
-                                    <Details fields={{
+                                    <TableGroup fields={{
                                         "wuid": { label: nlsHPCC.WUID, type: "string", value: wuid, readonly: true },
                                         "action": { label: nlsHPCC.Action, type: "string", value: workunit?.ActionEx, readonly: true },
                                         "state": { label: nlsHPCC.State, type: "string", value: workunit?.State, readonly: true },
@@ -186,8 +171,8 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
                         <ReflexSplitter style={{ position: "relative", height: "5px", backgroundColor: "transparent", borderStyle: "none" }}>
                             <div className={classNames.reflexSplitterDiv}></div>
                         </ReflexSplitter>
-                        <ReflexElement propagateDimensions={true} className={classNames.reflexPane}>
-                            <InfoGrid wuid={wuid} />
+                        <ReflexElement propagateDimensions={true} className={classNames.reflexPane} style={{ overflow: "hidden" }}>
+                            <InfoGrid wuid={wuid}></InfoGrid>
                         </ReflexElement>
                     </ReflexContainer>
                 </div>
@@ -211,13 +196,13 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
                 <Workflows wuid={wuid} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.Queries} itemIcon="Search" itemKey="queries" style={pivotItemStyle(size, 0)}>
-                <DojoAdapter widgetClassID="QuerySetQueryWidget" params={{ Wuid: wuid }} />
+                <Queries wuid={wuid} />
             </PivotItem>
-            <PivotItem headerText={nlsHPCC.Resources} itemKey="resources" style={pivotItemStyle(size, 0)}>
-                <DojoAdapter widgetClassID="ResourcesWidget" params={{ Wuid: wuid }} />
+            <PivotItem headerText={nlsHPCC.Resources} itemKey="resources" itemCount={resourceCount} style={pivotItemStyle(size, 0)}>
+                <Resources wuid={wuid} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.Helpers} itemKey="helpers" itemCount={workunit?.HelpersCount} style={pivotItemStyle(size, 0)}>
-                <DojoAdapter widgetClassID="HelpersWidget" params={{ Wuid: wuid }} />
+                <Helpers wuid={wuid} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.ECL} itemKey="eclsummary" style={pivotItemStyle(size, 0)}>
                 <DojoAdapter widgetClassID="ECLArchiveWidget" params={{ Wuid: wuid }} />

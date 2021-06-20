@@ -9,8 +9,9 @@ import * as Utility from "src/Utility";
 import nlsHPCC from "src/nlsHPCC";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { pushParams } from "../util/history";
-import { Fields, Filter } from "./Filter";
-import { ShortVerticalDivider } from "./Common";
+import { Fields } from "./forms/Fields";
+import { Filter } from "./forms/Filter";
+import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
 import { DojoGrid, selector, tree } from "./DojoGrid";
 
 const FilterFields: Fields = {
@@ -18,7 +19,7 @@ const FilterFields: Fields = {
     "Description": { type: "string", label: nlsHPCC.Description, placeholder: nlsHPCC.SomeDescription },
     "Owner": { type: "string", label: nlsHPCC.Owner, placeholder: nlsHPCC.jsmi },
     "Index": { type: "checkbox", label: nlsHPCC.Index },
-    "NodeGroup": { type: "target-group", label: nlsHPCC.Cluster, placeholder: nlsHPCC.Owner },
+    "NodeGroup": { type: "target-group", label: nlsHPCC.Group, placeholder: nlsHPCC.Cluster },
     "FileSizeFrom": { type: "string", label: nlsHPCC.FromSizes, placeholder: "4096" },
     "FileSizeTo": { type: "string", label: nlsHPCC.ToSizes, placeholder: "16777216" },
     "FileType": { type: "file-type", label: nlsHPCC.FileType },
@@ -71,10 +72,10 @@ export const Files: React.FunctionComponent<FilesProps> = ({
             key: "open", text: nlsHPCC.Open, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
             onClick: () => {
                 if (selection.length === 1) {
-                    window.location.href = `#/files/${selection[0].Name}`;
+                    window.location.href = `#/files/${selection[0].NodeGroup}/${selection[0].Name}`;
                 } else {
                     for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open(`#/files/${selection[i].Name}`, "_blank");
+                        window.open(`#/files/${selection[0].NodeGroup}/${selection[i].Name}`, "_blank");
                     }
                 }
             }
@@ -105,19 +106,7 @@ export const Files: React.FunctionComponent<FilesProps> = ({
     ];
 
     const rightButtons: ICommandBarItemProps[] = [
-        {
-            key: "copy", text: nlsHPCC.CopyLogicalFiles, disabled: !uiState.hasSelection || !navigator?.clipboard?.writeText, iconOnly: true, iconProps: { iconName: "Copy" },
-            onClick: () => {
-                const wuids = selection.map(s => s.Name);
-                navigator?.clipboard?.writeText(wuids.join("\n"));
-            }
-        },
-        {
-            key: "download", text: nlsHPCC.DownloadToCSV, disabled: !uiState.hasSelection, iconOnly: true, iconProps: { iconName: "Download" },
-            onClick: () => {
-                Utility.downloadToCSV(grid, selection.map(row => ([row.IsProtected, row.IsCompressed, row.IsKeyFile, row.__hpcc_displayName, row.Owner, row.SuperOwners, row.Description, row.NodeGroup, row.RecordCount, row.IntSize, row.Parts, row.Modified])), "workunits.csv");
-            }
-        }
+        ...createCopyDownloadSelection(grid, selection, "logicalfiles.csv")
     ];
 
     //  Grid ---
@@ -175,7 +164,7 @@ export const Files: React.FunctionComponent<FilesProps> = ({
                 if (row.__hpcc_isDir) {
                     return name;
                 }
-                return (row.getStateImageHTML ? row.getStateImageHTML() + "&nbsp;" : "") + "<a href='#/files/" + name + "' class='dgrid-row-url'>" + name + "</a>";
+                return (row.getStateImageHTML ? row.getStateImageHTML() + "&nbsp;" : "") + "<a href='#/files/" + row.NodeGroup + "/" + name + "' class='dgrid-row-url'>" + name + "</a>";
             },
             renderExpando: function (level, hasChildren, expanded, object) {
                 const dir = this.grid.isRTL ? "right" : "left";

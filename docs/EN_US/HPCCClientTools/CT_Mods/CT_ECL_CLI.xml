@@ -341,6 +341,12 @@ ecl deploy roxie - --name=FindPersonService
                 </row>
 
                 <row>
+                  <entry>--protect</entry>
+
+                  <entry>Protect the workunit from deletion</entry>
+                </row>
+
+                <row>
                   <entry>-v, --verbose</entry>
 
                   <entry>Output additional tracing information</entry>
@@ -1019,7 +1025,7 @@ ecl run thor findperson.ecl -I C:\MyECL\
                 </row>
 
                 <row>
-                  <entry>-X&lt;name&gt;</entry>
+                  <entry>-X&lt;name&gt;=&lt;value&gt;</entry>
 
                   <entry>Sets the stored input value (stored('name'))</entry>
                 </row>
@@ -1745,6 +1751,18 @@ ecl queries copy //192.168.1.10:8010/thor/findperson thor
                   <entry>-A, --activate</entry>
 
                   <entry>Activates query when copied</entry>
+                </row>
+
+                <row>
+                  <entry>-sp, --suspend-prev</entry>
+
+                  <entry>Suspend previously active query</entry>
+                </row>
+
+                <row>
+                  <entry>-dp, --delete-prev</entry>
+
+                  <entry>Delete previously active query</entry>
                 </row>
 
                 <row>
@@ -4789,7 +4807,7 @@ ecl bundle install mybundle --keepprior</programlisting>
 
             <programlisting>ecl bundle install &lt;bundle URL&gt;.git </programlisting>
 
-            <para>For example: </para>
+            <para>For example:</para>
 
             <para><programlisting>ecl bundle install https://github.com/hpcc-systems/Visualizer.git</programlisting></para>
           </listitem>

@@ -22,38 +22,66 @@
 
 
 //More to a more central location
-IPropertyTree * queryHostGroup(const char * name)
+IPropertyTree * getHostGroup(const char * name, bool required)
 {
-    if (isEmptyString(name))
-        return nullptr;
-    VStringBuffer xpath("storage/hostGroups[@name='%s']", name);
-    IPropertyTree & global = queryGlobalConfig();
-    return global.queryPropTree(xpath);
+    if (!isEmptyString(name))
+    {
+        VStringBuffer xpath("storage/hostGroups[@name='%s']", name);
+        Owned<IPropertyTree> global = getGlobalConfig();
+        IPropertyTree * match = global->getPropTree(xpath);
+        if (match)
+            return match;
+    }
+    if (required)
+        throw makeStringExceptionV(-1, "No entry found for hostGroup: '%s'", name ? name : "<null>");
+    return nullptr;
 }
 
-IPropertyTree * queryStoragePlane(const char * name)
+IPropertyTree * getStoragePlane(const char * name)
 {
     VStringBuffer xpath("storage/planes[@name='%s']", name);
-    IPropertyTree & global = queryGlobalConfig();
-    return global.queryPropTree(xpath);
+    Owned<IPropertyTree> global = getGlobalConfig();
+    return global->getPropTree(xpath);
+}
+
+
+// Expand indirect hostGroups so each hostGroups has an expanded list of host names
+void normalizeHostGroups()
+{
+    Owned<IPropertyTreeIterator> hostGroupIter = getGlobalConfigSP()->getElements("storage/hostGroups");
+    //Process the groups in order - so that multiple levels of indirection are supported
+    ForEach (*hostGroupIter)
+    {
+        IPropertyTree & cur = hostGroupIter->query();
+        if (!cur.hasProp("hosts"))
+        {
+            const char * name = cur.queryProp("@name");
+            const char * baseGroup = cur.queryProp("@hostGroup");
+            Owned<IPropertyTree> match = getHostGroup(baseGroup, true);
+            StringArray hosts;
+            Owned<IPropertyTreeIterator> hostIter = match->getElements("hosts");
+            ForEach (*hostIter)
+                hosts.append(hostIter->query().queryProp(nullptr));
+
+            if (hosts.ordinality() == 0)
+                throw makeStringExceptionV(-1, "Host group %s contains no hosts", baseGroup);
+
+            unsigned numHosts = cur.getPropInt("@count", hosts.ordinality());
+            unsigned offset = cur.getPropInt("@offset");
+            if (offset + numHosts > hosts.ordinality())
+                throw makeStringExceptionV(-1, "Group %s extends past the end of the base group %s", name, baseGroup);
+
+            unsigned delta = cur.getPropInt("@delta");
+            for (unsigned i=0; i < numHosts; i++)
+            {
+                unsigned baseIndex = offset + (i + delta) % numHosts;
+                addPTreeItem(&cur, "hosts", hosts.item(baseIndex));
+            }
+        }
+    }
 }
 
 //Cloned for now - export and use from elsewhere
-
-static void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropertyTree & source, const char * sourceName)
-{
-    if (source.hasProp(sourceName) && !target.hasProp(targetName))
-    {
-        if (source.isBinary(sourceName))
-        {
-            MemoryBuffer value;
-            source.getPropBin(sourceName, value);
-            target.setPropBin(targetName, value.length(), value.toByteArray());
-        }
-        else
-            target.setProp(targetName, source.queryProp(sourceName));
-    }
-}
 
 static void copySeparatorPropIfMissing(IPropertyTree & target, const char * targetName, IPropertyTree & source, const char * sourceName)
 {
@@ -92,7 +120,9 @@ public:
 protected:
     void ensureHostGroup(const char * name);
     void ensurePlane(const char * plane);
-    IPropertyTree * processExternalFile(CDfsLogicalFileName & logicalFilename);
+    void ensureExternalPlane(const char * name, const char * host);
+    IPropertyTree * processExternal(CDfsLogicalFileName & logicalFilename);
+    void processExternalFile(CDfsLogicalFileName & logicalFilename);
     void processExternalPlane(CDfsLogicalFileName & logicalFilename);
     void processFile(IDistributedFile & file);
     void processFilename(CDfsLogicalFileName & logicalFilename);
@@ -116,11 +146,8 @@ void LogicalFileResolver::ensureHostGroup(const char * name)
     if (storage->hasProp(xpath))
         return;
 
-    IPropertyTree * hosts = queryHostGroup(name);
-    if (!hosts)
-        throw makeStringExceptionV(0, "No entry found for hostGroup: '%s'", name);
-
-    storage->addPropTreeArrayItem("hostGroups", LINK(hosts));
+    Owned<IPropertyTree> hosts = getHostGroup(name, true);
+    storage->addPropTreeArrayItem("hostGroups", hosts.getClear());
 }
 
 void LogicalFileResolver::ensurePlane(const char * name)
@@ -130,7 +157,7 @@ void LogicalFileResolver::ensurePlane(const char * name)
     if (storage->hasProp(xpath))
         return;
 
-    IPropertyTree * plane = queryStoragePlane(name);
+    Owned<IPropertyTree> plane = getStoragePlane(name);
     if (!plane)
         throw makeStringExceptionV(0, "No entry found for plane: '%s'", name);
 
@@ -139,20 +166,62 @@ void LogicalFileResolver::ensurePlane(const char * name)
 }
 
 
-IPropertyTree * LogicalFileResolver::processExternalFile(CDfsLogicalFileName & logicalFilename)
+void LogicalFileResolver::ensureExternalPlane(const char * name, const char * host)
+{
+    VStringBuffer xpath("planes[@name='%s']", name);
+    IPropertyTree * storage = ensurePTree(meta, "storage");
+    if (storage->hasProp(xpath))
+        return;
+
+    Owned<IPropertyTree> plane = createPTree("planes");
+    plane->setProp("@name", name);
+    plane->setProp("@hosts", name);
+    Owned<IPropertyTree> hostGroup = createPTree("hostGroups");
+    hostGroup->setProp("@name", name);
+    hostGroup->setProp("@hosts", name);
+    IPropertyTree * hosts = createPTree("hosts");
+    hosts->setProp("", host);
+    hostGroup->addPropTreeArrayItem("hosts", hosts);
+
+    storage->addPropTreeArrayItem("planes", plane.getClear());
+    storage->addPropTreeArrayItem("hostGroups", hostGroup.getClear());
+}
+
+
+IPropertyTree * LogicalFileResolver::processExternal(CDfsLogicalFileName & logicalFilename)
 {
     IPropertyTree * fileMeta = meta->addPropTree("file");
     fileMeta->setProp("@name", logicalFilename.get(false));
     fileMeta->setPropInt("@numParts", 1);
     fileMeta->setProp("@format", "unknown");
     fileMeta->setPropBool("@external", true);
+    fileMeta->setPropBool("@singlePartNoSuffix", true);
 
     return fileMeta;
 }
 
+void LogicalFileResolver::processExternalFile(CDfsLogicalFileName & logicalFilename)
+{
+    IPropertyTree * fileMeta = processExternal(logicalFilename);
+
+    //MORE: In the future we could go and grab the meta information from disk for a file and determine the number of parts etc.
+    //to provide an implicit multi part file import
+    if (options & ROincludeLocation)
+    {
+        StringBuffer hostName;
+        logicalFilename.getExternalHost(hostName);
+        StringBuffer planeName;
+        planeName.append("external_").append(hostName);
+        IPropertyTree * plane = createPTree("planes");
+        plane = fileMeta->addPropTreeArrayItem("planes", plane);
+        plane->setProp("", planeName);
+        ensureExternalPlane(planeName, hostName);
+    }
+}
+
 void LogicalFileResolver::processExternalPlane(CDfsLogicalFileName & logicalFilename)
 {
-    IPropertyTree * fileMeta = processExternalFile(logicalFilename);
+    IPropertyTree * fileMeta = processExternal(logicalFilename);
 
     //MORE: In the future we could go and grab the meta information from disk for a file and determine the number of parts etc.
     //to provide an implicit multi part file import

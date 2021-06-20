@@ -19,8 +19,6 @@
 #include "jfile.hpp"
 #include "jargv.hpp"
 
-#include "build-config.h"
-
 #include "ws_workunits.hpp"
 
 #include "eclcmd.hpp"
@@ -28,16 +26,14 @@
 #include "eclcmd_core.hpp"
 
 #define INIFILE "ecl.ini"
-#define SYSTEMCONFDIR CONFIG_DIR
 #define DEFAULTINIFILE "ecl.ini"
-#define SYSTEMCONFFILE ENV_CONF_FILE
 
 
 //=========================================================================================
 
 static int doMain(int argc, const char *argv[])
 {
-    EclCMDShell processor(argc, argv, createCoreEclCommand, BUILD_TAG, true);
+    EclCMDShell processor(argc, argv, createCoreEclCommand, hpccBuildInfo.buildTag, true);
     return processor.run();
 }
 

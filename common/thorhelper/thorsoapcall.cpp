@@ -33,6 +33,8 @@
 #include "zcrypt.hpp"
 #include "persistent.hpp"
 
+#include <memory>
+
 using roxiemem::OwnedRoxieString;
 
 #ifndef _WIN32
@@ -505,11 +507,10 @@ void initPersistentHandler()
     if (!persistentInitDone)
     {
 #ifndef _CONTAINERIZED
-        const IProperties &conf = queryEnvironmentConf();
-        int maxPersistentRequests = conf.getPropInt("maxPersistentRequests", DEFAULT_MAX_PERSISTENT_REQUESTS);
+        int maxPersistentRequests = queryEnvironmentConf().getPropInt("maxPersistentRequests", DEFAULT_MAX_PERSISTENT_REQUESTS);
 #else
-        const IPropertyTree& conf = queryComponentConfig();
-        int maxPersistentRequests = conf.getPropInt("@maxPersistentRequests", DEFAULT_MAX_PERSISTENT_REQUESTS);
+        Owned<IPropertyTree> conf = getComponentConfig();
+        int maxPersistentRequests = conf->getPropInt("@maxPersistentRequests", DEFAULT_MAX_PERSISTENT_REQUESTS);
 #endif
         if (maxPersistentRequests != 0)
             persistentHandler = createPersistentHandler(nullptr, DEFAULT_MAX_PERSISTENT_IDLE_TIME, maxPersistentRequests, PersistentLogLevel::PLogMin, true);
@@ -826,6 +827,7 @@ private:
     CTimeMon timeLimitMon;
     bool complete, timeLimitExceeded;
     bool customClientCert = false;
+    bool localClientCert = false;
     IRoxieAbortMonitor * roxieAbortMonitor;
 
 protected:
@@ -861,6 +863,7 @@ public:
         logMin = (flags & SOAPFlogmin) != 0;
         logXML = (flags & SOAPFlog) != 0;
         logUserMsg = (flags & SOAPFlogusermsg) != 0;
+        logUserTailMsg = (flags & SOAPFlogusertail) != 0;
 
         double dval = helper->getTimeout(); // In seconds, but may include fractions of a second...
         if (dval < 0.0) //not provided, or out of range
@@ -954,12 +957,19 @@ public:
         StringBuffer proxyAddress;
         proxyAddress.set(s.setown(helper->getProxyAddress()));
 
-        OwnedRoxieString hosts(helper->getHosts());
+        OwnedRoxieString hostsString(helper->getHosts());
+        const char *hosts = hostsString.get();
+
         if (isEmptyString(hosts))
             throw MakeStringException(0, "%sCALL specified no URLs",wscType == STsoap ? "SOAP" : "HTTP");
+        if (0==strncmp(hosts, "mtls:", 5))
+        {
+            localClientCert = true;
+            hosts += 5;
+        }
         if (0==strncmp(hosts, "secret:", 7))
         {
-            const char *finger = hosts.get()+7;
+            const char *finger = hosts+7;
             if (isEmptyString(finger))
                 throw MakeStringException(0, "%sCALL HTTP-CONNECT SECRET specified with no name", wscType == STsoap ? "SOAP" : "HTTP");
             if (!proxyAddress.isEmpty())
@@ -1117,6 +1127,8 @@ public:
         {
             if (clientCert != NULL)
                 ownedSC.setown(createSecureSocketContextEx(clientCert->certificate, clientCert->privateKey, clientCert->passphrase, ClientSocket));
+            else if (localClientCert)
+                ownedSC.setown(createSecureSocketContextSecret("local", ClientSocket));
             else
                 ownedSC.setown(createSecureSocketContext(ClientSocket));
         }
@@ -1157,6 +1169,16 @@ public:
             rtlDataAttr text;
             helper->getLogText(lenText, text.refstr(), row);
             logctx.CTXLOG("%s: %.*s", wscCallTypeText(), lenText, text.getstr());
+        }
+    }
+    void addUserLogTailMsg(const byte * row, unsigned timeTaken)
+    {
+        if (logUserTailMsg)
+        {
+            size32_t lenText;
+            rtlDataAttr text;
+            helper->getLogTailText(lenText, text.refstr(), row);
+            logctx.CTXLOG("%s [time=%u]: %.*s", wscCallTypeText(), timeTaken, lenText, text.getstr());
         }
     }
     inline IXmlToRowTransformer * getRowTransformer() { return rowTransformer; }
@@ -1223,6 +1245,7 @@ protected:
     bool logXML;
     bool logMin;
     bool logUserMsg;
+    bool logUserTailMsg = false;
     bool aborted;
     const IContextLogger &logctx;
     unsigned flags;
@@ -1376,8 +1399,30 @@ void CWSCHelperThread::createXmlSoapQuery(IXmlWriterExt &xmlWriter, ConstPointer
     xmlWriter.outputEndNested("soap:Envelope");
 }
 
+class CWSUserLogCompletor
+{
+public:
+    CWSUserLogCompletor(CWSCHelper &wshelper, ConstPointerArray &rows) : helper(wshelper), inputRows(rows) {}
+    ~CWSUserLogCompletor()
+    {
+        //user log entries were output for the whole batch in the createXXXQuery routine above
+        //need to match each with a query complete log entry
+        unsigned timeTaken = msTick()-start;
+        ForEachItemIn(idx, inputRows)
+            helper.addUserLogTailMsg((const byte *)inputRows.item(idx), timeTaken);
+    }
+private:
+    unsigned start = msTick();
+    ConstPointerArray &inputRows;
+    CWSCHelper &helper;
+};
+
 void CWSCHelperThread::processQuery(ConstPointerArray &inputRows)
 {
+    std::unique_ptr<CWSUserLogCompletor> log;
+    if (master->logUserTailMsg)
+        log.reset(new CWSUserLogCompletor(*master, inputRows));
+
     unsigned xmlWriteFlags = 0;
     unsigned xmlReadFlags = ptr_ignoreNameSpaces;
     if (master->flags & SOAPFtrim)

@@ -1,0 +1,41 @@
+storage:
+  planes:
+  - name: my-data-plane
+    prefix: "/var/lib/HPCCSystems/hpcc-data"
+    storageSize: 1Gi
+    storageClass: ""
+  - name: my-dll-plane
+    prefix: "/var/lib/HPCCSystems/queries"
+    storageSize: 3Gi
+    storageClass: ""
+    forcePermissions: true
+    labels: [ dll ]
+  - name: my-sasha-plane
+    prefix: "/var/lib/HPCCSystems/sasha"
+    storageSize: 3Gi
+    storageClass: ""
+    forcePermissions: true
+    labels: [ unknown ]
+  - name: my-dali-plane
+    prefix: "/var/lib/HPCCSystems/dalistorage"
+    storageSize: 1Gi
+    storageClass: ""
+    labels: [ dali ]
+  - name: landingzone
+    prefix: "/var/lib/HPCCSystems/landingzone"
+    storageSize: 1Gi
+    storageClass: ""
+    labels: [ lz ]
+
+  - name: sasha
+    storageClass: ""
+    storageSize: 1Gi
+    prefix: "/var/lib/HPCCSystems/sashastorage"
+    labels: [ sasha ]
+
+  dllStorage:
+    plane: my-dll-plane
+  daliStorage:
+    plane: my-dali-plane
+  dataStorage:
+    plane: my-data-plane

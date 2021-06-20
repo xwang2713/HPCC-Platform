@@ -957,6 +957,7 @@ protected:
     OwnedMalloc<CInMemJoinBase *> channels;
 
     std::atomic<unsigned> interChannelToNotifyCount{0}; // only used on channel 0
+    Owned<IBitSet> rhsChannelStop; // only used on channel 0
     InterruptableSemaphore interChannelBarrierSem;
     bool channelActivitiesAssigned;
 
@@ -1382,6 +1383,7 @@ public:
         return broadcastLock;
     }
     HTHELPER *queryTable() { return table; }
+    IBitSet *queryRhsChannelStopSet() { dbgassertex(0 == queryJobChannelNumber()); return rhsChannelStop; }
     void startLeftInput()
     {
         try
@@ -1440,6 +1442,8 @@ public:
             {
                 rowProcessor = new CRowProcessor(*this);
                 broadcastLock = new CriticalSection;
+                if (queryJob().queryJobChannels()>1)
+                    rhsChannelStop.setown(createThreadSafeBitSet());
             }
             sharedRightRowInterfaces.setown(createThorRowInterfaces(rightRowManager, rightOutputMeta, queryId(), queryHeapFlags(), &queryJobChannel().querySharedMemCodeContext()));
             rhs.setup(sharedRightRowInterfaces);
@@ -1543,6 +1547,9 @@ public:
             broadcaster->reset();
         stopInput(0, "(L)");
         left.clear();
+        if (isGlobal() && (queryJob().queryJobChannels()>1) && (0 == queryJobChannelNumber()))
+            rhsChannelStop->reset();
+
         dataLinkStop();
     }
     virtual void getMetaInfo(ThorDataLinkMetaInfo &info) const override
@@ -2237,7 +2244,7 @@ protected:
             IChannelDistributor **channelDistributors;
             unsigned nextSpillChannel;
             CriticalSection crit;
-            atomic_t spilt;
+            std::atomic<unsigned> spilt;
         public:
             CChannelDistributor(CLookupJoinActivityBase &_owner, ICompare *cmp) : owner(_owner)
             {
@@ -2247,7 +2254,7 @@ protected:
                 channelDistributors = ((CLookupJoinActivityBase *)owner.channels[0])->channelDistributors;
                 channelDistributors[owner.queryJobChannelNumber()] = this;
                 nextSpillChannel = 0;
-                atomic_set(&spilt, 0);
+                spilt = 0;
                 //NB: all channels will have done this, before rows are added
             }
 #define HPCC_17331 // Whilst under investigation. Should be solved by fix for HPCC-21091
@@ -2342,7 +2349,8 @@ protected:
         // IChannelDistributor impl.
             virtual void putRow(const void *row)
             {
-                if (atomic_cas(&spilt, 0, 1))
+                unsigned expected = 1;
+                if (spilt.compare_exchange_strong(expected, 0))
                 {
                     StringBuffer traceInfo;
                     if (channelCollector->shrink(&traceInfo)) // grab back some valuable table array space
@@ -2354,7 +2362,7 @@ protected:
             {
                 if (!channelCollector->spill(critical))
                     return false;
-                atomic_set(&spilt, 1);
+                spilt = 1;
                 return true;
             }
             virtual roxiemem::IBufferedRowCallback *queryCallback() { return this; }
@@ -2496,11 +2504,25 @@ protected:
                  * If any have spilt, still need to distribute rest of RHS..
                  */
                 bool ok = handleGlobalRHS(marker, helper->isRightAlreadySorted(), stopping);
-                if (stopping)
+
+                if (queryJob().queryJobChannels()>1)
+                {
+                    if (stopping)
+                        channels[0]->queryRhsChannelStopSet()->set(queryJobChannelNumber(), true);
+                    InterChannelBarrier();
+                    // if all stopping, then scan will == # channels
+                    if (queryJob().queryJobChannels() == channels[0]->queryRhsChannelStopSet()->scan(0, false))
+                    {
+                        ActPrintLog("All channels in global getRHS stopped");
+                        return;
+                    }
+                }
+                else if (stopping)
                 {
                     ActPrintLog("Global getRHS stopped");
                     return;
                 }
+
                 if (ok)
                     ActPrintLog("RHS global rows fitted in memory in this channel, count: %" RIPF "d", rhs.ordinality());
                 else
@@ -2787,15 +2809,14 @@ public:
         {
             if (isGlobal())
             {
-                if (gotRHS)
-                {
-                    // Other channels sharing HT. So do not reset until all here
-                    // NB: See handleGlobalRHS, if any channel failed over to local, all will have been marked failed over to local.
-                    if (!hasFailedOverToLocal() && queryJob().queryJobChannels()>1)
-                        InterChannelBarrier();
-                }
-                else
+                if (!gotRHS)
                     getRHS(true); // If global, need to handle RHS until all are slaves stop
+
+                // Other channels sharing HT. So do not reset until all here
+                // NB: See handleGlobalRHS, if any channel failed over to local, all will have been marked failed over to local.
+                // Also need to wait for other channels, if some proceeded to use RHS when others did not.
+                if (!hasFailedOverToLocal() && queryJob().queryJobChannels()>1)
+                    InterChannelBarrier();
             }
 
             if (rhsDistributor)
@@ -3256,8 +3277,24 @@ protected:
             if (isGlobal())
             {
                 doBroadcastRHS(stopping);
-                if (stopping) // broadcast done and no-one spilt, this node can now stop
+
+                if (queryJob().queryJobChannels()>1)
+                {
+                    if (stopping)
+                        channels[0]->queryRhsChannelStopSet()->set(queryJobChannelNumber(), true);
+                    InterChannelBarrier();
+                    // if all stopping, then scan will == # channels
+                    if (queryJob().queryJobChannels() == channels[0]->queryRhsChannelStopSet()->scan(0, false))
+                    {
+                        ActPrintLog("All channels in global getRHS stopped");
+                        return;
+                    }
+                }
+                else if (stopping)
+                {
+                    ActPrintLog("Global getRHS stopped");
                     return;
+                }
 
                 if (0 == queryJobChannelNumber()) // All channels broadcast, but only channel 0 receives
                 {
@@ -3343,14 +3380,13 @@ public:
         {
             if (isGlobal())
             {
-                if (gotRHS)
-                {
-                    // Other channels sharing HT. So do not reset until all here
-                    if (queryJob().queryJobChannels()>1)
-                        InterChannelBarrier();
-                }
-                else
+                if (!gotRHS)
                     getRHS(true); // If global, need to handle RHS until all are slaves stop
+
+                // Other channels sharing HT. So do not reset until all here
+                // Also need to wait for other channels, if some proceeded to use RHS when others did not.
+                if (queryJob().queryJobChannels()>1)
+                    InterChannelBarrier();
             }
         }
         PARENT::stop();

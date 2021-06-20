@@ -1214,9 +1214,10 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                 }
                 catch (IException *e)
                 {
-                    EXCLOG(e, nullptr);
-                    activity.fireException(e);
+                    Owned<IException> te = ThorWrapException(e, "%s", "Lookup handler process");
                     e->Release();
+                    EXCLOG(te, nullptr);
+                    activity.fireException(te);
                 }
                 processing.clearRows();
             }
@@ -2334,7 +2335,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
         {
             Owned<IFileIO> lazyFileIO = queryThor().queryFileCache().lookupIFileIO(*this, indexName, filePart);
             Owned<IDelayedFile> delayedFile = createDelayedFile(lazyFileIO);
-            return createKeyIndex(filename, crc, *delayedFile, (unsigned) -1, false, false);
+            return createKeyIndex(filename, crc, *delayedFile, (unsigned) -1, false);
         }
         else
         {
@@ -2343,7 +2344,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
              * The underlying IFileIO can later be closed by fhe file caching mechanism.
              */
             Owned<IFileIO> lazyIFileIO = queryThor().queryFileCache().lookupIFileIO(*this, indexName, filePart);
-            return createKeyIndex(filename, crc, *lazyIFileIO, (unsigned) -1, false, false);
+            return createKeyIndex(filename, crc, *lazyIFileIO, (unsigned) -1, false);
         }
     }
     IKeyManager *createPartKeyManager(unsigned partNo, unsigned copy)
@@ -2973,7 +2974,7 @@ public:
                     Owned<IFileIO> iFileIO = createIFileI(lenArray.item(p), tlkMb.toByteArray()+posArray.item(p));
                     StringBuffer name("TLK");
                     name.append('_').append(container.queryId()).append('_');
-                    Owned<IKeyIndex> tlkKeyIndex = createKeyIndex(name.append(p).str(), 0, *iFileIO, (unsigned) -1, true, false); // MORE - not the right crc
+                    Owned<IKeyIndex> tlkKeyIndex = createKeyIndex(name.append(p).str(), 0, *iFileIO, (unsigned) -1, true); // MORE - not the right crc
                     tlkKeyIndexes.append(*tlkKeyIndex.getClear());
                 }
             }

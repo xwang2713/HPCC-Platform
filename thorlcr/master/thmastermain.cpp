@@ -29,7 +29,6 @@
 #include <direct.h> 
 #endif
 
-#include "build-config.h"
 #include "jlib.hpp"
 #include "jdebug.hpp"
 #include "jfile.hpp"
@@ -570,17 +569,9 @@ bool ControlHandler(ahType type)
 #include "thactivitymaster.hpp"
 int main( int argc, const char *argv[]  )
 {
-#ifndef _CONTAINERIZED
-    for (unsigned i=0;i<(unsigned)argc;i++) {
-        if (streq(argv[i],"--daemon") || streq(argv[i],"-d")) {
-            if (daemon(1,0) || write_pidfile(argv[++i])) {
-                perror("Failed to daemonize");
-                return EXIT_FAILURE;
-            }
-            break;
-        }
-    }
-#endif
+    if (!checkCreateDaemon(argc, argv))
+        return EXIT_FAILURE;
+
 #if defined(WIN32) && defined(_DEBUG)
     int tmpFlag = _CrtSetDbgFlag( _CRTDBG_REPORT_FLAG );
     tmpFlag |= _CRTDBG_LEAK_CHECK_DF;
@@ -591,7 +582,7 @@ int main( int argc, const char *argv[]  )
     InitModuleObjects();
     NoQuickEditSection xxx;
     {
-        globals.setown(loadConfiguration(thorDefaultConfigYaml, argv, "thor", "THOR", "thor.xml", nullptr));
+        globals.setown(loadConfiguration(thorDefaultConfigYaml, argv, "thor", "THOR", "thor.xml", nullptr, nullptr, false));
     }
 #ifdef _DEBUG
     unsigned holdSlave = globals->getPropInt("@holdSlave", NotFound);
@@ -605,7 +596,7 @@ int main( int argc, const char *argv[]  )
 #endif
     setStatisticsComponentName(SCTthor, globals->queryProp("@name"), true);
 
-    globals->setProp("@masterBuildTag", BUILD_TAG);
+    globals->setProp("@masterBuildTag", hpccBuildInfo.buildTag);
 
     setIORetryCount(globals->getPropInt("Debug/@ioRetries")); // default == 0 == off
     StringBuffer daliServer;
@@ -674,7 +665,7 @@ int main( int argc, const char *argv[]  )
         logHandler = queryStderrLogMsgHandler();
         logUrl.set("stderr");
 #endif
-        LOG(MCdebugProgress, thorJob, "Build %s", BUILD_TAG);
+        LOG(MCdebugProgress, thorJob, "Build %s", hpccBuildInfo.buildTag);
 
         Owned<IGroup> serverGroup = createIGroupRetry(daliServer.str(), DALI_SERVER_PORT);
 
@@ -728,6 +719,7 @@ int main( int argc, const char *argv[]  )
             globals->setProp("@nodeGroup", thorname);
         }
 
+#ifndef _CONTAINERIZED
         if (globals->getPropBool("@useNASTranslation", true))
         {
             Owned<IPropertyTree> nasConfig = envGetNASConfiguration();
@@ -735,6 +727,7 @@ int main( int argc, const char *argv[]  )
                 globals->setPropTree("NAS", nasConfig.getLink()); // for use by slaves
             Owned<IPropertyTree> masterNasFilters = envGetInstallNASHooks(nasConfig, &thorEp);
         }
+#endif
         
         HardwareInfo hdwInfo;
         getHardwareInfo(hdwInfo);
@@ -895,12 +888,15 @@ int main( int argc, const char *argv[]  )
         e->Release();
         return -1;
     }
+
     StringBuffer queueName;
+#ifndef _CONTAINERIZED
     SCMStringBuffer _queueNames;
     const char *thorName = globals->queryProp("@name");
     if (!thorName) thorName = "thor";
     getThorQueueNames(_queueNames, thorName);
     queueName.set(_queueNames.str());
+#endif
 
     Owned<IException> exception;
     StringBuffer cloudJobName;
@@ -958,7 +954,7 @@ int main( int argc, const char *argv[]  )
         StringBuffer myEp;
         queryMyNode()->endpoint().getUrlStr(myEp);
 
-        applyK8sYaml("thorworker", workunit, cloudJobName, "jobspec", { { "graphName", graphName}, { "master", myEp.str() }, { "%numWorkers", std::to_string(numWorkers)} }, false);
+        applyK8sYaml("thorworker", workunit, cloudJobName, "jobspec", { { "graphName", graphName}, { "master", myEp.str() }, { "_HPCC_NUM_WORKERS_", std::to_string(numWorkers)} }, false);
 #else
         StringBuffer thorEpStr;
         LOG(MCdebugProgress, thorJob, "ThorMaster version %d.%d, Started on %s", THOR_VERSION_MAJOR,THOR_VERSION_MINOR,thorEp.getUrlStr(thorEpStr).str());
@@ -1026,7 +1022,7 @@ int main( int argc, const char *argv[]  )
                 StringBuffer uniqueGrpName;
                 queryNamedGroupStore().addUnique(&queryProcessGroup(), uniqueGrpName);
                 // change default plane
-                queryComponentConfig().setProp("storagePlane", uniqueGrpName);
+                getComponentConfigSP()->setProp("storagePlane", uniqueGrpName);
                 PROGLOG("Persistent Thor group created with group name: %s", uniqueGrpName.str());
             }
 #endif

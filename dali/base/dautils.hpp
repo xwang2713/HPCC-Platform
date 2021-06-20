@@ -95,6 +95,8 @@ public:
     bool isExternal() const { return external; }
     bool isExternalPlane() const;
     bool getExternalPlane(StringBuffer & plane) const;
+    bool isExternalFile() const;
+    bool getExternalHost(StringBuffer & host) const;
     /*
      * Multi files are temporary SuperFiles only. SuperFiles created
      * by the user do not fit into this category and are created
@@ -154,14 +156,14 @@ protected:
 class da_decl CTransactionLogTracker
 {
     unsigned max;
-    atomic_t *counts;
+    std::atomic<unsigned> * counts;
 public:
     CTransactionLogTracker(int _max) : max(_max)
     {
-        counts = new atomic_t[max+1]; // +1 reserve for unknown commands
+        counts = new std::atomic<unsigned>[max+1]; // +1 reserve for unknown commands
         unsigned t=0;
         for (; t<=max; t++)
-            atomic_set(&counts[t],0);
+            counts[t] = 0;
     }
     ~CTransactionLogTracker()
     {
@@ -170,15 +172,15 @@ public:
     inline const unsigned &getMax() const { return max; }
     inline void startTransaction(unsigned cmd)
     {
-        atomic_inc(&counts[cmd]);
+        counts[cmd]++;
     }
     inline void endTransaction(unsigned cmd)
     {
-        atomic_dec(&counts[cmd]);
+        counts[cmd]--;
     }
     unsigned getTransactionCount(unsigned cmd) const
     {
-        return (unsigned)atomic_read(&counts[cmd]);
+        return counts[cmd].load();
     }
     virtual StringBuffer &getCmdText(unsigned cmd, StringBuffer &ret) const = 0;
 };
@@ -442,7 +444,7 @@ interface ILocalOrDistributedFile: extends IInterface
     virtual bool isExternal() const = 0;
 };
 
-extern da_decl ILocalOrDistributedFile* createLocalOrDistributedFile(const char *fname,IUserDescriptor *user,bool onlylocal,bool onlydfs,bool iswrite, bool isPrivilegedUser);
+extern da_decl ILocalOrDistributedFile* createLocalOrDistributedFile(const char *fname,IUserDescriptor *user,bool onlylocal,bool onlydfs,bool iswrite, bool isPrivilegedUser, const StringArray *clusters);
 
 typedef __int64 ConnectionId;
 
@@ -534,8 +536,11 @@ interface ILockInfoCollection : extends IInterface
 extern da_decl ILockInfoCollection *createLockInfoCollection();
 extern da_decl ILockInfoCollection *deserializeLockInfoCollection(MemoryBuffer &mb);
 
+extern da_decl IPropertyTreeIterator * getDropZonePlanesIterator(const char * name=nullptr);
+extern da_decl IPropertyTree * getDropZonePlane(const char * name);
 extern da_decl void setPageCacheTimeoutMilliSeconds(unsigned timeoutSeconds);
 extern da_decl void setMaxPageCacheItems(unsigned _maxPageCacheItems);
 extern da_decl IRemoteConnection* connectXPathOrFile(const char* path, bool safe, StringBuffer& xpath);
+extern da_decl bool expandExternalPath(StringBuffer &dir, StringBuffer &tail, const char * filename, const char * s, bool iswin, IException **e);
 
 #endif

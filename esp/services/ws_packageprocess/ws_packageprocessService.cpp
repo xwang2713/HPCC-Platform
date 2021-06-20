@@ -29,8 +29,8 @@
 #include "package.h"
 #include "eclwatch_errorlist.hpp"
 #include "exception_util.hpp"
+#include "TpWrapper.hpp"
 
-#define SDS_LOCK_TIMEOUT (5*60*1000) // 5mins, 30s a bit short
 
 void CWsPackageProcessEx::init(IPropertyTree *cfg, const char *process, const char *service)
 {
@@ -102,8 +102,6 @@ IPropertyTree *getPkgSetRegistry(const char *process, bool readonly)
 ////////////////////////////////////////////////////////////////////////////////////////
 const unsigned roxieQueryRoxieTimeOut = 60000;
 
-#define SDS_LOCK_TIMEOUT (5*60*1000) // 5mins, 30s a bit short
-
 bool isFileKnownOnCluster(const char *logicalname, IConstWUClusterInfo *clusterInfo, IUserDescriptor* userdesc)
 {
     Owned<IDistributedFile> dst = queryDistributedFileDirectory().lookup(logicalname, userdesc, true, false, false, nullptr, defaultPrivilegedUser);
@@ -119,7 +117,7 @@ bool isFileKnownOnCluster(const char *logicalname, IConstWUClusterInfo *clusterI
 
 bool isFileKnownOnCluster(const char *logicalname, const char *target, IUserDescriptor* userdesc)
 {
-    Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(target);
+    Owned<IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(target);
     if (!clusterInfo)
         throw MakeStringException(PKG_TARGET_NOT_DEFINED, "Could not find information about target cluster %s ", target);
 
@@ -139,6 +137,16 @@ void cloneFileInfoToDali(unsigned updateFlags, StringArray &notFound, IPropertyT
 
     Owned<IReferencedFileList> wufiles = createReferencedFileList(user, password, allowForeignFiles, false);
     wufiles->addFilesFromPackageMap(packageMap);
+
+    Owned<IDFUhelper> helper = createIDFUhelper();
+#ifdef _CONTAINERIZED
+    SCMStringBuffer clusterName;
+    dstInfo->getName(clusterName);
+    StringBuffer targetPlane;
+    getRoxieDefaultPlane(targetPlane, clusterName.str());
+    wufiles->resolveFiles(targetPlane, lookupDaliIp, remotePrefix, srcCluster, !(updateFlags & (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM)), false, false);
+    wufiles->cloneAllInfo(updateFlags, helper, true, false, 0, 1, 0, nullptr);
+#else
     SCMStringBuffer processName;
     dstInfo->getRoxieProcess(processName);
     wufiles->resolveFiles(processName.str(), lookupDaliIp, remotePrefix, srcCluster, !(updateFlags & (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM)), false, false);
@@ -146,8 +154,8 @@ void cloneFileInfoToDali(unsigned updateFlags, StringArray &notFound, IPropertyT
     StringBuffer defReplicateFolder;
     getConfigurationDirectory(NULL, "data2", "roxie", processName.str(), defReplicateFolder);
 
-    Owned<IDFUhelper> helper = createIDFUhelper();
     wufiles->cloneAllInfo(updateFlags, helper, true, false, dstInfo->getRoxieRedundancy(), dstInfo->getChannelsPerNode(), dstInfo->getRoxieReplicateOffset(), defReplicateFolder);
+#endif
 
     Owned<IReferencedFileIterator> iter = wufiles->getFiles();
     ForEach(*iter)
@@ -160,7 +168,7 @@ void cloneFileInfoToDali(unsigned updateFlags, StringArray &notFound, IPropertyT
 
 void cloneFileInfoToDali(unsigned updateFlags, StringArray &notFound, IPropertyTree *packageMap, const char *lookupDaliIp, const char *dstCluster, const char *srcCluster, const char *prefix, IUserDescriptor* userdesc, bool allowForeignFiles)
 {
-    Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(dstCluster);
+    Owned<IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(dstCluster);
     if (!clusterInfo)
         throw MakeStringException(PKG_TARGET_NOT_DEFINED, "Could not find information about target cluster %s ", dstCluster);
 
@@ -274,7 +282,7 @@ public:
     }
     IConstWUClusterInfo *ensureClusterInfo()
     {
-        clusterInfo.setown(getTargetClusterInfo(target));
+        clusterInfo.setown(getWUClusterInfoByName(target));
         if (!clusterInfo)
             throw MakeStringException(PKG_TARGET_NOT_DEFINED, "Could not find information about target cluster %s ", target.str());
         return clusterInfo;
@@ -316,10 +324,9 @@ public:
     void setDerivedDfsLocation(const char *dfsLocation, const char *srcProcess)
     {
         splitDerivedDfsLocation(dfsLocation, srcCluster, daliIP, prefix, srcProcess, srcProcess, NULL, NULL);
-
         if (srcCluster.length())
         {
-            if (!isProcessCluster(daliIP, srcCluster))
+            if (!validateDataPlaneName(daliIP, srcCluster))
                 throw MakeStringException(PKG_INVALID_CLUSTER_TYPE, "Process cluster %s not found on %s DALI", srcCluster.str(), daliIP.length() ? daliIP.str() : "local");
         }
     }
@@ -370,7 +377,7 @@ public:
         else
         {
             CConstWUClusterInfoArray clusters;
-            getEnvironmentClusterInfo(clusters);
+            getWUClusterInfo(clusters);
             ForEachItemIn(i, clusters)
             {
                 IConstWUClusterInfo &cluster = clusters.item(i);
@@ -1129,7 +1136,7 @@ bool CWsPackageProcessEx::onValidatePackage(IEspContext &context, IEspValidatePa
         IArrayOf<IEspValidateResult> results;
         if (!streq(target, "*"))
         {
-            Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(target);
+            Owned<IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(target);
             if (!clusterInfo)
                 throw makeStringException(PKG_TARGET_NOT_DEFINED, "Target cluster not found");
             validatePackage(context, req, packageMapTree, clusterInfo, queriesToVerify, queriesToIgnore,
@@ -1138,7 +1145,7 @@ bool CWsPackageProcessEx::onValidatePackage(IEspContext &context, IEspValidatePa
         else
         {
             CConstWUClusterInfoArray clusters;
-            getEnvironmentClusterInfo(clusters);
+            getWUClusterInfo(clusters);
             ForEachItemIn(i, clusters)
             {
                 IConstWUClusterInfo &cluster = clusters.item(i);
@@ -1253,13 +1260,9 @@ bool CWsPackageProcessEx::onGetPackageMapSelectOptions(IEspContext &context, IEs
         bool includeProcesses = req.getIncludeProcesses();
         if (includeTargets || includeProcesses)
         {
-            Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
-            Owned<IConstEnvironment> env = factory->openEnvironment();
-            Owned<IPropertyTree> root = &env->getPTree();
-
             IArrayOf<IConstTargetData> targets;
             CConstWUClusterInfoArray clusters;
-            getEnvironmentClusterInfo(root, clusters);
+            getWUClusterInfo(clusters);
             ForEachItemIn(c, clusters)
             {
                 SCMStringBuffer str;
@@ -1348,7 +1351,7 @@ bool CWsPackageProcessEx::onGetQueryFileMapping(IEspContext &context, IEspGetQue
     if (!target || !*target)
         throw MakeStringException(PKG_TARGET_NOT_DEFINED, "Target cluster required");
 
-    Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(target);
+    Owned<IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(target);
     if (!clusterInfo)
         throw MakeStringException(PKG_TARGET_NOT_DEFINED, "Unable to find target cluster");
     if (clusterInfo->getPlatform()!=RoxieCluster)

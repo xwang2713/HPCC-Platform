@@ -23,6 +23,7 @@
 #include "jsocket.hpp"
 #include "jlog.hpp"
 #include "jencrypt.hpp"
+#include "jsecrets.hpp"
 #include "roxie.hpp"
 #ifdef _WIN32
 #include <winsock.h>
@@ -38,7 +39,6 @@ unsigned udpOutQsPriority = 0;
 unsigned udpMaxRetryTimedoutReqs = 0; // 0 means off (keep retrying forever)
 unsigned udpRequestToSendTimeout = 0; // value in milliseconds - 0 means calculate from query timeouts
 unsigned udpRequestToSendAckTimeout = 10; // value in milliseconds
-bool udpSnifferEnabled = false;
 
 #ifdef _DEBUG
 //#define TEST_DROPPED_PACKETS
@@ -66,7 +66,7 @@ using roxiemem::DataBuffer;
 
  *
  * Data races to watch for
- * 1. Two agent threads add data at same time - only one should sent rts (use atomic_inc for the count)
+ * 1. Two agent threads add data at same time - only one should sent rts (use atomic inc for the count)
  * 2. We check for timeout and resend rts or fail just as permission comes in
  *    - resend rts is harmless ?
  *    - fail is acceptable
@@ -87,7 +87,7 @@ RelaxedAtomic<unsigned> flowPermitsReceived;
 RelaxedAtomic<unsigned> dataPacketsSent;
 
 unsigned udpResendTimeout;  // in millseconds
-bool udpResendEnabled;
+bool udpResendLostPackets;
 bool udpAssumeSequential;
 
 static unsigned lastResentReport = 0;
@@ -191,11 +191,6 @@ public:
 
 };
 
-static byte key[32] = {
-    0xf7, 0xe8, 0x79, 0x40, 0x44, 0x16, 0x66, 0x18, 0x52, 0xb8, 0x18, 0x6e, 0x76, 0xd1, 0x68, 0xd3,
-    0x87, 0x47, 0x01, 0xe6, 0x66, 0x62, 0x2f, 0xbe, 0xc1, 0xd5, 0x9f, 0x4a, 0x53, 0x27, 0xae, 0xa1,
-};
-
 class UdpReceiverEntry : public IUdpReceiverEntry
 {
     UdpReceiverEntry() = delete;
@@ -257,6 +252,11 @@ public:
 
     void sendDone(unsigned packets)
     {
+        //This function has a potential race condition with requestToSendNew:
+        //packetsQueued must be checked within the critical section to ensure that requestToSend hasn't been called
+        //between retrieving the count and entering the critical section, otherwise this function will set
+        //requestExpiryTime to 0 (and indicate the operation is done)even though there packetsQueued is non-zero.
+        CriticalBlock b(activeCrit);
         bool dataRemaining;
         if (resendList)
             dataRemaining = (packetsQueued.load(std::memory_order_relaxed) && resendList->canRecord(nextSendSequence)) || resendList->numActive();
@@ -264,7 +264,6 @@ public:
             dataRemaining = packetsQueued.load(std::memory_order_relaxed);
         // If dataRemaining says 0, but someone adds a row in this window, the request_to_send will be sent BEFORE the send_completed
         // So long as receiver handles that, are we good?
-        CriticalBlock b(activeCrit);
         UdpRequestToSendMsg msg;
         msg.packets = packets;                      // Note this is how many we sent
         msg.sendSeq = nextSendSequence;
@@ -287,6 +286,7 @@ public:
 
     void requestToSendNew()
     {
+        //See comment in sendDone() on a potential race condition.
         CriticalBlock b(activeCrit);
         // This is called from data thread when new data added to a previously-empty list
         if (!requestExpiryTime)
@@ -424,7 +424,8 @@ public:
                     encryptBuffer.append(sizeof(UdpPacketHeader), header);    // We don't encrypt the header
                     length -= sizeof(UdpPacketHeader);
                     const char *data = buffer->data + sizeof(UdpPacketHeader);
-                    aesEncrypt(key, sizeof(key), data, length, encryptBuffer);
+                    const MemoryAttr &udpkey = getSecretUdpKey(true);
+                    aesEncrypt(udpkey.get(), udpkey.length(), data, length, encryptBuffer);
                     header->length = encryptBuffer.length();
                     encryptBuffer.writeDirect(0, sizeof(UdpPacketHeader), header);   // Only really need length updating
                     assert(length <= DATA_PAYLOAD);
@@ -605,8 +606,13 @@ public:
                 DBGLOG("UdpSender: added entry for ip=%s to receivers table - send_flow_port=%d", ip.getIpText(ipStr).str(), _sendFlowPort);
             }
         }
-        if (udpResendEnabled)
+        if (udpResendLostPackets)
+        {
+            DBGLOG("UdpSender: created resend list with %u entries", TRACKER_BITS);
             resendList = new UdpResendList;
+        }
+        else
+            DBGLOG("UdpSender: resend list disabled");
     }
 
     ~UdpReceiverEntry()
@@ -778,7 +784,7 @@ class CSendManager : implements ISendManager, public CInterface
             while(running) 
             {
                 UdpPermitToSendMsg f = { flowType::ok_to_send, 0, { } };
-                unsigned readsize = udpResendEnabled ? sizeof(UdpPermitToSendMsg) : offsetof(UdpPermitToSendMsg, seen);
+                unsigned readsize = udpResendLostPackets ? sizeof(UdpPermitToSendMsg) : offsetof(UdpPermitToSendMsg, seen);
                 while (running) 
                 {
                     try 
@@ -835,53 +841,13 @@ class CSendManager : implements ISendManager, public CInterface
     class send_data : public StartedThread 
     {
         CSendManager &parent;
-        ISocket     *sniffer_socket;
-        SocketEndpoint ep;
         simple_queue<UdpPermitToSendMsg> send_queue;
         Linked<TokenBucket> bucket;
 
-        void send_sniff(sniffType::sniffCmd busy)
-        {
-            sniff_msg msg = { busy, parent.myIP};
-            try 
-            {
-                if (!sniffer_socket) 
-                {
-                    sniffer_socket = ISocket::multicast_connect(ep, multicastTTL);
-                    if (udpTraceLevel > 2)
-                    {
-                        StringBuffer url;
-                        DBGLOG("UdpSender: multicast_connect ok to %s", ep.getUrlStr(url).str());
-                    }
-                }
-                sniffer_socket->write(&msg, sizeof(msg));
-                if (udpTraceLevel > 2)
-                    DBGLOG("UdpSender: sent busy=%d multicast msg", busy);
-            }
-            catch(IException *e) 
-            {
-                StringBuffer s;
-                StringBuffer url;
-                DBGLOG("UdpSender: multicast_connect or write failed ep=%s - %s", ep.getUrlStr(url).str(), e->errorMessage(s).str());
-                e->Release();
-            }
-            catch(...) 
-            {
-                StringBuffer url;
-                DBGLOG("UdpSender: multicast_connect or write unknown exception - ep=%s", ep.getUrlStr(url).str());
-                if (sniffer_socket) 
-                {
-                    sniffer_socket->Release();
-                    sniffer_socket = NULL;
-                }
-            }
-        }
-
     public:
-        send_data(CSendManager &_parent, int s_port, const IpAddress &snif_ip, TokenBucket *_bucket)
-            : StartedThread("UdpLib::send_data"), parent(_parent), bucket(_bucket), ep(s_port, snif_ip), send_queue(100) // MORE - send q size should be configurable and/or related to size of cluster?
+        send_data(CSendManager &_parent, TokenBucket *_bucket)
+            : StartedThread("UdpLib::send_data"), parent(_parent), bucket(_bucket), send_queue(100) // MORE - send q size should be configurable and/or related to size of cluster?
         {
-            sniffer_socket = NULL;
             if (check_max_socket_write_buffer(udpLocalWriteSocketSize) < 0) 
                 throw MakeStringException(ROXIE_UDP_ERROR, "System Socket max write buffer is less than %i", udpLocalWriteSocketSize);
             start();
@@ -893,8 +859,6 @@ class CSendManager : implements ISendManager, public CInterface
             UdpPermitToSendMsg dummy = {};
             send_queue.push(dummy);
             join();
-            if (sniffer_socket) 
-                sniffer_socket->Release();
         }   
 
         bool ok_to_send(const UdpPermitToSendMsg &msg) 
@@ -923,12 +887,8 @@ class CSendManager : implements ISendManager, public CInterface
                 if (!running)
                     return 0;
 
-                if (udpSnifferEnabled)
-                    send_sniff(sniffType::busy);
                 UdpReceiverEntry &receiverInfo = parent.receiversTable[permit.destNode];
                 unsigned payload = receiverInfo.sendData(permit, bucket);
-                if (udpSnifferEnabled)
-                    send_sniff(sniffType::idle);
                 
                 if (udpTraceLevel > 2)
                 {
@@ -971,7 +931,7 @@ class CSendManager : implements ISendManager, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
 
-    CSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int q_size, int _numQueues, const IpAddress &_myIP, TokenBucket *_bucket, bool _encrypted)
+    CSendManager(int server_flow_port, int data_port, int client_flow_port, int q_size, int _numQueues, const IpAddress &_myIP, TokenBucket *_bucket, bool _encrypted)
         : bucket(_bucket),
           myIP(_myIP),
           receiversTable([_numQueues, q_size, server_flow_port, data_port, _encrypted](const ServerIdentifier ip) { return new UdpReceiverEntry(ip.getIpAddress(), _numQueues, q_size, server_flow_port, data_port, _encrypted);}),
@@ -981,7 +941,7 @@ public:
         setpriority(PRIO_PROCESS, 0, -3);
 #endif
         numQueues = _numQueues;
-        data = new send_data(*this, sniffer_port, sniffer_multicast_ip, bucket);
+        data = new send_data(*this, bucket);
         resend_flow = new send_resend_flow(*this);
         receive_flow = new send_receive_flow(*this, client_flow_port);
     }
@@ -1025,6 +985,11 @@ public:
         return receiversTable[destNode].removeData((void*) &pkHdr, &UdpReceiverEntry::comparePacket);
     }
 
+    virtual void abortAll(const ServerIdentifier &destNode)
+    {
+        receiversTable[destNode].abort();
+    }
+
     virtual bool allDone() 
     {
         // Used for some timing tests only
@@ -1038,10 +1003,10 @@ public:
 
 };
 
-ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int sniffer_port, const IpAddress &sniffer_multicast_ip, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter, bool encryptionInTransit)
+ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter, bool encryptionInTransit)
 {
     assertex(!myNode.getIpAddress().isNull());
-    return new CSendManager(server_flow_port, data_port, client_flow_port, sniffer_port, sniffer_multicast_ip, queue_size_pr_server, queues_pr_server, myNode.getIpAddress(), rateLimiter, encryptionInTransit);
+    return new CSendManager(server_flow_port, data_port, client_flow_port, queue_size_pr_server, queues_pr_server, myNode.getIpAddress(), rateLimiter, encryptionInTransit);
 }
 
 class CMessagePacker : implements IMessagePacker, public CInterface
@@ -1188,7 +1153,7 @@ private:
                 part_buffer = bufferManager->allocate();
             const char *metaData = metaInfo.toByteArray();
             unsigned metaLength = metaInfo.length();
-            unsigned maxMetaLength = data_buffer_size + data_used;
+            unsigned maxMetaLength = data_buffer_size - data_used;
             while (metaLength > maxMetaLength)
             {
                 memcpy(&part_buffer->data[sizeof(UdpPacketHeader)+data_used], metaData, maxMetaLength);
@@ -1233,3 +1198,5 @@ extern UDPLIB_API IMessagePacker *createMessagePacker(ruid_t ruid, unsigned msgI
 {
     return new CMessagePacker(ruid, msgId, messageHeader, headerSize, _parent, _receiver, _sourceNode, _msgSeq, _queue, _encrypted);
 }
+
+IRoxieOutputQueueManager *ROQ = nullptr;

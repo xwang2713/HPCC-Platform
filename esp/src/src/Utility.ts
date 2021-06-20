@@ -45,6 +45,7 @@ export function parseXML(val) {
 
 export function csvEncode(cell) {
     if (!isNaN(cell)) return cell;
+    if (cell === undefined) return "";
     return '"' + String(cell).replace('"', '""') + '"';
 }
 
@@ -207,6 +208,38 @@ export function espSkew2NumberTests() {
             console.log("espSkew2NumberTests failed with " + test.str + "(" + espSkew2Number(test.str) + ") !== " + test.expected);
         }
     }, this);
+}
+
+export function formatAsDelim(grid, rows: any, delim = ",") {
+    const headers = grid.columns;
+    const container: string[] = [];
+    const headerNames: string[] = [];
+
+    for (const key in headers) {
+        if (key !== headers[key].id && headers[key].selectorType !== "checkbox") {
+            if (!headers[key].label) {
+                const str = csvEncode(headers[key].field);
+                headerNames.push(str);
+            } else {
+                const str = csvEncode(headers[key].label);
+                headerNames.push(str);
+            }
+        }
+    }
+    container.push(headerNames.join(delim));
+
+    rows.forEach(row => {
+        const cells: any[] = [];
+        for (const key in headers) {
+            if (key !== headers[key].id && headers[key].selectorType !== "checkbox") {
+                const cell = row[headers[key].field];
+                cells.push(csvEncode(cell));
+            }
+        }
+        container.push(cells.join(delim));
+    });
+
+    return container.join("\n");
 }
 
 export function downloadToCSV(grid, rows, fileName) {
@@ -904,4 +937,66 @@ export class Persist {
 
 export function textColor(backgroundColor: string): string {
     return Palette.textColor(backgroundColor);
+}
+
+function toCSVCell(str) {
+    str = "" + str;
+    const mustQuote = (str.indexOf(",") >= 0 || str.indexOf("\"") >= 0 || str.indexOf("\r") >= 0 || str.indexOf("\n") >= 0);
+    if (mustQuote) {
+        let retVal = "\"";
+        for (let i = 0; i < str.length; ++i) {
+            const c = str.charAt(i);
+            retVal += c === "\"" ? "\"\"" : c;
+
+        }
+        retVal += "\"";
+        return retVal;
+    }
+    return str;
+}
+
+function csvFormatHeader(data, delim) {
+    let retVal = "";
+    if (data.length) {
+        for (const key in data[0]) {
+            if (retVal.length)
+                retVal += delim;
+            retVal += key;
+        }
+    }
+    return retVal;
+}
+
+function csvFormatRow(row, idx, delim) {
+    let retVal = "";
+    for (const key in row) {
+        if (retVal.length)
+            retVal += delim;
+        retVal += toCSVCell(row[key]);
+    }
+    return retVal;
+}
+
+function csvFormatFooter(data) {
+    return "";
+}
+
+export function toCSV(data, delim = ",") {
+    let retVal = csvFormatHeader(data, delim) + "\n";
+    data.forEach((item, idx) => {
+        retVal += csvFormatRow(item, idx, delim) + "\n";
+    });
+    retVal += csvFormatFooter(data);
+    return retVal;
+}
+
+export function downloadText(content: string, fileName: string) {
+    const encodedUri = "data:text/csv;charset=utf-8,\uFEFF" + encodeURI(content);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", fileName);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }

@@ -39,11 +39,14 @@
 #include "jqueue.tpp"
 #include "jsuperhash.hpp"
 #include "jmisc.hpp"
+#include "jsecrets.hpp"
 
 #include "mpcomm.hpp"
 #include "mpbuff.hpp"
 #include "mputil.hpp"
 #include "mplog.hpp"
+
+#include "securesocket.hpp"
 
 #ifdef _MSC_VER
 #pragma warning (disable : 4355)
@@ -86,7 +89,11 @@
 #define _TRACING
 
 static  CriticalSection childprocesssect;
+#ifdef _WIN32
+static  Unsigned64Array childprocesslist;
+#else
 static  UnsignedArray childprocesslist;
+#endif
 
 // IPv6 TBD
 
@@ -440,9 +447,10 @@ class CMPConnectThread: public Thread
     ISocket *listensock;
     CMPServer *parent;
     int mpSoMaxConn;
-    unsigned mpTraceLevel;
     Owned<IAllowListHandler> allowListCallback;
     void checkSelfDestruct(void *p,size32_t sz);
+
+    Owned<ISecureSocketContext> secureContextServer;
 
 public:
     CMPConnectThread(CMPServer *_parent, unsigned port, bool _listen);
@@ -494,6 +502,8 @@ protected:
 public:
     bool checkclosed;
     bool tryReopenChannel = false;
+    bool useTLS = false;
+    unsigned mpTraceLevel = 0;
 
 // packet handlers
     PingPacketHandler           *pingpackethandler;         // TAG_SYS_PING
@@ -785,7 +795,7 @@ class CMPChannel: public CInterface
     CriticalSection attachsect;
     unsigned __int64 attachaddrval = 0;
     SocketEndpoint attachep, attachPeerEp;
-    atomic_t attachchk;
+    std::atomic<unsigned> attachchk;
 
 protected: friend class CMPServer;
     SocketEndpoint remoteep;
@@ -796,7 +806,7 @@ protected: friend class CMPPacketReader;
     unsigned startxfer; 
     unsigned numiter;
 #endif
-
+    Owned<ISecureSocketContext> secureContextClient;
 
     bool checkReconnect(CTimeMon &tm)
     {
@@ -839,7 +849,27 @@ protected: friend class CMPPacketReader;
                 if (remaining<10000)
                     remaining = 10000; // 10s min granularity for MP
                 newsock.setown(ISocket::connect_timeout(remoteep,remaining));
+
+#if defined(_USE_OPENSSL)
+                if (parent->useTLS)
+                {
+                    Owned<ISecureSocket> ssock = secureContextClient->createSecureSocket(newsock.getClear());
+                    int tlsTraceLevel = SSLogMin;
+                    if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
+                        tlsTraceLevel = SSLogMax;
+                    int status = ssock->secure_connect(tlsTraceLevel);
+                    if (status < 0)
+                    {
+                        ssock->close();
+                        exitException.setown(new CMPException(MPERR_connection_failed, remoteep));
+                        throw exitException.getLink();
+                    }
+                    newsock.setown(ssock.getClear());
+                }
+#endif // OPENSSL
+
                 newsock->set_keep_alive(true);
+
 #ifdef _FULLTRACE
                 LOG(MCdebugInfo, unknownJob, "MP: connect after socket connect, retrycount = %d", retrycount);
 #endif
@@ -884,9 +914,9 @@ protected: friend class CMPPacketReader;
                     {
                         CriticalBlock block(attachsect);
 #ifdef _TRACE
-                        PROGLOG("MP: connect got attachsect, attachchk = %d, loopCnt = %u", atomic_read(&attachchk), loopCnt);
+                        PROGLOG("MP: connect got attachsect, attachchk = %d, loopCnt = %u", attachchk.load(), loopCnt);
 #endif
-                        if (atomic_read(&attachchk) > 0)
+                        if (attachchk > 0)
                         {
                             if (remoteep.equals(attachep))
                             {
@@ -1233,7 +1263,7 @@ public:
                 attachaddrval = 0;
                 attachep.set(nullptr);
                 attachPeerEp.set(nullptr);
-                atomic_set(&attachchk, 0);
+                attachchk = 0;
             }
             if (!keepsocket) {
                 try {
@@ -1546,7 +1576,7 @@ public:
             return false;
         try {
             // try and mop up all data on socket 
-            
+            // TLS TODO: avail_read() may not return accurate amount of pending bytes
             size32_t sizeavail = sock->avail_read(); 
             if (sizeavail==0) {
                 // graceful close
@@ -1680,8 +1710,13 @@ CMPChannel::CMPChannel(CMPServer *_parent,SocketEndpoint &_remoteep) : parent(_p
     localep.set(parent->getPort());
     reader = new CMPPacketReader(this);
     attachep.set(nullptr);
-    atomic_set(&attachchk, 0);
+    attachchk = 0;
     lastxfer = msTick();
+
+#if defined(_USE_OPENSSL)
+    if (parent->useTLS)
+        secureContextClient.setown(createSecureSocketContextSecret("local", ClientSocket));
+#endif
 }
 
 void CMPChannel::reset()
@@ -1698,7 +1733,7 @@ void CMPChannel::reset()
     attachaddrval = 0;
     attachep.set(nullptr);
     attachPeerEp.set(nullptr);
-    atomic_set(&attachchk, 0);
+    attachchk = 0;
     lastxfer = msTick();
 }
 
@@ -1714,9 +1749,9 @@ bool CMPChannel::attachSocket(ISocket *newsock,const SocketEndpoint &_remoteep,c
 {
     struct attachdTor
     {
-        atomic_t &attchk;
-        attachdTor(atomic_t &_attchk) : attchk(_attchk) { }
-        ~attachdTor() { atomic_dec(&attchk); }
+        std::atomic<unsigned> &attchk;
+        attachdTor(std::atomic<unsigned> &_attchk) : attchk(_attchk) { }
+        ~attachdTor() { --attchk; }
     } attachChk (attachchk);
 
 #ifdef _FULLTRACE       
@@ -1729,7 +1764,7 @@ bool CMPChannel::attachSocket(ISocket *newsock,const SocketEndpoint &_remoteep,c
         attachep = _remoteep;
         if (newsock)
             newsock->getPeerEndpoint(attachPeerEp);
-        atomic_inc(&attachchk);
+        ++attachchk;
     }
 
     CriticalBlock block(connectsect);
@@ -1942,7 +1977,7 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
     parent = _parent;
     listen = _listen;
     mpSoMaxConn = 0;
-    mpTraceLevel = 0;
+#ifndef _CONTAINERIZED
     Owned<IPropertyTree> env = getHPCCEnvironment();
     if (env)
     {
@@ -1952,8 +1987,27 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
             if (!mpSoMaxConn)
                 mpSoMaxConn = env->getPropInt("EnvSettings/ports/mpSoMaxConn", 0);
         }
-        mpTraceLevel = env->getPropInt("EnvSettings/mpTraceLevel", 0);
+        unsigned mpTraceLevel = env->getPropInt("EnvSettings/mpTraceLevel", 0);
+        switch (mpTraceLevel)
+        {
+            case 0:
+                parent->mpTraceLevel = InfoMsgThreshold;
+                break;
+            case 1:
+                parent->mpTraceLevel = DebugMsgThreshold;
+                break;
+            case 2:
+                parent->mpTraceLevel = ExtraneousMsgThreshold;
+                break;
+            default:
+                parent->mpTraceLevel = MPVerboseMsgThreshold;
+                break;
+        }
     }
+#else
+    parent->mpTraceLevel = getComponentConfigSP()->getPropInt("logging/@detail", InfoMsgThreshold);
+#endif
+
     if (mpSoMaxConn)
     {
         int kernSoMaxConn = 0;
@@ -1967,6 +2021,9 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
     {
         // need to connect early to resolve clash
         unsigned minPort, maxPort;
+        minPort = MP_START_PORT;
+        maxPort = MP_END_PORT;
+#ifndef _CONTAINERIZED
         if (env)
         {
             minPort = env->getPropInt("EnvSettings/mpStart", 0);
@@ -1976,11 +2033,7 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
             if (!maxPort)
                 maxPort = env->getPropInt("EnvSettings/ports/mpEnd", MP_END_PORT);
         }
-        else
-        {
-            minPort = MP_START_PORT;
-            maxPort = MP_END_PORT;
-        }
+#endif
         assertex(maxPort >= minPort);
         Owned<IJSOCK_Exception> lastErr;
         // mck - if not listening then could ignore port range and
@@ -2011,6 +2064,11 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
     LOG(MCdebugInfo, unknownJob, "MP Connect Thread Init Port = %d", port);
 #endif
     running = false;
+
+#if defined(_USE_OPENSSL)
+    if (parent->useTLS)
+        secureContextServer.setown(createSecureSocketContextSecretSrv("local"));
+#endif
 }
 
 void CMPConnectThread::checkSelfDestruct(void *p,size32_t sz)
@@ -2065,20 +2123,11 @@ int CMPConnectThread::run()
 #endif
     while (running)
     {
-        ISocket *sock=NULL;
+        Owned<ISocket> sock;
         SocketEndpoint peerEp;
         try
         {
-            sock=listensock->accept(true, &peerEp);
-#ifdef _FULLTRACE       
-            StringBuffer s;
-            SocketEndpoint ep1;
-            if (sock)
-            {
-                sock->getPeerEndpoint(ep1);
-                PROGLOG("MP: Connect Thread: socket accepted from %s",ep1.getUrlStr(s).str());
-            }
-#endif
+            sock.setown(listensock->accept(true, &peerEp));
         }
         catch (IException *e)
         {
@@ -2089,7 +2138,33 @@ int CMPConnectThread::run()
         {
             try
             {
+#if defined(_USE_OPENSSL)
+                if (parent->useTLS)
+                {
+                    Owned<ISecureSocket> ssock = secureContextServer->createSecureSocket(sock.getClear());
+                    int tlsTraceLevel = SSLogMin;
+                    if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
+                        tlsTraceLevel = SSLogMax;
+                    int status = ssock->secure_accept(tlsTraceLevel);
+                    if (status < 0)
+                    {
+                        ssock->close();
+                        PROGLOG("MP Connect Thread: failed to accept secure connection");
+                        continue;
+                    }
+                    sock.setown(ssock.getClear());
+                }
+#endif // OPENSSL
+
+#ifdef _FULLTRACE
+                StringBuffer s;
+                SocketEndpoint ep1;
+                sock->getPeerEndpoint(ep1);
+                PROGLOG("MP: Connect Thread: socket accepted from %s",ep1.getUrlStr(s).str());
+#endif
+
                 sock->set_keep_alive(true);
+
                 size32_t rd;
                 SocketEndpoint _remoteep;
                 SocketEndpoint hostep;
@@ -2100,14 +2175,12 @@ int CMPConnectThread::run()
                 traceSlowReadTms("MP: initial accept packet from", sock, &connectHdr, sizeof(connectHdr.id), sizeof(connectHdr), rd, CONFIRM_TIMEOUT, CONFIRM_TIMEOUT_INTERVAL);
                 if (0 == rd)
                 {
-                    if (mpTraceLevel > 1)
+                    if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
                     {
                         // cannot get peer addresss as socket state is now ss_shutdown (unless we want to allow this in getPeerEndpoint())
-                        StringBuffer errMsg("MP Connect Thread: connect with no msg received, assumed port monitor check");
-                        PROGLOG("%s", errMsg.str());
+                        PROGLOG("MP Connect Thread: connect with no msg received, assumed port monitor check");
                     }
                     sock->close();
-                    sock->Release();
                     continue;
                 }
                 else
@@ -2124,7 +2197,6 @@ int CMPConnectThread::run()
                         peerEp.getUrlStr(errMsg);
                         FLLOG(MCoperatorWarning, unknownJob, "%s", errMsg.str());
                         sock->close();
-                        sock->Release();
                         continue;
                     }
                 }
@@ -2158,7 +2230,6 @@ int CMPConnectThread::run()
                         }
 
                         sock->close();
-                        sock->Release();
                         continue;
                     }
                 }
@@ -2183,7 +2254,7 @@ int CMPConnectThread::run()
                         peerEp.getUrlStr(errMsg);
                         FLLOG(MCoperatorWarning, unknownJob, "%s", errMsg.str());
                     }
-                    else if (mpTraceLevel > 1)
+                    else if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
                     {
                         // all zeros msg received
                         errMsg.append("MP Connect Thread: connect with empty msg received, assumed port monitor check from ");
@@ -2191,7 +2262,6 @@ int CMPConnectThread::run()
                         PROGLOG("%s", errMsg.str());
                     }
                     sock->close();
-                    sock->Release();
                     continue;
                 }
 #ifdef _FULLTRACE       
@@ -2203,7 +2273,7 @@ int CMPConnectThread::run()
 #endif
                 checkSelfDestruct(&connectHdr.id[0],sizeof(connectHdr.id));
                 Owned<CMPChannel> channel = parent->lookup(_remoteep);
-                if (!channel->attachSocket(sock,_remoteep,hostep,false,&rd,addrval))
+                if (!channel->attachSocket(sock.getClear(),_remoteep,hostep,false,&rd,addrval))
                 {
 #ifdef _FULLTRACE       
                     PROGLOG("MP Connect Thread: lookup failed");
@@ -2225,15 +2295,6 @@ int CMPConnectThread::run()
             {
                 FLLOG(MCoperatorWarning, unknownJob, e,"MP Connect Thread: Failed to make connection(1)");
                 sock->close();
-                e->Release();
-            }
-            try
-            {
-                sock->Release();
-            }
-            catch (IException *e)
-            {
-                FLLOG(MCoperatorWarning, unknownJob, e,"MP sock release failed");
                 e->Release();
             }
         }
@@ -2327,6 +2388,7 @@ CMPServer::CMPServer(unsigned __int64 _role, unsigned _port, bool _listen)
     role = _role;
     port = 0;   // connectthread tells me what port it actually connected on
     checkclosed = false;
+    useTLS = queryMtls();
 
     // If !_listen, CMPConnectThread binds a port but does not actually start
     // running, it is used as a unique IP:port required in MP INode/IGroup internals
@@ -3240,6 +3302,7 @@ public:
     ~CGlobalMPServer()
     {
         ::Release(worldcomm);
+        worldcomm = nullptr;
     }
     IInterCommunicator &queryWorldCommunicator()
     {
@@ -3263,7 +3326,9 @@ MODULE_INIT(INIT_PRIORITY_STANDARD)
 }
 MODULE_EXIT()
 {
-    ::Release(globalMPServer);
+    CGlobalMPServer * savedMPServer = globalMPServer;
+    globalMPServer = nullptr;
+    ::Release(savedMPServer);
 }
 
 void startMPServer(unsigned __int64 role, unsigned port, bool paused, bool listen)

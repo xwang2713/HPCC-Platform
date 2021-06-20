@@ -69,6 +69,11 @@
 
 project(hpccsystems-platform)
 
+# Stupid workaround. See https://gitlab.kitware.com/cmake/cmake/-/issues/21378
+# If cmake runs twice, cmake might not correctly set the compiler version variables
+unset ( ENV{CC} )
+unset ( ENV{CXX} )
+
 cmake_minimum_required(VERSION 3.13.0)
 
 set(TOP_LEVEL_PROJECT ON)
@@ -176,6 +181,7 @@ elseif ( NOT MAKE_DOCS_ONLY )
     HPCC_ADD_SUBDIRECTORY (rtl)
     HPCC_ADD_SUBDIRECTORY (services "PLATFORM")
     HPCC_ADD_SUBDIRECTORY (thorlcr "PLATFORM")
+    HPCC_ADD_SUBDIRECTORY (system/metrics)
     HPCC_ADD_SUBDIRECTORY (testing)
     if (NOT CONTAINERIZED)
       HPCC_ADD_SUBDIRECTORY (deploy)
@@ -394,11 +400,12 @@ if(TOP_LEVEL_PROJECT)
             ## CPack instruction required for RPM
             ###
             set(CPACK_RPM_SPEC_MORE_DEFINE
-                "%define _use_internal_dependency_generator 0
-                %define __getdeps()while read file; do /usr/lib/rpm/rpmdeps -%{1} ${file} | %{__grep} -v libantlr3c.so | %{__grep} -v libtbb.so ; done | /bin/sort -u
-                %define __find_provides /bin/sh -c '%{__getdeps P}'
-                %define __find_requires /bin/sh -c '%{__getdeps R}'
-                %undefine __brp_mangle_shebangs")
+"%define _use_internal_dependency_generator 0
+%define __getdeps() while read file; do /usr/lib/rpm/rpmdeps -%{1} ${file} | %{__grep} -v libantlr3c.so | %{__grep} -v libtbb.so ; done | /bin/sort -u
+%define __find_provides /bin/sh -c '%{__getdeps P}'
+%define __find_requires /bin/sh -c '%{__getdeps R}'
+%undefine __brp_mangle_shebangs
+%global __os_install_post %(echo '%{__os_install_post}' | sed -e 's!/usr/lib[^[:space:]]*/brp-python-bytecompile[[:space:]].*$!!g')")
             message("-- Will build RPM package")
             message("-- Packing BASH installation files")
             if(CLIENTTOOLS_ONLY)
