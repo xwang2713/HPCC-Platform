@@ -6,7 +6,18 @@
       "type": "object",
       "properties": {
         "commonPrefix": {
+          "description": "Mount prefix. The default is /var/lib/HPCCSystems",
+          "type": "string",
+          "default": "/var/lib/HPCCSystems"
+        },
+        "secretName": {
+          "description": "Kubernetes secret name for Azure storage account",
           "type": "string"
+        },
+        "secretNamespace": {
+          "description": "Kubernetes namespace for secret",
+          "type": "string",
+          "default": "default"
         }
       }
     },
@@ -59,6 +70,10 @@
           "description": "a list of labels associated with this plane, e.g. lz, data",
           "type": "array",
           "items": { "type": "string" }
+        },
+        "shareName": {
+          "description": "Azure storage share name",
+          "type": "string"
         }
       },
       "required": [ "name", "subPath", "size" ],
