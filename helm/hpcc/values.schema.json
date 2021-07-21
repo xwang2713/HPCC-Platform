@@ -26,25 +26,6 @@
     "storage": {
       "type": "object",
       "properties": {
-        "dllStorage": {
-          "$ref": "#/definitions/storageType"
-        },
-        "dataStorage": {
-          "$ref": "#/definitions/storageType"
-        },
-        "daliStorage": {
-          "$ref": "#/definitions/storageType"
-        },
-        "spillStorage": {
-          "oneOf": [
-            {
-              "$ref": "#/definitions/storageType"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "hostGroups": {
           "$ref": "#/definitions/hostGroups"
         },
@@ -169,7 +150,7 @@
               "type": "string",
               "description": "The (optional) file prefix to add to relative filenames"
             },
-            "storagePlane": {
+            "dataPlane": {
               "description": "The default storage plane to write data files to",
               "type": "string"
             },
@@ -197,6 +178,9 @@
           },
           "maxJobs": {
             "type": "integer"
+          },
+          "env": {
+            "$ref": "#/definitions/env"
           },
           "annotations": {
             "type": "object",
@@ -379,27 +363,10 @@
       },
       "additionalProperties": false
     },
-    "storageType": {
-      "type": "object",
-      "properties": {
-        "plane": {
-          "type": "string"
-        }
-      },
-      "required": [ "plane" ],
-      "additionalProperties": false
-    },
     "storagePlanes": {
       "description": "storage plane definitions",
-      "oneOf": [
-        {
-          "type": "array",
-          "items": { "$ref": "#/definitions/storagePlane" }
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "type": "array",
+      "items": { "$ref": "#/definitions/storagePlane" }
     },
     "storagePlane": {
       "description": "information about an individual storage plane",
@@ -411,6 +378,10 @@
         },
         "prefix": {
           "description": "either the path for a local mount, or the url prefix",
+          "type": "string"
+        },
+        "subPath": {
+          "description": "optional subdirectory within the mount directory",
           "type": "string"
         },
         "secret": {
@@ -443,10 +414,10 @@
           "type": "array",
           "items": { "type": "string" }
         },
-        "labels": {
-          "description": "a list of labels associated with this plane, e.g. lz, data, dali, sasha, dlls, spill. NB: if blank/unset, treated as if 'data'",
-          "type": "array",
-          "items": { "type": "string" }
+        "category": {
+          "description": "the category this plane is usd for, e.g. lz, data",
+          "type": "string",
+          "enum": ["data", "lz", "dali", "sasha", "dll", "spill" ]
         },
         "umask" : {
           "description": "file creation mask (used by despray)",
@@ -480,7 +451,7 @@
         }
 
       },
-      "required": [ "name", "prefix" ],
+      "required": [ "name", "prefix", "category" ],
       "additionalProperties": false
     },
     "resources": {
@@ -601,6 +572,25 @@
       },
       "additionalProperties": { "type": ["integer", "string", "boolean"] }
     },
+    "compileOption": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Compiler option name"
+        },
+        "value": {
+          "type": ["number", "string", "boolean"],
+          "description": "Compiler option  value"
+        },
+        "cluster": {
+          "type": "string",
+          "description": "Cluster to apply option to"
+        }
+      },
+      "required": [ "name", "value" ],
+      "additionalProperties": false
+    },
     "env": {
       "type": "array",
       "items": {
@@ -650,6 +640,9 @@
         },
         "image": {
           "$ref": "#/definitions/image"
+        },
+        "env": {
+          "$ref": "#/definitions/env"
         },
         "logging": {
           "$ref": "#/definitions/logging"
@@ -701,6 +694,9 @@
         "image": {
           "$ref": "#/definitions/image"
         },
+        "env": {
+          "$ref": "#/definitions/env"
+        },
         "logging": {
           "$ref": "#/definitions/logging"
         },
@@ -711,6 +707,10 @@
         "labels": {
           "type": "object",
           "additionalProperties": { "type": "string" }
+        },
+        "options": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/compileOption" }
         },
         "resources": {
           "$ref": "#/definitions/resources"
@@ -728,6 +728,9 @@
         },
         "image": {
           "$ref": "#/definitions/image"
+        },
+        "env": {
+          "$ref": "#/definitions/env"
         },
         "logging": {
           "$ref": "#/definitions/logging"
@@ -759,6 +762,9 @@
         },
         "image": {
           "$ref": "#/definitions/image"
+        },
+        "env": {
+          "$ref": "#/definitions/env"
         },
         "logging": {
           "$ref": "#/definitions/logging"
@@ -835,7 +841,7 @@
         "logging": {
           "$ref": "#/definitions/logging"
         },
-        "storagePlane": {
+        "dataPlane": {
           "description": "The default storage plane to write data files to",
           "type": "string"
         },
@@ -877,6 +883,9 @@
         "topoServer": {
           "$ref": "#/definitions/toposerver"
         },
+        "env": {
+          "$ref": "#/definitions/env"
+        },
         "logging": {
           "$ref": "#/definitions/logging"
         },
@@ -890,7 +899,7 @@
           "type": "array",
           "items": { "$ref": "#/definitions/roxieservice" }
         },
-        "storagePlane": {
+        "dataPlane": {
           "description": "The default storage plane to write data files to",
           "type": "string"
         },
@@ -931,6 +940,9 @@
         },
         "replicas": {
           "type": "integer"
+        },
+        "env": {
+          "$ref": "#/definitions/env"
         },
         "logging": {
           "$ref": "#/definitions/logging"
@@ -1054,10 +1066,13 @@
         "image": {
           "$ref": "#/definitions/image"
         },
+        "env": {
+          "$ref": "#/definitions/env"
+        },
         "logging": {
           "$ref": "#/definitions/logging"
         },
-        "storagePlane": {
+        "dataPlane": {
           "description": "The default storage plane to write data files to",
           "type": "string"
         },
@@ -1097,6 +1112,9 @@
         "interval": {
           "type": "integer",
           "default": 1
+        },
+        "env": {
+          "$ref": "#/definitions/env"
         },
         "annotations": {
           "type": "object",
@@ -1141,8 +1159,9 @@
         "image": {
           "$ref": "#/definitions/image"
         },
-        "storage": {
-          "$ref": "#/definitions/storageType"
+        "plane": {
+          "type": "string",
+          "description": "which storage plane to store the sasha data on"
         },
         "resources": {
           "$ref": "#/definitions/resources"
@@ -1182,8 +1201,9 @@
                 "at" : {},
                 "throttle": {},
                 "image": {},
-                "storage": {},
+                "plane": {},
                 "resources": {},
+                "env": {},
                 "annotations": {},
                 "labels": {}
               },
@@ -1200,6 +1220,7 @@
       "oneOf": [
         {
           "type": "object",
+          "required": [ "plane" ],
           "allOf": [
             { "$ref": "#/definitions/sashacommon" },
             { "$ref": "#/definitions/sasha-limitcutoff" },
@@ -1232,8 +1253,9 @@
                 "at" : {},
                 "throttle": {},
                 "image": {},
-                "storage": {},
+                "plane": {},
                 "resources": {},
+                "env": {},
                 "annotations": {},
                 "labels": {},
                 "limit": {},
@@ -1252,6 +1274,7 @@
       "oneOf": [
         {
           "type": "object",
+          "required": [ "plane" ],
           "allOf": [ 
             { "$ref": "#/definitions/sashacommon" },
             { "$ref": "#/definitions/sasha-limitcutoff" },
@@ -1264,8 +1287,9 @@
                 "at" : {},
                 "throttle": {},
                 "image": {},
-                "storage": {},
+                "plane": {},
                 "resources": {},
+                "env": {},
                 "annotations": {},
                 "labels": {},
                 "limit": {},
@@ -1295,8 +1319,9 @@
                 "at" : {},
                 "throttle": {},
                 "image": {},
-                "storage": {},
+                "plane": {},
                 "resources": {},
+                "env": {},
                 "annotations": {},
                 "labels": {},
                 "limit": {},
@@ -1337,7 +1362,7 @@
             "at" : {},
             "throttle": {},
             "image": {},
-            "storage": {},
+            "plane": {},
             "resources": {},
             "annotations": {},
             "labels": {}

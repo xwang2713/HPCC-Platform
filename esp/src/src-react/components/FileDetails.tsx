@@ -2,13 +2,21 @@ import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Pivot, PivotItem, ScrollablePane, ScrollbarVisibility, Sticky, StickyPositionType } from "@fluentui/react";
 import { SizeMe } from "react-sizeme";
 import nlsHPCC from "src/nlsHPCC";
+import { FileParts } from "./FileParts";
 import * as Utility from "src/Utility";
 import { getStateImageName, IFile } from "src/ESPLogicalFile";
-import { useFile } from "../hooks/File";
+import { useFile, useDefFile } from "../hooks/File";
 import { pivotItemStyle } from "../layouts/pivot";
+import { DojoAdapter } from "../layouts/DojoAdapter";
 import { pushUrl } from "../util/history";
+import { FileBlooms } from "./FileBlooms";
+import { SuperFiles } from "./SuperFiles";
+import { ECLSourceEditor, XMLSourceEditor } from "./SourceEditor";
 import { ShortVerticalDivider } from "./Common";
+import { FileDetailsGraph } from "./FileDetailsGraph";
 import { TableGroup } from "./forms/Groups";
+import { Queries } from "./Queries";
+import { WorkunitDetails } from "./WorkunitDetails";
 
 import "react-reflex/styles.css";
 
@@ -25,10 +33,13 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
 }) => {
 
     const [file, , refresh] = useFile(cluster, logicalFile);
+    const [defFile] = useDefFile(cluster, logicalFile, "def");
+    const [xmlFile] = useDefFile(cluster, logicalFile, "xml");
     const [description, setDescription] = React.useState("");
     const [_protected, setProtected] = React.useState(false);
     const [restricted, setRestricted] = React.useState(false);
 
+    const isDFUWorkunit = file?.Wuid[0] === "D";
     const isProtected = file?.ProtectList?.DFUFileProtect?.length > 0 || false;
 
     React.useEffect(() => {
@@ -36,8 +47,7 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
         setProtected(_protected || isProtected);
         setRestricted(restricted || file?.IsRestricted);
 
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [file?.Description, file?.ProtectList?.DFUFileProtect, file?.IsRestricted]);
+    }, [_protected, description, file?.Description, file?.IsRestricted, isProtected, restricted]);
 
     const canSave = file && (
         description !== file.Description ||
@@ -45,7 +55,7 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
         restricted !== file?.IsRestricted
     );
 
-    const buttons: ICommandBarItemProps[] = [
+    const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
             onClick: () => {
@@ -71,7 +81,7 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
             }
         },
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-    ];
+    ], [_protected, canSave, description, file, logicalFile, refresh, restricted]);
 
     const protectedImage = _protected ? Utility.getImageURL("locked.png") : Utility.getImageURL("unlocked.png");
     const stateImage = Utility.getImageURL(getStateImageName(file as unknown as IFile));
@@ -95,7 +105,7 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
                         </div>
                     </Sticky>
                     <TableGroup fields={{
-                        "Wuid": { label: nlsHPCC.Workunit, type: "link", value: file?.Wuid, href: `#/workunits/${file?.Wuid}`, readonly: true, },
+                        "Wuid": { label: nlsHPCC.Workunit, type: "link", value: file?.Wuid, href: `#/${isDFUWorkunit ? "dfu" : ""}workunits/${file?.Wuid}`, readonly: true, },
                         "Owner": { label: nlsHPCC.Owner, type: "string", value: file?.Owner, readonly: true },
                         "SuperOwner": { label: nlsHPCC.SuperFile, type: "links", links: file?.Superfiles?.DFULogicalFile?.map(row => ({ label: "", type: "link", value: row.Name, href: `#/superfiles/${row.Name}` })) },
                         "NodeGroup": { label: nlsHPCC.ClusterName, type: "string", value: file?.NodeGroup, readonly: true },
@@ -142,24 +152,35 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
             <PivotItem headerText={nlsHPCC.DataPatterns} itemKey="DataPatterns" style={pivotItemStyle(size, 0)}>
             </PivotItem>
             <PivotItem headerText={nlsHPCC.ECL} itemKey="ECL" style={pivotItemStyle(size, 0)}>
+                <ECLSourceEditor text={file?.Ecl} readonly={true} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.DEF} itemKey="DEF" style={pivotItemStyle(size, 0)}>
+                <XMLSourceEditor text={defFile} readonly={true} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.XML} itemKey="XML" style={pivotItemStyle(size, 0)}>
+                <XMLSourceEditor text={xmlFile} readonly={true} />
             </PivotItem>
-            <PivotItem headerText={nlsHPCC.Superfiles} itemKey="Superfiles" style={pivotItemStyle(size, 0)}>
+            <PivotItem headerText={nlsHPCC.Superfiles} itemKey="superfiles" itemCount={file?.Superfiles?.DFULogicalFile.length || 0} style={pivotItemStyle(size, 0)}>
+                <SuperFiles cluster={cluster} logicalFile={logicalFile} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.FileParts} itemKey="FileParts" style={pivotItemStyle(size, 0)}>
+                <FileParts cluster={cluster} logicalFile={logicalFile} />
+            </PivotItem>
+            <PivotItem headerText={nlsHPCC.Queries} itemIcon="Search" itemKey="queries" style={pivotItemStyle(size, 0)}>
+                <Queries filter={{ FileName: logicalFile }} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.Queries} itemKey="Queries" style={pivotItemStyle(size, 0)}>
             </PivotItem>
-            <PivotItem headerText={nlsHPCC.Graphs} itemKey="Graphs" style={pivotItemStyle(size, 0)}>
+            <PivotItem headerText={nlsHPCC.Graphs} itemKey="Graphs" itemCount={file?.Graphs?.ECLGraph?.length} headerButtonProps={{ disabled: isDFUWorkunit }} style={pivotItemStyle(size, 0)}>
+                <FileDetailsGraph cluster={cluster} logicalFile={logicalFile} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.Workunit} itemKey="Workunit" style={pivotItemStyle(size, 0)}>
+                {isDFUWorkunit ? <DojoAdapter widgetClassID="DFUWUDetailsWidget" params={{ Wuid: file?.Wuid }} /> : <WorkunitDetails wuid={file?.Wuid} />}
             </PivotItem>
             <PivotItem headerText={nlsHPCC.History} itemKey="History" style={pivotItemStyle(size, 0)}>
             </PivotItem>
-            <PivotItem headerText={nlsHPCC.Blooms} itemKey="Blooms" style={pivotItemStyle(size, 0)}>
+            <PivotItem headerText={nlsHPCC.Blooms} itemKey="Blooms" itemCount={file?.Blooms?.DFUFileBloom?.length} style={pivotItemStyle(size, 0)}>
+                <FileBlooms cluster={cluster} logicalFile={logicalFile} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.ProtectBy} itemKey="ProtectBy" style={pivotItemStyle(size, 0)}>
             </PivotItem>

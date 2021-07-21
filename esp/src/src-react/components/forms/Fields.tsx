@@ -153,14 +153,7 @@ export interface TargetClusterTextFieldProps extends DropdownProps {
     placeholder?: string;
 }
 
-export const TargetClusterTextField: React.FunctionComponent<TargetClusterTextFieldProps> = ({
-    key,
-    label,
-    selectedKey,
-    className,
-    onChange,
-    placeholder
-}) => {
+export const TargetClusterTextField: React.FunctionComponent<TargetClusterTextFieldProps> = (props) => {
 
     const [targetClusters, setTargetClusters] = React.useState<IDropdownOption[]>([]);
 
@@ -176,10 +169,9 @@ export const TargetClusterTextField: React.FunctionComponent<TargetClusterTextFi
                 })
             );
         });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    return <Dropdown key={key} label={label} selectedKey={selectedKey} optional className={className} onChange={onChange} placeholder={placeholder} options={targetClusters} />;
+    return <Dropdown { ...props } options={targetClusters} />;
 };
 
 export interface TargetGroupTextFieldProps {

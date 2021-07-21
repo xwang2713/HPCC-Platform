@@ -3,10 +3,9 @@ import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, mergeStyleSet
 import { SizeMe } from "react-sizeme";
 import { ReflexContainer, ReflexSplitter, ReflexElement } from "react-reflex";
 import nlsHPCC from "src/nlsHPCC";
-import { getImageURL } from "src/Utility";
-import { getStateIconClass } from "src/ESPWorkunit";
 import { WUStatus } from "src/react/index";
 import { useWorkunit } from "../hooks/Workunit";
+import { useFavorite } from "../hooks/favorite";
 import { DojoAdapter } from "../layouts/DojoAdapter";
 import { pivotItemStyle } from "../layouts/pivot";
 import { pushUrl } from "../util/history";
@@ -21,6 +20,7 @@ import { Queries } from "./Queries";
 import { Resources } from "./Resources";
 import { WUXMLSourceEditor } from "./SourceEditor";
 import { Workflows } from "./Workflows";
+import { WorkunitPersona } from "./controls/StateIcon";
 
 import "react-reflex/styles.css";
 
@@ -69,14 +69,14 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
     const [jobname, setJobname] = React.useState("");
     const [description, setDescription] = React.useState("");
     const [_protected, setProtected] = React.useState(false);
+    const [isFavorite, addFavorite, removeFavorite] = useFavorite(window.location.hash);
 
     React.useEffect(() => {
         setJobname(jobname || workunit?.Jobname);
         setDescription(description || workunit?.Description);
         setProtected(_protected || workunit?.Protected);
 
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [workunit?.Jobname, workunit?.Description, workunit?.Protected]);
+    }, [_protected, description, jobname, workunit?.Description, workunit?.Jobname, workunit?.Protected]);
 
     const canSave = workunit && (
         jobname !== workunit.Jobname ||
@@ -84,7 +84,7 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
         _protected !== workunit.Protected
     );
 
-    const buttons: ICommandBarItemProps[] = [
+    const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
             onClick: () => {
@@ -109,30 +109,37 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
             }
         },
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-    ];
+    ], [_protected, canSave, description, jobname, workunit, wuid]);
 
-    const protectedImage = getImageURL(workunit?.Protected ? "locked.png" : "unlocked.png");
-    const stateIconClass = getStateIconClass(workunit?.StateID, workunit?.isComplete(), workunit?.Archived);
+    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
+        {
+            key: "star", iconProps: { iconName: isFavorite ? "FavoriteStarFill" : "FavoriteStar" },
+            onClick: () => {
+                if (isFavorite) {
+                    removeFavorite();
+                } else {
+                    addFavorite();
+                }
+            }
+        }
+    ], [addFavorite, isFavorite, removeFavorite]);
+
     const serviceNames = workunit?.ServiceNames?.Item?.join("\n") || "";
     const resourceCount = workunit?.ResourceURLCount > 1 ? workunit?.ResourceURLCount - 1 : undefined;
 
     return <SizeMe monitorHeight>{({ size }) =>
         <Pivot overflowBehavior="menu" style={{ height: "100%" }} selectedKey={tab} onLinkClick={evt => pushUrl(`/workunits/${wuid}/${evt.props.itemKey}`)}>
-            <PivotItem headerText={wuid} itemKey="summary" style={pivotItemStyle(size)}>
+            <PivotItem headerText={wuid} itemKey="summary" style={pivotItemStyle(size)} >
                 <div style={{ height: "100%", position: "relative" }}>
                     <ReflexContainer orientation="horizontal">
                         <ReflexElement className={classNames.reflexScrollPane}>
                             <div className="pane-content">
                                 <ScrollablePane scrollbarVisibility={ScrollbarVisibility.auto}>
                                     <Sticky stickyPosition={StickyPositionType.Header}>
-                                        <CommandBar items={buttons} />
+                                        <CommandBar items={buttons} farItems={rightButtons} />
                                     </Sticky>
                                     <Sticky stickyPosition={StickyPositionType.Header}>
-                                        <div style={{ display: "inline-block" }}>
-                                            <h2>
-                                                <img src={protectedImage} />&nbsp;<div className={stateIconClass}></div>&nbsp;<span className="bold">{wuid}</span>
-                                            </h2>
-                                        </div>
+                                        <WorkunitPersona wuid={wuid} />
                                         <div style={{ width: "512px", height: "64px", float: "right" }}>
                                             <WUStatus wuid={wuid}></WUStatus>
                                         </div>
@@ -196,7 +203,7 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
                 <Workflows wuid={wuid} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.Queries} itemIcon="Search" itemKey="queries" style={pivotItemStyle(size, 0)}>
-                <Queries wuid={wuid} />
+                <Queries filter={{ WUID: wuid }} />
             </PivotItem>
             <PivotItem headerText={nlsHPCC.Resources} itemKey="resources" itemCount={resourceCount} style={pivotItemStyle(size, 0)}>
                 <Resources wuid={wuid} />

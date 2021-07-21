@@ -3237,7 +3237,11 @@ void GroupInformation::createStoragePlane(IPropertyTree * storage, unsigned copy
         }
 
         if (ordinality() > 1)
+        {
             plane->setPropInt("@numDevices", ordinality());
+            if (dropZoneIndex == 0)
+                plane->setPropInt("@defaultSprayParts", ordinality());
+        }
     }
 
     if (dir.length())
@@ -3245,8 +3249,8 @@ void GroupInformation::createStoragePlane(IPropertyTree * storage, unsigned copy
     else
         plane->setProp("@prefix", queryBaseDirectory(groupType, copy));
 
-    const char * label = (dropZoneIndex != 0) ? "lz" : "data";
-    addPTreeItem(plane, "labels", label);
+    const char * category = (dropZoneIndex != 0) ? "lz" : "data";
+    plane->setProp("@category", category);
 
     //MORE: If container is identical to this except for the name we could generate an information tag @alias
 }
@@ -3435,30 +3439,6 @@ static void doInitializeStorageGroups(bool createPlanesFromGroups)
     //Ensure that host groups that are defined in terms of other host groups are expanded out so they have an explicit list of hosts
     normalizeHostGroups();
 
-    //Groups are case insensitve, so add an extra key to the storage items to allow them to be
-    //searched by group name, and also check for duplicates.
-    Owned<IPropertyTreeIterator> iter = storage->getElements("planes");
-    StringBuffer group;
-    ForEach(*iter)
-    {
-        IPropertyTree & cur = iter->query();
-        //Check if this has already been done - so the function is safe to call more than once
-        const char * oldgroup = cur.queryProp("@group");
-        if (oldgroup)
-            continue;
-
-        const char * name = cur.queryProp("@name");
-        group.clear().append(name).toLowerCase();
-
-        //Check the storage plane does not match another one case-insensitiviely. (It is unlikely the Helm chart will have installed.)
-        VStringBuffer xpath("plane[@group='%s']", group.str());
-        IPropertyTree * match = storage->queryPropTree(xpath);
-        if (match)
-            throwStringExceptionV(DALI_DUPLICATE_STORAGE_PLANE, "Duplicate storage planes %s,%s (case insensitive)", name, match->queryProp("@name"));
-
-        cur.setProp("@group", group);
-    }
-
     //The following can be removed once the storage planes have better integration
     setupContainerizedStorageLocations();
 }
@@ -3476,12 +3456,13 @@ void initializeStorageGroups(bool createPlanesFromGroups)
 bool getDefaultStoragePlane(StringBuffer &ret)
 {
     // If the plane is specified for the component, then use that
-    if (getComponentConfigSP()->getProp("@storagePlane", ret))
+    if (getComponentConfigSP()->getProp("@dataPlane", ret))
         return true;
 
     //Otherwise check what the default plane for data storage is configured to be
-    if (getGlobalConfigSP()->getProp("storage/@dataPlane", ret))
-        return true;
+    Owned<IPropertyTreeIterator> dataPlanes = getGlobalConfigSP()->getElements("storage/planes[@category='data']");
+    if (dataPlanes->first())
+        return dataPlanes->query().getProp("@name", ret);
 
 #ifdef _CONTAINERIZED
     throwUnexpectedX("Default data plane not specified"); // The default should always have been configured by the helm charts
@@ -3513,12 +3494,12 @@ IStoragePlane * getStoragePlane(const char * name, bool required)
     StringBuffer group;
     group.append(name).toLowerCase();
 
-    VStringBuffer xpath("storage/planes[@group='%s']", group.str());
+    VStringBuffer xpath("storage/planes[@name='%s']", group.str());
     Owned<IPropertyTree> match = getGlobalConfigSP()->getPropTree(xpath);
     if (!match)
     {
         if (required)
-            throw makeStringExceptionV(-1, "Scope contains unknown storage plane '%s'", name);
+            throw makeStringExceptionV(-1, "Unknown storage plane '%s'", name);
         return nullptr;
     }
 

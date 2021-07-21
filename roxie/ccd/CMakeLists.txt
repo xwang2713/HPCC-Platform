@@ -27,7 +27,8 @@
 project( ccd ) 
 
 set (   SRCS 
-        ccdactivities.cpp 
+        ccdactivities.cpp
+        ../ccdcache/ccdcache.cpp
         ccddali.cpp
         ccdcontext.cpp
         ccddebug.cpp
@@ -68,6 +69,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/system/mp
          ${HPCC_SOURCE_DIR}/common/workunit
          ${HPCC_SOURCE_DIR}/roxie/udplib
+         ${HPCC_SOURCE_DIR}/roxie/ccdcache
          ${HPCC_SOURCE_DIR}/roxie/roxie
          ${HPCC_SOURCE_DIR}/common/environment
          ${HPCC_SOURCE_DIR}/ecl/hthor
@@ -140,5 +142,3 @@ IF (USE_TBBMALLOC AND USE_TBBMALLOC_ROXIE)
    add_dependencies ( ccd tbb )
    target_link_libraries ( ccd libtbbmalloc_proxy libtbbmalloc)
 ENDIF()
-
-

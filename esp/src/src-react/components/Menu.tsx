@@ -1,9 +1,19 @@
 import * as React from "react";
-import { INavLinkGroup, INavStyles, Nav } from "@fluentui/react";
+import { INavLink, INavLinkGroup, INavStyles, Nav } from "@fluentui/react";
 import { SizeMe } from "react-sizeme";
 import nlsHPCC from "src/nlsHPCC";
+import { useFavorites } from "../hooks/favorite";
+import { hashHistory } from "../util/history";
 
 const navLinkGroups: INavLinkGroup[] = [
+    {
+        name: "Favorites",
+        links: []
+    },
+    {
+        name: "History",
+        links: []
+    },
     {
         name: "Home",
         links: [
@@ -20,6 +30,7 @@ const navLinkGroups: INavLinkGroup[] = [
             { url: "#/workunits/dashboard", name: `${nlsHPCC.Workunits} (D)` },
             { url: "#/workunits/legacy", name: `${nlsHPCC.Workunits} (L)` },
             { url: "#/play", name: nlsHPCC.Playground },
+            { url: "#/play/legacy", name: `${nlsHPCC.Playground} (L)` },
         ]
     },
     {
@@ -78,16 +89,35 @@ interface DevMenuProps {
     location: string
 }
 
+const FIXED_WIDTH = 240;
+
 export const DevMenu: React.FunctionComponent<DevMenuProps> = ({
     location
 }) => {
 
-    const fixedWidth = 240;
+    const [favorites] = useFavorites();
+    const [menu, setMenu] = React.useState<INavLinkGroup[]>([...navLinkGroups]);
+
+    React.useEffect(() => {
+        navLinkGroups[0].links = Object.keys(favorites).map((key): INavLink => {
+            return { url: key, name: key };
+        });
+        setMenu([...navLinkGroups]);
+    }, [favorites]);
+
+    React.useEffect(() => {
+        return hashHistory.listen((location, action) => {
+            navLinkGroups[1].links = hashHistory.recent().map((row): INavLink => {
+                return { url: `#${row.pathname + row.search}`, name: row.pathname };
+            });
+            setMenu([...navLinkGroups]);
+        });
+    }, []);
 
     return <SizeMe monitorHeight>{({ size }) =>
-        <div style={{ width: `${fixedWidth}px`, height: "100%", position: "relative" }}>
+        <div style={{ width: `${FIXED_WIDTH}px`, height: "100%", position: "relative" }}>
             <div style={{ position: "absolute" }}>
-                <Nav groups={navLinkGroups} selectedKey={location} styles={navStyles(fixedWidth, size.height)} />
+                <Nav groups={menu} selectedKey={location} styles={navStyles(FIXED_WIDTH, size.height)} />
             </div>
         </div>
     }
