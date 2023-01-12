@@ -7,7 +7,7 @@ env:
 on:
   push:
     branches:
-      - "newbuild"
+      - "newbuild-code-sign"
 
   pull_request:
     branches:
