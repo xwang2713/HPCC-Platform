@@ -7,7 +7,7 @@ env:
 on:
   push:
     branches:
-      - "newbuild-code-sign3"
+      - "code-sign4"
     tags:
       - "*"
       - "community_*"
@@ -74,12 +74,11 @@ jobs:
       - name: WINDOWNS Dependencies
         if: ${{ contains(matrix.os, 'windows') }}
         # The secret referenced here was generated with "base64 -i hpcc_code_signing.pfx"
-        shell: powershell
+        shell: bash
         env:
           SIGN_CERT: ${{ secrets.SIGN_CERT }}
           SIGN_PW: ${{ secrets.SIGN_PW }}
         run: |
-          echo ${env:SIGN_CERT}
           echo ${env:SIGN_CERT} | base64 --decode > hpcc_code_signing.pfx
           echo ${env:SIGN_PW} > passphrase.txt
           certutil /p ${env:SIGN_PW} -dump hpcc_code_signing.pfx
