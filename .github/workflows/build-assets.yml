@@ -7,7 +7,7 @@ env:
 on:
   push:
     branches:
-      - "code-sign4"
+      - "code-sign5"
     tags:
       - "*"
       - "community_*"
@@ -81,7 +81,7 @@ jobs:
         run: |
           echo ${env:SIGN_CERT} | base64 --decode > hpcc_code_signing.pfx
           echo ${env:SIGN_PW} > passphrase.txt
-          certutil /p ${env:SIGN_PW} -dump hpcc_code_signing.pfx
+          certutil -p ${env:SIGN_PW} -dump hpcc_code_signing.pfx
 
       - name: OSX Dependencies
         if: ${{ contains(matrix.os, 'macos') }}
