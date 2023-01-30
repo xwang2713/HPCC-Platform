@@ -42,6 +42,7 @@ echo "Create ${PACKAGE_NAME}.pkg with pkgbuild"
 [ -d "${PACKAGE_NAME}" ] && rm -rf ${PACKAGE_NAME}
 mkdir -p ${PACKAGE_NAME}
 cd ${PACKAGE_NAME}
+[ ! -e  ${PACKAGE_SRC}/opt ] && mkdir ${PACKAGE_SRC}/opt
 echo "pkgbuild --root ${PACKAGE_SRC}/opt --install-location "/opt" --identifier $ID ${PACKAGE_NAME}.pkg"
 pkgbuild --root ${PACKAGE_SRC}/opt --install-location "/opt" --identifier $ID ${PACKAGE_NAME}.pkg
 if [ $? -ne 0 ]
