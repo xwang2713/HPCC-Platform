@@ -1,0 +1,4 @@
+export ACCOUNT_ID=446598291512
+export AWS_REGION=us-east-2
+export EKS_NAME=hpcc-fargate-ming
+export LBC_VERSION=v2.5.3

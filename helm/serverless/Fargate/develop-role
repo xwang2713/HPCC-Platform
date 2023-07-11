@@ -1,0 +1,17 @@
+If you are exploring these resources on Dev accounts, the ADFS-Developer role should give you the necessary permissions to play with these. In any other environment, to manage these resources manually one would need to have the ADFS-Operations role which is usually recommended for Operations team. 
+
+The account you gave `446598291512` is a Dev account, so if you do not have Developer role on it, you can request it as below:
+
+1.	Please submit a ticket at https://isit.lexisnexis.com/Ticket/CreateUAI.html?Queue=211 with the below fields as specified
+a.	Product/Application: AWS
+b.	Business Unit: RnD
+c.	AWS Accounts: 446598291512 RIS-Platform-Dev
+d.	Application User Id: Your Risk Id (Example: LastFi01 or lastfi01)
+e.	Domain: Risk
+f.	Employee#: Your Employee Number
+g.	Is this request for a system user: No
+2.	Click Next and select the role Developer
+3.	And on the subsequent pages fill in the prompted fields and submit the ticket. 
+4.	Once the ticket is approved, automation will take care of your access. 
+For instructions on how to access AWS, please refer to this documentation https://confluence.rsi.lexisnexis.com/display/CST/ADFS+Single-Sign-On
+

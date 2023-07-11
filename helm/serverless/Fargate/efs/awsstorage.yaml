@@ -1,0 +1,140 @@
+---
+# Source: hpcc-efs/templates/create-pv.yaml
+appversion: v1
+kind: PersistentVolume
+metadata:
+ name: dali-awsstorage-hpcc-efs-pv
+spec:
+ volumeMode: Filesystem
+ accessModes:
+  - ReadWriteOnce
+ PersistentVolumeReclaimPolicy: Retain
+ StorageClassName: efs-sc
+ csi:
+  driver: efs.csi.aws.com
+  volumeHandle: fs-aa45a1d1:dalistorage:fsap-01d52ed348e8c8d48
+---
+# Source: hpcc-efs/templates/create-pv.yaml
+appversion: v1
+kind: PersistentVolume
+metadata:
+ name: dll-awsstorage-hpcc-efs-pv
+spec:
+ volumeMode: Filesystem
+ accessModes:
+  - ReadWriteMany
+ PersistentVolumeReclaimPolicy: Retain
+ StorageClassName: efs-sc
+ csi:
+  driver: efs.csi.aws.com
+  volumeHandle: fs-aa45a1d1:queries:fsap-01d52ed348e8c8d48
+---
+# Source: hpcc-efs/templates/create-pv.yaml
+appversion: v1
+kind: PersistentVolume
+metadata:
+ name: sasha-awsstorage-hpcc-efs-pv
+spec:
+ volumeMode: Filesystem
+ accessModes:
+  - ReadWriteMany
+ PersistentVolumeReclaimPolicy: Retain
+ StorageClassName: efs-sc
+ csi:
+  driver: efs.csi.aws.com
+  volumeHandle: fs-aa45a1d1:sasha:fsap-01d52ed348e8c8d48
+---
+# Source: hpcc-efs/templates/create-pv.yaml
+appversion: v1
+kind: PersistentVolume
+metadata:
+ name: data-awsstorage-hpcc-efs-pv
+spec:
+ volumeMode: Filesystem
+ accessModes:
+  - ReadWriteMany
+ PersistentVolumeReclaimPolicy: Retain
+ StorageClassName: efs-sc
+ csi:
+  driver: efs.csi.aws.com
+  volumeHandle: fs-aa45a1d1:hpcc-data:fsap-01d52ed348e8c8d48
+---
+# Source: hpcc-efs/templates/create-pv.yaml
+appversion: v1
+kind: PersistentVolume
+metadata:
+ name: mydropzone-awsstorage-hpcc-efs-pv
+spec:
+ volumeMode: Filesystem
+ accessModes:
+  - ReadWriteMany
+ PersistentVolumeReclaimPolicy: Retain
+ StorageClassName: efs-sc
+ csi:
+  driver: efs.csi.aws.com
+  volumeHandle: fs-aa45a1d1:dropzone:fsap-01d52ed348e8c8d48
+---
+# Source: hpcc-efs/templates/create-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dali-awsstorage-hpcc-efs-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: aws-efs
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: hpcc-efs/templates/create-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dll-awsstorage-hpcc-efs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: aws-efs
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: hpcc-efs/templates/create-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sasha-awsstorage-hpcc-efs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: aws-efs
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: hpcc-efs/templates/create-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-awsstorage-hpcc-efs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: aws-efs
+  resources:
+    requests:
+      storage: 3Gi
+---
+# Source: hpcc-efs/templates/create-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mydropzone-awsstorage-hpcc-efs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: aws-efs
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,20 @@
+{{- range $plane := .Values.planes -}}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+ name: {{ printf "%s-%s-pv" $plane.name (include "hpcc-efs.fullname" $) }}
+spec:
+ capacity:
+  storage: {{ $plane.size }}
+ volumeMode: Filesystem
+ accessModes:
+  - {{ $plane.rwmany | default false | ternary "ReadWriteMany" "ReadWriteOnce" }}
+ persistentVolumeReclaimPolicy: Retain
+ storageClassName: efs-sc
+ mountOptions:
+  - tls
+ csi:
+  driver: efs.csi.aws.com
+  volumeHandle: {{ printf "%s:/%s"   $.Values.common.efsId $plane.subPath }}
+---
+{{ end }}

@@ -43,8 +43,8 @@ data:
 {{ range $roxie := $.Values.roxie -}}
 {{- if not $roxie.disabled  -}}
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
-{{- $secretsCategories := list "system" "ecl-user" "ecl" "storage" }}
-{{- $commonCtx := dict "root" $ "me" $roxie "secretsCategories" $secretsCategories "env" $env }}
+{{- $secretsCategories := list "system" "eclUser" "ecl" "storage" }}
+{{- $commonCtx := dict "root" $ "me" $roxie "includeCategories" (list "lz" "data" "remote" "spill" "dll" "debug") "secretsCategories" $secretsCategories "env" $env }}
 {{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.localroxieConfigMap" "component" "roxie" "excludeKeys" "global")) }}
 {{- include "hpcc.checkDefaultStoragePlane" $commonCtx }}
 {{- if $roxie.localAgent -}}
@@ -68,7 +68,8 @@ spec:
         server: {{ $servername | quote }}
         accessDali: "yes"
         accessEsp: "yes"
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.0.0
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "roxie-server" "name" "roxie" "instance" $roxie.name) | indent 8 }}
 {{- if hasKey . "labels" }}
 {{ toYaml .labels | indent 8 }}
 {{- end }}
@@ -81,14 +82,15 @@ spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" $roxie.name "target" $roxie.name "type" "roxie") | indent 6 }}
       serviceAccountName: "hpcc-default"
       initContainers:
-        {{- include "hpcc.checkDataMount" $commonCtx | indent 6 }}
+      {{- include "hpcc.changePlaneMountPerms" $commonCtx | indent 6 }}
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ $roxie.name | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ roxie ]
-        args: [
+        command: [ {{ include "hpcc.componentCommand" (dict "me" $roxie "root" $ "process" "roxie") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" $roxie "root" $ "process" "roxie") | nindent 16 }}
                 {{ include "hpcc.configArg" $roxie }},
-                {{ include "hpcc.daliArg" $ }},
+                {{ include "hpcc.daliArg" (dict "root" $ "component" "Local Roxie" "optional" false) }},
                 "--server=true", 
                 "--localAgent=true",
                 "--resolveLocally=false"
@@ -113,16 +115,14 @@ spec:
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
+{{ include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
 {{- include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "name" $roxie.name "component" "localroxie" "external" false) | indent 8 }}
 {{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "name" $roxie.name "component" "localroxie" "external" true) | indent 8 }}
 {{ include "hpcc.addUDPCertificateVolumeMount" (dict "root" $ "name" $roxie.name "component" "localudpkey" ) | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" . | indent 6 }}
-{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
+{{ include "hpcc.addVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addCertificateVolume" (dict "root" $ "name" $roxie.name "component" "localroxie" "external" false) | indent 6 }}
 {{ include "hpcc.addCertificateVolume" (dict "root" $ "name" $roxie.name "component" "localroxie" "external" true) | indent 6 }}
@@ -140,6 +140,8 @@ kind: ConfigMap
 {{ include "hpcc.addCertificate" (dict "root" $ "name" $roxie.name "services" $roxie.services "component" "localroxie" "external" false) }}
 {{ include "hpcc.addCertificate" (dict "root" $ "name" $roxie.name "services" $roxie.services "component" "localroxie" "external" true) }}
 {{ include "hpcc.addUDPCertificate" (dict "root" $ "name" $roxie.name "component" "localudpkey") }}
+---
+{{ include "hpcc.addEgress" $commonCtx }}
 
 {{- end }}
 {{- end }}

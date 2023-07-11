@@ -27,21 +27,37 @@
 {{- $previousPlanes := dict -}}
 {{- $previousMounts := dict -}}
 {{- range $plane := $planes -}}
- {{- if (ne (lower $plane.name) $plane.name) -}}
-  {{- required (printf "Name of storage plane '%s' must not contain upper case" $plane.name) nil -}}
- {{- end -}}
- {{- if hasKey $previousPlanes $plane.name -}}
-  {{- required (printf "Storage plane '%s' is defined more than once" $plane.name) nil -}}
- {{- end -}}
- {{- $_ := set $previousPlanes $plane.name true -}}
- {{- $rawPlane := omit $plane "name" "category" "subPath" -}}
- {{- if hasKey $previousMounts $plane.prefix -}}
-  {{- /* Should this restrict if has a pvc or a storage class? */ -}}
-  {{- if not (deepEqual (get $previousMounts $plane.prefix) $rawPlane) -}}
-    {{- required (printf "Multiple incompatible planes refer to prefix '%s'" $plane.prefix) nil -}}
+ {{- if not .disabled -}}
+  {{- if (ne (lower $plane.name) $plane.name) -}}
+   {{- required (printf "Name of storage plane '%s' must not contain upper case" $plane.name) nil -}}
+  {{- end -}}
+  {{- if hasKey $previousPlanes $plane.name -}}
+   {{- required (printf "Storage plane '%s' is defined more than once" $plane.name) nil -}}
+  {{- end -}}
+  {{- $_ := set $previousPlanes $plane.name true -}}
+  {{- $rawPlane := omit $plane "name" "category" "subPath" -}}
+  {{- $numDevices := int ($plane.numDevices | default 1) -}}
+  {{- if and (not (hasKey $plane "hosts")) (not (hasKey $plane "hostGroup")) -}}
+   {{- if hasKey $previousMounts $plane.prefix -}}
+    {{- /* Should this restrict if has a pvc or a storage class? */ -}}
+    {{- if not (deepEqual (get $previousMounts $plane.prefix) $rawPlane) -}}
+     {{- required (printf "Multiple incompatible planes refer to prefix '%s'" $plane.prefix) nil -}}
+    {{- end -}}
+   {{- end -}}
+   {{- $numMounts := int ($plane.numMounts | default $numDevices) -}}
+   {{- if and (ne $numMounts 1) (ne $numMounts $numDevices) }}
+     {{- required (printf "Storage plane '%s': numMounts should either be 1 or match numDevices" $plane.name) nil -}}
+   {{- end -}}
+   {{- $previousMounts := set $previousMounts $plane.prefix $rawPlane -}}
+   {{- $_ := set $previousMounts $plane.prefix $rawPlane -}}
+  {{- end -}}
+  {{ range $alias := $plane.aliases -}}
+   {{- $numMounts := int ($alias.numMounts | default $numDevices) -}}
+   {{- if and (ne $numMounts 1) (ne $numMounts $numDevices) }}
+     {{- required (printf "Storage plane '%s' alias '%s': numMounts (%d) should either be 1 or match numDevices (%d)" $plane.name $alias.name $numMounts $numDevices) nil -}}
+   {{- end -}}
   {{- end -}}
  {{- end -}}
- {{- $_ := set $previousMounts $plane.prefix $rawPlane -}}
 {{- end -}}
 {{- /* check that planes exist for each of the required planes */ -}}
 {{ $need := dict }}

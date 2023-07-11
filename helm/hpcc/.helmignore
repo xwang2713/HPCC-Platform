@@ -20,3 +20,16 @@
 .idea/
 *.tmproj
 .vscode/
+
+# Ignored components: mini (hthor)
+#/templates/sasha.yaml
+#/templates/roxie.yaml
+#/templates/eclscheduler.yaml
+#/templates/localroxie.yaml
+
+#/templates/thor.yaml
+#/templates/dfuserver.yaml
+#/templates/dafilesrv.yaml
+#/templates/eclagent.yaml
+#/templates/eclccserver.yaml
+#/templates/esp.yaml

@@ -21,6 +21,7 @@
 ##############################################################################
 
 */}}
+
 {{/*
 roxie configmap
 Pass in dict with root and me
@@ -33,13 +34,22 @@ data:
   {{ .me.name }}.yaml:
     version: 1.0
     roxie:
-{{ toYaml ( omit .me "logging" "topoServer" "encryptInTransit" "env") | indent 6 }}
+{{- $root := .root -}}
+{{- $component := .me }}
+      services:
+  {{- range $service := .me.services }}
+      - name: {{ $service.name }}
+{{ toYaml (omit $service "tls" "name") | indent 8 }}
+   {{- if ne (int $service.servicePort) 0 }}
+     {{- include "hpcc.addTLSServiceEntries" (dict "root" $root "service" $service "component" $component "visibility" $service.visibility) | indent 6 }}
+   {{- end }}
+  {{- end }}
+{{ toYaml ( omit .me "logging" "topoServer" "encryptInTransit" "env" "services") | indent 6 }}
       numChannels: {{ .numChannels }}
       topologyServers: "{{ .toponame }}:{{ .topoport }}"
+      heartbeatInterval: {{ .heartbeatInterval }}
       resolveLocally: false
-{{- $certificates := (.root.Values.certificates | default dict) -}}
-{{- $issuers := ($certificates.issuers | default dict) -}}
-{{- $mtlsEnabled := (and ($certificates.enabled) (hasKey $issuers "local")) -}}
+{{- $mtlsEnabled := (eq (include "hpcc.isMtlsEnabled" (dict "root" .root)) "true") -}}
 {{/* By default use encryption if local certificates are enabled, but allow it to be turned off via roxie .encryptInTransit value */}}
 {{- if (hasKey .me "encryptInTransit") -}}
   {{- if and (.me.encryptInTransit) (not $mtlsEnabled) -}}
@@ -63,20 +73,22 @@ data:
   {{ .toponame }}.yaml:
     version: 1.0
     toposerver:
-      port: {{ .topoport }}
-      traceLevel: {{ .toposerver.traceLevel | default 1 }}
+{{ toYaml ( omit .toposerver "logging" "env") | indent 6 }}
 {{- include "hpcc.generateLoggingConfig" (dict "root" .root "me" .toposerver) | indent 6 }}
+    global:
+{{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
 {{- end -}}
 
 {{ range $roxie := $.Values.roxie -}}
 {{- if not $roxie.disabled -}}
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
-{{- $secretsCategories := list "system" "ecl-user" "ecl" "storage" }}
+{{- $secretsCategories := list "system" "eclUser" "ecl" "storage" }}
 {{- $toposerver := ($roxie.topoServer | default dict) -}}
-{{- $commonCtx := dict "root" $ "me" $roxie "secretsCategories" $secretsCategories "toposerver" $toposerver "env" $env }}
+{{- $commonCtx := dict "root" $ "me" $roxie "includeCategories" (list "lz" "data" "remote" "spill" "dll" "debug") "secretsCategories" $secretsCategories "toposerver" $toposerver "env" $env }}
 {{- $_ := set $commonCtx "toponame" (printf "%s-toposerver" $roxie.name) -}}
 {{- $_ := set $commonCtx "numChannels" ($roxie.numChannels | int | default 1) -}}
 {{- $_ := set $commonCtx "topoport" ($toposerver.port | int | default 9004) -}}
+{{- $_ := set $commonCtx "heartbeatInterval" ($toposerver.heartbeatInterval | int | default 10000) -}}
 {{- $_ := set $toposerver "name" $commonCtx.toponame -}}
 {{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.roxieConfigMap" "component" "roxie" "excludeKeys" "global")) }}
 {{- $topoconfigSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.roxieTopoConfigMap" "component" "toposerver" "excludeKeys" "global")) }}
@@ -103,31 +115,39 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "topology-server" "name" "roxie" "instance" $commonCtx.toponame) | indent 8 }}
         run: {{ $commonCtx.toponame | quote }}
         roxie-cluster: {{ $roxie.name | quote }}
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.0.0
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.generateMetricsReporterLabel"  $.Values.global.metrics | nindent 8}}
+{{- end }}
 {{- if hasKey $toposerver "labels" }}
 {{ toYaml $toposerver.labels | indent 8 }}
 {{- end }}
       annotations:
         checksum/config: {{ $topoconfigSHA }}
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.addPrometheusScrapeAnnotations"  $.Values.global.metrics | nindent 8 }}
+{{- end }}
 {{- if hasKey $toposerver "annotations" }}
 {{ toYaml $toposerver.annotations | indent 8 }}
 {{- end }}
     spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" $commonCtx.toponame "target" $roxie.name "type" "roxie") | indent 6 }}
       serviceAccountName: "hpcc-default"
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ $commonCtx.toponame | quote }}
 {{ include "hpcc.addSentinelProbes" $toposerver | indent 8 }}
 {{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
 {{- if not $.Values.global.privileged }}
-{{- include "hpcc.addStubResources" . | indent 8 }}
+{{- include "hpcc.addStubResources" ($commonCtx | merge (dict "instances" 1)) | indent 8 }}
 {{- end }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         workingDir: /var/lib/HPCCSystems
-        command: [ toposerver ] 
-        args: [ 
+        command: [ {{ include "hpcc.componentCommand" (dict "me" $toposerver "root" $ "process" "toposerver") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" $toposerver "root" $ "process" "toposerver") | nindent 16 }}
                 {{ include "hpcc.configArg" $toposerver }}
               ]
         env:
@@ -157,6 +177,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ $commonCtx.toponame | quote }}
+  labels:
+    helmVersion: 9.0.0
+    {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "topology-server" "name" "roxie" "instance" $commonCtx.toponame) | indent 4 }}
 spec:
   ports:
   - port: {{ $commonCtx.topoport  }}
@@ -170,7 +193,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ $roxie.name | quote }}
+  name: {{ printf "%s-internal-traffic" $roxie.name }}
 spec:
   podSelector:
     matchLabels:
@@ -197,7 +220,9 @@ kind: ConfigMap
 {{ include "hpcc.generateConfig" ($commonCtx | merge (dict "configMapHelper" "hpcc.roxieTopoConfigMap")) }}
 ---
 
+{{- $_ := set $commonCtx "instanceNames" list -}}
 {{ if $roxie.serverReplicas -}}
+{{ $_ := set $commonCtx "instanceNames" (list $servername) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -215,12 +240,19 @@ spec:
         roxie-cluster: {{ $roxie.name | quote }}
         accessDali: "yes"
         accessEsp: "yes"
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.0.0
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "roxie-server" "name" "roxie" "instance" $servername) | indent 8 }}
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.generateMetricsReporterLabel" $.Values.global.metrics | nindent 8}}
+{{- end }}
 {{- if hasKey $roxie "labels" }}
 {{ toYaml $roxie.labels | indent 8 }}
 {{- end }}
       annotations:
         checksum/config: {{ $configSHA }}
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.addPrometheusScrapeAnnotations" $.Values.global.metrics | nindent 8 }}
+{{- end }}
 {{- if hasKey $roxie "annotations" }}
 {{ toYaml $roxie.annotations | indent 8 }}
 {{- end }}
@@ -228,14 +260,15 @@ spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" $servername "target" $roxie.name "type" "roxie") | indent 6 }}
       serviceAccountName: "hpcc-default"
       initContainers:
-        {{- include "hpcc.checkDataMount" (dict "root" $) | indent 6 }}
+      {{- include "hpcc.changePlaneMountPerms" $commonCtx | indent 6 }}
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
+      terminationGracePeriodSeconds: {{ add ($roxie.agentQueryReleaseDelaySeconds | default 60) 30 }}
       containers:
       - name: {{ $servername | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ roxie ] 
-        args: [
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }},
+        command: [ {{ include "hpcc.componentCommand" (dict "me" $roxie "root" $ "process" "roxie") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" $roxie "root" $ "process" "roxie") | nindent 16 }}
+                {{ include "hpcc.daliArg" (dict "root" $ "component" "Roxie" "optional" false) }},
                 "--server=true" 
               ]
         env:
@@ -253,25 +286,27 @@ spec:
           containerPort: {{ $service.servicePort }}
 {{- end }}
 {{- end }}
-{{ include "hpcc.addSentinelProbes" $roxie | indent 8 }}
+        lifecycle:
+          preStop:
+            exec:
+              command: ["testsocket", ".", "control:closedown"]        
+{{ include "hpcc.addSentinelProbes" ( $roxie | merge (dict "readyProbeName" ".ready" )) | indent 8 }}
 {{ include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
-{{- include "hpcc.addResources" (dict "me" $roxie.serverResources) | indent 8 }}
+{{- include "hpcc.addResources" (dict "me"  ($roxie.serverResources | default $roxie.resources)) | indent 8 }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" $roxie | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
+{{ include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" "roxie-server" "name" $servername "external" false) | indent 8 }}
-{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" "roxie-server" "name" $servername "external" true) | indent 8 }}
+{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" "roxie-server" "name" $servername "certificate" $roxie.certificate "external" true) | indent 8 }}
 {{ include "hpcc.addUDPCertificateVolumeMount" (dict "root" $ "component" "udpkey" "name" $udpkeyname ) | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" $roxie | indent 6 }}
-{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
+{{ include "hpcc.addVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addCertificateVolume" (dict "root" $ "component" "roxie-server" "name" $servername "external" false) | indent 6 }}
-{{ include "hpcc.addCertificateVolume" (dict "root" $ "component" "roxie-server" "name" $servername "external" true) | indent 6 }}
+{{ include "hpcc.addCertificateVolume" (dict "root" $ "component" "roxie-server" "name" $servername "certificate" $roxie.certificate "external" true) | indent 6 }}
 {{ include "hpcc.addUDPCertificateVolume" (dict "root" $ "component" "udpkey" "name" $udpkeyname) | indent 6 }}
 
 ---
@@ -283,6 +318,7 @@ spec:
 {{ range $c, $e := until ($commonCtx.numChannels|int) -}}
 {{- $channel := add $c 1 -}}
 {{- $name := printf "%s-agent-%d" $roxie.name $channel }}
+{{- $_ := set $commonCtx "instanceNames" (append $commonCtx.instanceNames $name) }}
 
 {{ include "hpcc.addCertificate" (dict "root" $ "name" $name "services" $roxie.services "component" "roxie-agent" "external" false) }}
 {{ include "hpcc.addCertificate" (dict "root" $ "name" $name "services" $roxie.services "component" "roxie-agent" "external" true) }}
@@ -292,13 +328,14 @@ kind: Deployment
 metadata:
   name: {{ $name | quote}}
 spec:
-  replicas: {{ $roxie.replicas | default 1 }}
+  replicas: {{ (hasKey $roxie "replicas") | ternary $roxie.replicas 1 }}
   selector:
     matchLabels:
       run: {{ $name | quote}}
   template:
     metadata:
       labels:
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "roxie-agent" "name" "roxie" "instance" $name) | indent 8 }}
         run: {{ $name | quote}}
 {{- if not $roxie.serverReplicas }}        
         server: {{ $servername | quote }}
@@ -306,12 +343,18 @@ spec:
         roxie-cluster: {{ $roxie.name | quote }}
         accessDali: "yes"
         accessEsp: "yes"
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.0.0
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.generateMetricsReporterLabel" $.Values.global.metrics | nindent 8}}
+{{- end }}
 {{- if hasKey $roxie "labels" }}
 {{ toYaml $roxie.labels | indent 8 }}
 {{- end }}
       annotations:
         checksum/config: {{ $configSHA }}
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.addPrometheusScrapeAnnotations" $.Values.global.metrics | nindent 8 }}
+{{- end }}
 {{- if hasKey $roxie "annotations" }}
 {{ toYaml $roxie.annotations | indent 8 }}
 {{- end }}
@@ -319,14 +362,16 @@ spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" $name "target" $roxie.name "type" "roxie") | indent 6 }}
       serviceAccountName: "hpcc-default"
       initContainers:
-        {{- include "hpcc.checkDataMount" (dict "root" $) | indent 6 }}
+      {{- include "hpcc.changePlaneMountPerms" $commonCtx | indent 6 }}
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
+      terminationGracePeriodSeconds: {{ add ($roxie.agentQueryReleaseDelaySeconds | default 60) 30 }}
       containers:
       - name: {{ $name | quote}}
         workingDir: /var/lib/HPCCSystems
-        command: [ roxie ]
-        args: [ 
+        command: [ {{ include "hpcc.componentCommand" (dict "me" $roxie "root" $ "process" "roxie") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" $roxie "root" $ "process" "roxie") | nindent 16 }}
                 {{ include "hpcc.configArg" $roxie }},
-                {{ include "hpcc.daliArg" $ }},
+                {{ include "hpcc.daliArg" (dict "root" $ "component" "Roxie" "optional" false) }},
                 "--channels={{ $channel }}", 
                 "--server={{ not $roxie.serverReplicas }}",
               ]
@@ -346,30 +391,32 @@ spec:
           containerPort: {{ $service.servicePort }}
 {{- end }}
 {{- end }}
-{{ include "hpcc.addSentinelProbes" $roxie | indent 8 }}
+        lifecycle:
+          preStop:
+            exec:
+              command: ["testsocket", ".", "control:closedown"]
+{{ include "hpcc.addSentinelProbes" ( $roxie | merge (dict "readyProbeName" ".ready" )) | indent 8 }}
 {{- end }}
 {{ include "hpcc.addSecurityContext" (dict "root" $ "me" .) | indent 8 }}
-{{- include "hpcc.addResources" (dict "me" $roxie.channelResources) | indent 8 }}
+{{- include "hpcc.addResources" (dict "me" ($roxie.channelResources | default $roxie.resources)) | indent 8 }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" $roxie | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
+{{ include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
 {{- if not $roxie.serverReplicas }}
 {{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" "roxie-agent" "name" $name "external" false) | indent 8 }}
-{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" "roxie-agent" "name" $name "external" true) | indent 8 }}
+{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" "roxie-agent" "name" $name "certificate" $roxie.certificate "external" true) | indent 8 }}
 {{ include "hpcc.addUDPCertificateVolumeMount" (dict "root" $ "component" "udpkey" "name" $udpkeyname ) | indent 8 }}
 {{- end }}
 
       volumes:
 {{ include "hpcc.addConfigMapVolume" $roxie | indent 6 }}
-{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
+{{ include "hpcc.addVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 {{- if not $roxie.serverReplicas }}
 {{ include "hpcc.addCertificateVolume" (dict "root" $ "component" "roxie-agent" "name" $name "external" false) | indent 6 }}
-{{ include "hpcc.addCertificateVolume" (dict "root" $ "component" "roxie-agent" "name" $name "external" true) | indent 6 }}
+{{ include "hpcc.addCertificateVolume" (dict "root" $ "component" "roxie-agent" "name" $name "certificate" $roxie.certificate "external" true) | indent 6 }}
 {{ include "hpcc.addUDPCertificateVolume" (dict "root" $ "component" "udpkey" "name" $udpkeyname) | indent 6 }}
 {{- end }}
 
@@ -377,6 +424,8 @@ spec:
 
 {{- end }}
 {{- end }}
+---
+{{ include "hpcc.addEgress" (dict "root" $ "me" $roxie "labels" $commonCtx.instanceNames) }}
 {{- end }}
 {{- end }}
  

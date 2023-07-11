@@ -1,7 +1,22 @@
 # Azure subscription
-SUBSCRIPTION=
-STORAGE_ACCOUNT_NAME=
-SA_RESOURCE_GROUP=
+SUBSCRIPTION="us-hpccplatform-dev"
+STORAGE_ACCOUNT_NAME="saacitestming"
+SA_RESOURCE_GROUP="rgsaacitestming"
+TAGS="business_unit=research-and-development \
+      admin=ming \
+      owner=ming \
+      owner_email=xiaoming.wang@lexisnexisrisk.com \
+      cost_center=st660 \
+      environment=development \
+      location=$location \
+      market=us \
+      product_group=dev \
+      production_name=hpccsystems \
+      project=aks-one-touch \
+      resource_group_type=app \
+      sre_team=hpcc_platform \
+      subscription_id=module.subscription.output.subscription_id \
+      subcription_type=nonprod"
 # Set the same location as Kubernetes cluster
 SA_LOCATION=eastus
 SA_KEY_DIR=~/.azure/storage
@@ -14,4 +29,4 @@ SA_SKU=Standard_LRS
 # Kubernetes secret.
 SECRET_NAME=
 SECRET_NAMESPACE="default"
-SHARE_NAMES=
+SHARE_NAMES="dalishare dllshare sashashare datashare lzshare"

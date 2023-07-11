@@ -37,13 +37,25 @@ data:
 {{- include "hpcc.generateLoggingConfig" . | indent 6 }}
 {{- include "hpcc.generateMetricsConfig" . | indent 6 }}
 {{- if and .root.Values.certificates .root.Values.certificates.enabled }}
+ {{- $externalCert := (ne (include "hpcc.isVisibilityPublic" (dict "root" .root "visibility" .me.service.visibility)) "") -}}
+ {{- $externalIssuerKeyName := ternary "remote" "public" (eq "true" ( include "hpcc.usesRemoteClientCertificates" .me )) -}}
+ {{- $issuerKeyName := ternary $externalIssuerKeyName "local" $externalCert -}}
  {{- if not (hasKey .me "tls" )}}
-      tls: true
+      tls: {{ include "hpcc.isIssuerEnabled" (dict "root" .root "issuerKeyName" $issuerKeyName) }}
  {{- end }}
       tls_config:
- {{- if (not (eq .me.service.visibility "cluster")) }}
-        certificate: /opt/HPCCSystems/secrets/certificates/public/tls.crt
-        privatekey: /opt/HPCCSystems/secrets/certificates/public/tls.key
+ {{- if $externalCert }}
+        certificate: /opt/HPCCSystems/secrets/certificates/{{ $issuerKeyName }}/tls.crt
+        privatekey: /opt/HPCCSystems/secrets/certificates/{{ $issuerKeyName }}/tls.key
+   {{- if (hasKey .me "remoteClients" )}}
+        verify:
+          enable: true
+          address_match: false
+          accept_selfsigned: false
+          trusted_peers: [ {{ include "hpcc.getTrustedPeerString" (dict "root" .root "remoteClients" .me.remoteClients "instance" .me.name "component" .me.application "visibility" .me.service.visibility) | quote }} ]
+          ca_certificates:
+            path: /opt/HPCCSystems/secrets/certificates/{{ $issuerKeyName }}/ca.crt
+   {{- end }}
  {{- else }}
         certificate: /opt/HPCCSystems/secrets/certificates/local/tls.crt
         privatekey: /opt/HPCCSystems/secrets/certificates/local/tls.key
@@ -53,7 +65,7 @@ data:
           accept_selfsigned: false
           trusted_peers: [ anyone ]
           ca_certificates:
-            path: "/opt/HPCCSystems/secrets/certificates/local/ca.crt"
+            path: /opt/HPCCSystems/secrets/certificates/local/ca.crt
  {{- end }}
 {{- else if not (hasKey .me "tls" )}}
       tls: false
@@ -63,6 +75,9 @@ data:
       dfuQueues:
 {{- include "hpcc.generateConfigDfuQueues" . | indent 6}}
 {{ include "hpcc.generateVaultConfig" . | indent 6 }}
+{{- if eq .me.application "eclwatch" }}
+ {{- include "hpcc.generateWarnings" (dict "root" .root) | nindent 6 }}
+{{- end }}
     global:
 {{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
 {{- end -}}
@@ -71,8 +86,10 @@ data:
 {{- if not .disabled -}}
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
 {{- $application := .application | default "eclwatch" -}}
-{{- $secretsCategories := ternary (list "storage" "esp" "codeSign" "codeVerify")  (list "storage" "esp") (eq $application "eclwatch") -}}
-{{- $includeStorageCategories := ternary (list "lz" "data") (list "data") (eq $application "eclwatch") -}}
+{{- $authtype := .auth | default "none" -}}
+{{- $noAuthSecretsCategories := ternary (list "system" "storage" "esp" "codeSign" "codeVerify")  (list "system" "storage" "esp") (eq $application "eclwatch") -}}
+{{- $secretsCategories := ternary (append $noAuthSecretsCategories "authn") $noAuthSecretsCategories  (eq $authtype "ldap") -}}
+{{- $includeStorageCategories := ternary (list "lz" "data" "dll" "debug") (list "data" "dll" "debug") (eq $application "eclwatch") -}}
 {{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories  "includeCategories" $includeStorageCategories "env" $env -}}
 {{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.espConfigMap" "component" "esp" "excludeKeys" "global,esp.queues")) -}}
 {{- if (ne (include "hpcc.isVisibilityPublic" (dict "root" $ "visibility" .service.visibility)) "") }}
@@ -81,6 +98,9 @@ data:
 {{- else -}}
  {{- $_ := set $commonCtx "externalCert" false -}}
 {{- end -}}
+{{- $signingEnabled := eq (include "hpcc.isIssuerEnabled" (dict "root" $ "issuerKeyName" "signing")) "true" -}}
+{{- $generateSigningCert := and ($signingEnabled) (eq $application "eclwatch") -}}
+{{- $signingCertGenerator := and ($signingEnabled) (has $application (list "eclwatch" "eclservices")) | ternary "eclwatch" "" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -97,26 +117,34 @@ spec:
         server: {{ .name | quote }}
         accessDali: "yes"
         app: {{ $application }}
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.0.0
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "name" $application "component" "esp" "instance" .name) | indent 8 }}
+{{- if hasKey $.Values.global "metrics" }}
+ {{- include "hpcc.generateMetricsReporterLabel" $.Values.global.metrics | nindent 8 }}
+{{- end }}
 {{- if hasKey . "labels" }}
 {{ toYaml .labels | indent 8 }}
 {{- end }}
       annotations:
         checksum/config: {{ $configSHA }}
+{{- if hasKey  $.Values.global "metrics" }}
+ {{- include "hpcc.addPrometheusScrapeAnnotations" $.Values.global.metrics | nindent 8 }}
+{{- end }}
 {{- if hasKey . "annotations" }}
 {{ toYaml .annotations | indent 8 }}
 {{- end }}
     spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" .name "type" "esp") | indent 6 }}
-      serviceAccountName: "hpcc-default"
+      serviceAccountName: "hpcc-esp-service"
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ .name | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ esp ] 
-        args: [
+        command: [ {{ include "hpcc.componentCommand" (dict "me" . "root" $ "process" "esp") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" . "root" $ "process" "esp") | nindent 16 }}
                 {{ printf "--application=%s" $application | quote }},
                 {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }}
+                {{ include "hpcc.daliArg" (dict "root" $ "component" $application "optional" (has $application (list "esdl" "ldapenvironment" "loggingservice")) )}}
               ]
         env:
 {{ include "hpcc.mergeEnvironments" $env | indent 8 -}}
@@ -129,20 +157,24 @@ spec:
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
 {{ include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
-{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" $application "name" .name "certificate" .certificate "visibility" .service.visibility) | indent 8 }}
+{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" $application "name" .name "certificate" .certificate "visibility" .service.visibility "remoteClients" .remoteClients) | indent 8 }}
 {{- if $commonCtx.externalCert }}
  {{- include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" $application "name" .name "external" false) | nindent 8 }}
+{{- end }}
+{{- if $signingCertGenerator }}
+ {{- include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" $signingCertGenerator "name" "global" "issuerKeyName" "signing") | nindent 8 }}
 {{- end }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" . | indent 6 }}
 {{ include "hpcc.addVolumes" $commonCtx | indent 6 }}
-{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
-{{ include "hpcc.addCertificateVolume" (dict "root" $ "component" $application "name" .name "certificate" .certificate "visibility" .service.visibility) | indent 6 }}
+{{ include "hpcc.addCertificateVolume" (dict "root" $ "component" $application "name" .name "certificate" .certificate "visibility" .service.visibility "remoteClients" .remoteClients) | indent 6 }}
 {{- if $commonCtx.externalCert }}
  {{- include "hpcc.addCertificateVolume" (dict "root" $ "component" $application "name" .name "external" false) | nindent 6 }}
+{{- end }}
+{{- if $signingCertGenerator }}
+ {{- include "hpcc.addCertificateVolume" (dict "root" $ "component" $signingCertGenerator "name" "global" "issuerKeyName" "signing") | nindent 6 }}
 {{- end }}
 ---
 kind: ConfigMap
@@ -150,14 +182,30 @@ kind: ConfigMap
 ---
 {{- if hasKey . "service" -}}
 {{- if .service.servicePort -}}
-{{ include "hpcc.addService" ( dict "root" $ "name" .name "service" .service "selector" .name "defaultPort" 8880 ) }}
+{{- $service := deepCopy .service -}}
+{{- if not (hasKey $service "labels") -}}
+ {{- $_ := set $service "labels" dict -}}
+{{- end -}}
+{{- $_ := set $service "labels" (merge $service.labels (dict "server" $application)) -}}
+{{ include "hpcc.addService" ( dict "root" $ "name" .name "service" $service "selector" .name "defaultPort" 8880 ) }}
 ---
+{{ include "hpcc.addEgress" $commonCtx }}
 {{- end }}
 {{- end }}
 
-{{ include "hpcc.addCertificate" (dict "root" $ "name" .name "service" .service "component" $application "visibility" .service.visibility) }}
+{{ include "hpcc.addCertificate" (dict "root" $ "name" .name "service" .service "component" $application "visibility" .service.visibility "remoteClients" .remoteClients) }}
+
 {{- if $commonCtx.externalCert }}
  {{- include "hpcc.addCertificate" (dict "root" $ "name" .name "service" .service "component" $application "external" false) }}
+{{- end }}
+{{- if $generateSigningCert }}
+ {{- include "hpcc.addCertificate" (dict "root" $ "name" "global" "component" $application "issuerKeyName" "signing") }}
+{{- end }}
+
+{{- $instance := .name -}}
+{{- $visibility := .service.visibility -}}
+{{- range $remoteClient := .remoteClients }}
+ {{ include "hpcc.addClientCertificate" (dict "root" $ "client" $remoteClient.name "organization" $remoteClient.organization "instance" $instance "component" $application "visibility" $visibility "secretTemplate" $remoteClient.secretTemplate) }}
 {{- end }}
 {{- end }}
 {{- end }}

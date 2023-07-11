@@ -42,7 +42,6 @@ data:
 {{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
 {{- end -}}
 
-
 {{ range $.Values.eclscheduler -}}
 {{- if not .disabled -}}
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
@@ -61,10 +60,11 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "eclscheduler" "name" "eclscheduler" "instance" .name) | indent 8 }}
         run: {{ .name | quote }}
         accessDali: "yes"
         accessEsp: "no"
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.0.0
 {{- if hasKey . "labels" }}
 {{ toYaml .labels | indent 8 }}
 {{- end }}
@@ -78,14 +78,15 @@ spec:
       serviceAccountName: "hpcc-default"
       terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds | default 600 }}
       initContainers:
-        {{- include "hpcc.checkDllMount" $commonCtx | indent 6 }}
+      {{- include "hpcc.changePlaneMountPerms" $commonCtx | indent 6 }}
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ .name | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ eclscheduler ]
-        args: [
+        command: [ {{ include "hpcc.componentCommand" (dict "me" . "root" $ "process" "eclscheduler") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" . "root" $ "process" "eclscheduler") | nindent 16 }}
                 {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }}
+                {{ include "hpcc.daliArg" (dict "root" $ "component" "ECL Scheduler" "optional" false) }}
               ]
         env:
 {{ include "hpcc.mergeEnvironments" $env | indent 8 -}}
@@ -94,19 +95,15 @@ spec:
 {{ include "hpcc.addSentinelProbes" . | indent 8 }}
 {{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
 {{- if not $.Values.global.privileged }}
-{{- include "hpcc.addStubResources" . | indent 8 }}
+{{- include "hpcc.addStubResources" ($commonCtx | merge (dict "instances" 1)) | indent 8 }}
 {{- end }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "name" .name "component" "eclscheduler") | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" . | indent 6 }}
-{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addCertificateVolume" (dict "root" $ "name" .name "component" "eclscheduler") | indent 6 }}
 ---
