@@ -1,0 +1,105 @@
+name: Build ECLIDE
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;nuget,GitHub,read"
+  VCPKG_NUGET_REPOSITORY: "https://github.com/hpcc-systems/vcpkg"
+
+on:
+  push:
+    tag:
+      - "ide-ga-9.4.2-*"
+
+jobs:
+  preamble:
+    name: Publish Release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      folder_platform: ${{ steps.vars.outputs.folder_platform }}
+      mount_platform: ${{ steps.vars.outputs.mount_platform }}
+      folder_build: ${{ steps.vars.outputs.folder_build }}
+      mount_build: ${{ steps.vars.outputs.mount_build }}
+      community_ref: ${{ steps.vars.outputs.community_ref }}
+      community_tag: ${{ steps.vars.outputs.community_tag }}
+      eclide_tag: ${{ steps.vars.outputs.community_tag }}
+      hpcc_version: ${{ steps.vars.outputs.hpcc_version }}
+      candidate_base_branch: ${{ steps.vars.outputs.candidate_base_branch }}
+      candidate_branch: ${{ steps.vars.outputs.candidate_branch }}
+      cmake_docker_config: ${{ steps.vars.outputs.cmake_docker_config }}
+      gpg_import: ${{ steps.vars.outputs.gpg_import }}
+      working_tag: ${{ steps.vars.outputs.working_tag }}
+    steps:
+      - name: Calculate vars
+        id: vars
+        run: |
+          echo "working_tag=community_ide-ga-9.4.2-43" >> $GITHUB_OUTPUT
+          echo "folder_platform=${{ github.workspace }}/HPCC-Platform" >> $GITHUB_OUTPUT
+          echo 'mount_platform=source="${{ github.workspace }}/HPCC-Platform",target=/hpcc-dev/HPCC-Platform,type=bind,consistency=cached' >> $GITHUB_OUTPUT
+          echo "folder_build=${{ github.workspace }}/build" >> $GITHUB_OUTPUT
+          echo 'mount_build=source="${{ github.workspace }}/build",target=/hpcc-dev/build,type=bind,consistency=cached' >> $GITHUB_OUTPUT
+          community_ref=${{ github.ref }}
+          echo "community_ref=$community_ref" >> $GITHUB_OUTPUT
+          community_tag=$(echo $community_ref | cut -d'/' -f3)
+          echo "community_tag=$community_tag" >> $GITHUB_OUTPUT
+          echo "hpcc_version=$(echo $community_tag | sed 's/community_//' | sed 's/-[0-9]$//')" >> $GITHUB_OUTPUT
+          community_base_ref=${{ github.event.base_ref || github.ref }}
+          candidate_branch=$(echo $community_base_ref | cut -d'/' -f3)
+          echo "candidate_branch=$candidate_branch" >> $GITHUB_OUTPUT
+          echo "candidate_base_branch=$(echo $candidate_branch | awk -F'.' -v OFS='.' '{ $3="x"; print }')" >> $GITHUB_OUTPUT
+          echo "cmake_docker_config=-DCMAKE_BUILD_TYPE=RelWithDebInfo -DVCPKG_FILES_DIR=/hpcc-dev -DCPACK_THREADS=0 -DUSE_OPTIONAL=OFF -DSIGN_MODULES=${{ github.repository_owner == 'hpcc-systems' && 'ON' || 'OFF' }}" >> $GITHUB_OUTPUT
+          echo 'gpg_import=gpg --batch --import /hpcc-dev/build/private.key' >> $GITHUB_OUTPUT
+
+      - name: Print vars
+        run: |
+          echo "${{ toJSON(steps.vars.outputs) }})"
+
+      - name: Release HPCC-Platform
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          allowUpdates: true
+          generateReleaseNotes: false
+          prerelease: ${{ contains(github.ref, '-rc') }}
+
+#      - name: Release ECLIDE
+#          #uses: ncipollo/release-action@v1.12.0
+#        with:
+#          allowUpdates: true
+#          generateReleaseNotes: false
+#          prerelease: ${{ contains(github.ref, '-rc') }}
+#          repo: ECLIDE
+#          tag: ${{ steps.vars.outputs.eclide_tag }}
+
+
+  build-bare-metal:
+    name: Build Bare Metal
+    # if: github.repository == 'hpcc-systems/HPCC-Platform'
+    needs: preamble
+    strategy:
+      matrix:
+        include:
+          - os: "windows-2022"
+            mono: ""
+            sudo: ""
+            cmake_config_options: '-A Win32 -DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF -DPKG_CONFIG_EXECUTABLE=D:/a/HPCC-Platform/HPCC-Platform/build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe'
+            cmake_build_options: "--config Release --parallel $NUMBER_OF_PROCESSORS"
+      fail-fast: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Print vars
+        shell: "bash"
+        run: |
+          echo ${{ matrix.os }}
+          echo "${{ toJSON(needs.preamble.outputs) }})"
+
+      - name: "Get Documents and Clienttools builds"
+        shell: "bash"
+        run: |
+          echo "Get Documents and Clienttools builds"
+          dep_tag=${{ needs.preamble.outputs.working_tag }}
+          echo "Using tag: ${dep_tag} "
+          work_dir=$(pwd)
+          echo "Current dir: $work_dir "
+          curl -sL -o lf.tar.gz \
+            https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/portal_html_EN_US.zip
