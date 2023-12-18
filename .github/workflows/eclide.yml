@@ -93,6 +93,7 @@ jobs:
           echo ${{ matrix.os }}
           echo "${{ toJSON(needs.preamble.outputs) }})"
 
+
       - name: "Get Documents and Clienttools builds"
         shell: "bash"
         run: |
@@ -103,6 +104,11 @@ jobs:
           work_dir=$(pwd)
           echo "Current dir: $work_dir "
           curl -sL -o portal_html_EN_US.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/portal_html_EN_US.zip
-          ls -l partal*.zip
-          curl -sL -o /hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe
+          ls -l portal*.zip
+          curl -sL -o hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe
           ls -l hpcc*.exe
+
+      - name: "Install html-help-workshop"
+        run: |
+          choco install html-help-workshop -y
+          hhc -h
