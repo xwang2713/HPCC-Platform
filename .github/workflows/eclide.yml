@@ -93,16 +93,98 @@ jobs:
           echo ${{ matrix.os }}
           echo "${{ toJSON(needs.preamble.outputs) }})"
 
-      - name: "Get Documents and Clienttools builds"
+      - name: Checkout HPCC-Platform
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.preamble.outputs.community_ref }}
+          submodules: recursive
+          path: ./HPCC-Platform
+
+      - name: Checkout ECLIDE
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository_owner }}/ECLIDE
+          submodules: recursive
+          path: ./ECLIDE
+
+      - name: Checkout ECLIDE Tag
+        run: |
+          cd ./ECLIDE
+          git remote -v
+          git fetch --tags origin
+          git tag | grep community
+          git checkout tags/${{ needs.preamble.outputs.working_tag }}
+          git branch
+
+      - name: "Install html-help-workshop"
         shell: "bash"
         run: |
-          echo "Get Documents and Clienttools builds"
+          choco install html-help-workshop
+          mkdir ./docs
+
+      - name: "Create EN_US CHM file"
+        shell: "bash"
+        run: |
+          cd ./docs
+          pwd
           dep_tag="${{ needs.preamble.outputs.working_tag }}"
-          echo "Using tag: ${dep_tag} "
-          echo "Using tag: $dep_tag "
+          echo "dep_tag ${dep_tag}"
+          curl -sL -o html_help_EN_US.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/html_help_EN_US-9.4.17-closedown0.zip
+          7z x html_help_EN_US.zip
+          mv html_help html_help_EN_US
+          cd html_help_EN_US
+          C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
+          mv htmlhelp.chm ECLReference.chm
+          cp ECLReference.chm ../../ECLIDE/docs/
+          ls ../../ECLIDE/docs/*.chm
+
+      - name: "Create PT_BR CHM file"
+        shell: "bash"
+        run: |
+          cd ./docs
+          pwd
+          dep_tag="${{ needs.preamble.outputs.working_tag }}"
+          echo "dep_tag ${dep_tag}"
+          curl -sL -o html_help_PT_BR.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/html_help_PT_BR-9.4.17-closedown0.zip
+          7z x html_help_PT_BR.zip
+          mv html_help html_help_PT_BR
+          cd html_help_PT_BR
+          C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
+          mv htmlhelp.chm ECLReference_PT_BR.chm
+          cp ECLReference_PT_BR.chm ../../ECLIDE/docs/
+          ls ../../ECLIDE/docs/*.chm
+
+      - name: "Get Clienttools build"
+        shell: "bash"
+        run: |
+          cd ECLIDE
+          mkdir HPCC-Platform
+          cd HPCC-Platform
           work_dir=$(pwd)
           echo "Current dir: $work_dir "
-          curl -sL -o portal_html_EN_US.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/portal_html_EN_US.zip
-          ls -l partal*.zip
-          curl -sL -o /hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe
+          dep_tag="${{ needs.preamble.outputs.working_tag }}"
+          curl -sL -o hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-community_9.4.17-closedown0Windows-i386.exe
           ls -l hpcc*.exe
+
+      - name: "Build ECLIDE"
+        run: |
+          cd ECLIDE
+          mkdir build
+          cd build
+          cmake -A Win32 ..
+          cmake --build . --config RelWithDebInfo --target package --parallel
+
+      - name: Upload Assets
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          allowUpdates: true
+          generateReleaseNotes: false
+          prerelease: ${{ contains(github.ref, '-rc') }}
+          artifacts: "./ECLIDE/build/*.exe,./build/*.exe,./build/*.msi,./build/*.dmg,./build/*.pkg,./build/*.tar.gz"
+
+      - name: Upload error logs
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }}-logs
+          path: ./build/**/*.log
