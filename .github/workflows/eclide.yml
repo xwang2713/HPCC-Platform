@@ -111,9 +111,9 @@ jobs:
       - name: "Install html-help-workshop"
         run: |
           choco install html-help-workshop -y
-          choco list
+          choco search html-help-workshop
           pwd
           7z x html_help_EN_US.zip
           cd html_help
-          ./hhc.exe htmlhelp.hhp
+          htmlhelp.exe htmlhelp.hhp
           ls *.chm
