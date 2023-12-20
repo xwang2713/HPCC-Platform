@@ -112,8 +112,8 @@ jobs:
         run: |
           choco install html-help-workshop
           #choco search html-help-workshop
-          ls  C:/"Program Files (x86)"/"HTML Help Workshop"
+          #ls  C:/"Program Files (x86)"/"HTML Help Workshop"
           7z x html_help_EN_US.zip
           cd html_help
           C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp
-          ls *.chm
+          #ls *.chm
