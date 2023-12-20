@@ -112,7 +112,6 @@ jobs:
           ls
           cd ./ECLIDE
           git remote -v
-          git tag
           git checkout tags/${{ needs.preamble.outputs.working_tag }}
           git branch
 
