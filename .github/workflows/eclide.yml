@@ -197,7 +197,7 @@ jobs:
           - os: "windows-2022"
             mono: ""
             sudo: ""
-            cmake_config_options: '-A Win32 -DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF'
+            cmake_config_options: '-DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF'
             cmake_build_options: "--config Release --parallel $NUMBER_OF_PROCESSORS"
       fail-fast: false
 
@@ -243,7 +243,7 @@ jobs:
         shell: "bash"
         run: |
           mkdir -p ./build
-          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }} -DPKG_CONFIG_EXECUTABLE=./build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe
+          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }} -DPKG_CONFIG_EXECUTABLE=./build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe -A x64
           cmake --build ./build ${{ matrix.cmake_build_options }} --target package
 
       - name: Upload Assets
@@ -282,18 +282,19 @@ jobs:
         uses: actions/checkout@v3
         with:
           repository: ${{ github.repository_owner }}/ECLIDE
-          #   ref: ${{ needs.preamble.outputs.eclide_ref }}
+          ref: ${{ needs.preamble.outputs.eclide_ref }}
           submodules: recursive
           path: ./ECLIDE
+          fetch-depth: 0
 
-      - name: Checkout ECLIDE Tag
-        run: |
-          cd ./ECLIDE
-          git remote -v
-          git fetch --tags origin
-          git tag | grep community
-          git checkout tags/${{ needs.preamble.outputs.eclide_tag }}
-          git branch
+      #- name: Checkout ECLIDE Tag
+      #  run: |
+      #    cd ./ECLIDE
+      #    git remote -v
+      #    git fetch --tags origin
+      #    git tag | grep community
+      #    git checkout tags/${{ needs.preamble.outputs.eclide_tag }}
+      #    git branch
 
       - name: "Install html-help-workshop"
         shell: "bash"
@@ -339,7 +340,8 @@ jobs:
           mkdir HPCC-Platform
           cd HPCC-Platform
           dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-i386.exe
+          #curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-i386.exe
+          curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe
 
       - name: "Build ECLIDE"
         run: |
@@ -350,7 +352,7 @@ jobs:
           mkdir -p ./build
           cd ./build
           pwd
-          cmake -A Win32 -S ../ -B .
+          cmake -A Win32 -S ../ -B . -DCT_ARCH=x86_64
           cmake --build . --config RelWithDebInfo --target package --parallel
 
       - name: Upload Assets
