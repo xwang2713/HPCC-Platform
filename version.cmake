@@ -7,6 +7,6 @@ set ( HPCC_MAJOR 9 )
 set ( HPCC_MINOR 3 )
 set ( HPCC_POINT 0 )
 set ( HPCC_MATURITY "rc" )
-set ( HPCC_SEQUENCE 13 )
+set ( HPCC_SEQUENCE 15 )
 set ( HPCC_TAG_TIMESTAMP "2023-11-30T17:05:34Z" )
 ###

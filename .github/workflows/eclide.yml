@@ -222,6 +222,21 @@ jobs:
           submodules: recursive
           path: ./HPCC-Platform
 
+      - name: "Create sinning file"
+        shell: "pwsh"
+        env:
+          SIGN_CERT: ${{ secrets.SIGN_CERT }}
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          mkdir -p ./sign
+          cd sign
+          $pfxPath = "hpcc_code_signing.pfx"
+          $encodedBytes = [System.Convert]::FromBase64String($env:SIGN_CERT)
+          $currentDirectory = Get-Location
+          $certificatePath = Join-Path -Path $currentDirectory -ChildPath $pfxPath
+          [IO.File]::WriteAllBytes("$certificatePath", $encodedBytes)
+          echo ${env:SIGN_PW} > passphrase.txt
+          CertUtil -p ${env:SIGN_PW} hpcc_code_signing.pfx
 
       - name: "vcpkg Bootstrap"
         shell: "bash"
@@ -243,8 +258,16 @@ jobs:
         shell: "bash"
         run: |
           mkdir -p ./build
-          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }} -DPKG_CONFIG_EXECUTABLE=./build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe -A x64
+          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }} -DPKG_CONFIG_EXECUTABLE=./build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe -A x64  -DSIGN_DIRECTORY=../sign
           cmake --build ./build ${{ matrix.cmake_build_options }} --target package
+
+      - name: Sign Clienttool Package
+        shell: "pwsh"
+        env:
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          cd ./build
+          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../sign/hpcc_code_signing.pfx /p $env:SIGN_PW /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
 
       - name: Upload Assets
         uses: ncipollo/release-action@v1.12.0
@@ -343,6 +366,22 @@ jobs:
           #curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-i386.exe
           curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe
 
+      - name: "Create sinning file"
+        shell: "pwsh"
+        env:
+          SIGN_CERT: ${{ secrets.SIGN_CERT }}
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          mkdir -p ./sign
+          cd sign
+          $pfxPath = "hpcc_code_signing.pfx"
+          $encodedBytes = [System.Convert]::FromBase64String($env:SIGN_CERT)
+          $currentDirectory = Get-Location
+          $certificatePath = Join-Path -Path $currentDirectory -ChildPath $pfxPath
+          [IO.File]::WriteAllBytes("$certificatePath", $encodedBytes)
+          echo ${env:SIGN_PW} > passphrase.txt
+          CertUtil -p ${env:SIGN_PW} hpcc_code_signing.pfx
+
       - name: "Build ECLIDE"
         run: |
           ls -l ECLIDE/
@@ -352,8 +391,16 @@ jobs:
           mkdir -p ./build
           cd ./build
           pwd
-          cmake -A Win32 -S ../ -B . -DCT_ARCH=x86_64
+          cmake -A Win32 -S ../ -B . -DCT_ARCH=x86_64 -DSIGN_DIRECTORY=../sign
           cmake --build . --config RelWithDebInfo --target package --parallel
+
+      - name: Sign ECLIDE Package
+        shell: "pwsh"
+        env:
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          cd ./build
+          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../sign/hpcc_code_signing.pfx /p $env:SIGN_PW /t http://timestamp.digicert.com /fd SHA256 hpccsystems-eclide*.exe
 
       - name: Upload Assets
         uses: ncipollo/release-action@v1.12.0
