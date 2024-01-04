@@ -7,7 +7,7 @@ env:
 on:
   push:
     tag:
-      - "community_9.3.0-rc*"
+      - "sign-ct-9.4.2-*"
 
 jobs:
   preamble:
@@ -20,13 +20,9 @@ jobs:
       mount_platform: ${{ steps.vars.outputs.mount_platform }}
       folder_build: ${{ steps.vars.outputs.folder_build }}
       mount_build: ${{ steps.vars.outputs.mount_build }}
-      folder_eclide: ${{ steps.vars.outputs.folder_eclide }}
-      folder_eclide_build: ${{ steps.vars.outputs.folder_eclide_build }}
-      folder_eclide_docs: ${{ steps.vars.outputs.folder_eclide_docs }}
       community_ref: ${{ steps.vars.outputs.community_ref }}
       community_tag: ${{ steps.vars.outputs.community_tag }}
-      eclide_ref: ${{ steps.vars.outputs.eclide_ref }}
-      eclide_tag: ${{ steps.vars.outputs.eclide_tag }}
+      eclide_tag: ${{ steps.vars.outputs.community_tag }}
       hpcc_version: ${{ steps.vars.outputs.hpcc_version }}
       candidate_base_branch: ${{ steps.vars.outputs.candidate_base_branch }}
       candidate_branch: ${{ steps.vars.outputs.candidate_branch }}
@@ -40,15 +36,10 @@ jobs:
           echo 'mount_platform=source="${{ github.workspace }}/HPCC-Platform",target=/hpcc-dev/HPCC-Platform,type=bind,consistency=cached' >> $GITHUB_OUTPUT
           echo "folder_build=${{ github.workspace }}/build" >> $GITHUB_OUTPUT
           echo 'mount_build=source="${{ github.workspace }}/build",target=/hpcc-dev/build,type=bind,consistency=cached' >> $GITHUB_OUTPUT
-          echo "folder_eclide=${{ github.workspace }}/ECLIDE" >> $GITHUB_OUTPUT
-          echo "folder_eclide_build=${{ github.workspace }}/ECLIDE/build" >> $GITHUB_OUTPUT
-          echo "folder_eclide_docs=${{ github.workspace }}/ECLIDE/docs" >> $GITHUB_OUTPUT
           community_ref=${{ github.ref }}
           echo "community_ref=$community_ref" >> $GITHUB_OUTPUT
-          echo "eclide_ref=$(echo $community_ref | sed 's/community/eclide/')" >> $GITHUB_OUTPUT
           community_tag=$(echo $community_ref | cut -d'/' -f3)
           echo "community_tag=$community_tag" >> $GITHUB_OUTPUT
-          echo "eclide_tag=$(echo $community_tag | sed 's/community/eclide/')" >> $GITHUB_OUTPUT
           echo "hpcc_version=$(echo $community_tag | sed 's/community_//' | sed 's/-[0-9]$//')" >> $GITHUB_OUTPUT
           community_base_ref=${{ github.event.base_ref || github.ref }}
           candidate_branch=$(echo $community_base_ref | cut -d'/' -f3)
@@ -77,115 +68,6 @@ jobs:
 #          repo: ECLIDE
 #          tag: ${{ steps.vars.outputs.eclide_tag }}
 
-  build-docker:
-    name: Build Docker
-    needs: preamble
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            name: docs
-            documentation: true
-      fail-fast: false
-
-    steps:
-      - name: Free additional disk space (remove Android SDK + Tools)
-        run: |
-          sudo rm -rf /usr/local/lib/android
-
-      - name: Checkout HPCC-Platform
-        uses: actions/checkout@v3
-        with:
-          ref: ${{ needs.preamble.outputs.community_ref }}
-          submodules: recursive
-          path: ${{ needs.preamble.outputs.folder_platform }}
-
-
-      - name: Calculate vars
-        id: vars
-        working-directory: ${{ needs.preamble.outputs.folder_platform }}/vcpkg
-        run: |
-          vcpkg_sha_short=$(git rev-parse --short=8 HEAD)
-          echo "vcpkg_sha_short=$vcpkg_sha_short" >> $GITHUB_OUTPUT
-          docker_build_label=hpccsystems/platform-build-${{ matrix.os }}
-          echo "docker_build_label=$docker_build_label" >> $GITHUB_OUTPUT
-          echo "docker_tag=$docker_build_label:$vcpkg_sha_short" >> $GITHUB_OUTPUT
-          echo "docker_tag_candidate_base=$docker_build_label:${{ needs.preamble.outputs.candidate_base_branch }}" >> $GITHUB_OUTPUT
-
-      - name: Print vars
-        run: |
-          echo "${{ toJSON(needs.preamble.outputs) }})"
-          echo "${{ toJSON(steps.vars.outputs) }})"
-
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Create Build Image
-        uses: docker/build-push-action@v4
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          file: ${{ needs.preamble.outputs.folder_platform }}/dockerfiles/vcpkg/${{ matrix.os }}.dockerfile
-          context: ${{ needs.preamble.outputs.folder_platform }}/dockerfiles/vcpkg
-          push: ${{ github.repository_owner == 'hpcc-systems' }}
-          load: ${{ github.repository_owner != 'hpcc-systems' }}
-          build-args: |
-            VCPKG_REF=${{ steps.vars.outputs.vcpkg_sha_short }}
-          tags: |
-            ${{ steps.vars.outputs.docker_tag_candidate_base }}
-          cache-from: |
-            type=registry,ref=${{ steps.vars.outputs.docker_tag_candidate_base }}
-            type=registry,ref=${{ steps.vars.outputs.docker_tag }}
-          cache-to: type=inline
-
-      - name: CMake documentation (community)
-        if: ${{ !matrix.container && matrix.documentation }}
-        run: |
-          mkdir -p {${{needs.preamble.outputs.folder_build }},EN_US,PT_BR}
-          sudo rm -f ${{ needs.preamble.outputs.folder_build }}/CMakeCache.txt
-          sudo rm -rf ${{ needs.preamble.outputs.folder_build }}/CMakeFiles
-          docker run --rm --mount ${{ needs.preamble.outputs.mount_platform }} --mount ${{ needs.preamble.outputs.mount_build }} ${{ steps.vars.outputs.docker_tag_candidate_base }} "\
-            cmake -S /hpcc-dev/HPCC-Platform -B /hpcc-dev/build -DMAKE_DOCS_ONLY=ON -DUSE_NATIVE_LIBRARIES=ON -DDOCS_AUTO=ON -DDOC_LANGS=ALL && \
-            cmake --build /hpcc-dev/build --parallel $(nproc) --target all"
-          docker run --rm --mount ${{ needs.preamble.outputs.mount_platform }} --mount ${{ needs.preamble.outputs.mount_build }} ${{ steps.vars.outputs.docker_tag_candidate_base }} "cd /hpcc-dev/build/Release/docs/EN_US && zip ALL_HPCC_DOCS_EN_US-${{ needs.preamble.outputs.community_tag }}.zip *.pdf"
-          docker run --rm --mount ${{ needs.preamble.outputs.mount_platform }} --mount ${{ needs.preamble.outputs.mount_build }} ${{ steps.vars.outputs.docker_tag_candidate_base }} "cd /hpcc-dev/build/Release/docs/PT_BR && zip ALL_HPCC_DOCS_PT_BR-${{ needs.preamble.outputs.community_tag }}.zip *.pdf"
-
-      - name: Create Docker Image (community)
-        uses: docker/build-push-action@v4
-        if: ${{ matrix.container && !matrix.documentation }}
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          file: ${{ needs.preamble.outputs.folder_platform }}/dockerfiles/vcpkg/platform-core-${{ matrix.os }}/Dockerfile
-          context: ${{ needs.preamble.outputs.folder_build }}
-          push: ${{ github.repository_owner == 'hpcc-systems' }}
-          build-args: |
-            PKG_FILE=${{ steps.container.outputs.k8s_pkg_file }}
-          tags: |
-            hpccsystems/platform-core-${{ matrix.os }}:${{ needs.preamble.outputs.community_tag }}
-            hpccsystems/platform-core-${{ matrix.os }}:${{ needs.preamble.outputs.candidate_base_branch }}
-          cache-from: |
-            type=registry,ref=hpccsystems/platform-core-${{ matrix.os }}:${{ needs.preamble.outputs.candidate_base_branch }}
-
-      - name: Upload Assets (community)
-        if: ${{ !matrix.ln }}
-        uses: ncipollo/release-action@v1.12.0
-        with:
-          allowUpdates: true
-          generateReleaseNotes: false
-          prerelease: ${{ contains(github.ref, '-rc') }}
-          artifacts: "${{ needs.preamble.outputs.folder_build }}/*.deb,${{ needs.preamble.outputs.folder_build }}/*.rpm,${{ needs.preamble.outputs.folder_build }}/Release/docs/*.zip,${{ needs.preamble.outputs.folder_build }}/Release/docs/EN_US/*.zip,${{ needs.preamble.outputs.folder_build }}/Release/docs/PT_BR/*.zip,${{ needs.preamble.outputs.folder_build }}/docs/EN_US/EclipseHelp/*.zip,${{ needs.preamble.outputs.folder_build }}/docs/EN_US/HTMLHelp/*.zip,${{ needs.preamble.outputs.folder_build }}/docs/PT_BR/HTMLHelp/*.zip"
-
-      #  Common  ---
-      - name: Cleanup Environment
-        if: always()
-        run: rm -f ${{ needs.preamble.outputs.folder_build }}/private.key
 
   build-bare-metal:
     name: Build Bare Metal
@@ -197,7 +79,7 @@ jobs:
           - os: "windows-2022"
             mono: ""
             sudo: ""
-            cmake_config_options: '-DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF'
+            cmake_config_options: '-A Win32 -DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF -DPKG_CONFIG_EXECUTABLE=D:/a/HPCC-Platform/HPCC-Platform/build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe'
             cmake_build_options: "--config Release --parallel $NUMBER_OF_PROCESSORS"
       fail-fast: false
 
@@ -222,6 +104,46 @@ jobs:
           submodules: recursive
           path: ./HPCC-Platform
 
+      - name: "Create sinning file"
+        shell: "bash"
+        env:
+          SIGN_CERT: ${{ secrets.SIGN_CERT }}
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          mkdir -p ./sign
+          cd sign
+          #echo ${env:SIGN_CERT//[$'\t\r\n']} > sign_encoded.txt
+          #echo ${env:SIGN_CERT//[$'\t\r\n']} | base64 --decode > hpcc_code_signing.pfx
+          echo ${env:SIGN_CERT]} > hpcc_code_signing.pfx
+
+          ls -l *
+          #md5sum sign_encoded.txt
+          md5sum hpcc_code_signing.pfx
+          echo ${env:SIGN_PW} > passphrase.txt
+          ls -l *.pfx
+          #certutil -p ${env:SIGN_PW} -dump hpcc_code_signing.pfx
+
+      - name: "Verify sinning file"
+        shell: "pwsh"
+        env:
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          cd sign
+          CertUtil -p ${env:SIGN_PW} hpcc_code_signing.pfx
+
+      #- name: "Create sinning file"
+      #  shell: "pwsh"
+      #  env:
+      #    SIGN_CERT: ${{ secrets.SIGN_CERT }}
+      #    SIGN_PW: ${{ secrets.SIGN_PW }}
+      #  run: |
+      #    mkdir -p ./sign
+      #    cd sign
+      #    $pfxPath = "./hpcc_code_signing.pfx"
+      #    $encodedBytes = [System.Convert]::FromBase64String($env:SIGN_CERT)
+      #    Set-Content $pfxPath -Value $encodedBytes -Encoding BYTE
+      #    #Write-Output "::set-output name=PFX_PATH::$pfxPath"
+      #    CertUtil -p ${env:SIGN_PW} -dump hpcc_code_signing.pfx
 
       - name: "vcpkg Bootstrap"
         shell: "bash"
@@ -243,8 +165,11 @@ jobs:
         shell: "bash"
         run: |
           mkdir -p ./build
-          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }} -DPKG_CONFIG_EXECUTABLE=./build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe -A x64
+          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }}  -DSIGN_DIRECTORY=../sign
           cmake --build ./build ${{ matrix.cmake_build_options }} --target package
+          cmake --build ./build ${{ matrix.cmake_build_options }} --target SIGN
+          #"C:\Program Files (x86)\Microsoft SDKs\ClickOnce\SignTool\signtool.exe" sign /f ../sign/hpcc_code_signing.pfx /p ${env:SIGN_PW} /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
+          #PFX_PASSWORD
 
       - name: Upload Assets
         uses: ncipollo/release-action@v1.12.0
@@ -260,112 +185,3 @@ jobs:
         with:
           name: ${{ matrix.os }}-logs
           path: ./build/**/*.log
-
-  build-bare-metal-eclide:
-    name: Build Bare Metal ECLIDE
-    needs: [ preamble, build-docker, build-bare-metal ]
-    runs-on: "windows-2022"
-    steps:
-      - name: Print vars
-        shell: "bash"
-        run: |
-          echo "${{ toJSON(needs.preamble.outputs) }})"
-
-      - name: Checkout HPCC-Platform
-        uses: actions/checkout@v3
-        with:
-          ref: ${{ needs.preamble.outputs.community_ref }}
-          submodules: recursive
-          path: ./HPCC-Platform
-
-      - name: Checkout ECLIDE
-        uses: actions/checkout@v3
-        with:
-          repository: ${{ github.repository_owner }}/ECLIDE
-          ref: ${{ needs.preamble.outputs.eclide_ref }}
-          submodules: recursive
-          path: ./ECLIDE
-          fetch-depth: 0
-
-      #- name: Checkout ECLIDE Tag
-      #  run: |
-      #    cd ./ECLIDE
-      #    git remote -v
-      #    git fetch --tags origin
-      #    git tag | grep community
-      #    git checkout tags/${{ needs.preamble.outputs.eclide_tag }}
-      #    git branch
-
-      - name: "Install html-help-workshop"
-        shell: "bash"
-        run: |
-          choco install html-help-workshop
-          mkdir -p ./ECLIDE/docs }}
-
-      - name: "Create EN_US CHM file"
-        shell: "bash"
-        run: |
-          pwd
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          hpcc_version="${{ needs.preamble.outputs.hpcc_version }}"
-          curl -sL -o html_help_EN_US.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/html_help_EN_US-${hpcc_version}.zip
-          7z x html_help_EN_US.zip
-          mv html_help html_help_EN_US
-          cd html_help_EN_US
-          # Chocolate install package not in PATH. Use path full of hhc.exe
-          # hhc.exe return non-zero. Appending "true" to work-around
-          C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
-          mv htmlhelp.chm ECLReference.chm
-          cp ECLReference.chm ../ECLIDE/docs/
-
-      - name: "Create PT_BR CHM file"
-        shell: "bash"
-        run: |
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          hpcc_version="${{ needs.preamble.outputs.hpcc_version }}"
-          curl -sL -o html_help_PT_BR.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/html_help_PT_BR-${hpcc_version}.zip
-          7z x html_help_PT_BR.zip
-          mv html_help html_help_PT_BR
-          cd html_help_PT_BR
-          # Chocolate install package not in PATH. Use path full of hhc.exe
-          # hhc.exe return non-zero. Appending "true" to work-around
-          C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
-          mv htmlhelp.chm ECLReference_PT_BR.chm
-          cp ECLReference_PT_BR.chm ../ECLIDE/docs/
-
-      - name: "Get Clienttools build"
-        shell: "bash"
-        run: |
-          cd ./ECLIDE
-          mkdir HPCC-Platform
-          cd HPCC-Platform
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          #curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-i386.exe
-          curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe
-
-      - name: "Build ECLIDE"
-        run: |
-          ls -l ECLIDE/
-          cd ECLIDE
-          git fetch
-          git branch
-          mkdir -p ./build
-          cd ./build
-          pwd
-          cmake -A Win32 -S ../ -B . -DCT_ARCH=x86_64
-          cmake --build . --config RelWithDebInfo --target package --parallel
-
-      - name: Upload Assets
-        uses: ncipollo/release-action@v1.12.0
-        with:
-          allowUpdates: true
-          generateReleaseNotes: false
-          prerelease: ${{ contains(github.ref, '-rc') }}
-          artifacts: "./ECLIDE/build/*.exe,./build/*.exe,./build/*.msi,./build/*.dmg,./build/*.pkg,./build/*.tar.gz"
-
-      - name: Upload error logs
-        if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: windows-2022-logs
-          path: ./ECLIDE/build/**/*.log
