@@ -7,7 +7,7 @@ env:
 on:
   push:
     tag:
-      - "community_9.3.0-rc*"
+      - "sign-ct-9.4.2-*"
 
 jobs:
   preamble:
@@ -20,13 +20,9 @@ jobs:
       mount_platform: ${{ steps.vars.outputs.mount_platform }}
       folder_build: ${{ steps.vars.outputs.folder_build }}
       mount_build: ${{ steps.vars.outputs.mount_build }}
-      folder_eclide: ${{ steps.vars.outputs.folder_eclide }}
-      folder_eclide_build: ${{ steps.vars.outputs.folder_eclide_build }}
-      folder_eclide_docs: ${{ steps.vars.outputs.folder_eclide_docs }}
       community_ref: ${{ steps.vars.outputs.community_ref }}
       community_tag: ${{ steps.vars.outputs.community_tag }}
-      eclide_ref: ${{ steps.vars.outputs.eclide_ref }}
-      eclide_tag: ${{ steps.vars.outputs.eclide_tag }}
+      eclide_tag: ${{ steps.vars.outputs.community_tag }}
       hpcc_version: ${{ steps.vars.outputs.hpcc_version }}
       candidate_base_branch: ${{ steps.vars.outputs.candidate_base_branch }}
       candidate_branch: ${{ steps.vars.outputs.candidate_branch }}
@@ -40,15 +36,10 @@ jobs:
           echo 'mount_platform=source="${{ github.workspace }}/HPCC-Platform",target=/hpcc-dev/HPCC-Platform,type=bind,consistency=cached' >> $GITHUB_OUTPUT
           echo "folder_build=${{ github.workspace }}/build" >> $GITHUB_OUTPUT
           echo 'mount_build=source="${{ github.workspace }}/build",target=/hpcc-dev/build,type=bind,consistency=cached' >> $GITHUB_OUTPUT
-          echo "folder_eclide=${{ github.workspace }}/ECLIDE" >> $GITHUB_OUTPUT
-          echo "folder_eclide_build=${{ github.workspace }}/ECLIDE/build" >> $GITHUB_OUTPUT
-          echo "folder_eclide_docs=${{ github.workspace }}/ECLIDE/docs" >> $GITHUB_OUTPUT
           community_ref=${{ github.ref }}
           echo "community_ref=$community_ref" >> $GITHUB_OUTPUT
-          echo "eclide_ref=$(echo $community_ref | sed 's/community/eclide/')" >> $GITHUB_OUTPUT
           community_tag=$(echo $community_ref | cut -d'/' -f3)
           echo "community_tag=$community_tag" >> $GITHUB_OUTPUT
-          echo "eclide_tag=$(echo $community_tag | sed 's/community/eclide/')" >> $GITHUB_OUTPUT
           echo "hpcc_version=$(echo $community_tag | sed 's/community_//' | sed 's/-[0-9]$//')" >> $GITHUB_OUTPUT
           community_base_ref=${{ github.event.base_ref || github.ref }}
           candidate_branch=$(echo $community_base_ref | cut -d'/' -f3)
@@ -197,7 +188,7 @@ jobs:
           - os: "windows-2022"
             mono: ""
             sudo: ""
-            cmake_config_options: '-DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF'
+            cmake_config_options: '-A Win32 -DUSE_OPTIONAL=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF -DUSE_LIBMEMCACHED=OFF -DWSSQL_SERVICE=OFF -DPKG_CONFIG_EXECUTABLE=D:/a/HPCC-Platform/HPCC-Platform/build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe'
             cmake_build_options: "--config Release --parallel $NUMBER_OF_PROCESSORS"
       fail-fast: false
 
@@ -222,6 +213,17 @@ jobs:
           submodules: recursive
           path: ./HPCC-Platform
 
+      - name: "Create sinning file"
+        shell: "powershell"
+        env:
+          SIGN_CERT: ${{ secrets.SIGN_CERT }}
+          SIGN_PW: ${{ secrets.SIGN_PW }}
+        run: |
+          mkdir sign
+          cd sign
+          echo ${env:SIGN_CERT} | certutil --decode > hpcc_code_signing.pfx
+          echo ${env:SIGN_PW} > passphrase.txt
+          certutil /p ${env:SIGN_PW} -dump hpcc_code_signing.pfx
 
       - name: "vcpkg Bootstrap"
         shell: "bash"
@@ -243,8 +245,9 @@ jobs:
         shell: "bash"
         run: |
           mkdir -p ./build
-          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }} -DPKG_CONFIG_EXECUTABLE=./build/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe -A x64
+          cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }}  -DSIGN_DIRECTORY=../sign
           cmake --build ./build ${{ matrix.cmake_build_options }} --target package
+          signtool sign /f ../sign/hpcc_code_signing.pfx /p ${{ secrets.GITHUB_TOKEN }} /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
 
       - name: Upload Assets
         uses: ncipollo/release-action@v1.12.0
@@ -260,112 +263,3 @@ jobs:
         with:
           name: ${{ matrix.os }}-logs
           path: ./build/**/*.log
-
-  build-bare-metal-eclide:
-    name: Build Bare Metal ECLIDE
-    needs: [ preamble, build-docker, build-bare-metal ]
-    runs-on: "windows-2022"
-    steps:
-      - name: Print vars
-        shell: "bash"
-        run: |
-          echo "${{ toJSON(needs.preamble.outputs) }})"
-
-      - name: Checkout HPCC-Platform
-        uses: actions/checkout@v3
-        with:
-          ref: ${{ needs.preamble.outputs.community_ref }}
-          submodules: recursive
-          path: ./HPCC-Platform
-
-      - name: Checkout ECLIDE
-        uses: actions/checkout@v3
-        with:
-          repository: ${{ github.repository_owner }}/ECLIDE
-          ref: ${{ needs.preamble.outputs.eclide_ref }}
-          submodules: recursive
-          path: ./ECLIDE
-          fetch-depth: 0
-
-      #- name: Checkout ECLIDE Tag
-      #  run: |
-      #    cd ./ECLIDE
-      #    git remote -v
-      #    git fetch --tags origin
-      #    git tag | grep community
-      #    git checkout tags/${{ needs.preamble.outputs.eclide_tag }}
-      #    git branch
-
-      - name: "Install html-help-workshop"
-        shell: "bash"
-        run: |
-          choco install html-help-workshop
-          mkdir -p ./ECLIDE/docs }}
-
-      - name: "Create EN_US CHM file"
-        shell: "bash"
-        run: |
-          pwd
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          hpcc_version="${{ needs.preamble.outputs.hpcc_version }}"
-          curl -sL -o html_help_EN_US.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/html_help_EN_US-${hpcc_version}.zip
-          7z x html_help_EN_US.zip
-          mv html_help html_help_EN_US
-          cd html_help_EN_US
-          # Chocolate install package not in PATH. Use path full of hhc.exe
-          # hhc.exe return non-zero. Appending "true" to work-around
-          C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
-          mv htmlhelp.chm ECLReference.chm
-          cp ECLReference.chm ../ECLIDE/docs/
-
-      - name: "Create PT_BR CHM file"
-        shell: "bash"
-        run: |
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          hpcc_version="${{ needs.preamble.outputs.hpcc_version }}"
-          curl -sL -o html_help_PT_BR.zip https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/html_help_PT_BR-${hpcc_version}.zip
-          7z x html_help_PT_BR.zip
-          mv html_help html_help_PT_BR
-          cd html_help_PT_BR
-          # Chocolate install package not in PATH. Use path full of hhc.exe
-          # hhc.exe return non-zero. Appending "true" to work-around
-          C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
-          mv htmlhelp.chm ECLReference_PT_BR.chm
-          cp ECLReference_PT_BR.chm ../ECLIDE/docs/
-
-      - name: "Get Clienttools build"
-        shell: "bash"
-        run: |
-          cd ./ECLIDE
-          mkdir HPCC-Platform
-          cd HPCC-Platform
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          #curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-i386.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-i386.exe
-          curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe https://github.com/xwang2713/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe
-
-      - name: "Build ECLIDE"
-        run: |
-          ls -l ECLIDE/
-          cd ECLIDE
-          git fetch
-          git branch
-          mkdir -p ./build
-          cd ./build
-          pwd
-          cmake -A Win32 -S ../ -B . -DCT_ARCH=x86_64
-          cmake --build . --config RelWithDebInfo --target package --parallel
-
-      - name: Upload Assets
-        uses: ncipollo/release-action@v1.12.0
-        with:
-          allowUpdates: true
-          generateReleaseNotes: false
-          prerelease: ${{ contains(github.ref, '-rc') }}
-          artifacts: "./ECLIDE/build/*.exe,./build/*.exe,./build/*.msi,./build/*.dmg,./build/*.pkg,./build/*.tar.gz"
-
-      - name: Upload error logs
-        if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: windows-2022-logs
-          path: ./ECLIDE/build/**/*.log
