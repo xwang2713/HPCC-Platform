@@ -234,6 +234,17 @@ jobs:
           docker run --rm --mount ${{ needs.preamble.outputs.mount_platform }} --mount ${{ needs.preamble.outputs.mount_build }} ${{ steps.vars.outputs.docker_tag_candidate_base }} "cd /hpcc-dev/build/Release/docs/EN_US && zip ALL_HPCC_DOCS_EN_US-${{ needs.preamble.outputs.community_tag }}.zip *.pdf"
           docker run --rm --mount ${{ needs.preamble.outputs.mount_platform }} --mount ${{ needs.preamble.outputs.mount_build }} ${{ steps.vars.outputs.docker_tag_candidate_base }} "cd /hpcc-dev/build/Release/docs/PT_BR && zip ALL_HPCC_DOCS_PT_BR-${{ needs.preamble.outputs.community_tag }}.zip *.pdf"
 
+      - name: Upload Artifacts for ECLIDE build
+        if: ${{ !matrix.ln && !matrix.container && matrix.documentation }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-help-documents
+          path: |
+            ${{ needs.preamble.outputs.folder_build }}/docs/EN_US/EclipseHelp/*.zip
+            ${{ needs.preamble.outputs.folder_build }}/docs/EN_US/HTMLHelp/*.zip
+            ${{ needs.preamble.outputs.folder_build }}/docs/PT_BR/HTMLHelp/*.zip
+          compression-level: 0
+
       - name: Upload Assets (community)
         if: ${{ !matrix.ln }}
         uses: ncipollo/release-action@v1.12.0
@@ -428,20 +439,17 @@ jobs:
           path: ./LN
 
       - name: "Create code signing"
+        if: ${{ contains(matrix.os,'windows') }}
         shell: "pwsh"
-        env:
-          SIGN_CERT: ${{ secrets.SIGN_CERT }}
-          SIGN_PW: ${{ secrets.SIGN_PW }}
         run: |
           mkdir -p ./sign
           cd sign
           $pfxPath = "hpcc_code_signing.pfx"
-          $encodedBytes = [System.Convert]::FromBase64String($env:SIGN_CERT)
+          $encodedBytes = [System.Convert]::FromBase64String("${{ secrets.SIGNING_CERTIFICATE }}")
           $currentDirectory = Get-Location
           $certificatePath = Join-Path -Path $currentDirectory -ChildPath $pfxPath
           [IO.File]::WriteAllBytes("$certificatePath", $encodedBytes)
-          echo ${env:SIGN_PW} > passphrase.txt
-          CertUtil -p ${env:SIGN_PW} hpcc_code_signing.pfx
+          CertUtil -p ${{ secrets.SIGNING_CERTIFICATE_PASSPHRASE }} hpcc_code_signing.pfx
 
       - name: "vcpkg Bootstrap"
         shell: "bash"
@@ -466,13 +474,20 @@ jobs:
           cmake -S ./HPCC-Platform -B ./build ${{ matrix.cmake_config_options }}
           cmake --build ./build ${{ matrix.cmake_build_options }} --target package
 
-      - name: Sign Packages
+      - name: Sign Windows Package
+        if: ${{ contains(matrix.os,'windows') }}
         shell: "pwsh"
-        env:
-          SIGN_PW: ${{ secrets.SIGN_PW }}
         run: |
           cd ./build
-          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../sign/hpcc_code_signing.pfx /p $env:SIGN_PW /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
+          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../sign/hpcc_code_signing.pfx /p ${{ secrets.SIGNING_CERTIFICATE_PASSPHRASE }} /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
+
+      - name: Upload Artifact for ECLIDE build
+        if: ${{ contains(matrix.os, 'windows') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Clienttools
+          path: ./build/hpccsystems-clienttools*.exe
+          compression-level: 0
 
       - name: Upload Assets
         uses: ncipollo/release-action@v1.12.0
@@ -490,13 +505,12 @@ jobs:
           cmake -S ./LN -B ./build ${{ matrix.cmake_config_options }}
           cmake --build ./build ${{ matrix.cmake_build_options }} --target package
 
-      - name: Sign LN Package
+      - name: Sign LN Windows Package
+        if: ${{ contains(matrix.os,'windows') }}
         shell: "pwsh"
-        env:
-          SIGN_PW: ${{ secrets.SIGN_PW }}
         run: |
           cd ./build
-          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../sign/hpcc_code_signing.pfx /p $env:SIGN_PW /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
+          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../sign/hpcc_code_signing.pfx /p ${{ secrets.SIGNING_CERTIFICATE_PASSPHRASE }} /t http://timestamp.digicert.com /fd SHA256 hpccsystems-clienttools*.exe
 
       - name: Upload LN Assets
         uses: ncipollo/release-action@v1.12.0
@@ -548,61 +562,56 @@ jobs:
         run: |
           choco install html-help-workshop
           mkdir -p ./ECLIDE/docs }}
+      
+      - name: "Fetch html artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: html-help-documents
+          merge-multiple: true
+      
+      - name: "Fetch clienttools artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: Windows-Clienttools
+          merge-multiple: true
 
       - name: "Create EN_US CHM file"
         shell: "bash"
         run: |
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          hpcc_version="${{ needs.preamble.outputs.hpcc_version }}"
-          curl -sL -o html_help_EN_US.zip https://github.com/hpcc-systems/HPCC-Platform/releases/download/${dep_tag}/html_help_EN_US-${hpcc_version}.zip
-          7z x html_help_EN_US.zip
-          mv html_help html_help_EN_US
-          cd html_help_EN_US
+          html_doc=$(find . -type f -name "html_help_EN_US-*")
+          mkdir html_help_EN_US
+          7z x $html_doc -ohtml_help_EN_US
+          cd html_help_EN_US/html_help
           # Chocolate install a package but it is not in PATH variable. Use path full of hhc.exe
           # hhc.exe return non-zero. Appending "true" to work-around
           C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
           mv htmlhelp.chm ECLReference.chm
-          cp ECLReference.chm ../ECLIDE/docs/
+          cp ECLReference.chm ../../ECLIDE/docs/
 
       - name: "Create PT_BR CHM file"
         shell: "bash"
         run: |
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          hpcc_version="${{ needs.preamble.outputs.hpcc_version }}"
-          curl -sL -o html_help_PT_BR.zip https://github.com/hpcc-systems/HPCC-Platform/releases/download/${dep_tag}/html_help_PT_BR-${hpcc_version}.zip
-          7z x html_help_PT_BR.zip
-          mv html_help html_help_PT_BR
-          cd html_help_PT_BR
+          html_doc=$(find . -type f -name "html_help_PT_BR-*")
+          mkdir html_help_PT_BR
+          7z x $html_doc -ohtml_help_PT_BR
+          cd html_help_PT_BR/html_help
           # Chocolate install a package but it is not in PATH variable. Use path full of hhc.exe
           # hhc.exe return non-zero. Appending "true" to work-around
           C:/"Program Files (x86)"/"HTML Help Workshop"/hhc.exe htmlhelp.hhp || true
           mv htmlhelp.chm ECLReference_PT_BR.chm
-          cp ECLReference_PT_BR.chm ../ECLIDE/docs/
+          cp ECLReference_PT_BR.chm ../../ECLIDE/docs/
 
-      - name: "Fetch Clienttools package"
-        shell: "bash"
-        run: |
-          cd ./ECLIDE
-          mkdir HPCC-Platform
-          cd HPCC-Platform
-          dep_tag="${{ needs.preamble.outputs.community_tag }}"
-          curl -sL -o hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe https://github.com/hpcc-systems/HPCC-Platform/releases/download/${dep_tag}/hpccsystems-clienttools-${dep_tag}Windows-x86_64.exe
-
-      - name: "Create code sining"
+      - name: "Load code signing"
         shell: "pwsh"
-        env:
-          SIGN_CERT: ${{ secrets.SIGN_CERT }}
-          SIGN_PW: ${{ secrets.SIGN_PW }}
         run: |
           mkdir -p ./sign
           cd sign
           $pfxPath = "hpcc_code_signing.pfx"
-          $encodedBytes = [System.Convert]::FromBase64String($env:SIGN_CERT)
+          $encodedBytes = [System.Convert]::FromBase64String("${{ secrets.SIGNING_CERTIFICATE }}")
           $currentDirectory = Get-Location
           $certificatePath = Join-Path -Path $currentDirectory -ChildPath $pfxPath
           [IO.File]::WriteAllBytes("$certificatePath", $encodedBytes)
-          echo ${env:SIGN_PW} > passphrase.txt
-          CertUtil -p ${env:SIGN_PW} hpcc_code_signing.pfx
+          CertUtil -p ${{ secrets.SIGNING_CERTIFICATE_PASSPHRASE }} hpcc_code_signing.pfx
 
       - name: "Build ECLIDE"
         run: |
@@ -614,11 +623,9 @@ jobs:
 
       - name: Sign ECLIDE Package
         shell: "pwsh"
-        env:
-          SIGN_PW: ${{ secrets.SIGN_PW }}
         run: |
           cd ./ECLIDE/build
-          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../../sign/hpcc_code_signing.pfx /p $env:SIGN_PW /t http://timestamp.digicert.com /fd SHA256 hpccsystems-eclide*.exe
+          C:\"Program Files (x86)"\"Microsoft SDKs"\ClickOnce\SignTool\signtool.exe sign /debug /f ../../sign/hpcc_code_signing.pfx /p ${{ secrets.SIGNING_CERTIFICATE_PASSPHRASE}} /t http://timestamp.digicert.com /fd SHA256 hpccsystems-eclide*.exe
 
       - name: Upload Assets
         uses: ncipollo/release-action@v1.12.0
