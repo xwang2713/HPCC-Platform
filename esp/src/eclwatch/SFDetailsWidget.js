@@ -7,7 +7,7 @@ define([
     "dojo/dom-attr",
     "dojo/dom-class",
     "dojo/dom-form",
-    "src/Memory",
+    "src/store/Memory",
     "dojo/store/Observable",
     "dojo/promise/all",
 
@@ -36,6 +36,7 @@ define([
     "dijit/form/Button",
     "dijit/form/DropDownButton",
     "dijit/form/ToggleButton",
+    "dijit/Fieldset",
     "dijit/TitlePane"
 ], function (exports, declare, nlsHPCCMod, arrayUtil, dom, domAttr, domClass, domForm, MemoryMod, Observable, all,
     registry,

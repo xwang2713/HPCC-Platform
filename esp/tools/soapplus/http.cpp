@@ -136,13 +136,19 @@ __int64 Http::receiveData(ISocket* socket, IByteOutputStream* ostream, bool isCl
 
     Owned<IFileIOStream> full_stream = NULL;
     if(full_output)
-        full_stream.setown(createIOStream(full_output));
+        full_stream.setown(createBufferedIOStream(full_output));
     Owned<IFileIOStream> content_stream = NULL;
     if(content_output)
-        content_stream.setown(createIOStream(content_output));
+        content_stream.setown(createBufferedIOStream(content_output));
 
     char oneline[2049];
-    bsocket->read(oneline, 4);
+    unsigned readlen = bsocket->read(oneline, 4);
+    if (readlen < 4)
+    {
+        printf("Failed to read HTTP Method.\n");
+        return -1;
+    }
+
     if(alwayshttp)
         isRoxie = false;
     else if(strncmp(oneline, "GET", 3) == 0 || strncmp(oneline, "POST", 4) == 0 || strncmp(oneline, "HTTP", 4) == 0)
@@ -445,8 +451,7 @@ void Http::SplitURL(const char* url, StringBuffer& protocol,StringBuffer& UserNa
         UserName.append(username);
     }
 
-    if(hostptr)
-        host.append(hostptr);
+    host.append(hostptr);
 
     if(portptr)
         port.append(portptr);
@@ -461,7 +466,7 @@ HttpClient::HttpClient(IProperties* globals, const char* url, const char* inname
                        const char* outdir, const char* outfilename, bool writeToFiles,
                        int doValidation, const char* xsdpath, bool isEspLogFile) : m_stopstress(false)
 {
-    m_globals = globals;
+    m_globals.setown(globals ? LINK(globals) : createProperties(true));
     if(url && *url)
         m_url.append(url);
     if(inname)
@@ -494,16 +499,13 @@ HttpClient::HttpClient(IProperties* globals, const char* url, const char* inname
             if(m_ssctx.get() == NULL)
             {
                 Owned<IPropertyTree> cfgtree = nullptr;
-                if (globals->hasProp("cfg"))
+                if (m_globals->hasProp("cfg"))
                 {
-                    const char* cfg = globals->queryProp("cfg");
+                    const char* cfg = m_globals->queryProp("cfg");
                     if (cfg && *cfg)
                         cfgtree.setown(createPTreeFromXMLFile(cfg));
                 }
-                if (cfgtree)
-                    m_ssctx.setown(createSecureSocketContextEx2(cfgtree, ClientSocket));
-                else
-                    m_ssctx.setown(createSecureSocketContext(ClientSocket));
+                m_ssctx.setown(createSecureSocketContextEx2(cfgtree, ClientSocket));
             }
 #else
         throw MakeStringException(-1, "HttpClient: failure to create SSL socket - OpenSSL not enabled in build");
@@ -528,10 +530,10 @@ HttpClient::HttpClient(IProperties* globals, const char* url, const char* inname
     if(xsdpath !=  NULL)
         m_xsdpath.append(xsdpath);
 
-    if(globals && globals->hasProp("stressduration"))
+    if (m_globals->hasProp("stressduration"))
     {
-        m_stressthreads = globals->getPropInt("stressthreads", 0);
-        m_stressduration = globals->getPropInt("stressduration", 0);
+        m_stressthreads = m_globals->getPropInt("stressthreads", 0);
+        m_stressduration = m_globals->getPropInt("stressduration", 0);
     }
     else
     {
@@ -629,7 +631,7 @@ void HttpClient::start()
         }
     }
 
-    bool autogen = m_globals ? m_globals->getPropBool("autogen", false) : false;
+    bool autogen = m_globals->getPropBool("autogen");
 
     if(autogen && !m_isEspLogFile)
     {
@@ -679,7 +681,7 @@ void HttpClient::start()
             }
             int ind = 0;
             char seqbuf[20];
-            if(!(m_globals && m_globals->getPropBool("useDefault")))
+            if (!m_globals->getPropBool("useDefault"))
             {
                 fprintf(stderr, "Pick one method, or just press enter to generate a request for each method:\n");
                 if (fgets(seqbuf, 19, stdin)) {
@@ -914,39 +916,36 @@ public:
         }
 
         Owned<CSimpleSocket> persistent_socket = nullptr;
-        if(m_client)
+        for(;;)
         {
-            for(;;)
+            IArrayOf<CRequest>& requests = m_client->queryStressRequests();
+            ForEachItemIn(x, requests)
             {
-                IArrayOf<CRequest>& requests = m_client->queryStressRequests();
-                ForEachItemIn(x, requests)
-                {
-                    if(m_client->queryStopStress())
-                        break;
-
-                    CRequest& req = requests.item(x);
-                    if(STRESS_USE_JSOCKET)
-                        m_client->sendRequest(req.queryReqbuf(), req.getName(), m_stat.get());
-                    else
-                        m_client->sendStressRequest(req.queryReqbuf(), m_stat.get(), persistent_socket);
-                    if(delaymax > 0 && !m_client->queryStopStress())
-                    {
-                        int delay = 0;
-                        if(delaymin < delaymax)
-                        {
-                            delay = delaymin + (fastRand() % (delaymax - delaymin));
-                        }
-                        else
-                        {
-                            delay = delaymin;
-                        }
-
-                        Sleep(delay);
-                    }
-                }
                 if(m_client->queryStopStress())
                     break;
+
+                CRequest& req = requests.item(x);
+                if(STRESS_USE_JSOCKET)
+                    m_client->sendRequest(req.queryReqbuf(), req.getName(), m_stat.get());
+                else
+                    m_client->sendStressRequest(req.queryReqbuf(), m_stat.get(), persistent_socket);
+                if(delaymax > 0 && !m_client->queryStopStress())
+                {
+                    int delay = 0;
+                    if(delaymin < delaymax)
+                    {
+                        delay = delaymin + (fastRand() % (delaymax - delaymin));
+                    }
+                    else
+                    {
+                        delay = delaymin;
+                    }
+
+                    Sleep(delay);
+                }
             }
+            if(m_client->queryStopStress())
+                break;
         }
 
         return 0;
@@ -1013,7 +1012,7 @@ int HttpClient::sendStressRequests(HttpStat* overall_stat)
 
     //__int64 start = msTick();
     for(i = 0; i < m_stressthreads; i++)
-        thrdlist[i]->start();
+        thrdlist[i]->start(false);
 
     if(http_tracelevel > 0)
         fprintf(m_logfile, "Started %d stress test threads.\n", m_stressthreads);
@@ -1118,6 +1117,11 @@ public:
             return -1;
 
         m_sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (m_sockfd == INVALID_SOCKET)
+        {
+            fprintf(m_logfile, "Error: invalid socket");
+            return -1;
+        }
         int ret = ::connect(m_sockfd, (struct sockaddr *)(address->m_addr), sizeof(*(address->m_addr)));
         if(ret < 0)
         {
@@ -1129,7 +1133,7 @@ public:
         
         if(m_ssctx != NULL)
         {
-            m_securesocket.setown(m_ssctx->createSecureSocket(m_sockfd));
+            m_securesocket.setown(m_ssctx->createSecureSocket(m_sockfd, SSLogNormal, address->m_fqdn.str()));
             int res = m_securesocket->secure_connect();
             if(res < 0)
             {
@@ -1650,7 +1654,7 @@ int HttpClient::validate(StringBuffer& xml)
                 int line = 0, col =0;
                 const char* pElemStr = bptr;
 
-                if (msg.length() > 0 && pElemStr)
+                if (msg.length() > 0)
                 {
                     sscanf(strstr(msg.str(), "line"), "line %d, char %d:",&line, &col);
 
@@ -1759,7 +1763,7 @@ int HttpClient::sendRequest(StringBuffer& req, IFileIO* request_output, IFileIO*
         socket.setown(ISocket::connect(ep));
         if(m_ssctx.get() != NULL)
         {
-            Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket.getLink());
+            Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket.getLink(), SSLogNormal, m_host.str());
             int res = securesocket->secure_connect();
             if(res >= 0)
             {
@@ -1782,7 +1786,7 @@ int HttpClient::sendRequest(StringBuffer& req, IFileIO* request_output, IFileIO*
     if(socket.get() == NULL)
     {
         StringBuffer urlstr;
-        OERRLOG("Can't connect to %s", ep.getUrlStr(urlstr).str());
+        OERRLOG("Can't connect to %s", ep.getEndpointHostText(urlstr).str());
         return -1;
     }
 
@@ -1826,8 +1830,7 @@ int HttpClient::sendRequest(StringBuffer& req, IFileIO* request_output, IFileIO*
 
         if(!isPersist || iter >= numReq - 1)
         {
-            socket->shutdown();
-            socket->close();
+            shutdownAndCloseNoThrow(socket);
         }
 
         unsigned end1 = msTick();
@@ -1907,9 +1910,7 @@ int SimpleServer::start()
 {
     const char* fname = NULL;
 
-    bool abortEarly = false;
-    if(m_globals)
-        abortEarly = m_globals->getPropBool("abortEarly", false);
+    bool abortEarly = m_globals->getPropBool("abortEarly");
 
     Owned<IFile> server_infile = NULL;
 
@@ -2216,4 +2217,3 @@ int SimpleServer::start()
 
     return 0;
 }
-

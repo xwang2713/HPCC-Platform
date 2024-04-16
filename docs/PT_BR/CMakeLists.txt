@@ -18,10 +18,12 @@
 #  This CMakeLists intended to be used in docs/PT_BR
 #    Refactored for internationalization
 ###
-# Last Mod GP 4/2021
-#  Removed ECL Plugin For Eclipse
-####################
-#
+# Last Mod GP 11/2023
+#  Removed AWS
+#  Removed HPCC in a VM
+#  Removed Monitoring  
+#  Removed ECLWatch  
+#####################
 # Doc dirs to include.
 #
 
@@ -70,18 +72,13 @@ add_subdirectory(HPCCClientTools)
 add_subdirectory(HPCCCertify)
 add_subdirectory(HPCCDataHandling)
 add_subdirectory(HPCCDataTutorial)
-add_subdirectory(HPCCMonitoring)
+
 add_subdirectory(HPCCSystemAdmin)
 add_subdirectory(HPCCSpark)
-add_subdirectory(IMDB)
-add_subdirectory(InstantCloud)
 add_subdirectory(Installing_and_RunningTheHPCCPlatform)
 add_subdirectory(RoxieReference)
-add_subdirectory(RunningHPCCinaVirtualMachine)
-
-#add_subdirectory(ECLPluginForEclipse)
 add_subdirectory(ECLScheduler)
-add_subdirectory(ECLWatch)
+#add_subdirectory(ECLWatch)
 add_subdirectory(VisualizingECL)
 add_subdirectory(WsSQLUG)
 ##add_subdirectory(PortalHTML)

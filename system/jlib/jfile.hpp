@@ -45,7 +45,7 @@ enum IFOmode { IFOcreate, IFOread, IFOwrite, IFOreadwrite, IFOcreaterw };    // 
 enum IFSHmode { IFSHnone, IFSHread=0x8, IFSHfull=0x10};   // sharing modes
 enum IFSmode { IFScurrent = FILE_CURRENT, IFSend = FILE_END, IFSbegin = FILE_BEGIN };    // seek mode
 enum CFPmode { CFPcontinue, CFPcancel, CFPstop };    // modes for ICopyFileProgress::onProgress return
-enum IFEflags { IFEnone=0x0, IFEnocache=0x1, IFEcache=0x2 };    // mask
+enum IFEflags { IFEnone=0x0, IFEnocache=0x1, IFEcache=0x2, IFEsync=0x4 };    // mask
 constexpr offset_t unknownFileSize = -1;
 
 class CDateTime;
@@ -131,6 +131,8 @@ interface IFile :extends IInterface
 
     virtual IMemoryMappedFile *openMemoryMapped(offset_t ofs=0, memsize_t len=(memsize_t)-1, bool write=false)=0;
 };
+
+extern jlib_decl void setRenameRetries(unsigned renameRetries, bool manualRenameChk);
 
 struct CDirectoryEntry: public CInterface
 { // for cloning IDirectoryIterator iterator
@@ -218,6 +220,7 @@ interface IFileIOStream : extends IIOStream
     virtual void seek(offset_t pos, IFSmode origin) = 0;
     virtual offset_t size() = 0;
     virtual offset_t tell() = 0;
+    virtual unsigned __int64 getStatistic(StatisticKind kind) = 0;
 };
 
 interface IDiscretionaryLock: extends IInterface
@@ -267,6 +270,8 @@ extern jlib_decl void createHardLink(const char* fileName, const char* existingF
 
 extern jlib_decl IFile * createIFile(const char * filename);
 extern jlib_decl IFile * createIFile(MemoryBuffer & buffer);
+extern jlib_decl void touchFile(const char *filename);
+extern jlib_decl void touchFile(IFile *file);
 extern jlib_decl IFileIO * createIFileIO(HANDLE handle,IFOmode mode,IFEflags extraFlags=IFEnone);
 extern jlib_decl IDirectoryIterator * createDirectoryIterator(const char * path = NULL, const char * wildcard = NULL, bool sub = false, bool includedirs = true);
 extern jlib_decl IDirectoryIterator * createNullDirectoryIterator();
@@ -276,6 +281,10 @@ extern jlib_decl IFileIOStream * createIOStream(IFileIO * file);        // links
 extern jlib_decl IFileIOStream * createNoSeekIOStream(IFileIOStream * stream);  // links argument
 extern jlib_decl IFileIOStream * createBufferedIOStream(IFileIO * file, unsigned bufsize=(unsigned)-1);// links argument
 extern jlib_decl IFileIOStream * createBufferedAsyncIOStream(IFileAsyncIO * file, unsigned bufsize=(unsigned)-1);// links argument
+extern jlib_decl IFileIOStream * createIOStreamFromFile(const char *fileNameWithPath, IFOmode mode);// links argument
+extern jlib_decl IFileIOStream * createBufferedIOStreamFromFile(const char *fileNameWithPath, IFOmode mode, unsigned bufsize=(unsigned)-1);// links argument
+extern jlib_decl IFileIOStream * createProgressIFileIOStream(IFileIOStream *iFileIOStream, offset_t totalSize, const char *msg, unsigned periodSecs);
+
 
 // Useful for commoning up file and string based processing
 extern jlib_decl IFileIO * createIFileI(unsigned len, const void * buffer);     // input only...
@@ -385,10 +394,10 @@ public:
     const SocketEndpoint & queryEndpoint() const            { return ep; } // node containing file
     const IpAddress      & queryIP() const                  { return ep; }
     unsigned short getPort() const                          { return ep.port; }
-    bool isNull() const;                        
+    bool isNull() const;
 
     // the following overwrite previous contents
-    void set(const RemoteFilename & other);         
+    void set(const RemoteFilename & other);
     void setPath(const SocketEndpoint & _ep, const char * filename); // filename should be full windows or unix path (local)
     void setLocalPath(const char *name);                    // local path - can partial but on linux must be under \c$ or \d$
     void setRemotePath(const char * url,const char *local=NULL); // url should be full (share) path including ep
@@ -463,11 +472,33 @@ extern jlib_decl void removeIFileCreateHook(IRemoteFileCreateHook *);
 
 extern jlib_decl IFile * createIFile(const RemoteFilename & filename);
 
-// Hook mechanism for accessing files inside containers (eg zipfiles)
+interface IStorageApiInfo : implements IInterface
+{
+    virtual const char * getStorageType() const = 0;
+    virtual const char * queryStorageApiAccount(unsigned stripeNumber) const = 0;
+    virtual const char * queryStorageContainerName(unsigned stripeNumber) const = 0;
+    virtual StringBuffer & getSASToken(unsigned stripeNumber, StringBuffer & token) const = 0;
+};
+enum class ApiCopyStatus { NotStarted, Pending, Success, Failed, Aborted };
+interface IAPICopyClientOp : implements IInterface
+{
+    virtual void startCopy(const char *source) = 0;
+    virtual ApiCopyStatus getProgress(CDateTime & dateTime, int64_t & outputLength) = 0;
+    virtual ApiCopyStatus abortCopy() = 0;
+    virtual ApiCopyStatus getStatus() const = 0;
+};
 
+interface IAPICopyClient : implements IInterface
+{
+    virtual const char * name() const = 0;
+    virtual IAPICopyClientOp * startCopy(const char *srcPath, unsigned srcStripeNum,  const char *tgtPath, unsigned tgtStripeNum) const = 0;
+};
+
+// Hook mechanism for accessing files inside containers (eg zipfiles)
 interface IContainedFileHook: extends IInterface
 {
     virtual IFile * createIFile(const char *fileName) = 0;
+    virtual IAPICopyClient * getCopyApiClient(IStorageApiInfo * source, IStorageApiInfo * target) = 0;
 };
 extern jlib_decl void addContainedFileHook(IContainedFileHook *);
 extern jlib_decl void removeContainedFileHook(IContainedFileHook *);
@@ -495,6 +526,22 @@ inline char getPathSepChar(const char *dir)
     return s?(*s):((*dir&&(dir[1]==':'))?'\\':PATHSEPCHAR);
 }
 
+inline char getPathSepCharEx(const char *s)
+{
+    if (!s)
+        return '/';
+
+    bool foundBackslash=false;
+    while (*s) {
+        if (s[0]=='/')
+            return '/';
+        if (s[0]=='\\')
+            foundBackslash=true;
+        s++;
+    }
+    return foundBackslash?'\\':'/';
+}
+
 inline bool containsPathSepChar(const char *s)
 {
     return findPathSepChar(s)!=NULL;    
@@ -520,6 +567,8 @@ inline StringBuffer &removeTrailingPathSepChar(StringBuffer &path)
     }
     return path;
 }
+
+extern jlib_decl bool isRootDirectory(const char * path);
 
 inline StringBuffer &addNonEmptyPathSepChar(StringBuffer &path,char sepchar=0)
 {
@@ -550,6 +599,7 @@ inline const char *splitDirTail(const char *path,StringBuffer &dir)
 extern jlib_decl bool isUrl(const char *path);
 extern jlib_decl bool isRemotePath(const char *path);
 extern jlib_decl bool isAbsolutePath(const char *path);
+extern jlib_decl bool containsRelPaths(const char *path);
 
 // NOTE - makeAbsolutePath also normalizes the supplied path to remove . and .. references
 extern jlib_decl StringBuffer &makeAbsolutePath(const char *relpath,StringBuffer &out,bool mustExist=false);
@@ -557,6 +607,7 @@ extern jlib_decl StringBuffer &makeAbsolutePath(StringBuffer &relpath,bool mustE
 extern jlib_decl StringBuffer &makeAbsolutePath(const char *relpath, const char *basedir, StringBuffer &out);
 extern jlib_decl StringBuffer &makePathUniversal(const char *path, StringBuffer &out);
 extern jlib_decl const char *splitRelativePath(const char *full,const char *basedir,StringBuffer &reldir); // removes basedir if matches, returns tail and relative dir
+extern jlib_decl const char *getRelativePath(const char *path, const char *leadingPath);
 extern jlib_decl const char *splitDirMultiTail(const char *multipath,StringBuffer &dir,StringBuffer &tail);
 extern jlib_decl StringBuffer &mergeDirMultiTail(const char *dir,const char *tail, StringBuffer &multipath);
 extern jlib_decl StringBuffer &removeRelativeMultiPath(const char *full,const char *dir,StringBuffer &reltail); // removes dir if matches, returns relative multipath
@@ -605,7 +656,7 @@ extern jlib_decl bool mountDrive(const char *drv,const RemoteFilename &rfn); // 
 extern jlib_decl bool unmountDrive(const char *drv); // linux only currently
 
 extern jlib_decl IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, StringBuffer &tmpName, IFOmode mode=IFOcreate);
-
+extern jlib_decl IFile * writeToProtectedTempFile(const char * component, const char * prefix, size_t len, const void * data);
 
 // used by remote copy
 interface ICopyFileIntercept
@@ -620,12 +671,12 @@ extern jlib_decl bool containsFileWildcard(const char * path);
 extern jlib_decl bool isDirectory(const char * path);
 extern jlib_decl void removeFileTraceIfFail(const char * filename);
 extern jlib_decl IFileIOCache* createFileIOCache(unsigned max);
-extern jlib_decl IFile * createSentinelTarget();
+extern jlib_decl IFile * createSentinelTarget(const char *suffix = nullptr);
 extern jlib_decl void writeSentinelFile(IFile * file);
 extern jlib_decl void removeSentinelFile(IFile * file);
 extern jlib_decl StringBuffer & appendCurrentDirectory(StringBuffer & target, bool blankIfFails);
 extern jlib_decl timestamp_type getTimeStamp(IFile * file);
-
+extern jlib_decl IAPICopyClient * createApiCopyClient(IStorageApiInfo * source, IStorageApiInfo * target);
 #ifdef _WIN32
 const static bool filenamesAreCaseSensitive = false;
 #else
@@ -726,7 +777,20 @@ jlib_decl IFileEventWatcher *createFileEventWatcher(FileWatchFunc callback);
 
 //---- Storage plane related functions ----------------------------------------------------
 
+interface IPropertyTree;
+interface IPropertyTreeIterator;
 extern jlib_decl IPropertyTree * getHostGroup(const char * name, bool required);
 extern jlib_decl IPropertyTree * getStoragePlane(const char * name);
+extern jlib_decl IPropertyTree * getRemoteStorage(const char * name);
+extern jlib_decl IPropertyTreeIterator * getRemoteStoragesIterator();
+extern jlib_decl IPropertyTreeIterator * getPlanesIterator(const char * category, const char *name);
+
+extern jlib_decl IFileIO *createBlockedIO(IFileIO *base, size32_t blockSize);
+extern jlib_decl size32_t getBlockedFileIOSize(const char *planeName, size32_t defaultSize=0);
+
+//---- Pluggable file type related functions ----------------------------------------------
+
+extern jlib_decl void addAvailableGenericFileTypeName(const char * name);
+extern jlib_decl bool hasGenericFiletypeName(const char * name);
 
 #endif

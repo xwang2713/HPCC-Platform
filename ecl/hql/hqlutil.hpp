@@ -256,6 +256,9 @@ extern HQL_API bool splitResultValue(SharedHqlExpr & dataset, SharedHqlExpr & at
 extern HQL_API bool isDependentOnParameter(IHqlExpression * expr);
 extern HQL_API bool isTimed(IHqlExpression * expr);
 
+//Check a regular expression return an exception if it is invalid
+extern HQL_API IException * checkRegexSyntax(IHqlExpression * expr);
+
 inline bool isInternalEmbedAttr(IAtom *name)
 {
     return name == languageAtom || name == projectedAtom || name == streamedAtom || name == _linkCounted_Atom || 
@@ -386,8 +389,9 @@ extern HQL_API void checkDependencyConsistency(const HqlExprArray & exprs);
 extern HQL_API void checkSelectConsistency(IHqlExpression * expr);
 extern HQL_API bool isUngroup(IHqlExpression * expr);
 extern HQL_API bool containsExpression(IHqlExpression * expr, IHqlExpression * search);
-extern HQL_API bool containsSelfWithinExpr(IHqlExpression * expr, IHqlExpression * self); // Search for use of self in an expression (not lhs of an assignment)
 extern HQL_API bool containsOperator(IHqlExpression * expr, node_operator search);
+extern HQL_API IHqlExpression * containedSeqId(IHqlExpression * expr, unsigned __int64 search);
+extern HQL_API bool containsSelfWithinExpr(IHqlExpression * expr, IHqlExpression * self); // Search for use of self in an expression (not lhs of an assignment)
 extern HQL_API bool containsIfBlock(IHqlExpression * record);
 extern HQL_API bool canCreateRtlTypeInfo(IHqlExpression * record); // Can we generate completely valid rtltypeinfo?
 extern HQL_API IHqlExpression * removeAnnotations(IHqlExpression * expr, IHqlExpression * search);
@@ -713,7 +717,7 @@ extern HQL_API bool hasNonNullRecord(ITypeInfo * type);
 extern HQL_API void encryptEclAttribute(IStringVal & out, size32_t len, const void * in);
 extern void decryptEclAttribute(MemoryBuffer & out, const char * in);
 
-extern HQL_API bool debugFindFirstDifference(IHqlExpression * left, IHqlExpression * right);
+extern HQL_API bool traceFindFirstDifference(IHqlExpression * left, IHqlExpression * right);
 extern HQL_API void debugTrackDifference(IHqlExpression * expr);
 
 extern HQL_API StringBuffer & convertToValidLabel(StringBuffer &out, const char * in, unsigned inlen);
@@ -755,10 +759,11 @@ extern HQL_API IHqlExpression * normalizeDatasetAlias(IHqlExpression * expr);
 extern HQL_API IHqlExpression * normalizeAnyDatasetAliases(IHqlExpression * expr);
 
 //In hqlgram2.cpp
-extern HQL_API IPropertyTree * queryEnsureArchiveModule(IPropertyTree * archive, const char * name, IHqlScope * rScope);
+extern HQL_API IPropertyTree * queryEnsureArchiveModule(IPropertyTree * archive, const char * package, const char * name, IHqlScope * rScope);
 extern HQL_API IPropertyTree * queryArchiveAttribute(IPropertyTree * module, const char * name);
 extern HQL_API IPropertyTree * createArchiveAttribute(IPropertyTree * module, const char * name);
 extern HQL_API IPropertyTree * queryArchiveEntry(IPropertyTree * archive, const char * name);
+extern HQL_API void ensureArchiveImport(IPropertyTree * archive, const char * package, IIdAtom * id, IHqlScope * scope);
 
 extern HQL_API IError * annotateExceptionWithLocation(IException * e, IHqlExpression * location);
 extern HQL_API IHqlExpression * expandMacroDefinition(IHqlExpression * expr, HqlLookupContext & ctx, bool reportError);

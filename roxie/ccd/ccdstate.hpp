@@ -56,7 +56,7 @@ interface IRoxiePackage : public IHpccPackage
     // Lookup information in package to resolve existing logical file name
     virtual const IResolvedFile *lookupFileName(const char *fileName, bool opt, bool useCache, bool cacheResults, IConstWorkUnit *wu, bool ignoreForeignPrefix, bool isPrivilegedUser) const = 0;
     // Lookup information in package to create new logical file name
-    virtual IRoxieWriteHandler *createFileName(const char *fileName, bool overwrite, bool extend, const StringArray &clusters, IConstWorkUnit *wu, bool isPrivilegedUser) const = 0;
+    virtual IRoxieWriteHandler *createWriteHandler(const char *fileName, bool overwrite, bool extend, const StringArray &clusters, IConstWorkUnit *wu, bool isPrivilegedUser) const = 0;
     // Lookup information in package about what in-memory indexes should be built for file
     virtual IPropertyTreeIterator *getInMemoryIndexInfo(const IPropertyTree &graphNode) const = 0;
     // Set the hash to be used for this package
@@ -93,6 +93,7 @@ interface IFileIOArray : extends IInterface
     virtual unsigned numValid() const = 0;
     virtual bool isValid(unsigned partNo) const = 0;
     virtual unsigned __int64 size() const = 0;
+    virtual unsigned __int64 partSize(unsigned partNo) const = 0;
     virtual StringBuffer &getId(StringBuffer &) const = 0;
     virtual const char *queryLogicalFilename(unsigned partNo) const = 0;
     virtual int queryActualFormatCrc() const = 0;    // Actual format on disk
@@ -117,6 +118,7 @@ interface IRoxieQuerySetManagerSet : extends IInterface
 {
     virtual void load(const IPropertyTree *querySets, const IRoxiePackageMap &packages, hash64_t &hash, bool forceRetry) = 0;
     virtual void getQueries(const char *id, IArrayOf<IQueryFactory> &queries, const IRoxieContextLogger &logctx) const = 0;
+    virtual void preloadOnce() = 0;
 };
 
 interface IRoxieQuerySetManager : extends IInterface
@@ -124,11 +126,12 @@ interface IRoxieQuerySetManager : extends IInterface
     virtual bool isActive() const = 0;
     virtual IQueryFactory *getQuery(const char *id, StringBuffer *querySet, const IRoxieContextLogger &ctx) const = 0;
     virtual void load(const IPropertyTree *querySet, const IRoxiePackageMap &packages, hash64_t &hash, bool forceRetry) = 0;
-    virtual void getStats(const char *queryName, const char *graphName, StringBuffer &reply, const IRoxieContextLogger &logctx) const = 0;
+    virtual void getStats(const char *queryName, const char *graphName, IConstWorkUnit *statsWu, unsigned channel, bool reset, const IRoxieContextLogger &logctx) const = 0;
     virtual void resetQueryTimings(const char *queryName, const IRoxieContextLogger &logctx) = 0;
     virtual void resetAllQueryTimings() = 0;
     virtual void getActivityMetrics(StringBuffer &reply) const = 0;
     virtual void getAllQueryInfo(StringBuffer &reply, bool full, const IRoxieQuerySetManagerSet *agents, const IRoxieContextLogger &logctx) const = 0;
+    virtual void preloadOnce() const = 0;
 };
 
 interface IRoxieDebugSessionManager : extends IInterface
@@ -140,7 +143,7 @@ interface IRoxieDebugSessionManager : extends IInterface
 
 interface IRoxieQueryPackageManagerSet : extends IInterface
 {
-    virtual void requestReload(bool wait, bool force) = 0;
+    virtual void requestReload(bool waitUntilComplete, bool forceRetry, bool incremental) = 0;
     virtual void load() = 0;
     virtual void doControlMessage(IPropertyTree *xml, StringBuffer &reply, const IRoxieContextLogger &ctx) = 0;
     virtual IQueryFactory *getQuery(const char *id, StringBuffer *querySet, IArrayOf<IQueryFactory> *agents, const IRoxieContextLogger &logctx) const = 0;

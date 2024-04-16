@@ -29,7 +29,6 @@
 #include "fterror.hpp"
 #include "dadfs.hpp"
 #include "filecopy.ipp"
-#include "daftdir.hpp"
 #include "jptree.hpp"
 #include "dalienv.hpp"
 
@@ -158,37 +157,6 @@ void CDistributedFileSystem::transfer(IFileDescriptor * from, IFileDescriptor * 
     sprayer->spray();
 }
 
-void CDistributedFileSystem::directory(const char * directory, IGroup * machines, IPropertyTree * options, IPropertyTree * result)
-{
-    doDirectory(directory, machines, options, result);
-}
-
-void CDistributedFileSystem::physicalCopy(const char * source, const char * target, IPropertyTree * options, IDaftCopyProgress * progress)
-{
-    Owned<IPropertyTree> dirOptions = createPTree("options");
-    Owned<IPropertyTree> files = createPTree("files");
-
-    dirOptions->setPropBool("@time", false);
-    if (options)
-    {
-        dirOptions->setPropBool("@recurse", options->getPropBool("@recurse", false));
-    }
-
-    StringBuffer localSourceName;
-    RemoteFilename sourceName;
-    sourceName.setRemotePath(source);
-    sourceName.getLocalPath(localSourceName);
-    Owned<IGroup> sourceGroup = createIGroup(1, &sourceName.queryEndpoint());
-    directory(localSourceName.str(), sourceGroup, dirOptions, files);
-    physicalCopy(files, target, options, progress);
-}
-
-
-void CDistributedFileSystem::physicalCopy(IPropertyTree * source, const char * target, IPropertyTree * options, IDaftCopyProgress * progress)
-{
-    doPhysicalCopy(source, target, options, progress);
-}
-
 //-- operations on a single file. --
 
 offset_t CDistributedFileSystem::getSize(IDistributedFile * file, bool forceget, bool dontsetattr)
@@ -215,7 +183,7 @@ offset_t CDistributedFileSystem::getSize(IDistributedFile * file, bool forceget,
             lock.queryAttributes().setPropInt64("@size", totalSize);
         }
     }
-    //LOG(MCdebugInfo(1000), unknownJob, "DFS: getSize(%s)=%" I64F "d", file->queryLogicalName(), totalSize);
+    //LOG(MCdebugInfo(1000), "DFS: getSize(%s)=%" I64F "d", file->queryLogicalName(), totalSize);
     return totalSize;
 }
 
@@ -273,7 +241,7 @@ offset_t CDistributedFileSystem::getSize(IDistributedFilePart * part, bool force
         }
     }
 
-    //LOG(MCdebugInfo(2000), unknownJob, "DFS: getSize(%s)=%" I64F "d", part->queryPartName(), size);
+    //LOG(MCdebugInfo(2000), "DFS: getSize(%s)=%" I64F "d", part->queryPartName(), size);
     return size;
 }
 

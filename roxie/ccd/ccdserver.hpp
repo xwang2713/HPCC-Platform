@@ -91,10 +91,24 @@ interface IStrandJunction;
 
 class ClusterWriteHandler;
 
+enum class RoxieSourceCharacteristics : byte
+{
+    none = 0,
+    urgentStart = 0x01,
+    hasRowLatency = 0x02,
+    hasDependencies = 0x04,
+    slowDependencies = 0x08,
+};
+typedef RoxieSourceCharacteristics RSC;
+extern std::string getText(RoxieSourceCharacteristics flags);
+
+BITMASK_ENUM(RoxieSourceCharacteristics);
+
 class StrandOptions;
 interface IOrderedCallbackCollection;
 interface IFinalRoxieInput : extends IInputBase
 {
+    virtual RoxieSourceCharacteristics getSourceCharacteristics() const = 0;
     virtual void start(unsigned parentExtractSize, const byte *parentExtract, bool paused) = 0;
     virtual void reset() = 0;
 
@@ -149,6 +163,7 @@ interface IRoxieServerActivity : extends IActivityBase
     virtual IFinalRoxieInput *queryInput(unsigned idx) const = 0;
     virtual void execute(unsigned parentExtractSize, const byte *parentExtract) = 0;
     virtual void onCreate(IHThorArg *colocalArg) = 0;
+    virtual RoxieSourceCharacteristics getSourceCharacteristics() const = 0;
     virtual void start(unsigned parentExtractSize, const byte *parentExtract, bool paused) = 0;
     virtual IStrandJunction *getOutputStreams(IRoxieAgentContext *ctx, unsigned idx, PointerArrayOf<IEngineRowStream> &streams, const StrandOptions * consumerOptions, bool consumerOrdered, IOrderedCallbackCollection * orderedCallbacks) = 0;  // Use StrandFlags values for flags
 
@@ -187,6 +202,8 @@ interface IRoxieServerActivity : extends IActivityBase
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) = 0;
     virtual IEngineRowAllocator * createRowAllocator(IOutputMetaData * metadata) = 0;
     virtual void gatherStatistics(IStatisticGatherer * statsBuilder) const = 0;
+    virtual void noteStatistic(StatisticKind kind, unsigned __int64 value) const = 0;
+    virtual void noteLibrary(IQueryFactory *library) = 0;
 };
 
 interface IRoxieServerActivityFactory : extends IActivityFactory
@@ -222,6 +239,10 @@ interface IRoxieServerActivityFactory : extends IActivityFactory
     virtual bool isActivityCodeSigned() const = 0;
     virtual RecordTranslationMode getEnableFieldTranslation() const = 0;
     virtual SinkMode getSinkMode() const = 0;
+    virtual bool executeDependenciesSequentially() const = 0;
+    virtual bool startInputsSequentially() const = 0;
+    virtual RoxieSourceCharacteristics getActivityCharacteristics() const = 0;
+    virtual std::string describe() const = 0;
 };
 interface IGraphResult : public IInterface
 {
@@ -284,14 +305,15 @@ public:
     { 
         size32_t dummy; 
         cleanupRequired = true;
-        return (byte *) keyManager->loadBlob(id, dummy); 
+        return (byte *) keyManager->loadBlob(id, dummy, ctx); 
     }
 
 public:
-    inline void setManager(IKeyManager * _manager)
+    inline void setManager(IKeyManager * _manager, IContextLogger * _ctx)
     {
         finishedRow();
         keyManager = _manager;
+        ctx = _ctx;
     }
     inline void finishedRow()
     {
@@ -304,6 +326,7 @@ public:
 
 protected:
     IKeyManager * keyManager;
+    IContextLogger * ctx = nullptr;
     bool cleanupRequired;
 };
 
@@ -311,13 +334,13 @@ protected:
 class TransformCallbackAssociation
 {
 public:
-    TransformCallbackAssociation(CIndexTransformCallback & _callback, IKeyManager * manager) : callback(_callback)
+    TransformCallbackAssociation(CIndexTransformCallback & _callback, IKeyManager * manager, IContextLogger * ctx) : callback(_callback)
     {
-        callback.setManager(manager);
+        callback.setManager(manager, ctx);
     }
     ~TransformCallbackAssociation()
     {
-        callback.setManager(NULL);
+        callback.setManager(nullptr, nullptr);
     }
 private:
     CIndexTransformCallback & callback;

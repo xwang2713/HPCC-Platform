@@ -83,13 +83,16 @@ enum JSOCKET_ERROR_CODES {
 class jlib_decl IpAddress
 {
     unsigned netaddr[4] = { 0, 0, 0, 0 };
+    StringAttr hostname; // not currently serialized
+
+protected:
+    StringBuffer &getHostText(StringBuffer & out, bool ip) const;
 public:
     IpAddress() = default;
-    IpAddress(const IpAddress& other)                   { ipset(other); }
     explicit IpAddress(const char *text)                { ipset(text); }
     
     bool ipset(const char *text);                       // sets to NULL if fails or text=NULL   
-    void ipset(const IpAddress& other)                  { memcpy(&netaddr,&other.netaddr,sizeof(netaddr)); }
+    void ipset(const IpAddress& other) { *this = other; }
     bool ipequals(const IpAddress & other) const;       
     int  ipcompare(const IpAddress & other) const;      // depreciated 
     unsigned iphash(unsigned prev=0) const;
@@ -99,7 +102,8 @@ public:
     bool isLoopBack() const;                            // is loopback (localhost: 127.0.0.1 or ::1)
     bool isLocal() const;                               // matches local interface 
     bool isIp4() const;
-    StringBuffer &getIpText(StringBuffer & out) const;
+    StringBuffer &getIpText(StringBuffer &out) const;
+    StringBuffer &getHostText(StringBuffer & out) const;
     void ipserialize(MemoryBuffer & out) const;         
     void ipdeserialize(MemoryBuffer & in);          
     unsigned ipdistance(const IpAddress &ip,unsigned offset=0) const;       // network order distance (offset: 0-3 word (leat sig.), 0=Ipv4)
@@ -111,14 +115,9 @@ public:
 
     size32_t getNetAddress(size32_t maxsz,void *dst) const;     // for internal use - returns 0 if address doesn't fit
     void setNetAddress(size32_t sz,const void *src);            // for internal use
+    const char * queryHostname() const { return hostname.get(); }
 
     inline bool operator == ( const IpAddress & other) const { return ipequals(other); }
-    inline IpAddress & operator = ( const IpAddress &other )
-    {
-        ipset(other);
-        return *this;
-    }
-
 };
 
 struct IpComparator
@@ -145,6 +144,8 @@ inline StringBuffer & GetHostName(StringBuffer &str) { return str.append(GetCach
 extern jlib_decl IpAddress &GetHostIp(IpAddress &ip);
 extern jlib_decl IpAddress &localHostToNIC(IpAddress &ip);  
 
+extern jlib_decl bool queryKeepAlive(int &time, int &intvl, int &probes);
+
 class jlib_decl SocketEndpoint : extends IpAddress
 {
 public:
@@ -162,8 +163,9 @@ public:
     inline void setLocalHost(unsigned short _port)              { port = _port; GetHostIp(*this); } // NB *not* localhost(127.0.0.1)
     inline void set(unsigned short _port, const IpAddress & _ip) { ipset(_ip); port = _port; };
     inline bool equals(const SocketEndpoint &ep) const          { return ((port==ep.port)&&ipequals(ep)); }
-    void getUrlStr(char * str, size32_t len) const;             // in form ip4:port or [ip6]:port
-    StringBuffer &getUrlStr(StringBuffer &str) const;           // in form ip4:port or [ip6]:port
+    StringBuffer &getEndpointIpText(StringBuffer &str) const;
+    void getEndpointHostText(char * str, size32_t len) const;             // in form ip4:port or [ip6]:port
+    StringBuffer &getEndpointHostText(StringBuffer &str) const;           // in form ip4:port or [ip6]:port
 
     inline SocketEndpoint & operator = ( const SocketEndpoint &other )
     {
@@ -181,10 +183,14 @@ public:
     unsigned short portPadding = 0;
 };
 
+// Conditionally return endpoint hostname or resolved IP (may want condition to differ in future, e.g. depending on dns configuration)
+// In k8s by default pod hostnames are not resolvable from other pods, use this function when serializing the text of a host to another host
+extern jlib_decl StringBuffer &getRemoteAccessibleHostText(StringBuffer &str, const SocketEndpoint &ep);
+
 class jlib_decl SocketEndpointArray : public StructArrayOf<SocketEndpoint>
 { 
 public:
-    StringBuffer &getText(StringBuffer &text);
+    StringBuffer &getText(StringBuffer &text) const;
     bool fromName(const char *name, unsigned defport);
     void fromText(const char *s,unsigned defport);
 };
@@ -290,7 +296,7 @@ public:
                            unsigned timeout) = 0;
     virtual void   read(void* buf, size32_t size) = 0;
     virtual size32_t write(void const* buf, size32_t size) = 0; // returns amount written normally same as in size (see set_nonblock)
-    virtual size32_t writetms(void const* buf, size32_t size, unsigned timeoutms=WAIT_FOREVER) = 0;
+    virtual size32_t writetms(void const* buf, size32_t minSize, size32_t size, unsigned timeoutms=WAIT_FOREVER) = 0;
 
     virtual size32_t get_max_send_size() = 0;
 
@@ -339,6 +345,9 @@ public:
     // Shutdown socket: prohibit write and/or read operations on socket
     //
     virtual void  shutdown(unsigned mode=SHUTDOWN_READWRITE) = 0; // not needed for UDP
+
+    // Same as shutdown, but never throws an exception (to call from closedown destructors)
+    virtual void  shutdownNoThrow(unsigned mode=SHUTDOWN_READWRITE) = 0; // not needed for UDP
 
     // Get local name of accepted (or connected) socket and returns port
     virtual int name(char *name,size32_t namemax)=0;
@@ -410,6 +419,8 @@ public:
 
     virtual bool isSecure() const = 0;
     virtual bool isValid() const = 0;
+
+    virtual unsigned __int64 getStatistic(StatisticKind kind) const = 0;
 
 /*
 Exceptions raised: (when set_raise_exceptions(TRUE))
@@ -527,15 +538,15 @@ protected:
 
 struct JSocketStatistics
 {
+    cycle_t readtimecycles;
+    cycle_t writetimecycles;
     unsigned connects;          // successful
     unsigned connecttime;       // all times in microsecs
     unsigned failedconnects;
     unsigned failedconnecttime;
     unsigned reads;
-    unsigned readtime;
     __int64  readsize;          // all sizes in bytes
     unsigned writes;
-    unsigned writetime;
     __int64  writesize;
     unsigned activesockets;
     unsigned numblockrecvs;
@@ -677,8 +688,10 @@ extern jlib_decl int wait_write_multiple(UnsignedArray  &socks,     //IN   socke
                                         unsigned timeoutMS,         //IN   timeout
                                         UnsignedArray  &readySocks);//OUT  sockets ready to be written
 
-extern jlib_decl void throwJSocketException(int jsockErr);
-extern jlib_decl IJSOCK_Exception* createJSocketException(int jsockErr, const char *_msg);
+extern jlib_decl IJSOCK_Exception* createJSocketException(int jsockErr, const char *_msg, const char *file, unsigned line);
+extern jlib_decl void throwJSockException(int jsockErr, const char *_msg, const char *file, unsigned line);
+#define THROWJSOCKEXCEPTION(exc) throwJSockException(exc, nullptr, __FILE__, __LINE__)
+#define THROWJSOCKEXCEPTION_MSG(exc, msg) throwJSockException(exc, msg, __FILE__, __LINE__)
 
 extern jlib_decl bool isIPV4(const char *ip);
 extern jlib_decl bool isIPV6(const char *ip);
@@ -726,6 +739,14 @@ public:
     bool recv(MemoryBuffer &mb, unsigned timeoutms);
     virtual void cancel();
 };
+
+extern jlib_decl void shutdownAndCloseNoThrow(ISocket * optSocket);     // Safely shutdown and close a socket without throwing an exception.
+
+#ifdef _WIN32
+#define SOCKETERRNO() WSAGetLastError()
+#else
+#define SOCKETERRNO() (errno)
+#endif
 
 #endif
 

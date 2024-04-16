@@ -96,6 +96,9 @@ ESPStruct [nil_remove] DFUWorkunit
     [min_ver("1.12")] bool preserveCompression(true);
     [min_ver("1.14")] int expireDays;
     [min_ver("1.21")] bool PreserveFileParts;
+    [min_ver("1.23")] double FileAccessCost;
+    [min_ver("1.25")] int KbPerSecAve;
+    [min_ver("1.25")] int KbPerSec;
 };
 
 ESPStruct [nil_remove] GroupNode
@@ -150,6 +153,11 @@ ESPrequest GetDFUWorkunits
     string Sortby;
     bool Descending(false);
     int64 CacheHint(-1);
+    string ParentWuid;
+    string PublisherWuid;
+    [min_ver("1.24")] bool includeProgressMessages(false);
+    [min_ver("1.25")] bool includeTimings(false);
+    [min_ver("1.25")] bool includeTransferRate(false);
 };
 
 ESPresponse [encode(0), exceptions_inline]
@@ -215,6 +223,18 @@ ESPrequest CreateDFUWorkunit
 
 ESPresponse [exceptions_inline]
 CreateDFUWorkunitResponse
+{
+    ESPstruct DFUWorkunit result;
+};
+
+ESPrequest CreateDFUPublisherWorkunit
+{
+    string DFUServerQueue;
+};
+
+ESPresponse [exceptions_inline]
+
+CreateDFUPublisherWorkunitResponse
 {
     ESPstruct DFUWorkunit result;
 };
@@ -308,6 +328,7 @@ ESPrequest [nil_remove] SprayFixed
 
     string destGroup;
     string destLogicalName;
+    [min_ver("1.25")] int destNumParts(0);
     bool   overwrite;
     bool   replicate;
     int    ReplicateOffset(1);
@@ -361,6 +382,7 @@ ESPrequest [nil_remove] SprayVariable
 
     string destGroup;
     string destLogicalName;
+    [min_ver("1.25")] int destNumParts(0);
     bool   overwrite;
     bool   replicate;
     int    ReplicateOffset(1);
@@ -459,6 +481,7 @@ ESPrequest [nil_remove] Copy
     string srcusername;
     string srcpassword;
     bool   overwrite;
+    bool   ensure;
     bool   replicate;
     int    ReplicateOffset(1);
 
@@ -531,6 +554,7 @@ ESPresponse [exceptions_inline] DFUWUFileResponse
 
 ESPrequest FileListRequest
 {
+    [min_ver("1.24")] string DropZoneName;
     string Netaddr;
     string Path;
     string Mask;
@@ -541,6 +565,7 @@ ESPrequest FileListRequest
 ESPStruct PhysicalFileStruct
 {
     string name;
+    [min_ver("1.23")] string Server;
     bool isDir;
     int64 filesize;
     string modifiedtime;
@@ -690,9 +715,19 @@ ESPresponse [exceptions_inline, nil_remove] GetDFUServerQueuesResponse
     ESParray<string> Names;
 };
 
+ESPrequest GetRemoteTargetsRequest
+{
+};
+
+ESPresponse [exceptions_inline, nil_remove] GetRemoteTargetsResponse
+{
+    ESParray<string> TargetNames;
+    bool             AllowForeign;
+};
+
 ESPservice [
     auth_feature("DEFERRED"),
-    version("1.22"),
+    version("1.26"),
     exceptions_inline("./smc_xslt/exceptions.xslt")] FileSpray
 {
     ESPmethod EchoDateTime(EchoDateTime, EchoDateTimeResponse);
@@ -703,6 +738,7 @@ ESPservice [
     ESPmethod [resp_xsl_default("/esp/xslt/dfu_progress.xslt")] GetDFUProgress(ProgressRequest, ProgressResponse);
 
     ESPmethod [resp_xsl_default("/esp/xslt/dfu_wuid.xslt")] CreateDFUWorkunit(CreateDFUWorkunit, CreateDFUWorkunitResponse);
+    ESPmethod CreateDFUPublisherWorkunit(CreateDFUPublisherWorkunit, CreateDFUPublisherWorkunitResponse);
     ESPmethod [resp_xsl_default("/esp/xslt/dfu_wuid.xslt")] UpdateDFUWorkunit(UpdateDFUWorkunit, UpdateDFUWorkunitResponse);
     ESPmethod DeleteDFUWorkunit(DeleteDFUWorkunit, DeleteDFUWorkunitResponse);
     ESPmethod DeleteDFUWorkunits(DeleteDFUWorkunits, DeleteDFUWorkunitsResponse);
@@ -726,6 +762,7 @@ ESPservice [
     ESPmethod [min_ver("1.13")] DropZoneFileSearch(DropZoneFileSearchRequest, DropZoneFileSearchResponse);
     ESPmethod GetSprayTargets(GetSprayTargetsRequest, GetSprayTargetsResponse);
     ESPmethod [min_ver("1.14")] GetDFUServerQueues(GetDFUServerQueuesRequest, GetDFUServerQueuesResponse);
+    ESPmethod [min_ver("1.26")] GetRemoteTargets(GetRemoteTargetsRequest, GetRemoteTargetsResponse);
 };
 
 SCMexportdef(FileSpray);

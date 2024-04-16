@@ -39,6 +39,7 @@
 #include "roxiemem.hpp"
 #include "thorstep.hpp"
 #include "roxiemem.hpp"
+#include "dadfs.hpp"
 
 #define ROWAGG_PERROWOVERHEAD (sizeof(AggregateRowBuilder))
 
@@ -65,8 +66,11 @@ static CClassMeta<AggregateRowBuilder> AggregateRowBuilderMeta;
 
 void RowAggregator::start(IEngineRowAllocator *_rowAllocator, ICodeContext *ctx, unsigned activityId)
 {
-    rowAllocator.set(_rowAllocator);
-    rowBuilderAllocator.setown(ctx->getRowAllocatorEx(&AggregateRowBuilderMeta, activityId, roxiemem::RHFunique|roxiemem::RHFscanning|roxiemem::RHFdelayrelease));
+    if (rowAllocator != _rowAllocator)
+    {
+        rowAllocator.set(_rowAllocator);
+        rowBuilderAllocator.setown(ctx->getRowAllocatorEx(&AggregateRowBuilderMeta, activityId, roxiemem::RHFunique|roxiemem::RHFscanning|roxiemem::RHFdelayrelease));
+    }
 }
 
 void RowAggregator::reset()
@@ -80,7 +84,6 @@ void RowAggregator::reset()
     _releaseAll();
     eof = false;
     cursor = NULL;
-    rowAllocator.clear();
     totalSize = overhead = 0;
 }
 
@@ -798,7 +801,7 @@ extern const char * getActivityText(ThorActivityKind kind)
     case TAKstreamediterator:       return "Streamed Dataset";
     case TAKexternalsource:         return "User Source";
     case TAKexternalsink:           return "User Output";
-    case TAKexternalprocess:        return "User Proceess";
+    case TAKexternalprocess:        return "User Process";
     case TAKwhen_action:            return "When";
     case TAKsubsort:                return "Sub Sort";
     case TAKdictionaryworkunitwrite:return "Dictionary Write";
@@ -1618,25 +1621,33 @@ public:
         --nested;
     }
 
+    virtual unsigned __int64 getStatistic(StatisticKind kind) override
+    {
+        return stream->getStatistic(kind);
+    }
 };
 
 #ifdef TRACE_CREATE
 unsigned CRowStreamWriter::wrnum=0;
 #endif
 
+template<typename T>
+static IFileIO * createCompressedFileWriter(T file, IRowInterfaces *rowIf, unsigned flags, ICompressor *compressor, size32_t compressorBlkSz)
+{
+    size32_t fixedSize = rowIf->queryRowMetaData()->querySerializedDiskMeta()->getFixedSize();
+    if (fixedSize && TestRwFlag(flags, rw_grouped))
+        ++fixedSize; // row writer will include a grouping byte
+    ICompressedFileIO *compressedFileIO = createCompressedFileWriter(file, fixedSize, TestRwFlag(flags, rw_extend), TestRwFlag(flags, rw_compressblkcrc), compressor, getCompMethod(flags));
+    if (compressorBlkSz)
+        compressedFileIO->setBlockSize(compressorBlkSz);
+    return compressedFileIO;
+}
+
 IExtRowWriter *createRowWriter(IFile *iFile, IRowInterfaces *rowIf, unsigned flags, ICompressor *compressor, size32_t compressorBlkSz)
 {
     OwnedIFileIO iFileIO;
     if (TestRwFlag(flags, rw_compress))
-    {
-        size32_t fixedSize = rowIf->queryRowMetaData()->querySerializedDiskMeta()->getFixedSize();
-        if (fixedSize && TestRwFlag(flags, rw_grouped))
-            ++fixedSize; // row writer will include a grouping byte
-        ICompressedFileIO *compressedFileIO = createCompressedFileWriter(iFile, fixedSize, TestRwFlag(flags, rw_extend), TestRwFlag(flags, rw_compressblkcrc), compressor, getCompMethod(flags));
-        if (compressorBlkSz)
-            compressedFileIO->setBlockSize(compressorBlkSz);
-        iFileIO.setown(compressedFileIO);
-    }
+        iFileIO.setown(createCompressedFileWriter(iFile, rowIf, flags, compressor, compressorBlkSz));
     else
         iFileIO.setown(iFile->open((flags & rw_extend)?IFOwrite:IFOcreate));
     if (!iFileIO)
@@ -1645,10 +1656,14 @@ IExtRowWriter *createRowWriter(IFile *iFile, IRowInterfaces *rowIf, unsigned fla
     return createRowWriter(iFileIO, rowIf, flags);
 }
 
-IExtRowWriter *createRowWriter(IFileIO *iFileIO, IRowInterfaces *rowIf, unsigned flags, size32_t compressorBlkSz)
+IExtRowWriter *createRowWriter(IFileIO *iFileIO, IRowInterfaces *rowIf, unsigned flags, ICompressor *compressor, size32_t compressorBlkSz)
 {
+    Owned<IFileIO> compressedFileIO;
     if (TestRwFlag(flags, rw_compress))
-        throw MakeStringException(0, "Unsupported createRowWriter flags");
+    {
+        compressedFileIO.setown(createCompressedFileWriter(iFileIO, rowIf, flags, compressor, compressorBlkSz));
+        iFileIO = compressedFileIO.get();
+    }
     Owned<IFileIOStream> stream;
     if (TestRwFlag(flags, rw_buffered))
         stream.setown(createBufferedIOStream(iFileIO));
@@ -1656,7 +1671,7 @@ IExtRowWriter *createRowWriter(IFileIO *iFileIO, IRowInterfaces *rowIf, unsigned
         stream.setown(createIOStream(iFileIO));
     if (flags & rw_extend)
         stream->seek(0, IFSend);
-    flags &= ~((unsigned)(rw_extend|rw_buffered));
+    flags &= ~((unsigned)(rw_extend|rw_buffered|COMP_MASK));
     return createRowWriter(stream, rowIf, flags);
 }
 
@@ -2013,14 +2028,17 @@ static IOutputMetaData *_getDaliLayoutInfo(MemoryBuffer &layoutBin, IPropertyTre
         if (props.hasProp("_rtlType"))
         {
             props.getPropBin("_rtlType", layoutBin);
-            try
+            if (layoutBin.length())
             {
-                return createTypeInfoOutputMetaData(layoutBin, isGrouped);
-            }
-            catch (IException *E)
-            {
-                EXCLOG(E);
-                error.setown(E); // Save to throw later if we can't recover via ECL
+                try
+                {
+                    return createTypeInfoOutputMetaData(layoutBin, isGrouped);
+                }
+                catch (IException *E)
+                {
+                    EXCLOG(E);
+                    error.setown(E); // Save to throw later if we can't recover via ECL
+                }
             }
         }
         if (props.hasProp("meta"))
@@ -2245,3 +2263,26 @@ bool CPersistentTask::join(unsigned timeout, bool throwException)
 }
 #endif
 
+unsigned __int64 crcLogicalFileTime(IDistributedFile * file, unsigned __int64 crc, const char * filename)
+{
+    IDistributedSuperFile * super = file->querySuperFile();
+    if (super)
+    {
+        Owned<IDistributedFileIterator> iter = super->getSubFileIterator(true);
+        ForEach(*iter)
+        {
+            IDistributedFile & cur = iter->query();
+            const char * name = cur.queryLogicalName();
+            crc = rtlHash64Data(strlen(name), name, crc);
+            crc = crcLogicalFileTime(&cur, crc, name);
+        }
+    }
+    else
+    {
+        CDateTime dt;
+        file->getModificationTime(dt);
+        unsigned __int64 modifiedTime = dt.getSimple();
+        crc = rtlHash64Data(sizeof(modifiedTime), &modifiedTime, crc);
+    }
+    return crc;
+}

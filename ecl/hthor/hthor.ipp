@@ -283,6 +283,7 @@ protected:
     IHThorDiskWriteArg &helper;
     bool extend;
     bool overwrite;
+    Owned<IFileIO> io;
     Linked<IFileIOStream> diskout;
     StringBuffer lfn;
     StringAttr filename;
@@ -291,10 +292,13 @@ protected:
     bool grouped;
     bool blockcompressed;
     bool encrypted;
+    bool outputPlaneCompressed = false;
     CachedOutputMetaData serializedOutputMeta;
     offset_t uncompressedBytesWritten;
     Owned<IExtRowWriter> outSeq;
     unsigned __int64 numRecords;
+    stat_type numDiskWrites = 0;
+    cost_type diskAccessCost = 0;
     Owned<ClusterWriteHandler> clusterHandler;
     offset_t sizeLimit;
     Owned<IRowInterfaces> rowIf;
@@ -312,6 +316,7 @@ protected:
     void open();
     void close();
     void publish();
+    void updateProgress(IStatisticGatherer &progress) const override;
     void updateWorkUnitResult(unsigned __int64 reccount);
     void finishOutput();
     bool next();
@@ -378,21 +383,30 @@ class CHThorIndexWriteActivity : public CHThorActivityBase
     IHThorIndexWriteArg &helper;
     Owned<ClusterWriteHandler> clusterHandler;
     StringAttr filename;
+    StringBuffer defaultIndexCompression;
     Owned<IFile> file;
     bool incomplete;
     bool defaultNoSeek = false;
     offset_t sizeLimit;
     unsigned __int64 duplicateKeyCount = 0;
     unsigned __int64 cummulativeDuplicateKeyCount = 0;
-
+    unsigned __int64 totalLeafNodes = 0;
+    unsigned __int64 totalBranchNodes = 0;
+    unsigned __int64 totalBlobNodes = 0;
+    stat_type numDiskWrites = 0;
+    cost_type diskAccessCost = 0;
     void close();
-    void buildUserMetadata(Owned<IPropertyTree> & metadata);
     void buildLayoutMetadata(Owned<IPropertyTree> & metadata);
     virtual void updateProgress(IStatisticGatherer &progress) const override
     {
         CHThorActivityBase::updateProgress(progress);
         StatsActivityScope scope(progress, activityId);
         progress.addStatistic(StNumDuplicateKeys, cummulativeDuplicateKeyCount);
+        progress.addStatistic(StNumDiskWrites, numDiskWrites);
+        progress.addStatistic(StCostFileAccess, diskAccessCost);
+        progress.addStatistic(StNumLeafCacheAdds, totalLeafNodes);
+        progress.addStatistic(StNumNodeCacheAdds, totalBranchNodes);
+        progress.addStatistic(StNumBlobCacheAdds, totalBlobNodes);
     }
 
 public:
@@ -1162,6 +1176,13 @@ public:
     virtual void performSort();
 };
 
+class CParallelTaskQuickSorter : public CSimpleSorterBase
+{
+public:
+    CParallelTaskQuickSorter(ICompare * _compare, roxiemem::IRowManager * _rowManager, size32_t _initialSize, size32_t _commitDelta) : CSimpleSorterBase(_compare, _rowManager, _initialSize, _commitDelta) {}
+    virtual void performSort();
+};
+
 class CStableSorter : public CSimpleSorterBase
 {
 public:
@@ -1191,6 +1212,14 @@ class CParallelStableQuickSorter : public CStableSorter
 {
 public:
     CParallelStableQuickSorter(ICompare * _compare, roxiemem::IRowManager * _rowManager, size32_t _initialSize, size32_t _commitDelta, roxiemem::IBufferedRowCallback * _rowCB) : CStableSorter(_compare, _rowManager, _initialSize, _commitDelta, _rowCB){}
+
+    virtual void performSort();
+};
+
+class CParallelTaskStableQuickSorter : public CStableSorter
+{
+public:
+    CParallelTaskStableQuickSorter(ICompare * _compare, roxiemem::IRowManager * _rowManager, size32_t _initialSize, size32_t _commitDelta, roxiemem::IBufferedRowCallback * _rowCB) : CStableSorter(_compare, _rowManager, _initialSize, _commitDelta, _rowCB){}
 
     virtual void performSort();
 };
@@ -2077,6 +2106,7 @@ public:
     virtual IHThorWebServiceCallArg * queryCallHelper() { return callHelper; };
     virtual const void * getNextRow() { return NULL; };
     virtual void releaseRow(const void * r) { ReleaseRoxieRow(r); }
+    virtual unsigned queryActivityId() const override { return activityId; }
 
 protected:
     Owned<IWSCHelper> WSChelper;
@@ -2257,6 +2287,8 @@ protected:
     unsigned __int64 remoteLimit = 0;
     unsigned __int64 localOffset;
     unsigned __int64 offsetOfPart;
+    stat_type numDiskReads = 0;
+    cost_type diskAccessCost = 0;
     StringBuffer mangledHelperFileName;
     StringAttr logicalFileName;
     StringArray subfileLogicalFilenames;
@@ -2312,6 +2344,7 @@ public:
     virtual unsigned __int64 getLocalFilePosition(const void * row);
     virtual const char * queryLogicalFilename(const void * row) { return logicalFileName.get(); }
     virtual const byte * lookupBlob(unsigned __int64 id) { UNIMPLEMENTED; }
+    virtual void updateProgress(IStatisticGatherer &progress) const override;
 };
 
 class CHThorBinaryDiskReadBase : public CHThorDiskReadBaseActivity, implements IIndexReadContext

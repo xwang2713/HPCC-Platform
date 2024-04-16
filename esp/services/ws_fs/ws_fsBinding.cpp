@@ -33,6 +33,7 @@ int CFileSpraySoapBindingEx::onGetInstantQuery(IEspContext &context, CHttpReques
         return downloadFile(context, request, response);
     }
 
+#ifndef _CONTAINERIZED
     //The code below should be only for legacy ECLWatch.
     bool permission = true;
     bool bDownloadFile = false;
@@ -131,7 +132,7 @@ int CFileSpraySoapBindingEx::onGetInstantQuery(IEspContext &context, CHttpReques
                     {
                         if (stricmp(method, "CopyInput") == 0)
                         {
-                            Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(sourceLogicalFile.str(), userdesc.get(), false, false, false, nullptr, defaultPrivilegedUser);
+                            Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(sourceLogicalFile.str(), userdesc.get(), AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
                             if(!df)
                             {
                                 throw MakeStringException(ECLWATCH_FILE_NOT_EXIST,"Could not find file %s.",sourceLogicalFile.str());
@@ -193,15 +194,14 @@ int CFileSpraySoapBindingEx::onGetInstantQuery(IEspContext &context, CHttpReques
         return 0;
     }
     else
+#endif
         return CFileSpraySoapBinding::onGetInstantQuery(context, request, response, service, method);
 }
 
+#ifndef _CONTAINERIZED //The code here is used by legacy ECLWatch.
 IPropertyTree* CFileSpraySoapBindingEx::createPTreeForXslt(double clientVersion, const char* method, const char* dfuwuid)
 {
     Owned<IPropertyTree> pRoot = createPTreeFromXMLString("<Environment/>");
-#ifdef _CONTAINERIZED
-    IERRLOG("CONTAINERIZED(CFileSpraySoapBindingEx::createPTreeForXslt)");
-#else
     Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
     Owned<IConstEnvironment> constEnv = factory->openEnvironment();
     Owned<IPropertyTree> pEnvRoot = &constEnv->getPTree();
@@ -298,7 +298,6 @@ IPropertyTree* CFileSpraySoapBindingEx::createPTreeForXslt(double clientVersion,
         if (wuxml.length() > 0)
             pSoftware->addPropTree("DfuWorkunit", createPTreeFromXMLString(wuxml.str()));
     }
-#endif
     return pRoot.getClear();
 }
 
@@ -342,7 +341,7 @@ void CFileSpraySoapBindingEx::appendDropZones(double clientVersion, IConstEnviro
 
             IpAddress ipAddr;
             ipAddr.ipset(server.str());
-            ipAddr.getIpText(networkAddress);
+            ipAddr.getHostText(networkAddress);
             if (!ipAddr.isNull())
             {
                 dropZone->addProp("@netAddress", networkAddress);
@@ -379,12 +378,13 @@ void CFileSpraySoapBindingEx::xsltTransform(const char* xml, const char* sheet, 
             const char *key = it->getPropKey();
             //set parameter in the XSL transform skipping over the @ prefix, if any
             const char* paramName = *key == '@' ? key+1 : key;
-            trans->setParameter(paramName, StringBuffer().append('\'').append(params->queryProp(key)).append('\'').str());
+            trans->setParameter(paramName, StringBuffer().append('\'').append(it->queryPropValue()).append('\'').str());
         }
     }
 
     trans->transform(ret);
 }
+#endif
 
 int CFileSpraySoapBindingEx::downloadFile(IEspContext &context, CHttpRequest* request, CHttpResponse* response)
 {
@@ -393,50 +393,28 @@ int CFileSpraySoapBindingEx::downloadFile(IEspContext &context, CHttpRequest* re
         if (!context.validateFeatureAccess(FILE_SPRAY_URL, SecAccess_Full, false))
             throw MakeStringException(ECLWATCH_FILE_SPRAY_ACCESS_DENIED, "Failed to download file. Permission denied.");
 
-        StringBuffer netAddressStr, osStr, pathStr, nameStr;
+        StringBuffer netAddressStr, osStr, pathStr, nameStr, dropZoneName;
         request->getParameter("NetAddress", netAddressStr);
         request->getParameter("OS", osStr);
         request->getParameter("Path", pathStr);
         request->getParameter("Name", nameStr);
-        
-#if 0
-        StringArray files;
-        IProperties* params = request->queryParameters();
-        Owned<IPropertyIterator> iter = params->getIterator();
-        if (iter && iter->first())
-        {
-            while (iter->isValid())
-            {
-                const char *keyname=iter->getPropKey();
-                if (!keyname || strncmp(keyname, "Names", 5))
-                    continue;
+        request->getParameter("DropZoneName", dropZoneName);
+        if (nameStr.isEmpty())
+            throw makeStringException(ECLWATCH_INVALID_INPUT,"File name not specified.");
+        if (containsRelPaths(nameStr))
+            throw makeStringExceptionV(ECLWATCH_INVALID_INPUT, "Invalid file name %s", nameStr.str());
 
-                files.append(params->queryProp(iter->getPropKey()));
-                iter->next();
-            }
-        }
-#endif
-
-        if (netAddressStr.length() < 1)
-            throw MakeStringException(ECLWATCH_INVALID_INPUT, "Network address not specified.");
-
-        if (pathStr.length() < 1)
-            throw MakeStringException(ECLWATCH_INVALID_INPUT, "Path not specified.");
-
-        if (nameStr.length() < 1)
-            throw MakeStringException(ECLWATCH_INVALID_INPUT,"File name not specified.");
-
+        if (pathStr.isEmpty())
+            throw makeStringException(ECLWATCH_INVALID_INPUT, "Path not specified.");
         char pathSep = '/';
-        if ((osStr.length() > 1) && (atoi(osStr.str())== OS_WINDOWS))
-        {
+        if (!osStr.isEmpty() && (atoi(osStr.str())== OS_WINDOWS))
             pathSep = '\\';
-        }
-
         pathStr.replace(pathSep=='\\'?'/':'\\', pathSep);
-        if (*(pathStr.str() + pathStr.length() -1) != pathSep)
-            pathStr.append( pathSep );
+
+        validateDropZoneReq(context, dropZoneName, netAddressStr, pathStr, SecAccess_Read);
 
         StringBuffer fullName;
+        addPathSepChar(pathStr);
         fullName.appendf("%s%s", pathStr.str(), nameStr.str());
 
         StringBuffer headerStr("attachment;");
@@ -472,6 +450,16 @@ int CFileSpraySoapBindingEx::downloadFile(IEspContext &context, CHttpRequest* re
         response->handleExceptions(xslp, me, "FileSpray", "DownloadFile", StringBuffer(getCFD()).append("./smc_xslt/exceptions.xslt"));
     }
     return 0;
+}
+
+int CFileSpraySoapBindingEx::onStartUpload(IEspContext& ctx, CHttpRequest* request, CHttpResponse* response, const char* serv, const char* method)
+{
+    StringBuffer netAddress, path, dropZoneName;
+    request->getParameter("NetAddress", netAddress);
+    request->getParameter("Path", path);
+    request->getParameter("DropZoneName", dropZoneName);
+    validateDropZoneReq(ctx, dropZoneName, netAddress, path, SecAccess_Full);
+    return EspHttpBinding::onStartUpload(ctx, request, response, serv, method);
 }
 
 int CFileSpraySoapBindingEx::onFinishUpload(IEspContext &ctx, CHttpRequest* request, CHttpResponse* response,   const char *service, const char *method, StringArray& fileNames, StringArray& files, IMultiException *me)

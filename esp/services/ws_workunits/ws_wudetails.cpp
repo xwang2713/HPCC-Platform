@@ -383,9 +383,9 @@ void WUDetailsVisitor::buildAttribListToReturn(IConstWUPropertiesToReturn & prop
         return;
 
     if (statisticsPostFilterRequired)
-        propertiesToReturnStats.set(createBitSet(StatisticFilterMaskSize));
+        propertiesToReturnStats.setown(createBitSet(StatisticFilterMaskSize));
     if (attributesPostFilterRequired)
-        propertiesToReturnAttribs.set(createBitSet(AttributeFilterMaskSize));
+        propertiesToReturnAttribs.setown(createBitSet(AttributeFilterMaskSize));
 
     StringArray & propertiesToReturnList = propertiesToReturn.getProperties();
     ForEachItemIn(idx1,propertiesToReturnList)
@@ -415,8 +415,8 @@ void WUDetailsVisitor::resetScope()
     currentStatisticScopeType = SSTnone;
     extraStatisticsForCurScope = nullptr;
     extraAttributesForCurScope = nullptr;
-    EspWUResponseProperties.clear();
-    EspWUResponseNotes.clear();
+    EspWUResponseProperties.kill();
+    EspWUResponseNotes.kill();
     endListAttr();
 }
 
@@ -439,47 +439,78 @@ void WUDetails::processRequest(IEspWUDetailsRequest &req, IEspWUDetailsResponse 
     const bool includeScopeType = scopeOptions.getIncludeScopeType();
     const bool includeId = scopeOptions.getIncludeId();
 
-    buildWuScopeFilter(req.getScopeFilter(), req.getNestedFilter(), req.getPropertiesToReturn(),
-                       req.getFilter(), scopeOptions);
-
-    StringBuffer filter;
-    PROGLOG("WUDetails: %s", wuScopeFilter.describe(filter).str());
-
     IArrayOf<IEspWUResponseScope> respScopes;
-    WUDetailsVisitor wuDetailsVisitor(req.getPropertyOptions(), req.getPropertiesToReturn());
-    Owned<IConstWUScopeIterator> iter = &workunit->getScopeIterator(wuScopeFilter);
-    ForEach(*iter)
-    {
-        StatisticScopeType scopeType = iter->getScopeType();
-        const char * scope = iter->queryScope();
-        assertex(scope);
-
-        wuDetailsVisitor.noteScopeType(scopeType);
-        iter->playProperties(wuDetailsVisitor);
-
-        Owned<IEspWUResponseScope> respScope = createWUResponseScope("","");
-        if (includeScope)
-            respScope->setScopeName(scope);
-        if (includeScopeType)
-            respScope->setScopeType(queryScopeTypeName(scopeType));
-        if (includeId)
-            respScope->setId(queryScopeTail(scope));
-
-        IArrayOf<IEspWUResponseProperty> & properties = wuDetailsVisitor.getResponseProperties();
-        if (!properties.empty())
-            respScope->setProperties(properties);
-
-        IArrayOf<IEspWUResponseNote> & notes = wuDetailsVisitor.getResponseNotes();
-        if (!notes.empty())
-            respScope->setNotes(notes);
-
-        respScopes.append(*respScope.getClear());
-
-        wuDetailsVisitor.resetScope();
-    }
     StringBuffer maxVersion;
-    maxVersion.append(wuDetailsVisitor.getMaxTimestamp());
+    if (workunit)
+    {
+        buildWuScopeFilter(req.getScopeFilter(), req.getNestedFilter(), req.getPropertiesToReturn(),
+                           req.getFilter(), scopeOptions);
 
+        StringBuffer filter;
+        PROGLOG("WUDetails: %s", wuScopeFilter.describe(filter).str());
+        WUDetailsVisitor wuDetailsVisitor(req.getPropertyOptions(), req.getPropertiesToReturn());
+        Owned<IConstWUScopeIterator> iter = &workunit->getScopeIterator(wuScopeFilter);
+        ForEach(*iter)
+        {
+            StatisticScopeType scopeType = iter->getScopeType();
+            const char * scope = iter->queryScope();
+            assertex(scope);
+
+            wuDetailsVisitor.noteScopeType(scopeType);
+            iter->playProperties(wuDetailsVisitor);
+
+            Owned<IEspWUResponseScope> respScope = createWUResponseScope("","");
+            if (includeScope)
+                respScope->setScopeName(scope);
+            if (includeScopeType)
+                respScope->setScopeType(queryScopeTypeName(scopeType));
+            if (includeId)
+                respScope->setId(queryScopeTail(scope));
+
+            IArrayOf<IEspWUResponseProperty> & properties = wuDetailsVisitor.getResponseProperties();
+            if (!properties.empty())
+                respScope->setProperties(properties);
+
+            IArrayOf<IEspWUResponseNote> & notes = wuDetailsVisitor.getResponseNotes();
+            if (!notes.empty())
+                respScope->setNotes(notes);
+
+            respScopes.append(*respScope.getClear());
+
+            wuDetailsVisitor.resetScope();
+        }
+        maxVersion.append(wuDetailsVisitor.getMaxTimestamp());
+    }
+    else
+    {
+        if (req.getPropertiesToReturn().getAllNotes())
+        {
+            Owned<IPropertyTree> componentConfig = getComponentConfig();
+            IArrayOf<IEspWUResponseNote> espWuResponseNotes;
+
+            Owned<IPropertyTreeIterator> iter = componentConfig->getElements("warnings");
+            ForEach(*iter)
+            {
+                IPropertyTree & cur = iter->query();
+
+                Owned<IEspWUResponseNote> espWuResponseNote = createWUResponseNote("","");
+                espWuResponseNote->setSource(cur.queryProp("@source"));
+                espWuResponseNote->setMessage(cur.queryProp("@msg"));
+                if (cur.hasProp("@code"))
+                    espWuResponseNote->setErrorCode(cur.getPropInt64("@code"));
+                else
+                    espWuResponseNote->setErrorCode_null();
+                espWuResponseNote->setSeverity(cur.queryProp("@severity"));
+                espWuResponseNote->setCost(0);
+                espWuResponseNotes.append(*espWuResponseNote.getClear());
+            }
+            Owned<IEspWUResponseScope> respScope = createWUResponseScope("","");
+            respScope->setScopeName("");
+            respScope->setNotes(espWuResponseNotes);
+            respScopes.append(*respScope.getClear());
+        }
+        maxVersion.append(0);
+    }
     resp.setWUID(wuid.str());
     resp.setMaxVersion(maxVersion.str());
     resp.setScopes(respScopes);

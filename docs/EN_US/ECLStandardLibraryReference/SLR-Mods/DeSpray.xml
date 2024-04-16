@@ -17,7 +17,8 @@
   <emphasis>espserverIPport </emphasis> <emphasis role="bold">] </emphasis>
   ,<emphasis role="bold"> [</emphasis> <emphasis>maxConnections</emphasis>
   <emphasis role="bold">] </emphasis> ,<emphasis role="bold"> [</emphasis>
-  <emphasis>allowoverwrite</emphasis> <emphasis
+  <emphasis>allowoverwrite</emphasis> <emphasis role="bold">],[</emphasis>
+  <emphasis>destinationPlane</emphasis> <emphasis
   role="bold">])</emphasis></para>
 
   <para><emphasis>dfuwuid</emphasis> <emphasis role="bold"> :=
@@ -34,12 +35,13 @@
   <emphasis>espserverIPport </emphasis> <emphasis role="bold">] </emphasis>
   ,<emphasis role="bold"> [</emphasis> <emphasis>maxConnections</emphasis>
   <emphasis role="bold">] </emphasis> ,<emphasis role="bold"> [</emphasis>
-  <emphasis>allowoverwrite</emphasis> <emphasis
-  role="bold">]);</emphasis></para>
+  <emphasis>allowoverwrite</emphasis> <emphasis role="bold">],[</emphasis>
+  <emphasis>destinationPlane</emphasis> <emphasis
+  role="bold">])</emphasis></para>
 
   <informaltable colsep="1" frame="all" rowsep="1">
     <tgroup cols="2">
-      <colspec colwidth="80.50pt" />
+      <colspec colwidth="130.50pt" />
 
       <colspec />
 
@@ -55,7 +57,8 @@
           <entry><emphasis>destinationIP</emphasis></entry>
 
           <entry>A null-terminated string containing the destination IP
-          address of the file.</entry>
+          address of the file. Deprecated, you should use destinationPlane
+          instead.</entry>
         </row>
 
         <row>
@@ -77,18 +80,21 @@
         <row>
           <entry><emphasis>espserverIPport</emphasis></entry>
 
-          <entry>Optional. A null-terminated string containing the protocol,
-          IP, port, and directory, or the DNS equivalent, of the ESP server
-          program. This is usually the same IP and port as ECL Watch, with
-          "/FileSpray" appended. If omitted, the default is the value
-          contained in the lib_system.ws_fs_server attribute.</entry>
+          <entry>Optional. This should almost always be omitted, which then
+          defaults to the value contained in the lib_system.ws_fs_server
+          attribute. When not omitted, it should be a null-terminated string
+          containing the protocol, IP, port, and directory, or the DNS
+          equivalent, of the ESP server program. This is usually the same IP
+          and port as ECL Watch, with "/FileSpray" appended.</entry>
         </row>
 
         <row>
           <entry><emphasis>maxConnections</emphasis></entry>
 
           <entry>Optional. An integer specifying the maximum number of
-          connections. If omitted, the default is one (1).</entry>
+          connections. If omitted, the default is -1, which indicates the
+          system chooses a suitable default based on the size of the
+          cluster.</entry>
         </row>
 
         <row>
@@ -97,6 +103,16 @@
           <entry>Optional. A boolean TRUE or FALSE flag indicating whether to
           allow the new file to overwrite an existing file of the same name.
           If omitted, the default is FALSE.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis>destinationPlane</emphasis></entry>
+
+          <entry>Optional. The destination storage plane. Note:
+          <emphasis>destinationPlane</emphasis> should not be used at the same
+          time as <emphasis>destinationIP</emphasis>. In a containerized
+          deployment, <emphasis>destinationPlane</emphasis> is required if you
+          have more than one Landing Zone.</entry>
         </row>
 
         <row>

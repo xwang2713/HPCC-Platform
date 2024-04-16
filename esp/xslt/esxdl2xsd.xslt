@@ -25,6 +25,7 @@
     <xsl:param name="version" select="/esxdl/@version"/>
     <xsl:param name="no_annot_Param" select="false()"/>
     <xsl:param name="all_annot_Param" select="false()"/>
+    <xsl:param name="no_exceptions_inline" select="false()"/>
 
     <!--
         Note: This version of the stylesheet assumes that the XML input has been processed
@@ -103,17 +104,6 @@
                         <xsl:attribute name="name"><xsl:value-of select="@name"/></xsl:attribute>
                             <xsl:attribute name="type">tns:<xsl:value-of select="@name"/></xsl:attribute>
                     </xsd:element>
-                </xsd:sequence>
-            </xsd:complexType>
-        </xsl:if>
-        <!--
-            This structure has been marked as the first to use an array EspStringArray
-            so a separate EspStringArray structure definition must be generated.
-        -->
-        <xsl:if test="@espStringArray='1'">
-            <xsd:complexType name="EspStringArray">
-                <xsd:sequence>
-                    <xsd:element name="Item" type="xsd:string" minOccurs="0" maxOccurs="unbounded"/>
                 </xsd:sequence>
             </xsd:complexType>
         </xsl:if>
@@ -335,26 +325,55 @@
 	</xsd:element>
     </xsl:template>
     <xsl:template match="EsdlRequest">
-        <xsd:element>
-            <xsl:attribute name="name"><xsl:value-of select="@name"/></xsl:attribute>
-            <xsd:complexType>
-                <xsd:all>
-                    <xsl:apply-templates select="EsdlElement|EsdlArray|EsdlList|EsdlEnum"/>
-                </xsd:all>
-            </xsd:complexType>
-        </xsd:element>
+        <xsl:choose>
+            <xsl:when test="/esxdl/EsdlService/@use_method_name='1'">
+                <!--
+                    Output an xsd:element of this EsdlRequest structure for each EsdlMethod that
+                    uses this request_type. The name of the xsd:element matches the EsdlMethod/@name.
+                -->
+                <xsl:variable name="curRequest" select="."/>
+                <xsl:for-each select="/esxdl/EsdlService/EsdlMethod[@request_type=$curRequest/@name]">
+                    <xsd:element>
+                        <xsl:attribute name="name">
+                            <xsl:value-of select="@name"/>
+                        </xsl:attribute>
+                        <xsd:complexType>
+                            <xsd:all>
+                                <xsl:apply-templates select="$curRequest/EsdlElement|$curRequest/EsdlArray|$curRequest/EsdlList|$curRequest/EsdlEnum"/>
+                            </xsd:all>
+                        </xsd:complexType>
+                    </xsd:element>
+                </xsl:for-each>
+            </xsl:when>
+            <xsl:otherwise>
+                <xsd:element>
+                    <xsl:attribute name="name">
+                        <xsl:value-of select="@name"/>
+                    </xsl:attribute>
+                    <xsd:complexType>
+                        <xsd:all>
+                            <xsl:apply-templates select="EsdlElement|EsdlArray|EsdlList|EsdlEnum"/>
+                        </xsd:all>
+                    </xsd:complexType>
+                </xsd:element>
+            </xsl:otherwise>
+        </xsl:choose>
     </xsl:template>
     <xsl:template match="EsdlResponse">
         <xsd:element>
             <xsl:attribute name="name"><xsl:value-of select="@name"/></xsl:attribute>
             <xsd:complexType>
                 <xsd:all>
+                    <xsl:if test="@exceptions_inline and not($no_exceptions_inline)">
+                        <xsd:element name="Exceptions" type="tns:ArrayOfEspException" minOccurs="0" maxOccurs="1"/>
+                    </xsl:if>
                     <xsl:apply-templates select="EsdlElement|EsdlArray|EsdlList|EsdlEnum"/>
                 </xsd:all>
             </xsd:complexType>
         </xsd:element>
     </xsl:template>
     <xsl:template match="EsdlService">
+        <xsl:variable name="useMethodName" select="@use_method_name='1'"/>
         <wsdl:message name="EspSoapFault">
             <wsdl:part name="parameters" element="tns:Exceptions"/>
         </wsdl:message>
@@ -362,7 +381,12 @@
             <wsdl:message>
                 <xsl:attribute name="name"><xsl:value-of select="@name"/>SoapIn</xsl:attribute>
                 <wsdl:part name="parameters">
-                    <xsl:attribute name="element">tns:<xsl:value-of select="@request_type"/></xsl:attribute>
+                    <xsl:attribute name="element">
+                        <xsl:choose>
+                            <xsl:when test="$useMethodName">tns:<xsl:value-of select="@name"/></xsl:when>
+                            <xsl:otherwise>tns:<xsl:value-of select="@request_type"/></xsl:otherwise>
+                        </xsl:choose>
+                    </xsl:attribute>
                 </wsdl:part>
             </wsdl:message>
             <wsdl:message>
@@ -419,6 +443,7 @@
             </wsdl:port>
         </wsdl:service>
     </xsl:template>
+
     <xsl:template name="CreateSchema">
         <xsl:param name="inwsdl" select="false()"/>
         <xsd:schema elementFormDefault="qualified" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -441,6 +466,19 @@
                 </xsd:sequence>
             </xsd:complexType>
             <xsd:element name="Exceptions" type="tns:ArrayOfEspException"/>
+
+            <!--
+                The first Esdlstruct|EsdlRequest|EsdlResponse that contains a string array is marked with @espStringArray='1'
+                but we are changing order, so look for any object with espStringArray, and if there is one output the following definition
+            -->
+            <xsl:if test="*/@espStringArray='1'">
+                <xsd:complexType name="EspStringArray">
+                    <xsd:sequence>
+                        <xsd:element name="Item" type="xsd:string" minOccurs="0" maxOccurs="unbounded"/>
+                    </xsd:sequence>
+                </xsd:complexType>
+            </xsl:if>
+
             <xsl:apply-templates select="EsdlEnumType" />
             <xsl:apply-templates select="EsdlStruct"/>
             <xsl:apply-templates select="EsdlRequest"/>
@@ -449,7 +487,7 @@
         </xsd:schema>
     </xsl:template>
     <xsl:template name="CreateWsdl">
-        <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:http="http://schemas.xmlsoap.org/wsdl/http/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:mime="http://schemas.xmlsoap.org/wsdl/mime/">
+        <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:http="http://schemas.xmlsoap.org/wsdl/http/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:mime="http://schemas.xmlsoap.org/wsdl/mime/" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">
             <xsl:attribute name="targetNamespace"><xsl:value-of select="$tnsParam"/></xsl:attribute>
             <xsl:copy-of select="namespace::tns"/>
             <wsdl:types>

@@ -1,5 +1,7 @@
 %{
+#ifdef _WIN32
 #pragma warning(disable:4786)
+#endif
 
 #include "platform.h"
 
@@ -43,7 +45,7 @@ ModuleInfo * CurModule=NULL;
 ProcInfo *   CurProc;
 ParamInfo *  CurParam;
 LayoutInfo * CurLayout;
-EnumInfo *   CurEnum=NULL;  
+EnumInfo *   CurEnum=NULL;
 EnumValInfo *   CurEnumVal;
 int EnumValue = 0;
 ApiInfo * CurApi=NULL;
@@ -58,7 +60,7 @@ ModuleInfo * LastModule;
 ProcInfo *   LastProc;
 ParamInfo *  LastParam;
 LayoutInfo * LastLayout;
-EnumInfo *   LastEnum;  
+EnumInfo *   LastEnum;
 EnumValInfo *   LastEnumVal;
 ApiInfo * LastApi=NULL;
 IncludeInfo *LastInclude=NULL;
@@ -67,7 +69,7 @@ EspMessageInfo * LastEspMessage=NULL;
 EspServInfo * LastService=NULL;
 //EspMethodInfo * LastMethod=NULL;
 
-char *esp_def_export_tag=NULL;
+std::string esp_def_export_tag;
 
 bool rettype;
 unsigned linenum=1;
@@ -82,7 +84,6 @@ int  nCommentStartLine = -1;
   SCMEXPORTDEF
   SCMINTERFACE
   SCMENUM
-  SCMCLARION
   SCMEND
   ESPINCLUDE
   ESPSTRUCT
@@ -143,7 +144,7 @@ SectionList
  ;
 
 Section
- : Module 
+ : Module
  | Enumeration
  | ExportDef
  | EspDefExport
@@ -169,7 +170,7 @@ ExportDef
 EspDefExport
  : ESPDEFEXPORT '(' ID ')' ';'
  {
-    esp_def_export_tag=strdup($3.getName());
+    esp_def_export_tag = $3.getName();
  }
  ;
 
@@ -179,7 +180,7 @@ EspService
     AddEspService();
     //Now the default is sorted
     if (CurService->getMetaInt("sort_method",1)!=0)
-        CurService->sortMethods();  
+        CurService->sortMethods();
     CurService->write_esp_interface();
     CurService->write_event_interface();
     CurService->write_client_interface();
@@ -261,7 +262,7 @@ EspServiceStart
  ;
 
 EspServiceBody
- : '{' EspServiceEntryList '}' 
+ : '{' EspServiceEntryList '}'
  | '{' '}'
  ;
 
@@ -297,7 +298,7 @@ EspServiceMethod
         CurEspMessage->write_cpp_interfaces();
         AddEspMessage();
         CurEspMessage=NULL;
-    
+
         CurEspMessage = new EspMessageInfo(EspMessageInfo::espm_response, CurProc);
         CurEspMessage->write_cpp_interfaces();
         AddEspMessage();
@@ -334,7 +335,7 @@ EspStruct
  ;
 
 EspStructStart
- : ESPSTRUCT EspMetaData ID 
+ : ESPSTRUCT EspMetaData ID
  {
     CurEspMessage = new EspMessageInfo($3.getName(), EspMessageInfo::espm_struct);
     CurEspMessage->tags = getClearCurMetaTags();
@@ -354,7 +355,7 @@ EspEnum
  ;
 
 EspEnumStart
- : ESPENUM EspMetaData ID 
+ : ESPENUM EspMetaData ID
  {
     CurEspMessage = new EspMessageInfo($3.getName(), EspMessageInfo::espm_enum);
     CurEspMessage->tags = getClearCurMetaTags();
@@ -368,7 +369,7 @@ EnumBase
     if (CurEspMessage->getParentName())
         yyerror("parent is already specified by meta extends");
     CurEspMessage->setParentName($2.getName());
- } 
+ }
  |
  {
     yyerror("base type must be specified for enumeration type");
@@ -395,7 +396,7 @@ EnumBaseType
  ;
 
 EnumBody
- : '{' EnumList OptionalComma '}' 
+ : '{' EnumList OptionalComma '}'
  {
     CurParam=NULL;
     LastParam=NULL;
@@ -405,7 +406,7 @@ EnumBody
  ;
 
 EnumList
- : EnumItemDef 
+ : EnumItemDef
  | EnumList ',' EnumItemDef
  ;
 
@@ -416,7 +417,7 @@ EnumItemDef
     CurParam->name = strdup($1.getName());
     CurParam->kind = TK_ENUM;
     CurParam->tags = getClearCurMetaTags();
-    AddEspProperty(); 
+    AddEspProperty();
  }
  | ID '(' EnumConstValue ',' string_const ')'
  {
@@ -425,7 +426,7 @@ EnumItemDef
     CurParam->kind = TK_ENUM;
     AddMetaTag(new MetaTagInfo("desc", $5.getString()));
     CurParam->tags = getClearCurMetaTags();;
-    AddEspProperty(); 
+    AddEspProperty();
  }
  | ID
  {
@@ -435,7 +436,7 @@ EnumItemDef
     AddMetaTag(new MetaTagInfo("enum", VStrBuffer("\"%s\"", $1.getName()).str()));
     CurParam->tags = getClearCurMetaTags();
 
-    AddEspProperty(); 
+    AddEspProperty();
  }
  ;
 
@@ -483,7 +484,7 @@ EspRequest
  ;
 
 EspRequestStart
- : ESPREQUEST EspMetaData ID 
+ : ESPREQUEST EspMetaData ID
  {
     CurEspMessage = new EspMessageInfo($3.getName(), EspMessageInfo::espm_request);
     CurEspMessage->tags = getClearCurMetaTags();
@@ -516,17 +517,17 @@ OptionalExtends
     if (CurEspMessage->getParentName())
         yyerror("parent is already specified by meta extends");
     CurEspMessage->setParentName($2.getName());
- } 
+ }
  |
  ;
 
 EspMessageBody
- : '{' EspPropertyList '}' 
+ : '{' EspPropertyList '}'
  {
     CurParam=NULL;
     LastParam=NULL;
  }
- | '{' '}' 
+ | '{' '}'
  ;
 
 EspPropertyList
@@ -539,20 +540,20 @@ EspPropertyDef
  {
     if (CurParam)
     {
-        if (CurParam->name && ((CurParam->flags & PF_RETURN)==0)) 
+        if (CurParam->name && ((CurParam->flags & PF_RETURN)==0))
         {
-            if (CurParam->kind==TK_null) 
+            if (CurParam->kind==TK_null)
             {
                 CurParam->kind = TK_STRUCT;
                 CurParam->typname = CurParam->name;
             }
-            else 
+            else
             {
                 errnum = 9;
                 yyerror("unknown/unexpected ID");
             }
         }
-    
+
         CurParam->flags |= PF_TEMPLATE;
         CurParam->templ = strdup($2.getName());
         CurParam->name = strdup($6.getName());
@@ -560,26 +561,26 @@ EspPropertyDef
     }
     else
         CurMetaTags=NULL;
-    AddEspProperty(); 
+    AddEspProperty();
  }
  | EspTemplateStart ESPTEMPLATE '<' EspTemplateParams ',' ID '>' ID EspPropertyInit ';'
  {
     if (CurParam)
     {
-        if (CurParam->name && ((CurParam->flags & PF_RETURN)==0)) 
+        if (CurParam->name && ((CurParam->flags & PF_RETURN)==0))
         {
-            if (CurParam->kind==TK_null) 
+            if (CurParam->kind==TK_null)
             {
                 CurParam->kind = TK_STRUCT;
                 CurParam->typname = CurParam->name;
             }
-            else 
+            else
             {
                 errnum = 21;
                 yyerror("invalid type declaration in template");
             }
         }
-    
+
         CurParam->flags |= PF_TEMPLATE;
         CurParam->templ = strdup($2.getName());
         CurParam->name = strdup($8.getName());
@@ -590,7 +591,7 @@ EspPropertyDef
     }
     else
         CurMetaTags=NULL;
-    AddEspProperty(); 
+    AddEspProperty();
  }
  | EspTemplateStart ESPTEMPLATE '<' EspType ID '>' ID ';'
  {
@@ -605,7 +606,7 @@ EspPropertyDef
     }
     else
         CurMetaTags=NULL;
-    AddEspProperty(); 
+    AddEspProperty();
  }
  | EspTemplateStart ESPTEMPLATE '<' EspType ID ',' ID '>' ID ';'
  {
@@ -623,7 +624,7 @@ EspPropertyDef
     }
     else
         CurMetaTags=NULL;
-    AddEspProperty(); 
+    AddEspProperty();
  }
  | EspPropertyStart StartParam ESPSTRUCTREF ID ID ';'
  {
@@ -633,7 +634,7 @@ EspPropertyDef
         CurParam->typname=strdup($4.getName());
         CurParam->kind=TK_ESPSTRUCT;
         CurParam->tags = getClearCurMetaTags();
-        AddEspProperty(); 
+        AddEspProperty();
     }
  }
  | EspPropertyStart StartParam ESPENUMREF ID ID OptEspEnumInit ';'
@@ -644,7 +645,7 @@ EspPropertyDef
         CurParam->typname=strdup($4.getName());
         CurParam->kind=TK_ESPENUM;
         CurParam->tags = getClearCurMetaTags();
-        AddEspProperty(); 
+        AddEspProperty();
     }
  }
  | EspPropertyStart Param EspPropertyInit ';'
@@ -658,7 +659,7 @@ EspPropertyDef
                 CurParam->kind=TK_INT;
         }
         CurParam->tags = getClearCurMetaTags();
-        AddEspProperty(); 
+        AddEspProperty();
     }
  }
  ;
@@ -672,7 +673,7 @@ OptEspEnumInit
  {
     AddMetaTag(new MetaTagInfo("default", $2.getString()));
  }
- | 
+ |
  {
  }
  ;
@@ -710,7 +711,7 @@ EspPropertyInit
  {
     AddMetaTag(new MetaTagInfo("default", 0));
  }
- | 
+ |
  {
     //AddMetaTag(new MetaTagInfo("default", 0));
  }
@@ -763,7 +764,7 @@ EspMetaData
 
 EspMetaPropertyList
  : EspMetaProperty
- | EspMetaPropertyList ',' EspMetaProperty 
+ | EspMetaPropertyList ',' EspMetaProperty
  ;
 
 EspMetaProperty
@@ -800,14 +801,9 @@ Module
  }
  ;
 
- 
+
 ModuleStart
- : MODULE ID
- {
-   CurModule = new ModuleInfo($2.getName());
-   LastProc = NULL;
- }
- | SCMINTERFACE ID
+ : SCMINTERFACE ID
  {
    CurModule = new ModuleInfo($2.getName());
    CurModule->isSCMinterface = true;
@@ -824,7 +820,7 @@ ModuleVersion
    {
         errnum = 5;
         yyerror("version must be in range 0-255");
-   } 
+   }
  }
  | '(' ID ')'
  {
@@ -834,8 +830,8 @@ ModuleVersion
  ;
 
 ModuleBody
- : '{' ProcDefList '}' 
- | '{' '}' 
+ : '{' ProcDefList '}'
+ | '{' '}'
  ;
 
 
@@ -850,7 +846,7 @@ Enumeration
  }
  ;
 
- 
+
 EnumerationStart
  : SCMENUM ID
  {
@@ -861,7 +857,7 @@ EnumerationStart
  ;
 
 EnumerationBody
- : '{' EnumDefList '}' 
+ : '{' EnumDefList '}'
  ;
 
 
@@ -883,18 +879,18 @@ EnumDefList
    {
      LastEnumVal->next = CurEnumVal;
      LastEnumVal = CurEnumVal;
-   } 
+   }
  }
  ;
 
 EnumDef
- : ID '=' INTEGER_CONST 
+ : ID '=' INTEGER_CONST
  {
     EnumValue = $3.getInt();
     CurEnumVal = new EnumValInfo($1.getName(),EnumValue);
     EnumValue++;
  }
- | ID '=' '-' INTEGER_CONST 
+ | ID '=' '-' INTEGER_CONST
  {
     EnumValue = - $4.getInt();
     CurEnumVal = new EnumValInfo($1.getName(),EnumValue);
@@ -938,6 +934,8 @@ ApiStart
    CurProc = new ProcInfo();
     CurModule = NULL;
    LastProc = NULL;
+   if (esp_def_export_tag.empty())
+     esp_def_export_tag.append(hcp->getPackageName()).append("_API");
  }
  | SCMAPI '(' ')'
  {
@@ -945,6 +943,8 @@ ApiStart
    CurProc = new ProcInfo();
     CurModule = NULL;
    LastProc = NULL;
+   if (esp_def_export_tag.empty())
+     esp_def_export_tag.append(hcp->getPackageName()).append("_API");
  }
  | SCMAPI '(' ID ')'
  {
@@ -952,9 +952,10 @@ ApiStart
    CurProc = new ProcInfo();
     CurModule = NULL;
    LastProc = NULL;
+   if (esp_def_export_tag.empty())
+     esp_def_export_tag.append($3.getName()).append("_API");
  }
  ;
-
 
 
 ProcDefList
@@ -975,7 +976,7 @@ ProcDefList
    {
      LastProc->next = CurProc;
      LastProc = CurProc;
-   } 
+   }
  }
  ;
 
@@ -997,9 +998,9 @@ ProcAttr
 ProcAttrList
  : ProcAttr ProcAttrList
  |
- ;  
+ ;
 
-  
+
 RetParam
  : StartRetParam TypeModifiers TypeList
  {
@@ -1050,7 +1051,7 @@ TypeModifiers
  : TypeModifier TypeModifiers
  |
  ;
-    
+
 TypeModifier
  : InOut
  | String
@@ -1059,7 +1060,7 @@ TypeModifier
  ;
 
 
-                                
+
 Layout
  : LAYOUT '(' LayoutParams ')'
  {
@@ -1113,7 +1114,7 @@ LayoutSizeVal
  ;
 
 StartLayout
- : 
+ :
  {
    CurLayout = new LayoutInfo;
  }
@@ -1192,13 +1193,13 @@ Type
  {
    switch(CurParam->kind)
    {
-     case TK_UNSIGNED:  
-       CurParam->kind = TK_UNSIGNEDCHAR; 
+     case TK_UNSIGNED:
+       CurParam->kind = TK_UNSIGNEDCHAR;
        break;
      case TK_null:
-       CurParam->kind = TK_CHAR; 
+       CurParam->kind = TK_CHAR;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1210,9 +1211,9 @@ Type
    switch(CurParam->kind)
    {
      case TK_null:
-       CurParam->kind = TK_BYTE; 
+       CurParam->kind = TK_BYTE;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1224,9 +1225,9 @@ Type
    switch(CurParam->kind)
    {
      case TK_null:
-       CurParam->kind = TK_BOOL; 
+       CurParam->kind = TK_BOOL;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1237,13 +1238,13 @@ Type
  {
    switch(CurParam->kind)
    {
-     case TK_UNSIGNED:  
-       CurParam->kind = TK_UNSIGNEDSHORT; 
+     case TK_UNSIGNED:
+       CurParam->kind = TK_UNSIGNEDSHORT;
        break;
      case TK_null:
-       CurParam->kind = TK_SHORT; 
+       CurParam->kind = TK_SHORT;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1258,18 +1259,18 @@ Type
  {
    switch(CurParam->kind)
    {
-     case TK_UNSIGNED: 
+     case TK_UNSIGNED:
        break;
      case TK_SHORT:
-       CurParam->kind = TK_SHORT; 
+       CurParam->kind = TK_SHORT;
        break;
      case TK_LONG:
        CurParam->kind = TK_LONG;
-       break;   
-     case TK_null:
-       CurParam->kind = TK_INT; 
        break;
-     default: 
+     case TK_null:
+       CurParam->kind = TK_INT;
+       break;
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1281,9 +1282,9 @@ Type
    switch(CurParam->kind)
    {
      case TK_null:
-       CurParam->kind = TK_UNSIGNED; 
+       CurParam->kind = TK_UNSIGNED;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1297,16 +1298,16 @@ Type
      case TK_LONG:
        CurParam->kind = TK_LONGLONG;
        break;
-     case TK_UNSIGNED:  
-       CurParam->kind = TK_UNSIGNEDLONG; 
+     case TK_UNSIGNED:
+       CurParam->kind = TK_UNSIGNEDLONG;
        break;
      case TK_UNSIGNEDLONG:
        CurParam->kind = TK_UNSIGNEDLONGLONG;
        break;
      case TK_null:
-       CurParam->kind = TK_LONG; 
+       CurParam->kind = TK_LONG;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1315,7 +1316,7 @@ Type
  }
  | STAR
  {
-    if (CurParam->flags&(PF_PTR|PF_REF)) 
+    if (CurParam->flags&(PF_PTR|PF_REF))
     {
         errnum = 8;
         yyerror("parameter type not supported");
@@ -1324,10 +1325,10 @@ Type
     {
         CurParam->flags|=PF_PTR;
     }
- }  
+ }
  | UMBERSAND
  {
-    if (CurParam->flags&(PF_REF)) 
+    if (CurParam->flags&(PF_REF))
     {
         errnum = 8;
         yyerror("parameter type not supported");
@@ -1336,7 +1337,7 @@ Type
     {
         CurParam->flags|=PF_REF;
     }
- }  
+ }
  | _CONST
  {
     CurParam->flags |= PF_CONST;
@@ -1346,9 +1347,9 @@ Type
    switch(CurParam->kind)
    {
      case TK_null:
-       CurParam->kind = TK_DOUBLE; 
+       CurParam->kind = TK_DOUBLE;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1360,9 +1361,9 @@ Type
    switch(CurParam->kind)
    {
      case TK_null:
-       CurParam->kind = TK_FLOAT; 
+       CurParam->kind = TK_FLOAT;
        break;
-     default: 
+     default:
      {
        errnum = 7;
        yyerror("invalid type");
@@ -1377,38 +1378,38 @@ Type
  {
    if (rettype)
    {
-     if (!CurParam) 
+     if (!CurParam)
      {
        errnum = 9;
        yyerror("unknown/unexpected ID");
      }
-     else if (CurParam->kind==TK_null) 
+     else if (CurParam->kind==TK_null)
      {
        CurParam->kind = TK_STRUCT;
        CurParam->typname = strdup($1.getName());
-     } 
-     else if ((CurParam->kind==TK_VOID)&&((CurParam->flags&PF_PTR)==0)) 
+     }
+     else if ((CurParam->kind==TK_VOID)&&((CurParam->flags&PF_PTR)==0))
      {
        CurProc->name = strdup($1.getName());
        delete CurParam;
        CurParam = NULL;
      }
-     else 
+     else
      {
        CurParam->flags |= (PF_OUT|PF_RETURN);
        check_param();
-     } 
+     }
    }
    if (CurParam)
    {
-     if (CurParam->name && ((CurParam->flags&PF_RETURN)==0)) 
+     if (CurParam->name && ((CurParam->flags&PF_RETURN)==0))
      {
-       if (CurParam->kind==TK_null) 
+       if (CurParam->kind==TK_null)
        {
          CurParam->kind = TK_STRUCT;
          CurParam->typname = strdup(CurParam->name);
        }
-       else 
+       else
        {
          errnum = 9;
          yyerror("unknown/unexpected ID");
@@ -1418,7 +1419,7 @@ Type
         free(CurParam->name);
      CurParam->name = strdup($1.getName());
    }
- }  
+ }
 // | ESPTEMPLATE
  ;
 
@@ -1437,7 +1438,7 @@ Virtual
    if (CurProc->virt==0)
       CurProc->virt = 1;
  }
- ; 
+ ;
 
 Abstract
  : '=' INTEGER_CONST
@@ -1448,7 +1449,7 @@ Abstract
    {
      errnum = 10;
      yyerror("abstract not allowed on non-virtual");
-   } 
+   }
  }
  |
  ;
@@ -1472,7 +1473,7 @@ Async
  : ASYNC
  {
    CurProc->async = 1;
- } 
+ }
  ;
 
 Timeout
@@ -1495,7 +1496,7 @@ string_const
      memcpy(s+len1-1, $2.getString()+1, len2);
      $$.setVal(s);
  }
- ; 
+ ;
 
 /************************  END OF RULES  **********************/
 
@@ -1592,19 +1593,19 @@ MetaTagInfo* getClearCurMetaTags()
     {
         // alias
         if (streq("deprecated_ver",t->getName()))
-            t->setName("depr_ver"); 
+            t->setName("depr_ver");
 
-        if (tagNames.find(t->getName())!= tagNames.end()) 
+        if (tagNames.find(t->getName())!= tagNames.end())
         {
             VStrBuffer msg("Attribute '%s' are declared more than once", t->getName());
             yyerror(msg.str());
         }
-        else 
-        {           
+        else
+        {
             if ( (streq("depr_ver",t->getName()) && tagNames.find("max_ver")!=tagNames.end())
               || (streq("max_ver",t->getName()) && tagNames.find("depr_ver")!=tagNames.end()) )
                 yyerror("max_ver and depr_ver can not be used together");
-                
+
             tagNames.insert(t->getName());
         }
     }
@@ -1629,7 +1630,7 @@ void AddEnum()
 
 extern char *yytext;
 void yyerror(const char *s)
-{ 
+{
     if (!errnum)
       errnum = 99;
     if (yytext[0] == '\n')
@@ -1637,10 +1638,12 @@ void yyerror(const char *s)
       yytext = (char*)strdup("EOL");
     }
     // the following error format work with Visual Studio double click.
-    printf("%s(%d) : syntax error H%d : %s near \"%s\"\n",hcp->filename, linenum, errnum, s, yytext); 
-    outf("*** %s(%d) syntax error H%d : %s near \"%s\"\n",hcp->filename, linenum, errnum, s, yytext); 
+    printf("%s(%d) : syntax error H%d : %s near \"%s\"\n",hcp->filename, linenum, errnum, s, yytext);
+    outf("*** %s(%d) syntax error H%d : %s near \"%s\"\n",hcp->filename, linenum, errnum, s, yytext);
     errnum = 0;
 }
+
+void invalid_return_type();
 
 void check_param(void)
 {
@@ -1648,17 +1651,17 @@ void check_param(void)
         if ((CurParam->flags&PF_PTR)&&(CurParam->kind==TK_CHAR))
             CurParam->flags |= PF_STRING;
     }
-    if ((CurProc->async)&&(CurParam->flags&(PF_OUT|PF_RETURN))) 
+    if ((CurProc->async)&&(CurParam->flags&(PF_OUT|PF_RETURN)))
     {
         errnum = 1;
         yyerror("out parameters not allowed on async procedure");
     }
-    if ((CurParam->flags&(PF_CONST&PF_OUT))==(PF_CONST|PF_OUT)) 
+    if ((CurParam->flags&(PF_CONST&PF_OUT))==(PF_CONST|PF_OUT))
     {
         errnum = 2;
         yyerror("const not allowed on out parameter");
     }
-    switch (CurParam->flags&(PF_IN|PF_OUT|PF_STRING|PF_VARSIZE|PF_PTR|PF_REF|PF_RETURN)) 
+    switch (CurParam->flags&(PF_IN|PF_OUT|PF_STRING|PF_VARSIZE|PF_PTR|PF_REF|PF_RETURN))
     {
         case PF_IN:                                 // int T
         case (PF_IN|PF_REF):                        // in T&
@@ -1670,29 +1673,35 @@ void check_param(void)
         case (PF_OUT|PF_PTR|PF_REF|PF_VARSIZE):     // inout size() T*&
         case (PF_IN|PF_PTR|PF_STRING):              // in string const char *
         case (PF_OUT|PF_PTR|PF_REF|PF_STRING):      // out string char *&
-        case (PF_OUT|PF_RETURN):                    // return simple    
+        case (PF_OUT|PF_RETURN):                    // return simple
         case (PF_OUT|PF_PTR|PF_VARSIZE|PF_RETURN):  // return size() T*
         case (PF_OUT|PF_PTR|PF_STRING|PF_RETURN):   // return out string char *
             break;
-        case (PF_OUT|PF_PTR|PF_RETURN):                 // return T*    
+        case (PF_OUT|PF_PTR|PF_RETURN):                 // return T*
         case (PF_OUT|PF_REF|PF_RETURN):                 // return T&
-            if (isSCM)
-                break;
+            if (!isSCM)
+            {
+                invalid_return_type();
+            }
+            break;
         default:
-        {
-            // printf("Parameter flags %x\n",p->flags);
-            if (CurParam->flags&PF_RETURN )
-            {
-                errnum = 3;
-                printf("type = %d\n",CurParam->flags);
-                yyerror("Invalid return type");
-            }
-            else
-            {
-                errnum = 4;
-                yyerror("Invalid parameter combination");
-            }
-        }
+            invalid_return_type();
+            break;
     }
 }
 
+void invalid_return_type()
+{
+    // printf("Parameter flags %x\n",p->flags);
+    if (CurParam->flags&PF_RETURN )
+    {
+        errnum = 3;
+        printf("type = %d\n",CurParam->flags);
+        yyerror("Invalid return type");
+    }
+    else
+    {
+        errnum = 4;
+        yyerror("Invalid parameter combination");
+    }
+}

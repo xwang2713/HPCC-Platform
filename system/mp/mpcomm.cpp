@@ -68,7 +68,8 @@
 // These should really be configurable
 #define CANCELTIMEOUT       1000             // 1 sec
 #define CONNECT_TIMEOUT          (5*60*1000) // 5 mins
-#define CONNECT_READ_TIMEOUT     (10*1000)   // 10 seconds. NB: used by connect readtms loop (see loopCnt)
+#define CONNECT_READ_TIMEOUT     (90*1000)   // 90 seconds. NB: used by connect readtms loop (see loopCnt)
+#define CONNECT_READEXC_TIMEOUT  (10*1000)   // 10 seconds. NB: to read exception info after confirm
 #define CONNECT_TIMEOUT_INTERVAL 1000        // 1 sec
 #define CONNECT_RETRYCOUNT       180         // Overall max connect time is = CONNECT_RETRYCOUNT * CONNECT_READ_TIMEOUT
 #define CONNECT_TIMEOUT_MINSLEEP 2000        // random range: CONNECT_TIMEOUT_MINSLEEP to CONNECT_TIMEOUT_MAXSLEEP milliseconds
@@ -114,11 +115,11 @@ struct SocketEndpointV4
         val.setNetAddress(sizeof(ip),&ip);
         val.port = port;
     }
-    StringBuffer & getUrlStr(StringBuffer &val)
+    StringBuffer & getEndpointHostText(StringBuffer &val)
     {
         SocketEndpoint s;
         this->get(s);
-        return s.getUrlStr(val);
+        return s.getEndpointHostText(val);
     }
 };
 
@@ -230,12 +231,12 @@ public:
         StringBuffer tmp;
         switch (error) {
         case MPERR_ok:                          str.append("OK"); break;
-        case MPERR_connection_failed:           str.appendf("MP connect failed (%s)",endpoint.getUrlStr(tmp).str()); break;
+        case MPERR_connection_failed:           str.appendf("MP connect failed (%s)",endpoint.getEndpointHostText(tmp).str()); break;
         case MPERR_process_not_in_group:        str.appendf("Current process not in Communicator group"); break;
-        case MPERR_protocol_version_mismatch:   str.appendf("Protocol version mismatch (%s)",endpoint.getUrlStr(tmp).str()); break;
+        case MPERR_protocol_version_mismatch:   str.appendf("Protocol version mismatch (%s)",endpoint.getEndpointHostText(tmp).str()); break;
         // process crashes (segv, etc.) often cause this exception which is logged and can be misleading
         // change it from "MP link closed" to something more helpful
-        case MPERR_link_closed:                 str.appendf("Unexpected process termination (ep:%s)",endpoint.getUrlStr(tmp).str()); break;
+        case MPERR_link_closed:                 str.appendf("Unexpected process termination (ep:%s)",endpoint.getEndpointHostText(tmp).str()); break;
         }
         return str;
     }
@@ -442,16 +443,95 @@ class CMPChannel;
 
 class CMPConnectThread: public Thread
 {
-    bool running;
+    std::atomic<bool> running;
     bool listen;
     ISocket *listensock;
     CMPServer *parent;
     int mpSoMaxConn;
+    unsigned acceptThreadPoolSize = 0;
+    Owned<IThreadPool> threadPool;
+
     Owned<IAllowListHandler> allowListCallback;
     void checkSelfDestruct(void *p,size32_t sz);
 
     Owned<ISecureSocketContext> secureContextServer;
 
+    class CSlowClientProcessor : implements IThreaded
+    {
+        CMPConnectThread &owner;
+        CThreaded threaded;
+        std::vector<Owned<ISocket>> slowClientsSocks;
+        CriticalSection crit;
+        Semaphore sem;
+        std::atomic<bool> stopped = true;
+
+    public:
+        CSlowClientProcessor(CMPConnectThread &_owner) : threaded("CSlowClientProcessor"), owner(_owner)
+        {
+        }
+        void start()
+        {
+            stopped = false;
+            threaded.init(this, false);
+        }
+        void stop()
+        {
+            if (stopped)
+                return;
+
+            {
+                CriticalBlock b(crit);
+                stopped = true;
+                for (auto &sock : slowClientsSocks)
+                    sock->close();
+                slowClientsSocks.clear();
+            }
+
+            sem.signal();
+            if (!threaded.join(1000*60*5))
+                printf("CSlowClientProcessor::stop timed out\n");
+        }
+        void add(ISocket *sock) // NB: takes ownership
+        {
+            {
+                CriticalBlock b(crit);
+                if (stopped)
+                {
+                    sock->Release();
+                    return;
+                }
+                slowClientsSocks.emplace_back(sock);
+            }
+            sem.signal();
+        }
+    // IThreaded
+        virtual void threadmain() override
+        {
+            // The slow client processor deals with each queued slow client socket in turn, waiting the standard CONFIRM_TIMEOUT for each.
+            // An alternative would be to try each for shorter periods, shuffling them to the end if they still haven't been handled.
+            // But this is all probably OTT. The main thing is to avoid a slow client blocking the accept loop.
+            while (true)
+            {
+                sem.wait();
+
+                Owned<ISocket> sock;
+
+                {
+                    CriticalBlock b(crit);
+                    if (stopped)
+                        break;
+                    if (slowClientsSocks.empty()) // guard, but should never happen
+                    {
+                        WARNLOG("slowClientsSocks list empty");
+                        continue;
+                    }
+                    sock.set(slowClientsSocks.back());
+                    slowClientsSocks.pop_back();
+                }
+                owner.handleAcceptedSocket(sock.getClear(), CONFIRM_TIMEOUT, true);
+            }
+        }
+    } slowClientProcessor;
 public:
     CMPConnectThread(CMPServer *_parent, unsigned port, bool _listen);
     ~CMPConnectThread()
@@ -462,11 +542,21 @@ public:
     void startPort(unsigned short port);
     void stop()
     {
-        if (running) {
+        if (running)
+        {
             running = false;
             listensock->cancel_accept();
+
+            // ensure CMPConnectThread::run() has exited, and is not accepting more sockets
             if (!join(1000*60*5))   // should be pretty instant
                 printf("CMPConnectThread::stop timed out\n");
+
+            if (listen && acceptThreadPoolSize)
+            {
+                if (!threadPool->joinAll(true, 1000*60*5))
+                    printf("CMPConnectThread::stop threadPool->joinAll timed out\n");
+                slowClientProcessor.stop();
+            }
         }
     }
     void installAllowListCallback(IAllowListHandler *_allowListCallback)
@@ -477,6 +567,7 @@ public:
     {
         return allowListCallback;
     }
+    bool handleAcceptedSocket(ISocket *sock, unsigned timeoutMs, bool failOnTimeout);
 };
 
 class PingPacketHandler;
@@ -664,7 +755,7 @@ public:
                 }
             }
             catch (IException *e) {
-                FLLOG(MCoperatorWarning, unknownJob, e,"MP writepacket");
+                FLLOG(MCoperatorWarning, e,"MP writepacket");
                 e->Release();
             }
         }
@@ -697,36 +788,79 @@ public:
 
 void traceSlowReadTms(const char *msg, ISocket *sock, void *dst, size32_t minSize, size32_t maxSize, size32_t &sizeRead, unsigned timeoutMs, unsigned timeoutChkIntervalMs)
 {
-    dbgassertex(timeoutChkIntervalMs < timeoutMs);
+    dbgassertex(timeoutChkIntervalMs <= timeoutMs);
     StringBuffer epStr;
     CCycleTimer readTmsTimer;
-    unsigned intervalTimeoutMs = timeoutChkIntervalMs;
+    unsigned intervalTimeoutMs = 500;
+    CCycleTimer intvlTimer;
+
+    // legacy client sends minSize, recent client sends maxSize
+    // if read < maxSize, keep trying for maxSize, but if its exactly minSize
+    // somewhat quickly (without waiting full timeout) settle for minSize ...
+
+    if (intervalTimeoutMs > timeoutChkIntervalMs)
+        intervalTimeoutMs = timeoutChkIntervalMs;
+
+    sizeRead = 0;
+
+    unsigned firstReadTime = 0;
+    size32_t maxRead = maxSize;
     for (;;)
     {
         try
         {
-            sock->readtms(dst, minSize, maxSize, sizeRead, intervalTimeoutMs);
-            break;
+            size32_t amtRead = 0;
+            sock->readtms((char *)dst+sizeRead, 0, maxRead, amtRead, intervalTimeoutMs);
+            sizeRead += amtRead;
+            if (sizeRead == maxSize)
+                break;
+            maxRead -= amtRead;
         }
         catch (IJSOCK_Exception *e)
         {
             if (JSOCKERR_graceful_close == e->errorCode())
+            {
+                e->Release();
                 return;
+            }
             else if (JSOCKERR_timeout_expired != e->errorCode())
                 throw;
+            // interval read timed out ...
             unsigned elapsedMs = readTmsTimer.elapsedMs();
-            if (elapsedMs >= timeoutMs)
-                throw;
-            unsigned remainingMs = timeoutMs-elapsedMs;
-            if (remainingMs < timeoutChkIntervalMs)
-                intervalTimeoutMs = remainingMs;
-            if (0 == epStr.length())
+            if (sizeRead == minSize)
             {
-                SocketEndpoint ep;
-                sock->getPeerEndpoint(ep);
-                ep.getUrlStr(epStr);
+                if (firstReadTime == 0)
+                    firstReadTime = elapsedMs;
+                else if ((elapsedMs - firstReadTime) >= 5000) // max wait if minSize sent
+                {
+                    e->Release();
+                    break;
+                }
             }
-            WARNLOG("%s %s, stalled for %d ms so far", msg, epStr.str(), elapsedMs);
+            if (elapsedMs >= timeoutMs)
+            {
+                if (sizeRead >= minSize)
+                {
+                    e->Release();
+                    break;
+                }
+                throw;
+            }
+            unsigned remainingMs = timeoutMs-elapsedMs;
+            if (remainingMs < intervalTimeoutMs)
+                intervalTimeoutMs = remainingMs;
+            if (intvlTimer.elapsedMs() >= timeoutChkIntervalMs)
+            {
+                intvlTimer.reset();
+                if (0 == epStr.length())
+                {
+                    SocketEndpoint ep;
+                    sock->getPeerEndpoint(ep);
+                    ep.getEndpointHostText(epStr);
+                }
+                WARNLOG("%s %s, stalled for %d ms so far", msg, epStr.str(), elapsedMs);
+            }
+            e->Release();
         }
     }
     if (readTmsTimer.elapsedMs() >= TRACESLOW_THRESHOLD)
@@ -735,7 +869,7 @@ void traceSlowReadTms(const char *msg, ISocket *sock, void *dst, size32_t minSiz
         {
             SocketEndpoint ep;
             sock->getPeerEndpoint(ep);
-            ep.getUrlStr(epStr);
+            ep.getEndpointHostText(epStr);
         }
         WARNLOG("%s %s, took: %d ms", msg, epStr.str(), readTmsTimer.elapsedMs());
     }
@@ -835,7 +969,7 @@ protected: friend class CMPPacketReader;
             {
                 StringBuffer str;
 #ifdef _TRACE
-                LOG(MCdebugInfo, unknownJob, "MP: connecting to %s role: %" I64F "u", remoteep.getUrlStr(str).str(), parent->getRole());
+                LOG(MCdebugInfo, "MP: connecting to %s role: %" I64F "u", remoteep.getEndpointHostText(str).str(), parent->getRole());
 #endif
                 if (((int)tm.timeout)<0)
                     remaining = CONNECT_TIMEOUT;
@@ -871,7 +1005,7 @@ protected: friend class CMPPacketReader;
                 newsock->set_keep_alive(true);
 
 #ifdef _FULLTRACE
-                LOG(MCdebugInfo, unknownJob, "MP: connect after socket connect, retrycount = %d", retrycount);
+                LOG(MCdebugInfo, "MP: connect after socket connect, retrycount = %d", retrycount);
 #endif
 
                 SocketEndpoint hostep;
@@ -887,16 +1021,16 @@ protected: friend class CMPPacketReader;
 
 #ifdef _FULLTRACE
                 StringBuffer tmp1;
-                connectHdr.id[0].getUrlStr(tmp1);
+                connectHdr.id[0].getEndpointHostText(tmp1);
                 tmp1.append(' ');
-                connectHdr.id[1].getUrlStr(tmp1);
-                LOG(MCdebugInfo, unknownJob, "MP: connect after socket write %s",tmp1.str());
+                connectHdr.id[1].getEndpointHostText(tmp1);
+                LOG(MCdebugInfo, "MP: connect after socket write %s",tmp1.str());
 #endif
 
                 size32_t rd = 0;
 
 #ifdef _TRACE
-                LOG(MCdebugInfo, unknownJob, "MP: connect after socket write, waiting for read");
+                LOG(MCdebugInfo, "MP: connect after socket write, waiting for read");
 #endif
 
                 // Wait for connection reply but also check for A<->B deadlock (where both processes are here
@@ -909,6 +1043,10 @@ protected: friend class CMPPacketReader;
 #ifdef _TRACE
                 PROGLOG("MP: loopCnt start = %u", loopCnt);
 #endif
+                rd = 0;
+                byte replyBuf[sizeof(size32_t)];
+                size32_t totRead = 0;
+                size32_t maxRead = sizeof(size32_t);
                 while (loopCnt-- > 0)
                 {
                     {
@@ -929,13 +1067,20 @@ protected: friend class CMPPacketReader;
                         }
                     }
 
-                    rd = 0;
-
-                    MemoryBuffer replyMb;
-                    void *replyMem = replyMb.ensureCapacity(0x1000); // 4K - max size to allow for serialized exception
                     try
                     {
-                        newsock->readtms(replyMem, sizeof(rd), replyMb.capacity(), rd, CONNECT_TIMEOUT_INTERVAL);
+                        // read 4 bytes, value should be sizeof(ConnectHdr.id) [12] or sizeof(connectHdr) [44] or larger (exception)
+                        // if its an exception or legacy and not in allowlist the other side closes its socket after sending this msg ...
+
+                        size32_t amtRead = 0;
+                        newsock->readtms(&replyBuf[totRead], 0, maxRead, amtRead, CONNECT_TIMEOUT_INTERVAL);
+                        totRead += amtRead;
+                        if (totRead == sizeof(size32_t))
+                        {
+                            rd = totRead;
+                            break;
+                        }
+                        maxRead -= amtRead;
                     }
                     catch (IException *e)
                     {
@@ -965,7 +1110,7 @@ protected: friend class CMPPacketReader;
                             // if other side closes, connect again
                             if (e->errorCode() == JSOCKERR_graceful_close)
                             {
-                                LOG(MCdebugInfo, unknownJob, "MP: Retrying (other side closed connection, probably due to clash)");
+                                LOG(MCdebugInfo, "MP: Retrying (other side closed connection, probably due to clash)");
                                 e->Release();
                                 break;
                             }
@@ -973,54 +1118,64 @@ protected: friend class CMPPacketReader;
                             e->Release();
 
 #ifdef _TRACE
-                            LOG(MCdebugInfo, unknownJob, "MP: Retrying connection to %s, %d attempts left",remoteep.getUrlStr(str).str(),retrycount+1);
+                            LOG(MCdebugInfo, "MP: Retrying connection to %s, %d attempts left",remoteep.getEndpointHostText(str).str(),retrycount+1);
 #endif
                         }
                         else
                         {
+                            // interval read timed out ...
                             if (0 == epStr.length())
                             {
                                 SocketEndpoint ep;
                                 newsock->getPeerEndpoint(ep);
-                                ep.getUrlStr(epStr);
+                                ep.getEndpointHostText(epStr);
                             }
                             WARNLOG("MP: connect to: %s, stalled for %d ms so far", epStr.str(), msTick()-startMs);
                             e->Release();
                         }
                     }
-#ifdef _FULLTRACE
-                    PROGLOG("MP: rd = %d", rd);
+                } // while loopcnt
+
+                /* NB: legacy clients that don't handle the exception deserialization here
+                 * will see reply as success, so no clean error,
+                 * but will fail shortly afterwards since server connection is closed
+                 */
+                if (rd == sizeof(size32_t))
+                {
+                    size32_t replyVal;
+                    memcpy(&replyVal, (size32_t *)replyBuf, sizeof(size32_t));
+#ifdef _TRACE
+                    LOG(MCdebugInfo, "MP: connect after socket read replyVal=%u, sizeof(connectHdr)=%lu", replyVal, sizeof(connectHdr));
 #endif
-                    /* NB: legacy clients that don't handle the exception deserialization here
-                     * will see reply as success, so no clean error,
-                     * but will fail shortly afterwards since server connection is closed
-                     */
-                    if (rd > sizeof(rd)) // legacy clients will only ever send a reply of 0 or 4, if greater, then new client is replying with an exception
+                    if (replyVal > sizeof(ConnectHdr))
                     {
-                        MemoryBuffer mb;
-                        mb.setBuffer(rd, replyMem, false);
-                        size32_t len;
-                        mb.read(len); // exception length
-                        if (len)
+                        // read exception message ...
+                        MemoryBuffer replyMb;
+                        void *replyMem = replyMb.ensureCapacity(replyVal);
+
+                        size32_t amtRead = 0;
+                        try
                         {
-                            exitException.setown(deserializeException(mb));
+                            newsock->readtms(replyMem, replyVal, replyVal, amtRead, CONNECT_READEXC_TIMEOUT);
+                        }
+                        catch (IException *e)
+                        {
+                            if (0 == epStr.length())
+                            {
+                                SocketEndpoint ep;
+                                newsock->getPeerEndpoint(ep);
+                                ep.getEndpointHostText(epStr);
+                            }
+                            StringBuffer allowExcStr;
+                            exitException.setown(makeStringExceptionV(-99, "Error '%s' reading Allowlist exception from: %s", e->errorMessage(allowExcStr).str(), epStr.str()));
+                            e->Release();
                             throw exitException.getLink();
                         }
-                        break;
+                        replyMb.setLength(amtRead);
+                        exitException.setown(deserializeException(replyMb));
+                        throw exitException.getLink();
                     }
-                    else if (rd != 0)
-                    {
-                        assertex(rd == sizeof(rd));
-                        break;
-                    }
-                }
 
-#ifdef _TRACE
-                LOG(MCdebugInfo, unknownJob, "MP: connect after socket read rd=%u, sizeof(connectHdr)=%lu", rd, sizeof(connectHdr));
-#endif
-
-                if (rd)
-                {
                     unsigned elapsedMs = msTick() - startMs;
                     if (elapsedMs >= TRACESLOW_THRESHOLD)
                     {
@@ -1028,7 +1183,7 @@ protected: friend class CMPPacketReader;
                         {
                             SocketEndpoint ep;
                             newsock->getPeerEndpoint(ep);
-                            ep.getUrlStr(epStr);
+                            ep.getEndpointHostText(epStr);
                         }
                         WARNLOG("MP: connect to: %s, took: %d ms", epStr.str(), elapsedMs);
                     }
@@ -1036,7 +1191,7 @@ protected: friend class CMPPacketReader;
                     if (attachSocket(newsock,remoteep,hostep,true,NULL,addrval))
                     {
 #ifdef _TRACE
-                        LOG(MCdebugInfo, unknownJob, "MP: connected to %s",str.str());
+                        LOG(MCdebugInfo, "MP: connected to %s",str.str());
 #endif
                         lastxfer = msTick();
                         closed = false;
@@ -1067,7 +1222,7 @@ protected: friend class CMPPacketReader;
 #ifdef _TRACE
                 StringBuffer str;
                 str.clear();
-                LOG(MCdebugInfo, unknownJob, "MP: Retrying connection to %s, %d attempts left",remoteep.getUrlStr(str).str(),retrycount+1);
+                LOG(MCdebugInfo, "MP: Retrying connection to %s, %d attempts left",remoteep.getEndpointHostText(str).str(),retrycount+1);
 #endif
             }
 
@@ -1121,7 +1276,7 @@ public:
             CriticalBlock block(connectsect);
             if (closed) {
 #ifdef _TRACELINKCLOSED
-                LOG(MCdebugInfo, unknownJob, "WritePacket closed on entry");
+                LOG(MCdebugInfo, "WritePacket closed on entry");
                 PrintStackReport();
 #endif
                 if (!checkReconnect(tm))
@@ -1130,7 +1285,7 @@ public:
             if (!channelsock) {
                 if (!connect(tm)) {
 #ifdef _FULLTRACE
-                    LOG(MCdebugInfo, unknownJob, "WritePacket connect failed");
+                    LOG(MCdebugInfo, "WritePacket connect failed");
 #endif
                     return false;
                 }
@@ -1156,7 +1311,7 @@ public:
 #ifdef _FULLTRACE
             StringBuffer ep1;
             StringBuffer ep2;
-            LOG(MCdebugInfo, unknownJob, "WritePacket(target=%s,(%d,%d,%d))",remoteep.getUrlStr(ep1).str(),hdrsize,hdr2size,bodysize);
+            LOG(MCdebugInfo, "WritePacket(target=%s,(%d,%d,%d))",remoteep.getEndpointHostText(ep1).str(),hdrsize,hdr2size,bodysize);
             unsigned t2 = msTick();
 #endif
             unsigned n = 0;
@@ -1175,17 +1330,17 @@ public:
                 sizes[n++] = bodysize;
             }
             if (!dest) {
-                LOG(MCdebugInfo, unknownJob, "MP Warning: WritePacket unexpected NULL socket");
+                LOG(MCdebugInfo, "MP Warning: WritePacket unexpected NULL socket");
                 return false;
             }
             dest->write_multiple(n,bufs,sizes);  
             lastxfer = msTick();
 #ifdef _FULLTRACE
-            LOG(MCdebugInfo, unknownJob, "WritePacket(timewaiting=%d,timesending=%d)",t2-t1,lastxfer-t2);
+            LOG(MCdebugInfo, "WritePacket(timewaiting=%d,timesending=%d)",t2-t1,lastxfer-t2);
 #endif
         }
         catch (IException *e) {
-            FLLOG(MCoperatorWarning, unknownJob, e,"MP writepacket");
+            FLLOG(MCoperatorWarning, e,"MP writepacket");
             closeSocket(false, true);
             throw;
         }
@@ -1217,7 +1372,7 @@ public:
                 return true;
         }
         StringBuffer ep;
-        remoteep.getUrlStr(ep); 
+        remoteep.getEndpointHostText(ep); 
         for (;;) {
             CTimeMon pingtm(1000*60);
             if (sendPing(pingtm)) 
@@ -1228,11 +1383,11 @@ public:
                     return false;
             }
             if (tm.timedout()) {
-                LOG(MCdebugInfo, unknownJob, "MP: verify, ping failed to %s",ep.str());
+                LOG(MCdebugInfo, "MP: verify, ping failed to %s",ep.str());
                 closeSocket();
                 return false;
             }
-            LOG(MCdebugInfo, unknownJob, "MP: verify, ping failed to %s, retrying",ep.str());
+            LOG(MCdebugInfo, "MP: verify, ping failed to %s, retrying",ep.str());
             unsigned remaining;
             if (!pingtm.timedout(&remaining)&&remaining) 
                 Sleep(remaining);
@@ -1310,7 +1465,7 @@ public:
 
     StringBuffer & queryEpStr(StringBuffer &s)
     {
-        return remoteep.getUrlStr(s);
+        return remoteep.getEndpointHostText(s);
     }
 
     bool isClosed()
@@ -1346,7 +1501,7 @@ public:
 #ifdef _FULLTRACE
         StringBuffer ep1;
         StringBuffer ep2;
-        LOG(MCdebugInfo, unknownJob, "MP: send(target=%s,sender=%s,tag=%d,replytag=%d,size=%d)",hdr.target.getUrlStr(ep1).str(),hdr.sender.getUrlStr(ep2).str(),hdr.tag,hdr.replytag,hdr.size);
+        LOG(MCdebugInfo, "MP: send(target=%s,sender=%s,tag=%d,replytag=%d,size=%d)",hdr.target.getEndpointHostText(ep1).str(),hdr.sender.getEndpointHostText(ep2).str(),hdr.tag,hdr.replytag,hdr.size);
 #endif
         return channel->writepacket(&hdr,sizeof(hdr),mb.toByteArray(),mb.length(),tm);
     }
@@ -1401,7 +1556,7 @@ class MultiPacketHandler // TAG_SYS_MULTI
         if ((ms-lastErrMs) > 1000) // avoid logging too much
         {
             StringBuffer errorMsg("sender=");
-            msg.getSender().getUrlStr(errorMsg).newline();
+            msg.getSender().getEndpointHostText(errorMsg).newline();
             errorMsg.append("This header: ");
             mhdr.getDetails(errorMsg).newline();
             if (otherMhdr)
@@ -1410,7 +1565,7 @@ class MultiPacketHandler // TAG_SYS_MULTI
                 otherMhdr->getDetails(errorMsg).newline();
             }
             msg.getDetails(errorMsg);
-            LOG(MCerror, unknownJob, "MultiPacketHandler: protocol error (%d) %s", code, errorMsg.str());
+            LOG(MCerror, "MultiPacketHandler: protocol error (%d) %s", code, errorMsg.str());
         }
         lastErrMs = ms;
     }
@@ -1478,7 +1633,7 @@ public:
 #ifdef _FULLTRACE
         StringBuffer ep1;
         StringBuffer ep2;
-        LOG(MCdebugInfo, unknownJob, "MP: multi-send(target=%s,sender=%s,tag=%d,replytag=%d,size=%d)",hdr.target.getUrlStr(ep1).str(),hdr.sender.getUrlStr(ep2).str(),hdr.tag,hdr.replytag,hdr.size);
+        LOG(MCdebugInfo, "MP: multi-send(target=%s,sender=%s,tag=%d,replytag=%d,size=%d)",hdr.target.getEndpointHostText(ep1).str(),hdr.sender.getEndpointHostText(ep2).str(),hdr.tag,hdr.replytag,hdr.size);
 #endif
         PacketHeader outhdr;
         outhdr = hdr;
@@ -1496,13 +1651,13 @@ public:
             if (i+1==mhdr.numparts) 
                 mhdr.size = mhdr.total-mhdr.ofs;
 #ifdef _FULLTRACE
-            LOG(MCdebugInfo, unknownJob, "MP: multi-send block=%d, num blocks=%d, ofs=%d, size=%d",i,mhdr.numparts,mhdr.ofs,mhdr.size);
+            LOG(MCdebugInfo, "MP: multi-send block=%d, num blocks=%d, ofs=%d, size=%d",i,mhdr.numparts,mhdr.ofs,mhdr.size);
 #endif
             outhdr.initseq();
             outhdr.size = sizeof(outhdr)+sizeof(mhdr)+mhdr.size;
             if (!channel->writepacket(&outhdr,sizeof(outhdr),&mhdr,sizeof(mhdr),p,mhdr.size,tm)) {
 #ifdef _FULLTRACE
-                LOG(MCdebugInfo, unknownJob, "MP: multi-send failed");
+                LOG(MCdebugInfo, "MP: multi-send failed");
 #endif
                 return false;
             }
@@ -1591,7 +1746,7 @@ public:
                 if (pc) 
                 {
 #ifdef _TRACELINKCLOSED
-                    LOG(MCdebugInfo, unknownJob, "CMPPacketReader::notifySelected() about to close socket, mode = 0x%x", selected);
+                    LOG(MCdebugInfo, "CMPPacketReader::notifySelected() about to close socket, mode = 0x%x", selected);
 #endif
                     pc->closeSocket(false, true);
                 }
@@ -1611,7 +1766,7 @@ public:
                     // assumes packet header will arrive in one go
                     if (sizeavail<sizeof(hdr)) {
 #ifdef _FULLTRACE
-                        LOG(MCdebugInfo, unknownJob, "Selected stalled on header %u %lu",sizeavail,sizeavail-sizeof(hdr));
+                        LOG(MCdebugInfo, "Selected stalled on header %u %lu",sizeavail,sizeavail-sizeof(hdr));
 #endif
                         size32_t szread;
                         sock->read(&hdr,sizeof(hdr),sizeof(hdr),szread,60); // I don't *really* want to block here but not much else can do
@@ -1621,7 +1776,7 @@ public:
                     if (hdr.version/0x100 != MP_PROTOCOL_VERSION/0x100) {
                         // TBD IPV6 here
                         SocketEndpoint ep;
-                        hdr.sender.get(ep);
+                        sock->getPeerEndpoint(ep);
                         IMP_Exception *e=new CMPException(MPERR_protocol_version_mismatch,ep);
                         throw e;
                     }
@@ -1632,7 +1787,7 @@ public:
 #ifdef _FULLTRACE
                     StringBuffer ep1;
                     StringBuffer ep2;
-                    LOG(MCdebugInfo, unknownJob, "MP: ReadPacket(sender=%s,target=%s,tag=%d,replytag=%d,size=%d)",hdr.sender.getUrlStr(ep1).str(),hdr.target.getUrlStr(ep2).str(),hdr.tag,hdr.replytag,hdr.size);
+                    LOG(MCdebugInfo, "MP: ReadPacket(sender=%s,target=%s,tag=%d,replytag=%d,size=%d)",hdr.sender.getEndpointHostText(ep1).str(),hdr.target.getEndpointHostText(ep2).str(),hdr.tag,hdr.replytag,hdr.size);
 #endif
                     remaining = hdr.size-sizeof(hdr);
                     activemsg = new CMessageBuffer(remaining); // will get from low level IO at some stage
@@ -1652,7 +1807,7 @@ public:
                 if (remaining==0) { // we have the packet so process
 
 #ifdef _FULLTRACE
-                    LOG(MCdebugInfo, unknownJob, "MP: ReadPacket(timetaken = %d,select iterations=%d)",msTick()-parent->startxfer,parent->numiter);
+                    LOG(MCdebugInfo, "MP: ReadPacket(timetaken = %d,select iterations=%d)",msTick()-parent->startxfer,parent->numiter);
 #endif
                     do {
                         switch (activemsg->getTag()) {
@@ -1688,7 +1843,7 @@ public:
         }
         catch (IException *e) {
             if (e->errorCode()!=JSOCKERR_graceful_close)
-                FLLOG(MCoperatorWarning, unknownJob, e,"MP(Packet Reader)");
+                FLLOG(MCoperatorWarning, e,"MP(Packet Reader)");
             e->Release();
         }
         // error here, so close socket (ignore error as may be closed already)
@@ -1782,32 +1937,32 @@ bool CMPChannel::attachSocket(ISocket *newsock,const SocketEndpoint &_remoteep,c
 
         StringBuffer ep1;
         StringBuffer ep2;
-        _localep.getUrlStr(ep1);
-        _remoteep.getUrlStr(ep2);
-        LOG(MCdebugInfo, unknownJob, "MP: Possible clash between %s->%s %d(%d)",ep1.str(),ep2.str(),(int)ismaster,(int)master);
+        _localep.getEndpointHostText(ep1);
+        _remoteep.getEndpointHostText(ep2);
+        LOG(MCdebugInfo, "MP: Possible clash between %s->%s %d(%d)",ep1.str(),ep2.str(),(int)ismaster,(int)master);
 
         try {
             if (ismaster!=master) {
                 if (ismaster) {
-                    LOG(MCdebugInfo, unknownJob, "MP: resolving socket attach clash (master)");
+                    LOG(MCdebugInfo, "MP: resolving socket attach clash (master)");
                     return false;
                 }
                 else {
                     Sleep(50);  // give the other side some time to close
                     CTimeMon tm(10000);
                     if (verifyConnection(tm,false)) {
-                        LOG(MCdebugInfo, unknownJob, "MP: resolving socket attach clash (verified)");
+                        LOG(MCdebugInfo, "MP: resolving socket attach clash (verified)");
                         return false;
                     }
                 }
             }
         }
         catch (IException *e) {
-            FLLOG(MCoperatorWarning, unknownJob, e,"MP attachsocket(1)");
+            FLLOG(MCoperatorWarning, e,"MP attachsocket(1)");
             e->Release();
         }
         try {
-            LOG(MCdebugInfo, unknownJob, "Message Passing - removing stale socket to %s",ep2.str());
+            LOG(MCdebugInfo, "Message Passing - removing stale socket to %s",ep2.str());
             CriticalUnblock unblock(connectsect);
             closeSocket(true, true);
 #ifdef REFUSE_STALE_CONNECTION
@@ -1817,7 +1972,7 @@ bool CMPChannel::attachSocket(ISocket *newsock,const SocketEndpoint &_remoteep,c
             Sleep(100); // pause to allow close socket triggers to run
         }
         catch (IException *e) {
-            FLLOG(MCoperatorWarning, unknownJob, e,"MP attachsocket(2)");
+            FLLOG(MCoperatorWarning, e,"MP attachsocket(2)");
             e->Release();
         }
     }
@@ -1855,7 +2010,7 @@ bool CMPChannel::send(MemoryBuffer &mb, mptag_t tag, mptag_t replytag, CTimeMon 
     if (closed||(reply&&!isConnected()))  // flag error if has been disconnected
     {
 #ifdef _TRACELINKCLOSED
-        LOG(MCdebugInfo, unknownJob, "CMPChannel::send closed on entry %d",(int)closed);
+        LOG(MCdebugInfo, "CMPChannel::send closed on entry %d",(int)closed);
         PrintStackReport();
 #endif
         if (!checkReconnect(tm))
@@ -1932,7 +2087,7 @@ bool CMPChannel::sendPing(CTimeMon &tm)
         ret = parent->pingpackethandler->send(this,hdr,tm)&&!tm.timedout(&remaining);
     }
     catch (IException *e) {         
-        FLLOG(MCoperatorWarning, unknownJob, e,"MP ping(1)");
+        FLLOG(MCoperatorWarning, e,"MP ping(1)");
         e->Release();
     }
     sendmutex.unlock();
@@ -1962,17 +2117,18 @@ bool CMPChannel::sendPingReply(unsigned timeout,bool identifyself)
         ret = parent->pingreplypackethandler->send(this,hdr,mb,mon);
     }
     catch (IException *e) {         
-        FLLOG(MCoperatorWarning, unknownJob, e,"MP ping reply(1)");
+        FLLOG(MCoperatorWarning, e,"MP ping reply(1)");
         e->Release();
         ret = false;
     }
     sendmutex.unlock();
     return ret;
 }
-    
+
+static constexpr unsigned defaultAcceptThreadPoolSize = 100;
 // --------------------------------------------------------
 CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _listen)
-    : Thread("MP Connection Thread")
+    : Thread("MP Connection Thread"), slowClientProcessor(*this)
 {
     parent = _parent;
     listen = _listen;
@@ -1986,6 +2142,7 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
             mpSoMaxConn = env->getPropInt("EnvSettings/mpSoMaxConn", 0);
             if (!mpSoMaxConn)
                 mpSoMaxConn = env->getPropInt("EnvSettings/ports/mpSoMaxConn", 0);
+            acceptThreadPoolSize = env->getPropInt("EnvSettings/acceptThreadPoolSize", defaultAcceptThreadPoolSize);
         }
         unsigned mpTraceLevel = env->getPropInt("EnvSettings/mpTraceLevel", 0);
         switch (mpTraceLevel)
@@ -2006,6 +2163,13 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
     }
 #else
     parent->mpTraceLevel = getComponentConfigSP()->getPropInt("logging/@detail", InfoMsgThreshold);
+    if (listen)
+    {
+        if (getComponentConfigSP()->hasProp("expert/@acceptThreadPoolSize"))
+            acceptThreadPoolSize = getComponentConfigSP()->getPropInt("expert/@acceptThreadPoolSize");
+        else
+            acceptThreadPoolSize = getGlobalConfigSP()->getPropInt("expert/@acceptThreadPoolSize", defaultAcceptThreadPoolSize);
+    }
 #endif
 
     if (mpSoMaxConn)
@@ -2061,14 +2225,15 @@ CMPConnectThread::CMPConnectThread(CMPServer *_parent, unsigned port, bool _list
         listensock = NULL;  // delay create till running
     parent->setPort(port);
 #ifdef _TRACE
-    LOG(MCdebugInfo, unknownJob, "MP Connect Thread Init Port = %d", port);
+    LOG(MCdebugInfo, "MP Connect Thread Init Port = %d", port);
 #endif
     running = false;
 
 #if defined(_USE_OPENSSL)
     if (parent->useTLS)
-        secureContextServer.setown(createSecureSocketContextSecretSrv("local"));
+        secureContextServer.setown(createSecureSocketContextSecretSrv("local", nullptr, true));
 #endif
+    PROGLOG("MP TLS: %s acceptThreadPoolSize: %u", parent->useTLS ? "on" : "off", acceptThreadPoolSize);
 }
 
 void CMPConnectThread::checkSelfDestruct(void *p,size32_t sz)
@@ -2081,7 +2246,7 @@ void CMPConnectThread::checkSelfDestruct(void *p,size32_t sz)
     PROGLOG("MP Self destruct invoked");
     try {
         if (listensock) {
-            listensock->close();
+            shutdownAndCloseNoThrow(listensock);
             listensock->Release();
             listensock=NULL;
         }
@@ -2113,14 +2278,254 @@ void CMPConnectThread::startPort(unsigned short port)
     if (!listen)
         return;
     running = true;
-    Thread::start();
+    if (acceptThreadPoolSize)
+    {
+        class CMPConnectThreadFactory : public CInterfaceOf<IThreadFactory>
+        {
+            CMPConnectThread &owner;
+        public:
+            CMPConnectThreadFactory(CMPConnectThread &_owner) : owner(_owner)
+            {
+            }
+        // IThreadFactory
+            IPooledThread *createNew() override
+            {
+                class CMPConnectionThread : public CInterfaceOf<IPooledThread>
+                {
+                    CMPConnectThread &owner;
+                    Owned<ISocket> sock;
+                public:
+                    CMPConnectionThread(CMPConnectThread &_owner) : owner(_owner)
+                    {
+                    }
+                // IPooledThread
+                    virtual void init(void *param) override
+                    {
+                        sock.set((ISocket *)param);
+                    }
+                    virtual void threadmain() override
+                    {
+                        constexpr unsigned timeoutMs = 5000;
+
+                        // detach from this pooled thread, and own locally, so that we ensure that
+                        // the pooled thread object does not retain it until the next init() call.
+                        Owned<ISocket> handledSock = sock.getClear();
+
+                        if (owner.handleAcceptedSocket(handledSock.getLink(), timeoutMs, false))
+                        {
+                            // handoff to slowClientProcessor, which will retry for standard CONFIRM_TIMEOUT period
+                            owner.slowClientProcessor.add(handledSock.getClear());
+                        }
+                    }
+                    virtual bool stop() override
+                    {
+                        return true;
+                    }
+                    virtual bool canReuse() const override
+                    {
+                        return true;
+                    }
+                };
+                return new CMPConnectionThread(owner);
+            }
+        };
+        Owned<IThreadFactory> factory = new CMPConnectThreadFactory(*this);
+        threadPool.setown(createThreadPool("MPConnectPool", factory, false, nullptr, acceptThreadPoolSize, INFINITE));
+        slowClientProcessor.start();
+    }
+    Thread::start(false);
+}
+
+// only returns true if !failOnTimeout and times out
+bool CMPConnectThread::handleAcceptedSocket(ISocket *_sock, unsigned timeoutMs, bool failOnTimeout)
+{
+    SocketEndpoint peerEp;
+    _sock->getPeerEndpoint(peerEp);
+    Owned<ISocket> sock = _sock;
+    try
+    {
+#if defined(_USE_OPENSSL)
+        if (parent->useTLS)
+        {
+            Owned<ISecureSocket> ssock = secureContextServer->createSecureSocket(sock.getClear());
+            int tlsTraceLevel = SSLogMin;
+            if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
+                tlsTraceLevel = SSLogMax;
+            int status = ssock->secure_accept(tlsTraceLevel);
+            if (status < 0)
+            {
+                ssock->close();
+                PROGLOG("MP Connect Thread: failed to accept secure connection");
+                return false; // did not timeout
+            }
+            sock.setown(ssock.getClear());
+        }
+#endif // OPENSSL
+
+#ifdef _FULLTRACE
+        StringBuffer s;
+        SocketEndpoint ep1;
+        sock->getPeerEndpoint(ep1);
+        PROGLOG("MP: Connect Thread: socket accepted from %s",ep1.getEndpointHostText(s).str());
+#endif
+
+        sock->set_keep_alive(true);
+
+        size32_t rd = 0;
+        SocketEndpoint _remoteep;
+        SocketEndpoint hostep;
+        ConnectHdr connectHdr;
+        bool legacyClient = false;
+
+        // NB: min size is ConnectHdr.id for legacy clients, can thus distinguish old from new
+        try
+        {
+            traceSlowReadTms("MP: initial accept packet from", sock, &connectHdr, sizeof(connectHdr.id), sizeof(connectHdr), rd, timeoutMs, CONFIRM_TIMEOUT_INTERVAL);
+        }
+        catch (IJSOCK_Exception *e)
+        {
+            if (JSOCKERR_timeout_expired != e->errorCode())
+                throw;
+            if (!failOnTimeout)
+                return true; // timedout (socket kept open)
+        }
+        if (0 == rd)
+        {
+            if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
+            {
+                // cannot get peer addresss as socket state is now ss_shutdown (unless we want to allow this in getPeerEndpoint())
+                PROGLOG("MP Connect Thread: connect with no msg received, assumed port monitor check");
+            }
+            sock->close();
+            return false; // did not timeout
+        }
+        else
+        {
+            if (rd == sizeof(connectHdr.id)) // legacy client
+            {
+                legacyClient = true;
+                connectHdr.hdr.size = sizeof(PacketHeader);
+                connectHdr.hdr.tag = TAG_SYS_BCAST;
+                connectHdr.hdr.flags = 0;
+                connectHdr.hdr.version = MP_PROTOCOL_VERSION;
+                connectHdr.setRole(0); // unknown
+            }
+            else if (rd < sizeof(connectHdr.id) || rd > sizeof(connectHdr))
+            {
+                // not sure how to get here as this is not one of the possible outcomes of above: rd == 0 or rd == sizeof(id) or an exception
+                StringBuffer errMsg("MP Connect Thread: invalid number of connection bytes serialized from ");
+                peerEp.getEndpointHostText(errMsg);
+                FLLOG(MCoperatorWarning, "%s", errMsg.str());
+                sock->close();
+                return false; // did not timeout
+            }
+        }
+
+        if (allowListCallback)
+        {
+            StringBuffer ipStr;
+            peerEp.getHostText(ipStr);
+            StringBuffer responseText; // filled if denied, NB: if amount sent is > sizeof(ConnectHdr) we can differentiate exception from success
+            if (!allowListCallback->isAllowListed(ipStr, connectHdr.getRole(), &responseText))
+            {
+                Owned<IException> e = makeStringException(-1, responseText);
+                OWARNLOG(e, nullptr);
+
+                if (legacyClient)
+                {
+                    /* NB: legacy client can't handle exception response
+                        * Acknowledge legacy connection, then close socket
+                        * The effect will be the client sees an MPERR_link_closed
+                        */
+                    size32_t reply = sizeof(connectHdr.id);
+                    sock->write(&reply, sizeof(reply));
+                }
+                else
+                {
+                    MemoryBuffer mb;
+                    DelayedSizeMarker marker(mb);
+                    serializeException(e, mb);
+                    marker.write();
+                    sock->write(mb.toByteArray(), mb.length());
+                }
+
+                sock->close();
+                return false; // did not timeout
+            }
+        }
+
+        connectHdr.id[0].get(_remoteep);
+        connectHdr.id[1].get(hostep);
+
+        unsigned __int64 addrval = DIGIT1*connectHdr.id[0].ip[0] + DIGIT2*connectHdr.id[0].ip[1] + DIGIT3*connectHdr.id[0].ip[2] + DIGIT4*connectHdr.id[0].ip[3] + connectHdr.id[0].port;
+#ifdef _TRACE
+        PROGLOG("MP: Connect Thread: addrval = %" I64F "u", addrval);
+#endif
+
+        if (_remoteep.isNull() || hostep.isNull())
+        {
+            StringBuffer errMsg;
+            SocketEndpointV4 zeroTest[2];
+            memset(zeroTest, 0x0, sizeof(zeroTest));
+            if (memcmp(connectHdr.id, zeroTest, sizeof(connectHdr.id)))
+            {
+                // JCSMORE, I think _remoteep really must/should match a IP of this local host
+                errMsg.append("MP Connect Thread: invalid remote and/or host ep serialized from ");
+                peerEp.getEndpointHostText(errMsg);
+                FLLOG(MCoperatorWarning, "%s", errMsg.str());
+            }
+            else if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
+            {
+                // all zeros msg received
+                errMsg.append("MP Connect Thread: connect with empty msg received, assumed port monitor check from ");
+                peerEp.getEndpointHostText(errMsg);
+                PROGLOG("%s", errMsg.str());
+            }
+            sock->close();
+            return false; // did not timeout
+        }
+#ifdef _FULLTRACE       
+        StringBuffer tmp1;
+        _remoteep.getEndpointHostText(tmp1);
+        tmp1.append(' ');
+        hostep.getEndpointHostText(tmp1);
+        PROGLOG("MP: Connect Thread: after read %s",tmp1.str());
+#endif
+        checkSelfDestruct(&connectHdr.id[0],sizeof(connectHdr.id));
+        Owned<CMPChannel> channel = parent->lookup(_remoteep);
+        if (!channel->attachSocket(sock.getClear(),_remoteep,hostep,false,&rd,addrval))
+        {
+#ifdef _FULLTRACE       
+            PROGLOG("MP Connect Thread: lookup failed");
+#endif
+        }
+        else
+        {
+#ifdef _TRACE
+            StringBuffer str1;
+            StringBuffer str2;
+            LOG(MCdebugInfo, "MP Connect Thread: connected to %s",_remoteep.getEndpointHostText(str1).str());
+#endif
+        }
+#ifdef _FULLTRACE       
+        PROGLOG("MP: Connect Thread: after write");
+#endif
+    }
+    catch (IException *e)
+    {
+        FLLOG(MCoperatorWarning, e,"MP Connect Thread: Failed to make connection(1)");
+        sock->close();
+        e->Release();
+    }
+    return false; // did not timeout
 }
 
 int CMPConnectThread::run()
 {
 #ifdef _TRACE
-    LOG(MCdebugInfo, unknownJob, "MP: Connect Thread Starting - accept loop");
+    LOG(MCdebugInfo, "MP: Connect Thread Starting - accept loop");
 #endif
+    Owned<IException> exception;
     while (running)
     {
         Owned<ISocket> sock;
@@ -2131,181 +2536,39 @@ int CMPConnectThread::run()
         }
         catch (IException *e)
         {
-            LOG(MCdebugInfo, unknownJob, e,"MP accept failed");
-            throw; // error handling TBD
+            exception.setown(e);
         }
         if (sock)
         {
-            try
+            if (threadPool)
             {
-#if defined(_USE_OPENSSL)
-                if (parent->useTLS)
-                {
-                    Owned<ISecureSocket> ssock = secureContextServer->createSecureSocket(sock.getClear());
-                    int tlsTraceLevel = SSLogMin;
-                    if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
-                        tlsTraceLevel = SSLogMax;
-                    int status = ssock->secure_accept(tlsTraceLevel);
-                    if (status < 0)
-                    {
-                        ssock->close();
-                        PROGLOG("MP Connect Thread: failed to accept secure connection");
-                        continue;
-                    }
-                    sock.setown(ssock.getClear());
-                }
-#endif // OPENSSL
-
-#ifdef _FULLTRACE
-                StringBuffer s;
-                SocketEndpoint ep1;
-                sock->getPeerEndpoint(ep1);
-                PROGLOG("MP: Connect Thread: socket accepted from %s",ep1.getUrlStr(s).str());
-#endif
-
-                sock->set_keep_alive(true);
-
-                size32_t rd;
-                SocketEndpoint _remoteep;
-                SocketEndpoint hostep;
-                ConnectHdr connectHdr;
-                bool legacyClient = false;
-
-                // NB: min size is ConnectHdr.id for legacy clients, can thus distinguish old from new
-                traceSlowReadTms("MP: initial accept packet from", sock, &connectHdr, sizeof(connectHdr.id), sizeof(connectHdr), rd, CONFIRM_TIMEOUT, CONFIRM_TIMEOUT_INTERVAL);
-                if (0 == rd)
-                {
-                    if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
-                    {
-                        // cannot get peer addresss as socket state is now ss_shutdown (unless we want to allow this in getPeerEndpoint())
-                        PROGLOG("MP Connect Thread: connect with no msg received, assumed port monitor check");
-                    }
-                    sock->close();
-                    continue;
-                }
-                else
-                {
-                    if (rd == sizeof(connectHdr.id)) // legacy client
-                    {
-                        legacyClient = true;
-                        connectHdr.setRole(0); // unknown
-                    }
-                    else if (rd < sizeof(connectHdr.id) || rd > sizeof(connectHdr))
-                    {
-                        // not sure how to get here as this is not one of the possible outcomes of above: rd == 0 or rd == sizeof(id) or an exception
-                        StringBuffer errMsg("MP Connect Thread: invalid number of connection bytes serialized from ");
-                        peerEp.getUrlStr(errMsg);
-                        FLLOG(MCoperatorWarning, unknownJob, "%s", errMsg.str());
-                        sock->close();
-                        continue;
-                    }
-                }
-
-                if (allowListCallback)
-                {
-                    StringBuffer ipStr;
-                    peerEp.getIpText(ipStr);
-                    StringBuffer responseText; // filled if denied
-                    if (!allowListCallback->isAllowListed(ipStr, connectHdr.getRole(), &responseText))
-                    {
-                        Owned<IException> e = makeStringException(-1, responseText);
-                        OWARNLOG(e, nullptr);
-
-                        if (legacyClient)
-                        {
-                            /* NB: legacy client can't handle exception response
-                             * Acknowledge legacy connection, then close socket
-                             * The effect will be the client sees an MPERR_link_closed
-                             */
-                            size32_t reply = sizeof(connectHdr.id);
-                            sock->write(&reply, sizeof(reply));
-                        }
-                        else
-                        {
-                            MemoryBuffer mb;
-                            DelayedSizeMarker marker(mb);
-                            serializeException(e, mb);
-                            marker.write();
-                            sock->write(mb.toByteArray(), mb.length());
-                        }
-
-                        sock->close();
-                        continue;
-                    }
-                }
-
-                connectHdr.id[0].get(_remoteep);
-                connectHdr.id[1].get(hostep);
-
-                unsigned __int64 addrval = DIGIT1*connectHdr.id[0].ip[0] + DIGIT2*connectHdr.id[0].ip[1] + DIGIT3*connectHdr.id[0].ip[2] + DIGIT4*connectHdr.id[0].ip[3] + connectHdr.id[0].port;
-#ifdef _TRACE
-                PROGLOG("MP: Connect Thread: addrval = %" I64F "u", addrval);
-#endif
-
-                if (_remoteep.isNull() || hostep.isNull())
-                {
-                    StringBuffer errMsg;
-                    SocketEndpointV4 zeroTest[2];
-                    memset(zeroTest, 0x0, sizeof(zeroTest));
-                    if (memcmp(connectHdr.id, zeroTest, sizeof(connectHdr.id)))
-                    {
-                        // JCSMORE, I think _remoteep really must/should match a IP of this local host
-                        errMsg.append("MP Connect Thread: invalid remote and/or host ep serialized from ");
-                        peerEp.getUrlStr(errMsg);
-                        FLLOG(MCoperatorWarning, unknownJob, "%s", errMsg.str());
-                    }
-                    else if (parent->mpTraceLevel >= MPVerboseMsgThreshold)
-                    {
-                        // all zeros msg received
-                        errMsg.append("MP Connect Thread: connect with empty msg received, assumed port monitor check from ");
-                        peerEp.getUrlStr(errMsg);
-                        PROGLOG("%s", errMsg.str());
-                    }
-                    sock->close();
-                    continue;
-                }
-#ifdef _FULLTRACE       
-                StringBuffer tmp1;
-                _remoteep.getUrlStr(tmp1);
-                tmp1.append(' ');
-                hostep.getUrlStr(tmp1);
-                PROGLOG("MP: Connect Thread: after read %s",tmp1.str());
-#endif
-                checkSelfDestruct(&connectHdr.id[0],sizeof(connectHdr.id));
-                Owned<CMPChannel> channel = parent->lookup(_remoteep);
-                if (!channel->attachSocket(sock.getClear(),_remoteep,hostep,false,&rd,addrval))
-                {
-#ifdef _FULLTRACE       
-                    PROGLOG("MP Connect Thread: lookup failed");
-#endif
-                }
-                else
-                {
-#ifdef _TRACE
-                    StringBuffer str1;
-                    StringBuffer str2;
-                    LOG(MCdebugInfo, unknownJob, "MP Connect Thread: connected to %s",_remoteep.getUrlStr(str1).str());
-#endif
-                }
-#ifdef _FULLTRACE       
-                PROGLOG("MP: Connect Thread: after write");
-#endif
+                // if enabled, handle initial connection protocol on a separate thread
+                // if any block for more than a short period (5 seconds), then they are handed off to slowClientProcessor
+                threadPool->start(sock);
             }
-            catch (IException *e)
-            {
-                FLLOG(MCoperatorWarning, unknownJob, e,"MP Connect Thread: Failed to make connection(1)");
-                sock->close();
-                e->Release();
-            }
+            else
+                handleAcceptedSocket(sock.getClear(), CONFIRM_TIMEOUT, true);
         }
         else
         {
             if (running)
-                LOG(MCdebugInfo, unknownJob, "MP Connect Thread accept returned NULL");
+            {
+                if (exception)
+                {
+                    constexpr unsigned sleepSecs = 5;
+                    // Log and pause for a few seconds, because accept loop may have failed due to handle exhaustion.
+                    VStringBuffer msg("MP accept failed. Accept loop will be paused for %u seconds", sleepSecs);
+                    EXCLOG(exception, msg.str());
+                    exception.clear();
+                    MilliSleep(sleepSecs * 1000);
+                }
+                else // not sure this can ever happen (no exception, still running, and sock==nullptr)
+                    LOG(MCdebugInfo, "MP Connect Thread accept returned NULL");
+            }
         }
     }
 #ifdef _TRACE
-    LOG(MCdebugInfo, unknownJob, "MP Connect Thread Stopping");
+    LOG(MCdebugInfo, "MP Connect Thread Stopping");
 #endif
     return 0;
 }
@@ -2403,7 +2666,7 @@ CMPServer::CMPServer(unsigned __int64 _role, unsigned _port, bool _listen)
     broadcastpackethandler = new BroadcastPacketHandler;    // TAG_SYS_BCAST
     userpackethandler = new UserPacketHandler(this);        // default
     notifyclosedthread = new CMPNotifyClosedThread(this);
-    notifyclosedthread->start();
+    notifyclosedthread->start(false);
     selecthandler->start();
     rettag = (int)TAG_REPLY_BASE; // NB negative
 
@@ -2417,7 +2680,7 @@ CMPServer::~CMPServer()
     StringBuffer buf;
     getReceiveQueueDetails(buf);
     if (buf.length())
-        LOG(MCdebugInfo, unknownJob, "MP: Orphan check\n%s",buf.str());
+        LOG(MCdebugInfo, "MP: Orphan check\n%s",buf.str());
 #endif
     _releaseAll();
     selecthandler->stop(true);
@@ -2495,7 +2758,7 @@ bool CMPServer::recv(CMessageBuffer &mbuf, const SocketEndpoint *ep, mptag_t tag
     }
     if (nfy.aborted) {
 #ifdef _TRACELINKCLOSED
-        LOG(MCdebugInfo, unknownJob, "CMPserver::recv closed on notify");
+        LOG(MCdebugInfo, "CMPserver::recv closed on notify");
         PrintStackReport();
 #endif
         IMP_Exception *e=new CMPException(MPERR_link_closed,*nfy.ep);
@@ -2581,7 +2844,7 @@ unsigned CMPServer::probe(const SocketEndpoint *ep, mptag_t tag,CTimeMon &tm,Soc
     }
     if (nfy.aborted) {
 #ifdef _TRACELINKCLOSED
-        LOG(MCdebugInfo, unknownJob, "CMPserver::probe closed on notify");
+        LOG(MCdebugInfo, "CMPserver::probe closed on notify");
         PrintStackReport();
 #endif
         IMP_Exception *e=new CMPException(MPERR_link_closed,*ep);
@@ -2669,7 +2932,7 @@ void CMPServer::notifyClosed(SocketEndpoint &ep, bool trace)
     if (trace)
     {
         StringBuffer url;
-        LOG(MCdebugInfo, unknownJob, "MP: CMPServer::notifyClosed %s",ep.getUrlStr(url).str());
+        LOG(MCdebugInfo, "MP: CMPServer::notifyClosed %s",ep.getEndpointHostText(url).str());
         PrintStackReport();
     }
 #endif
@@ -3012,7 +3275,7 @@ public:
 #endif
     }
 
-    bool verifyConnection(rank_t rank,  unsigned timeout)
+    bool verifyConnection(rank_t rank,  unsigned timeout, bool allowConnect=true)
     {
         CriticalBlock block(verifysect);
         assertex(rank!=RANK_RANDOM);
@@ -3022,7 +3285,7 @@ public:
         unsigned remaining;
         if (tm.timedout(&remaining))
             return false;
-        return channel->verifyConnection(tm,true);
+        return channel->verifyConnection(tm,allowConnect);
     }
 
     bool verifyAll(bool duplex, unsigned totalTimeout, unsigned perConnectionTimeout)
@@ -3370,7 +3633,7 @@ void stopMPServer()
         {
             stopLogMsgReceivers();
 #ifdef _TRACE
-            LOG(MCdebugInfo, unknownJob, "MP: Stopping MP Server");
+            LOG(MCdebugInfo, "MP: Stopping MP Server");
 #endif
             _globalMPServer = globalMPServer;
             globalMPServer = NULL;
@@ -3381,7 +3644,7 @@ void stopMPServer()
     _globalMPServer->stop();
     _globalMPServer->Release();
 #ifdef _TRACE
-    LOG(MCdebugInfo, unknownJob, "MP: Stopped MP Server");
+    LOG(MCdebugInfo, "MP: Stopped MP Server");
 #endif
     CriticalBlock block(CGlobalMPServer::sect);
     initMyNode(0);

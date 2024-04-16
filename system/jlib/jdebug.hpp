@@ -22,6 +22,7 @@
 
 #include "jiface.hpp"
 #include "jstats.h"
+#include <atomic>
 
 #define TIMING
 
@@ -29,6 +30,7 @@ __int64 jlib_decl cycle_to_nanosec(cycle_t cycles);
 __int64 jlib_decl cycle_to_microsec(cycle_t cycles);
 __int64 jlib_decl cycle_to_millisec(cycle_t cycles);
 cycle_t jlib_decl nanosec_to_cycle(__int64 cycles);
+cycle_t jlib_decl millisec_to_cycle(unsigned ms);
 double jlib_decl getCycleToNanoScale();
 void jlib_decl display_time(const char * title, cycle_t diff);
 
@@ -43,12 +45,7 @@ void jlib_decl display_time(const char * title, cycle_t diff);
 inline cycle_t getTSC() { __asm { __asm _emit 0x0f __asm _emit 0x31 } }
 #pragma warning(pop)
 #elif !defined(_WIN32)
-inline __int64 getTSC()
-{
-   unsigned a, d;
-   __asm__ volatile("rdtsc" : "=a" (a), "=d" (d));
-   return ((cycle_t)a)|(((cycle_t)d) << 32);
-}
+inline cycle_t getTSC() { return __builtin_ia32_rdtsc(); }
 #else
 #include <intrin.h>
 inline cycle_t getTSC() { return __rdtsc(); }
@@ -142,11 +139,16 @@ struct ITimeReporter : public IInterface
 extern jlib_decl cycle_t oneSecInCycles;
 class CCycleTimer
 {
-    cycle_t start_time;
+    cycle_t start_time = 0;
 public:
     inline CCycleTimer()
     {
         reset();
+    }
+    inline CCycleTimer(bool enabled)
+    {
+        if (enabled)
+            reset();
     }
     inline void reset()
     {
@@ -163,6 +165,15 @@ public:
     inline unsigned elapsedMs() const
     {
         return static_cast<unsigned>(cycle_to_millisec(elapsedCycles()));
+    }
+    inline unsigned remainingMs(unsigned timeoutMs) const
+    {
+        if (INFINITE == timeoutMs)
+            return INFINITE;
+        unsigned eMs = elapsedMs();
+        if (eMs >= timeoutMs)
+            return 0;
+        return timeoutMs - eMs;
     }
 };
 inline cycle_t queryOneSecCycles() { return oneSecInCycles; }
@@ -224,6 +235,133 @@ private:
     unsigned start;
 };
 
+//---------------------------------------------------------------------------------------------------------------------
+
+/*
+  There are many situations where you want to report or check something periodically.  This class encapsulates the code
+  to perform the check.
+  The constructor has an option to indicate whether the first hasElapsed call should return true, or be suppressed.
+*/
+class PeriodicTimer
+{
+public:
+    PeriodicTimer() = default;
+    PeriodicTimer(unsigned ms, bool suppressFirst)
+    {
+        reset(ms, suppressFirst);
+    }
+
+    bool hasElapsed()
+    {
+        return hasElapsed(get_cycles_now());
+    }
+
+    bool hasElapsed(cycle_t nowCycles)
+    {
+        if ((nowCycles - lastElapsedCycles) < timePeriodCycles)
+            return false;
+
+        lastElapsedCycles = nowCycles;
+        return true;
+    }
+
+    void reset(unsigned ms, bool suppressFirst)
+    {
+        timePeriodCycles = nanosec_to_cycle((__int64)ms * 1000000);
+        lastElapsedCycles = get_cycles_now();
+        if (!suppressFirst)
+            lastElapsedCycles -= timePeriodCycles;
+    }
+
+protected:
+    cycle_t timePeriodCycles = 0;
+    cycle_t lastElapsedCycles = 0;
+};
+
+
+//---------------------------------------------------------------------------------------------------------------------
+
+/*
+There are several situations where we want to record the time spent waiting for items to be processed - time an item
+is queued before processing, time spent calling LDAP from within esp etc.. Gathering the metric has a few complications:
+* The metric gathering needs to have minimal impact
+* The waiting time needs to include items that are currently waiting as well completed
+* Multiple items can be being waited for at the same time, and complete at different times.
+
+    waitingTime = sum(itemTime)
+    = sum(completedItemTime) + sum(inflightItemTime)
+    = sum(endCompletedTime-startCompletedTime) + sum(currentTime-startInflightTime))
+    = sumEndCompletedTime - sumStartCompletedTime + sum(currentTime) - sumStartInflightTime
+    = sumEndCompletedTime + num*current - sumStartTime
+
+The following pattern efficiently solves the problem:
+
+ * When an item is queued/started atomically increment a counter, and add the current timestamp to the accumulated start time stamps.
+ * When an items is dequeued/complete atomically decrement a counter and add the current timestamp to the accumulated end time stamps.
+ * To calculate the waiting time use (sumEndTimestamps + numWaiting * currentTimeStamp) - sumStartTimestamps.
+
+
+At first glance this appears to have a problem because sumEndTimestamps will quickly overflow, but because of the
+properties of modulo arithmetic, the final result will be correct even if it has overflowed!
+Also since you are only ever interested in (sumEndTimestamps - sumStartTimestamps) the same field can be used for both.
+
+There are two versions, one that uses a critical section, and a second that uses atomics, but is limited to the number
+of active blocked items.
+*/
+
+class jlib_decl BlockedTimeTracker
+{
+public:
+    BlockedTimeTracker() = default;
+    BlockedTimeTracker(const BlockedTimeTracker &) = delete;
+
+    void noteWaiting();
+    void noteComplete();
+    __uint64 getWaitingNs() const;
+
+private:
+    mutable CriticalSection cs;
+    unsigned numWaiting = 0;
+    cycle_t timeStampTally = 0;
+};
+
+class jlib_decl BlockedSection
+{
+public:
+    BlockedSection(BlockedTimeTracker & _tracker) : tracker(_tracker) { tracker.noteWaiting(); }
+    ~BlockedSection() { tracker.noteComplete(); }
+private:
+    BlockedTimeTracker & tracker;
+};
+
+//Lightweight version that uses a single atomic, but has a limit on the number of active blocked items
+//Easier to understand by looking at the code for the BlockedTimeTracker class
+//Could be a template class (for MAX_ACTIVE), but I doubt it is worth it.
+class jlib_decl LightweightBlockedTimeTracker
+{
+    //MAX_ACTIVE should be a power of 2 for efficiency, 256 gives a max blocked time of about half a year before wrapping.
+    static constexpr unsigned MAX_ACTIVE = 256;
+public:
+    LightweightBlockedTimeTracker() = default;
+    LightweightBlockedTimeTracker(const LightweightBlockedTimeTracker &) = delete;
+
+    void noteWaiting()                  { timeStampTally.fetch_sub((get_cycles_now() * MAX_ACTIVE) - 1); } // i.e. add 1 and subtract the time
+    void noteComplete()                 { timeStampTally.fetch_add((get_cycles_now() * MAX_ACTIVE) - 1); }
+    __uint64 getWaitingNs() const;
+
+private:
+    std::atomic<__uint64> timeStampTally{0};            // timestamp * MAX_ACTIVE + active
+};
+
+class jlib_decl LightweightBlockedSection
+{
+public:
+    LightweightBlockedSection(LightweightBlockedTimeTracker & _tracker) : tracker(_tracker) { tracker.noteWaiting(); }
+    ~LightweightBlockedSection() { tracker.noteComplete(); }
+private:
+    LightweightBlockedTimeTracker & tracker;
+};
+
 
 //===========================================================================
 #ifndef USING_MPATROL
@@ -271,17 +409,33 @@ void jlib_decl enableMemLeakChecking(bool enable);
 
 // Hook to be called by the performance monitor, takes stats for processor, virtual memory, disk, and thread usage
 
-class jlib_decl CpuInfo
+
+enum
+{
+    ReadCpuInfo     = 0x0001,
+    ReadMemoryInfo  = 0x0002,
+    ReadContextInfo = 0x0004,
+    ReadFaultInfo   = 0x0008,
+    ReadAllInfo     = 0xFFFF,
+};
+
+class jlib_decl SystemProcessInfo
 {
 public:
-    CpuInfo() = default;
-    CpuInfo(bool processTime, bool systemTime);
+    SystemProcessInfo() = default;
 
     void clear();
-    bool getProcessTimes();
-    bool getSystemTimes();
-    CpuInfo operator - (const CpuInfo & rhs) const;
-    __uint64 getNumContextSwitches() const { return ctx; }
+    SystemProcessInfo operator - (const SystemProcessInfo & rhs) const;
+
+    __uint64 getNumContextSwitches() const { return contextSwitches; }
+    __uint64 getPeakVirtualMemory() const { return peakVirtualMemory; }
+    __uint64 getActiveVirtualMemory() const { return activeVirtualMemory; }
+    __uint64 getPeakResidentMemory() const { return peakResidentMemory; }
+    __uint64 getActiveResidentMemory() const { return activeResidentMemory; }
+    __uint64 getActiveSwapMemory() const { return activeSwapMemory; }
+    __uint64 getActiveDataMemory() const { return activeDataMemory; }
+    __uint64 getMajorFaults() const { return majorFaults; }
+    __uint64 getNumThreads() const { return numThreads; }
     unsigned getPercentCpu() const;
     __uint64 getSystemNs() const;
     __uint64 getUserNs() const;
@@ -298,7 +452,33 @@ protected:
     __uint64 system = 0;
     __uint64 idle = 0;
     __uint64 iowait =0;
-    __uint64 ctx =0;
+    __uint64 contextSwitches =0;
+    __uint64 peakVirtualMemory = 0;
+    __uint64 activeVirtualMemory = 0;
+    __uint64 peakResidentMemory = 0;
+    __uint64 activeResidentMemory = 0;
+    __uint64 activeSwapMemory = 0;
+    __uint64 activeDataMemory = 0;
+    __uint64 majorFaults = 0;
+    __uint64 numThreads = 0;
+};
+
+class jlib_decl ProcessInfo : public SystemProcessInfo
+{
+public:
+    ProcessInfo() = default;
+    ProcessInfo(unsigned flags);
+
+    bool update(unsigned flags);
+};
+
+class jlib_decl SystemInfo : public SystemProcessInfo
+{
+public:
+    SystemInfo() = default;
+    SystemInfo(unsigned flags);
+
+    bool update(unsigned flags);
 };
 
 //Information about a single IO device
@@ -431,11 +611,11 @@ enum class HugePageMode { Always, Madvise, Never, Unknown };
 extern jlib_decl void getHardwareInfo(HardwareInfo &hdwInfo, const char *primDiskPath = NULL, const char *secDiskPath = NULL);
 extern jlib_decl void getProcessTime(UserSystemTime_t & time);
 extern jlib_decl memsize_t getMapInfo(const char *type);
-extern jlib_decl memsize_t getVMInfo(const char *type);
 extern jlib_decl void getCpuInfo(unsigned &numCPUs, unsigned &CPUSpeed);
-extern jlib_decl void getPeakMemUsage(memsize_t &peakVm,memsize_t &peakResident);
 extern jlib_decl unsigned getAffinityCpus();
+extern jlib_decl void setAffinityCpus(unsigned cpus);
 extern jlib_decl void clearAffinityCache(); // should be called whenever the process affinity is changed to reset the cache
+extern jlib_decl bool applyResourcedCPUAffinity(const IPropertyTree *resourceSection);
 
 extern jlib_decl void printProcMap(const char *fn, bool printbody, bool printsummary, StringBuffer *lnout, MemoryBuffer *mb, bool useprintf);
 extern jlib_decl void PrintMemoryReport(bool full=true);

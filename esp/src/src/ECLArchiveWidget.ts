@@ -1,7 +1,8 @@
+/* eslint-disable @typescript-eslint/no-unsafe-declaration-merging */
 import { ECLEditor } from "@hpcc-js/codemirror";
 import { extent, Palette } from "@hpcc-js/common";
 import { Workunit } from "@hpcc-js/comms";
-import { HTMLTooltip } from "@hpcc-js/html";
+import { Table } from "@hpcc-js/dgrid";
 import { SplitPanel } from "@hpcc-js/phosphor";
 import { DirectoryTree } from "@hpcc-js/tree";
 import { xml2json } from "@hpcc-js/util";
@@ -12,11 +13,14 @@ import * as registry from "dijit/registry";
 import "dijit/Toolbar";
 import "dijit/ToolbarSeparator";
 import nlsHPCC from "./nlsHPCC";
+import { themeIsDark } from "./Utility";
 // @ts-ignore
 import * as template from "dojo/text!hpcc/templates/ECLArchiveWidget.html";
 // @ts-ignore
 import * as _Widget from "hpcc/_Widget";
 import { declareDecorator } from "./DeclareDecorator";
+
+const TIME_NAMES = ["TimeMaxLocalExecute", "TimeAvgLocalExecute", "TimeLocalExecute"];
 
 class DirectoryTreeEx extends DirectoryTree {
     calcWidth() {
@@ -43,12 +47,22 @@ export class ECLArchiveWidget {
 
     private borderContainer = null;
     private editor: ECLEditor = null;
+    private leftPanel: SplitPanel;
+    private summaryTable: Table;
     private archiveViewer: SplitPanel;
     private directoryTree: DirectoryTreeEx;
-    private tooltip: HTMLTooltip;
+    private selectedMarker: number;
 
     buildRendering(args) {
         this.inherited(arguments);
+    }
+
+    setEditorTheme() {
+        if (themeIsDark()) {
+            this.editor.option("theme", "darcula");
+        } else {
+            this.editor.option("theme", "default");
+        }
     }
 
     postCreate(args) {
@@ -84,14 +98,22 @@ export class ECLArchiveWidget {
             .textFileIcon("fa fa-file-code-o")
             .omitRoot(true)
             ;
+        this.summaryTable = new Table()
+            .sortable(true)
+            ;
         this.editor = new ECLEditor().readOnly(true);
         this.archiveViewer = new SplitPanel("horizontal");
-        this.tooltip = new HTMLTooltip()
-            .target(document.body)
-            .direction("e")
-            .visible(false)
-            .render()
-            ;
+        this.leftPanel = new SplitPanel("vertical");
+
+        const handleThemeToggle = (evt) => {
+            if (!context.editor) return;
+            if (evt.detail && evt.detail.dark === true) {
+                context.editor.option("theme", "darcula");
+            } else {
+                context.editor.option("theme", "default");
+            }
+        };
+        document.addEventListener("eclwatch-theme-toggle", handleThemeToggle);
 
         const tableDataTransformer = d => {
             const ret = d.map((n: any) => {
@@ -110,12 +132,16 @@ export class ECLArchiveWidget {
 
         const wu = Workunit.attach({ baseUrl: "" }, params.Wuid);
         wu.fetchQuery().then(function (query) {
-            context.editor.text(query.Text);
+            context.editor.text(query?.Text ?? "");
             if (!wu.HasArchiveQuery) {
                 context.archiveViewer
                     .addWidget(context.editor)
                     .lazyRender()
                     ;
+                const t = window.setTimeout(function () {
+                    context.setEditorTheme();
+                    window.clearTimeout(t);
+                }, 300);
             } else {
                 context.directoryTree
                     .data({
@@ -130,10 +156,16 @@ export class ECLArchiveWidget {
                     .iconSize(20)
                     .rowItemPadding(2)
                     ;
-                context.archiveViewer
+                context.leftPanel
                     .addWidget(context.directoryTree)
+                    .addWidget(context.summaryTable)
+                    .relativeSizes([0.38, 0.62])
+                    .lazyRender()
+                    ;
+                context.archiveViewer
+                    .addWidget(context.leftPanel)
                     .addWidget(context.editor)
-                    .relativeSizes([0.1, 0.9])
+                    .relativeSizes([0.2, 0.8])
                     .lazyRender()
                     ;
                 const scopesOptions = {
@@ -171,6 +203,7 @@ export class ECLArchiveWidget {
                     .then(([archiveXML, scopes]) => {
                         const markerData = buildMarkerData(scopes);
                         renderArchive(archiveXML, markerData);
+                        context.setEditorTheme();
                     });
             }
         });
@@ -363,6 +396,7 @@ export class ECLArchiveWidget {
                         addMarkers(markers);
                     });
                 }
+                updateSummary(markers);
             }
 
             function recursiveSort(n) {
@@ -400,17 +434,88 @@ export class ECLArchiveWidget {
                 return label;
             }
         }
+        function updateSummary(markers) {
+            const propCounts = {};
+            const propFormats = {};
+            const propSums = markers.reduce((ret, n) => {
+                n.properties.forEach(prop => {
+                    if (prop.Measure !== undefined) {
+                        if (!propCounts[prop.Name]) {
+                            propCounts[prop.Name] = 0;
+                            propFormats[prop.Name] = prop.Measure;
+                            ret[prop.Name] = 0;
+                        }
+                        propCounts[prop.Name]++;
+                        ret[prop.Name] += Number(prop.RawValue);
+                    }
+                });
+                return ret;
+            }, {});
+            const propAvgs = Object.keys(propSums).reduce((ret, k) => {
+                ret[k] = propSums[k] / propCounts[k];
+                return ret;
+            }, {});
+            context.summaryTable
+                .columns(["Name", "Cnt", "Avg", "Sum"])
+                .data([
+                    ...Object.keys(propSums).map(k => {
+                        let avg = propAvgs[k];
+                        let sum = propSums[k];
+
+                        const isTime = propFormats[k] === "ns";
+                        const isSize = propFormats[k] === "sz";
+
+                        if (isTime) {
+                            avg = _formatTime(avg);
+                            sum = _formatTime(sum);
+                        } else if (isSize) {
+                            avg = _formatSize(avg);
+                            sum = _formatSize(sum);
+                        } else {
+                            avg = avg.toFixed(3);
+                            sum = sum.toFixed(3);
+                        }
+                        return [
+                            k,
+                            propCounts[k],
+                            avg,
+                            sum,
+                        ];
+                    })
+                ])
+                .lazyRender()
+                ;
+            function _formatTime(v) {
+                if (v > 1000000000) {
+                    return (v / 1000000000).toFixed(3) + "s";
+                }
+                return (v / 1000000).toFixed(3) + "ms";
+            }
+            function _formatSize(v) {
+                if (v > 1000000000) {
+                    return (v * 0.000000000931).toFixed(3) + "Gb";
+                }
+                else if (v > 1000000) {
+                    return (v * 0.0000009537).toFixed(3) + "Mb";
+                }
+                return (v * 0.000977).toFixed(3) + "Kb";
+            }
+        }
         function buildMarkerData(scopesArr) {
             const markers = {};
-
-            const timeName = "TimeMaxLocalExecute";
 
             scopesArr.forEach(scope => {
                 const definitionList = scope.Properties.Property.find(n => n.Name === "DefinitionList");
 
                 const tableData = tableDataTransformer(scope.Properties.Property);
 
-                const timeEntry = tableData.find(n => n[0] === timeName);
+                let timeEntry;
+                for (const timeName of TIME_NAMES) {
+                    timeEntry = tableData.find(n => n[0] === timeName);
+                    if (timeEntry) {
+                        break;
+                    }
+                }
 
                 if (definitionList !== undefined && timeEntry !== undefined) {
                     const label = timeEntry[1];
@@ -426,12 +531,18 @@ export class ECLArchiveWidget {
                         if (!markers[filePath]) {
                             markers[filePath] = [];
                         }
-                        const rawTime = {};
-                        scope.Properties.Property.forEach(n => {
-                            if (n.Name === timeName) {
-                                Object.assign(rawTime, n);
+                        let rawTime;
+                        for (const timeName of TIME_NAMES) {
+                            for (const n of scope.Properties.Property) {
+                                if (n.Name === timeName) {
+                                    rawTime = { ...n };
+                                    break;
+                                }
                             }
-                        });
+                            if (rawTime) {
+                                break;
+                            }
+                        }
                         markers[filePath].push({
                             lineNum,
                             charNum,
@@ -439,7 +550,7 @@ export class ECLArchiveWidget {
                             color,
                             definitionList,
                             tableData,
-                            rawTime,
+                            rawTime: rawTime || {},
                             properties: scope.Properties.Property
                         });
                     });
@@ -448,10 +559,7 @@ export class ECLArchiveWidget {
 
             return markers;
         }
-        function markerTooltipTable(marker) {
-            const table = document.createElement("table");
-            const thead = document.createElement("thead");
-            const tbody = document.createElement("tbody");
+        function markerTableData(marker) {
             const labels = [];
             const tableDataArr = marker.tableData.map((_table, tableIdx) => {
                 const tableData = JSON.parse(_table);
@@ -477,36 +585,7 @@ export class ECLArchiveWidget {
                     })
                 ];
             });
-
-            _data
-                .filter(row => row[0] === "Label")
-                .forEach(row => {
-                    appendRow(row, thead, () => true);
-                });
-            _data
-                .filter(row => row[0] !== "Label")
-                .forEach(row => {
-                    appendRow(row, tbody, idx => idx === 0);
-                });
-            table.appendChild(thead);
-            table.appendChild(tbody);
-            table.style.maxWidth = "500px";
-            return table;
-
-            function appendRow(cellArr, parentNode, thCondition) {
-                const tr = document.createElement("tr");
-                tr.style.maxHeight = "200px";
-                cellArr.forEach((cellText, i) => {
-                    const td = document.createElement(thCondition(i) ? "th" : "td");
-                    td.style.maxWidth = "180px";
-                    td.style.textAlign = i === 0 ? "right" : "left";
-                    td.style.overflow = "hidden";
-                    td.style.textOverflow = "ellipsis";
-                    td.textContent = cellText;
-                    tr.appendChild(td);
-                });
-                parentNode.appendChild(tr);
-            }
+            return _data;
         }
         function addMarkers(markers) {
             const palette = Palette.rainbow("YlOrRd");
@@ -525,24 +604,30 @@ export class ECLArchiveWidget {
                     marker.color,
                     "Verdana",
                     "12px",
+                    () => { },
+                    () => { },
                     () => {
-                        //onmouseenter
-                        const _content = markerTooltipTable(marker);
-                        context.tooltip._cursorLoc = [
-                            (event as MouseEvent).clientX,
-                            (event as MouseEvent).clientY
-                        ];
-                        context.tooltip
-                            .followCursor(true)
-                            .visible(true)
-                            .fitContent(true)
-                            .tooltipContent(_content)
-                            .render()
-                            ;
-                    },
-                    () => {
-                        //onmouseleave
-                        context.tooltip.visible(false);
+                        if (context.selectedMarker === marker.lineNum) {
+                            updateSummary(markers);
+                            context.selectedMarker = -1;
+                            const columnArr = context.summaryTable.columns();
+                            columnArr[0] = "Name";
+                            context.summaryTable
+                                .columns(columnArr)
+                                .lazyRender()
+                                ;
+                        } else {
+
+                            const _data = markerTableData(marker);
+
+                            context.summaryTable
+                                .columns(["Line: " + marker.lineNum, ...Array(_data[0].length).fill("")])
+                                .data(_data)
+                                .lazyRender()
+                                ;
+
+                            context.selectedMarker = marker.lineNum;
+                        }
                     }
                 );
             });
@@ -586,12 +671,6 @@ export class ECLArchiveWidget {
             return markers;
         }
         function mergeCommonLines(markers) {
-            const timeMapToMs = {
-                "ns": 1000000,
-                "us": 1000,
-                "ms": 1,
-            };
-
             const lineMap = {};
             markers.forEach(n => {
                 if (!lineMap[n.lineNum]) {
@@ -602,7 +681,6 @@ export class ECLArchiveWidget {
             const ret = [];
             Object.keys(lineMap).forEach(key => {
                 let timeSum = 0;
-                const units = "ns";
                 const tableDataArr = [];
                 lineMap[key].forEach(n => {
                     if (n.rawTime) {
@@ -613,13 +691,26 @@ export class ECLArchiveWidget {
                 });
                 const lineMarker = {
                     lineNum: parseInt(key + ""),
-                    label: (timeSum / timeMapToMs[units]).toFixed(3) + "ms",
+                    label: nsToTime(timeSum),
                     timeSum,
                     tableData: tableDataArr
                 };
                 ret.push(lineMarker);
             });
             return ret;
+
+            function nsToTime(nanoseconds) {
+                const subSecond: string | number = Math.floor(nanoseconds % 100000000);
+                let seconds: string | number = Math.floor((nanoseconds / 1000000000) % 60);
+                let minutes: string | number = Math.floor((nanoseconds / (1000000000 * 60)) % 60);
+                let hours: string | number = Math.floor((nanoseconds / (1000000000 * 60 * 60)) % 24);
+
+                hours = (hours < 10) ? "0" + hours : hours;
+                minutes = (minutes < 10) ? "0" + minutes : minutes;
+                seconds = (seconds < 10) ? "0" + seconds : seconds;
+
+                return String(hours).padStart(2, "0") + ":" + String(minutes) + ":" + String(seconds) + "." + String(subSecond).padStart(9, "0");
+            }
         }
     }
 }

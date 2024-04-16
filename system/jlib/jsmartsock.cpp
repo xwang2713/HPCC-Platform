@@ -17,6 +17,7 @@
 
 
 #include "jsmartsock.ipp"
+#include "jsecrets.hpp"
 #include "jdebug.hpp"
 
 ISmartSocketException *createSmartSocketException(int errorCode, const char *msg)
@@ -207,6 +208,39 @@ void CSmartSocket::close()
     }
 }
 
+CSmartSocketFactory::CSmartSocketFactory(IPropertyTree &service, bool _retry, unsigned _retryInterval, unsigned _dnsInterval)
+{
+    const char *name = service.queryProp("@name");
+    const char *port = service.queryProp("@port");
+    if (isEmptyString(name) || isEmptyString(port))
+        throw createSmartSocketException(0, "CSmartSocket factory both name and port required for service configuration");
+
+    tlsService  = service.getPropBool("@tls");
+    issuer.set(service.queryProp("@issuer"));
+    if (tlsService)
+        tlsConfig.setown(createIssuerTlsConfig(issuer, nullptr, true, service.getPropBool("@selfSigned"), service.getPropBool("@caCert"), false));
+
+    StringBuffer s;
+    s.append(name).append(':').append(port);
+
+    PROGLOG("CSmartSocketFactory::CSmartSocketFactory(service(%s), %s)", name, s.str());
+
+    SmartSocketListParser slp(s);
+    if (slp.getSockets(sockArray) == 0)
+        throw createSmartSocketException(0, "no endpoints defined");
+
+    shuffleEndpoints();
+
+    nextEndpointIndex = 0;
+    dnsInterval=_dnsInterval;
+
+    retry = _retry;
+    if (retry)
+    {
+        retryInterval = _retryInterval;
+        this->start(false);
+    }
+}
 
 CSmartSocketFactory::CSmartSocketFactory(const char *_socklist, bool _retry, unsigned _retryInterval, unsigned _dnsInterval)
 {
@@ -224,10 +258,9 @@ CSmartSocketFactory::CSmartSocketFactory(const char *_socklist, bool _retry, uns
     if (retry)
     {
         retryInterval = _retryInterval;
-        this->start();
+        this->start(false);
     }
 }
-
 
 CSmartSocketFactory::~CSmartSocketFactory()
 {
@@ -270,7 +303,7 @@ void CSmartSocketFactory::shuffleEndpoints()
 }
 
 
-SmartSocketEndpoint *CSmartSocketFactory::nextSmartEndpoint()
+SmartSocketEndpoint *CSmartSocketFactory::nextSmartEndpoint(bool validate)
 {
     SmartSocketEndpoint *ss=sockArray.item(nextEndpointIndex);
     if (retry)
@@ -286,31 +319,33 @@ SmartSocketEndpoint *CSmartSocketFactory::nextSmartEndpoint()
     }
     ++nextEndpointIndex %= sockArray.ordinality();
 
+    if (validate)
+    {
+        synchronized block(lock);
+        ss->checkHost(dnsInterval);
+    }
     return ss;
 }
 
 SocketEndpoint& CSmartSocketFactory::nextEndpoint()
 {
-    SmartSocketEndpoint *ss=nextSmartEndpoint();
+    SmartSocketEndpoint *ss=nextSmartEndpoint(true);
     if (!ss)
         throw createSmartSocketException(0, "smartsocket failed to get nextEndpoint");
+
     return (ss->ep);
 }
 
 ISocket *CSmartSocketFactory::connect_sock(unsigned timeoutms, SmartSocketEndpoint *&ss, SocketEndpoint &ep)
 {
-    ss = nextSmartEndpoint();
+    ss = nextSmartEndpoint(true);
     if (!ss)
         throw createSmartSocketException(0, "smartsocket failed to get nextEndpoint");
 
     ISocket *sock = nullptr;
     try 
     {
-        {
-            synchronized block(lock);
-            ss->checkHost(dnsInterval);
-            ep = ss->ep;
-        }
+        ep = ss->ep;
         if (timeoutms)
             sock = ISocket::connect_timeout(ep, timeoutms);
         else
@@ -319,7 +354,7 @@ ISocket *CSmartSocketFactory::connect_sock(unsigned timeoutms, SmartSocketEndpoi
     catch (IException *e)
     {
         StringBuffer s("CSmartSocketFactory::connect_sock ");
-        ep.getUrlStr(s);
+        ep.getEndpointHostText(s);
         EXCLOG(e,s.str());
         ss->status=false;
         if (sock)
@@ -428,7 +463,7 @@ void CSmartSocketFactory::setStatus(SocketEndpoint &ep, bool status)
 
 StringBuffer & CSmartSocketFactory::getUrlStr(StringBuffer &url, bool useHostName)
 {
-    SmartSocketEndpoint * sep = nextSmartEndpoint();
+    SmartSocketEndpoint * sep = nextSmartEndpoint(false);
     if (sep)
     {
         SocketEndpoint ep;
@@ -443,12 +478,18 @@ StringBuffer & CSmartSocketFactory::getUrlStr(StringBuffer &url, bool useHostNam
         {
             sep->checkHost(dnsInterval);
             SocketEndpoint ep = sep->ep;
-            ep.getUrlStr(url);
+            ep.getEndpointHostText(url);
         }
     }
     return url;
 }
 
-ISmartSocketFactory *createSmartSocketFactory(const char *_socklist, bool _retry, unsigned _retryInterval, unsigned _dnsInterval) {
+ISmartSocketFactory *createSmartSocketFactory(IPropertyTree &service, bool _retry, unsigned _retryInterval, unsigned _dnsInterval)
+{
+    return new CSmartSocketFactory(service, _retry, _retryInterval, _dnsInterval);
+}
+
+ISmartSocketFactory *createSmartSocketFactory(const char *_socklist, bool _retry, unsigned _retryInterval, unsigned _dnsInterval)
+{
     return new CSmartSocketFactory(_socklist, _retry, _retryInterval, _dnsInterval);
 }

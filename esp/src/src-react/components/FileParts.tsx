@@ -1,71 +1,91 @@
 import * as React from "react";
-import { useConst } from "@fluentui/react-hooks";
-import { format as d3Format } from "@hpcc-js/common";
-import * as Observable from "dojo/store/Observable";
-import { Memory } from "src/Memory";
+import { ICommandBarItemProps, CommandBar } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
-import { useFile } from "../hooks/File";
+import { QuerySortItem } from "src/store/Store";
+import * as Utility from "src/Utility";
+import { useFile } from "../hooks/file";
 import { HolyGrail } from "../layouts/HolyGrail";
-import { DojoGrid } from "./DojoGrid";
-
-const formatNum = d3Format(",");
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 
 interface FilePartsProps {
     cluster?: string;
     logicalFile: string;
+    sort?: QuerySortItem;
 }
+
+const defaultSort = { attribute: "Id", descending: false };
 
 export const FileParts: React.FunctionComponent<FilePartsProps> = ({
     cluster,
-    logicalFile
+    logicalFile,
+    sort = defaultSort
 }) => {
 
-    const [file, , _refresh] = useFile(cluster, logicalFile);
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [, setSelection] = React.useState([]);
+    const [file, , , refreshData] = useFile(cluster, logicalFile);
+    const [data, setData] = React.useState<any[]>([]);
+    const {
+        selection, setSelection,
+        setTotal,
+        refreshTable } = useFluentStoreState({});
 
     //  Grid ---
-    const gridStore = useConst(new Observable(new Memory("Id")));
-    const gridSort = useConst([{ attribute: "Id", "descending": false }]);
-    const gridQuery = useConst({});
-    const gridColumns = useConst({
-        Id: { label: nlsHPCC.Part, sortable: true, },
-        Copy: { label: nlsHPCC.Copy, sortable: true, },
-        Ip: { label: nlsHPCC.IP, sortable: true, },
-        Cluster: { label: nlsHPCC.Cluster, sortable: true, },
-        PartsizeInt64: { label: nlsHPCC.Size, sortable: true, },
-        CompressedSize: { label: nlsHPCC.CompressedSize, sortable: true, },
-    });
-
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", gridQuery);
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [grid, gridQuery]);
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            Id: { label: nlsHPCC.Part, sortable: true, width: 80 },
+            Copy: { label: nlsHPCC.Copy, sortable: true, width: 80 },
+            Ip: { label: nlsHPCC.IP, sortable: true, width: 80 },
+            Cluster: { label: nlsHPCC.Cluster, sortable: true, width: 280 },
+            PartsizeInt64: {
+                label: nlsHPCC.Size, sortable: true, width: 120,
+                formatter: (value, row) => {
+                    return Utility.safeFormatNum(value);
+                }
+            },
+            CompressedSize: {
+                label: nlsHPCC.CompressedSize, sortable: true, width: 120,
+                formatter: (value, row) => {
+                    return Utility.safeFormatNum(value);
+                }
+            },
+        };
+    }, []);
 
     React.useEffect(() => {
-        if (file?.DFUFilePartsOnClusters) {
-            const fileParts = file?.DFUFilePartsOnClusters?.DFUFilePartsOnCluster[0]?.DFUFileParts?.DFUPart;
-            if (fileParts) {
-                gridStore.setData(fileParts.map(part => {
-                    return {
-                        Id: part.Id,
-                        Copy: part.Copy,
-                        Ip: part.Ip,
-                        Cluster: cluster,
-                        PartsizeInt64: formatNum(part.PartSizeInt64),
-                        CompressedSize: part.CompressedSize ? formatNum(part.CompressedSize) : ""
-                    };
-                }));
-                refreshTable();
-            }
+        const fileParts = file?.fileParts() ?? [];
+        setData(fileParts.map(part => {
+            return {
+                Id: part.Id,
+                Copy: part.Copy,
+                Ip: part.Ip,
+                Cluster: cluster,
+                PartsizeInt64: part.PartSizeInt64,
+                CompressedSize: part.CompressedSize
+            };
+        }));
+    }, [cluster, file]);
+
+    //  Command Bar  ---
+    const buttons = React.useMemo((): ICommandBarItemProps[] => [
+        {
+            key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
+            onClick: () => refreshData()
         }
-    }, [cluster, file?.DFUFilePartsOnClusters, gridStore, refreshTable]);
+    ], [refreshData]);
+
+    const copyButtons = useCopyButtons(columns, selection, "fileParts");
 
     return <HolyGrail
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
-            <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
+            <FluentGrid
+                data={data}
+                primaryID={"Id"}
+                sort={sort}
+                columns={columns}
+                setSelection={setSelection}
+                setTotal={setTotal}
+                refresh={refreshTable}
+            ></FluentGrid>
         }
     />;
 };

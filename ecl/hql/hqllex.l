@@ -751,6 +751,7 @@ FILTERED            { RETURNSYM(FILTERED); }
 FIRST               { RETURNSYM(FIRST); }
 FIXED               { RETURNSYM(TOK_FIXED); }
 FLAT                { RETURNSYM(FLAT); }
+FORMENCODED         { RETURNSYM(FORMENCODED); }             // Dynamically enabled based on the context
 FORMAT              { RETURNSYM(FORMAT_ATTR); }             // Dynamically enabled based on the context
 FORWARD             { RETURNSYM(FORWARD); }
 FROM                { RETURNSYM(FROM); }
@@ -760,6 +761,7 @@ FROMXML             { RETURNSYM(FROMXML); }
 FULL                { RETURNSYM(FULL); }
 FUNCTION            { RETURNHARD(FUNCTION); }
 GETENV              { RETURNSYM(GETENV); }
+GETSECRET           { RETURNSYM(GETSECRET); }
 GLOBAL              { RETURNSYM(GLOBAL); }
 GRAPH               { RETURNSYM(GRAPH); }
 GROUP               { RETURNSYM(GROUP); }
@@ -990,6 +992,7 @@ TRIM                { RETURNSYM(TRIM); }
 TRUNCATE            { RETURNSYM(TRUNCATE); }
 TYPE                { RETURNSYM(TYPE); }
 TYPEOF              { RETURNSYM(TYPEOF); }
+UNCOMPRESSED        { RETURNSYM(UNCOMPRESSED); }
 UNICODEORDER        { RETURNSYM(UNICODEORDER); }
 UNGROUP             { RETURNSYM(UNGROUP); }
 UNLIKELY            { RETURNSYM(UNLIKELY); }
@@ -1658,8 +1661,8 @@ FUNCTIONMACRO|MACRO {
                             int len = endpos-startpos;
                             Owned<IValue> unicodeValue;
                             // Special handling required for trailing \ char which suppresses the following linefeed, as unicode unescape does not handle it
-                            StringBuffer source(len, lexer->yyBuffer+startpos);
-                            source.replaceString("\\\n","");
+                            StringBuffer source;
+                            lexer->stripSlashNewline(returnToken, source, len, lexer->yyBuffer+startpos);
                             if (isUtf8)
                             {
                                 size32_t chars = rtlUtf8Length(source.length(), source.str());
@@ -1913,9 +1916,9 @@ FUNCTIONMACRO|MACRO {
                         setupdatepos;
                         if (likely(lookupFlags & LEXstring))
                         {
-                            unsigned len = (CUR_TOKEN_LENGTH-3)/2;    // round sign
-                            char *data =(char *)malloc(len+1);
-                            hex2str(data, (char *)CUR_TOKEN_TEXT+2, CUR_TOKEN_LENGTH-3);
+                            unsigned len = (CUR_TOKEN_LENGTH-3+1)/2;
+                            char *data =(char *)malloc(len);
+                            hex2str(data, (const char *)CUR_TOKEN_TEXT+2, CUR_TOKEN_LENGTH-3);
                             returnToken.setExpr(createConstant(createDataValue(data, len)));
                             free(data);
                         }
@@ -1928,18 +1931,13 @@ FUNCTIONMACRO|MACRO {
 
                         if (likely(lookupFlags & LEXstring))
                         {
-                            lexer->reportWarning(CategorySyntax, returnToken, ERR_HEXDATA_ODDDIGITS,"hex data must have even number of hex digits");
-                            char* str = (char*)malloc(CUR_TOKEN_LENGTH-1);
-                            str[0] = '0'; // add a leading zero
-                            strncpy(str+1,(char*)CUR_TOKEN_TEXT+2,CUR_TOKEN_LENGTH-3);
-                            str[CUR_TOKEN_LENGTH-2] = 0;
-                            unsigned len = (CUR_TOKEN_LENGTH-2)/2;    // round sign
-                            char *data =(char *)malloc(len+1);
-
-                            hex2str(data, str, CUR_TOKEN_LENGTH-2);
+                            //Could common up, because except for this warning this code is identical to the token above...
+                            lexer->reportWarning(CategorySyntax, returnToken, ERR_HEXDATA_ODDDIGITS,"hex data should have an even number of hex digits");
+                            unsigned len = (CUR_TOKEN_LENGTH-3+1)/2;    // round up
+                            char *data =(char *)malloc(len);
+                            hex2str(data, CUR_TOKEN_TEXT+2, CUR_TOKEN_LENGTH-3);
                             returnToken.setExpr(createConstant(createDataValue(data, len)));
                             free(data);
-                            free(str);
                         }
                         return (DATA_CONST);
                     }
@@ -1960,12 +1958,7 @@ FUNCTIONMACRO|MACRO {
                             msg.append("hex data can only contains 0-9a-fA-F: ");
                             msg.append(CUR_TOKEN_TEXT);
                             lexer->reportError(returnToken, ERR_HEXDATA_ILL, "%s", msg.str());
-
-                            // recovering
-                            char data[2], str[3] = "00";
-
-                            hex2str((char*)data, (char*)str, 2);
-                            returnToken.setExpr(createConstant(createDataValue(data, 2)));
+                            returnToken.setExpr(createConstant(createDataValue(nullptr, 0U)));
                         }
                         return (DATA_CONST);
                     }

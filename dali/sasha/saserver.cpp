@@ -19,6 +19,7 @@
 #include "thirdparty.h"
 #include "portlist.h"
 #include "jlib.hpp"
+#include "jfile.hpp"
 #include "jlog.hpp"
 #include "jptree.hpp"
 #include "jmisc.hpp"
@@ -29,6 +30,7 @@
 #include "mplog.hpp"
 #include "dasess.hpp"
 #include "dasds.hpp"
+#include "dafdesc.hpp"
 #include "daclient.hpp"
 #include "environment.hpp"
 #include "dllserver.hpp"
@@ -82,7 +84,7 @@ static void stopServer()
     ForEachItemInRev(i,servers)
     {
         ISashaServer &server=servers.item(i);
-        LOG(MCprogress, unknownJob, "Stopping %d",i);
+        LOG(MCprogress, "Stopping %d",i);
         server.stop();
     }
     ForEachItemInRev(j,servers)
@@ -94,10 +96,10 @@ static void stopServer()
 
 static bool actionOnAbort()
 {
-    LOG(MCprogress, unknownJob, "Stop signalled");
+    LOG(MCprogress, "Stop signalled");
     if (stopped)
     {
-        LOG(MCprogress, unknownJob, "Previously marked stopped. Killing process..");
+        LOG(MCprogress, "Previously marked stopped. Killing process..");
         queryLogMsgManager()->flushQueue(10*1000);
 #ifdef _WIN32
         TerminateProcess(GetCurrentProcess(), 1);
@@ -116,8 +118,8 @@ static bool actionOnAbort()
 void requestStop(IException *e)
 {
     if (e)
-        LOG(MCoperatorError, unknownJob, e, "SASERVER: Unexpected exception, saserver terminating");
-    LOG(MCprogress, unknownJob, "Stop requested");
+        LOG(MCoperatorError, e, "SASERVER: Unexpected exception, saserver terminating");
+    LOG(MCprogress, "Stop requested");
     stopSem.signal();
 }
 
@@ -248,7 +250,7 @@ void SashaMain()
             return new CSashaCmdThread;
         }
     } factory;
-    Owned<IThreadPool> threadpool = createThreadPool("sashaCmdPool",&factory);
+    Owned<IThreadPool> threadpool = createThreadPool("sashaCmdPool",&factory, false, nullptr);
     CMessageBuffer mb;
     while (!stopped) {
         try {
@@ -407,6 +409,7 @@ int main(int argc, const char* argv[])
             else
             {
                 addAbortHandler(actionOnAbort);
+                initializeStorageGroups(true);
 #ifdef _CONTAINERIZED
                 service = serverConfig->queryProp("@service");
                 if (isEmptyString(service))
@@ -430,6 +433,8 @@ int main(int argc, const char* argv[])
                     servers.append(*createSashaCachedWURemoverServer());
                 else if (strieq(service, "file-expiry"))
                     servers.append(*createSashaFileExpiryServer());
+                else if (strieq(service, "thor-qmon"))
+                    servers.append(*createSashaQMonitorServer());
                 //else if (strieq(service, "xref")) // TODO
                 //    servers.append(*createSashaXrefServer());
                 else
@@ -440,7 +445,7 @@ int main(int argc, const char* argv[])
 #endif
 
                 StringBuffer eps;
-                PROGLOG("SASERVER starting on %s",queryMyNode()->endpoint().getUrlStr(eps).str());
+                PROGLOG("SASERVER starting on %s",queryMyNode()->endpoint().getEndpointHostText(eps).str());
 
                 ForEachItemIn(i1,servers)
                 {
@@ -456,7 +461,7 @@ int main(int argc, const char* argv[])
                 {
                     CThreaded threaded;
                 public:
-                    CStopThread() : threaded("CStopThread") { threaded.init(this); } 
+                    CStopThread() : threaded("CStopThread") { threaded.init(this, false); }
                     ~CStopThread() { threaded.join(); }
                     virtual void threadmain() override
                     {

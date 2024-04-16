@@ -38,48 +38,67 @@ define([
 
         _getURL: function (item, option) {
             var params = "";
+
+            var uriEncodedParams = {
+                "Description": encodeURIComponent(item.Orig?.Description ?? ""),
+                "IPAddress": encodeURIComponent(item.Orig?.IPAddress ?? ""),
+                "LogDate": encodeURIComponent(item.Orig?.LogDate ?? ""),
+                "Name": encodeURIComponent(item.Orig?.Name ?? ""),
+                "PID": encodeURIComponent(item.Orig?.PID ?? ""),
+                "ProcessName": encodeURIComponent(item.Orig?.ProcessName ?? ""),
+                "SlaveNumber": encodeURIComponent(item.Orig?.SlaveNumber ?? ""),
+                "Type": encodeURIComponent(item.Type ?? ""),
+                "Wuid": encodeURIComponent(this.wu.Wuid),
+            };
+
             switch (item.Type) {
                 case "dll":
                     var parts = item.Orig.Name.split("/");
                     if (parts.length) {
                         var leaf = parts[parts.length - 1];
-                        params = "/WUFile/" + leaf + "?Wuid=" + this.wu.Wuid + "&Name=" + item.Orig.Name + "&Type=" + item.Orig.Type;
+                        params = `/WUFile/${leaf}?Wuid=${uriEncodedParams.Wuid}&Name=${uriEncodedParams.Name}&Type=${uriEncodedParams.Type}`;
                     }
                     break;
                 case "res":
-                    params = "/WUFile/res.txt?Wuid=" + this.wu.Wuid + "&Type=" + item.Orig.Type;
+                    params = `/WUFile/res.txt?Wuid=${uriEncodedParams.Wuid}&Type=${uriEncodedParams.Type}`;
+                    break;
+                case "ComponentLog":
+                    params = `/WUFile/${item.Type}?Wuid=${uriEncodedParams.Wuid}&Name=${uriEncodedParams.Name}&Type=${uriEncodedParams.Type}&LogFormat=2`;
+                    break;
+                case "postmortem":
+                    params = `/WUFile/${item.Type}?Wuid=${uriEncodedParams.Wuid}&Name=${uriEncodedParams.Name}&Type=${uriEncodedParams.Type}`;
                     break;
                 case "EclAgentLog":
-                    params = "/WUFile/" + item.Type + "?Wuid=" + this.wu.Wuid + "&Process=" + item.Orig.PID + "&Name=" + item.Orig.Name + "&Type=" + item.Orig.Type;
+                    params = `/WUFile/${item.Type}?Wuid=${uriEncodedParams.Wuid}&Process=${uriEncodedParams.PID}&Name=${uriEncodedParams.Name}&Type=${uriEncodedParams.Type}`;
                     break;
                 case "ThorSlaveLog":
-                    params = "/WUFile?Wuid=" + this.wu.Wuid + "&Process=" + item.Orig.ProcessName + "&ClusterGroup=" + item.Orig.ProcessName + "&LogDate=" + item.Orig.LogDate + "&SlaveNumber=" + item.Orig.SlaveNumber + "&Type=" + item.Type;
+                    params = `/WUFile?Wuid=${uriEncodedParams.Wuid}&Type=${uriEncodedParams.Type}&Process=${uriEncodedParams.ProcessName}&ClusterGroup=${uriEncodedParams.ProcessName}&LogDate=${uriEncodedParams.LogDate}&SlaveNumber=${uriEncodedParams.SlaveNumber}`;
                     break;
                 case "Archive Query":
-                    params = "/WUFile/ArchiveQuery?Wuid=" + this.wu.Wuid + "&Name=ArchiveQuery&Type=ArchiveQuery";
+                    params = `/WUFile/ArchiveQuery?Wuid=${uriEncodedParams.Wuid}&Name=ArchiveQuery&Type=ArchiveQuery`;
                     break;
                 case "ECL":
-                    params = "/WUFile?Wuid=" + this.wu.Wuid + "&Type=WUECL";
+                    params = `/WUFile?Wuid=${uriEncodedParams.Wuid}&Type=WUECL`;
                     break;
                 case "Workunit XML":
-                    params = "/WUFile?Wuid=" + this.wu.Wuid + "&Type=XML";
+                    params = `/WUFile?Wuid=${uriEncodedParams.Wuid}&Type=XML`;
                     break;
                 case "log":
                 case "cpp":
                 case "hpp":
-                    params = "/WUFile?Wuid=" + this.wu.Wuid + "&Name=" + item.Orig.Name + "&IPAddress=" + item.Orig.IPAddress + "&Description=" + item.Orig.Description + "&Type=" + item.Orig.Type;
+                    params = `/WUFile?Wuid=${uriEncodedParams.Wuid}&Name=${uriEncodedParams.Name}&IPAddress=${uriEncodedParams.IPAddress}&Description=${uriEncodedParams.Description}&Type=${uriEncodedParams.Type}`;
                     break;
                 case "xml":
                     if (option !== undefined)
-                        params = "/WUFile?Wuid=" + this.wu.Wuid + "&Name=" + item.Orig.Name + "&IPAddress=" + item.Orig.IPAddress + "&Description=" + item.Orig.Description + "&Type=" + item.Orig.Type;
+                        params = `/WUFile?Wuid=${uriEncodedParams.Wuid}&Name=${uriEncodedParams.Name}&IPAddress=${uriEncodedParams.IPAddress}&Description=${uriEncodedParams.Description}&Type=${uriEncodedParams.Type}`;
                     break;
                 default:
                     if (item.Type.indexOf("ThorLog") === 0)
-                        params = "/WUFile/" + item.Type + "?Wuid=" + this.wu.Wuid + "&Process=" + item.Orig.PID + "&Name=" + item.Orig.Name + "&Type=" + item.Orig.Type;
+                        params = `/WUFile/${item.Type}?Wuid=${uriEncodedParams.Wuid}&Process=${uriEncodedParams.PID}&Name=${uriEncodedParams.Name}&Type=${uriEncodedParams.Type}`;
                     break;
             }
 
-            return ESPRequest.getBaseURL() + params + (option ? "&Option=" + option : "&Option=1");
+            return ESPRequest.getBaseURL() + params + (option ? `&Option=${encodeURIComponent(option)}` : "&Option=1");
         },
 
         _doDownload: function (option) {
@@ -150,7 +169,8 @@ define([
                                 } if (row.Orig.Description === undefined && row.Orig.Type === Type) {
                                     return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + Type + "</a>";
                                 } else {
-                                    return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + Type + " (" + row.Orig.Description + ")" + "</a>";
+                                    const linkText = Type.replace("Slave", "Worker") + " (" + row.Description + ")";
+                                    return "<a href='#' onClick='return false;' class='dgrid-row-url'>" + linkText + "</a>";
                                 }
                             }
                             return Type;
@@ -239,8 +259,8 @@ define([
                     if (response.helpers) {
                         context.loadHelpers(response.helpers);
                     }
-                    if (response.thorLogList) {
-                        context.loadThorLogInfo(response.thorLogList);
+                    if (response.thorLogInfo) {
+                        context.loadThorLogInfo(response.thorLogInfo);
                     }
                     context.store.setData(context.logData);
                     context.grid.refresh();
@@ -298,7 +318,7 @@ define([
                     this.logData.push({
                         id: "T:" + i + "_" + j,
                         Type: "ThorSlaveLog",
-                        Description: thorLogInfo[i].ClusterGroup + "." + thorLogInfo[i].LogDate + ".log (slave " + (j + 1) + " of " + thorLogInfo[i].NumberSlaves + ")",
+                        Description: thorLogInfo[i].ClusterGroup + "." + thorLogInfo[i].LogDate + ".log (worker " + (j + 1) + " of " + thorLogInfo[i].NumberSlaves + ")",
                         Orig: lang.mixin({
                             SlaveNumber: j + 1
                         }, thorLogInfo[i])

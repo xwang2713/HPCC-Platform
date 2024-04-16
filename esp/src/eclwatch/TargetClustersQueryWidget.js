@@ -17,7 +17,9 @@ define([
     "hpcc/DelayLoadWidget",
     "src/ESPUtil",
     "hpcc/MachineInformationWidget",
-    "hpcc/IFrameWidget"
+    "hpcc/IFrameWidget",
+
+    "dijit/Dialog",
 ], function (declare, nlsHPCCMod, topic,
     registry,
     tree, selector,
@@ -50,7 +52,6 @@ define([
             });
 
             dojo.destroy(this.id + "Open");
-            this.refreshGrid();
             this.refreshActionState();
         },
 
@@ -86,13 +87,13 @@ define([
                 title: this.i18n.TargetClustersLegacy,
                 style: "border: 0; width: 100%; height: 100%"
             });
-            this.legacyTargetClustersIframeWidget.placeAt(this._tabContainer, "first");
+            this.legacyTargetClustersIframeWidget.placeAt(this._tabContainer, "last");
             this.machineFilter.disable();
         },
 
         createGrid: function (domID) {
             var context = this;
-            var retVal = new declare([ESPUtil.Grid(true, true, false, true)])({
+            var retVal = new declare([ESPUtil.Grid(true, true, undefined, true)])({
                 store: ESPPreflight.CreateTargetClusterStore(),
                 columns: {
                     col1: selector({

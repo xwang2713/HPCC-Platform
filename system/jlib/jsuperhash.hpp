@@ -30,6 +30,8 @@
 
 extern jlib_decl unsigned hashc( const unsigned char *k, unsigned length, unsigned initval);
 extern jlib_decl unsigned hashnc( const unsigned char *k, unsigned length, unsigned initval);
+extern jlib_decl unsigned hashcz( const unsigned char *k, unsigned initval);
+extern jlib_decl unsigned hashncz( const unsigned char *k, unsigned initval);
 
 class jlib_decl SuperHashTable : public CInterface
 {
@@ -73,7 +75,7 @@ protected:
     inline unsigned  doFind(const void * findParam) const
       { return doFind(getHashFromFindParam(findParam), findParam); }
 
-    unsigned firstIdx() const { return validIdx(0); }
+    unsigned firstIdx() const { return tablecount == 0 ? tablesize : validIdx(0); }
     unsigned validIdx(unsigned i) const;
 
 private:
@@ -160,11 +162,13 @@ public:
 
 };
 
-// Macro to provide find method taking reference instead of pointer
+// Macro to provide find method taking reference instead of pointer (yuk!)
 
 #define IMPLEMENT_SUPERHASHTABLEOF_REF_FIND(ET, FP)                        \
     inline ET *      find(FP & fp) const                                   \
-      { return SuperHashTableOf<ET, FP>::find(&fp); }
+      { return SuperHashTableOf<ET, FP>::find(&fp); }                      \
+    inline ET *      find(unsigned hash, FP & fp) const                    \
+      { return SuperHashTableOf<ET, FP>::find(hash, &fp); }
 
 
 // simple type hashing HT impl.
@@ -174,9 +178,9 @@ class SimpleHashTableOf : public SuperHashTableOf<ET, FP>
 {
     typedef SimpleHashTableOf<ET, FP> SELF;
 public:
-    SimpleHashTableOf<ET, FP>(void) : SuperHashTableOf<ET, FP>() { }
-    SimpleHashTableOf<ET, FP>(unsigned initsize) : SuperHashTableOf<ET, FP>(initsize) { }
-    ~SimpleHashTableOf<ET, FP>() { SELF::_releaseAll(); }
+    SimpleHashTableOf(void) : SuperHashTableOf<ET, FP>() { }
+    SimpleHashTableOf(unsigned initsize) : SuperHashTableOf<ET, FP>(initsize) { }
+    ~SimpleHashTableOf() { SELF::_releaseAll(); }
 
     IMPLEMENT_SUPERHASHTABLEOF_REF_FIND(ET, FP);
 
@@ -205,9 +209,9 @@ class OwningSimpleHashTableOf : public SimpleHashTableOf<ET, FP>
 {
     typedef OwningSimpleHashTableOf<ET, FP> SELF;
 public:
-    OwningSimpleHashTableOf<ET, FP>(void) : SimpleHashTableOf<ET, FP>() { }
-    OwningSimpleHashTableOf<ET, FP>(unsigned initsize) : SimpleHashTableOf<ET, FP>(initsize) { }
-    ~OwningSimpleHashTableOf<ET, FP>() { SELF::_releaseAll(); }
+    OwningSimpleHashTableOf(void) : SimpleHashTableOf<ET, FP>() { }
+    OwningSimpleHashTableOf(unsigned initsize) : SimpleHashTableOf<ET, FP>(initsize) { }
+    ~OwningSimpleHashTableOf() { SELF::_releaseAll(); }
 
     virtual void onRemove(void *et) { ((ET *)et)->Release(); }
 };
@@ -225,7 +229,7 @@ public:
       { if (cur) cur = table.next(cur); return (cur != NULL); }
  
 protected:
-    void *           queryPointer() { assertex(cur); return cur; }
+    void *           queryPointer() const { assertex(cur); return cur; }
 
 private:
     bool linkTable;
@@ -238,7 +242,7 @@ class SuperHashIteratorOf : public SuperHashIterator
 {
   public:
     SuperHashIteratorOf(const SuperHashTable & _table, bool linkTable=true) : SuperHashIterator(_table, linkTable) {}
-    ET &             query()
+    ET &             query() const
       { return *(static_cast<ET *>(queryPointer())); }
 };
 
@@ -284,20 +288,20 @@ class StringSuperHashTableOf : public SuperHashTableOf<ET, const char>
 {
     typedef StringSuperHashTableOf<ET> SELF;
 public:
-    StringSuperHashTableOf<ET>(void) : SuperHashTableOf<ET, const char>() { }
-    StringSuperHashTableOf<ET>(unsigned initsize) : SuperHashTableOf<ET, const char>(initsize) { }
-    ~StringSuperHashTableOf<ET>() { SELF::_releaseAll(); }
+    StringSuperHashTableOf(void) : SuperHashTableOf<ET, const char>() { }
+    StringSuperHashTableOf(unsigned initsize) : SuperHashTableOf<ET, const char>(initsize) { }
+    ~StringSuperHashTableOf() { SELF::_releaseAll(); }
 
     virtual void onAdd(void *et __attribute__((unused))) { }
     virtual void onRemove(void *et __attribute__((unused))) { }
     virtual unsigned getHashFromElement(const void *et) const
     {
         const char *str = ((const ET *) et)->queryFindString();
-        return hashc((const unsigned char *) str, (size32_t)strlen(str), 0);
+        return hashcz((const unsigned char *) str, 0);
     }
     virtual unsigned getHashFromFindParam(const void *fp) const
     {
-        return hashc((const unsigned char *) fp, (size32_t)strlen((const char *)fp), 0);
+        return hashcz((const unsigned char *) fp, 0);
     }
     virtual const void *getFindParam(const void *et) const
     {
@@ -314,9 +318,9 @@ class OwningStringSuperHashTableOf : public StringSuperHashTableOf<ET>
 {
     typedef OwningStringSuperHashTableOf<ET> SELF;
 public:
-    OwningStringSuperHashTableOf<ET>(void) : StringSuperHashTableOf<ET>() { }
-    OwningStringSuperHashTableOf<ET>(unsigned initsize) : StringSuperHashTableOf<ET>(initsize) { }
-    ~OwningStringSuperHashTableOf<ET>() { SELF::_releaseAll(); }
+    OwningStringSuperHashTableOf(void) : StringSuperHashTableOf<ET>() { }
+    OwningStringSuperHashTableOf(unsigned initsize) : StringSuperHashTableOf<ET>(initsize) { }
+    ~OwningStringSuperHashTableOf() { SELF::_releaseAll(); }
 
     virtual void onRemove(void *et) { ((ET *)et)->Release(); }
 };
@@ -418,7 +422,7 @@ class ThreadSafeOwningSimpleHashTableOf : public ThreadSafeSimpleHashTableOf<ET,
 {
     typedef ThreadSafeOwningSimpleHashTableOf<ET, FP> SELF;
 public:
-    ~ThreadSafeOwningSimpleHashTableOf<ET, FP>() { SELF::_releaseAll(); }
+    ~ThreadSafeOwningSimpleHashTableOf() { SELF::_releaseAll(); }
     virtual void onRemove(void *et) { ((ET *)et)->Release(); }
 };
 
@@ -605,9 +609,9 @@ protected:
     virtual unsigned getHashFromFindParam(const void *fp) const
     {
         if (nocase)
-            return hashnc((const unsigned char *)fp, (size32_t)strlen((const char *)fp), 0);
+            return hashncz((const unsigned char *)fp, 0);
         else
-            return hashc((const unsigned char *)fp, (size32_t)strlen((const char *)fp), 0);
+            return hashcz((const unsigned char *)fp, 0);
     }
 
     virtual const void *getFindParam(const void *e) const
@@ -615,13 +619,7 @@ protected:
         return ((HashKeyElement *) e)->get();
     }
 
-    virtual bool matchesFindParam(const void *e, const void *fp, unsigned fphash __attribute__((unused))) const
-    {
-        if (nocase)
-            return (0 == stricmp(((HashKeyElement *)e)->get(), (const char *)fp));
-        else
-            return (0 == strcmp(((HashKeyElement *)e)->get(), (const char *)fp));
-    }
+    virtual bool matchesFindParam(const void *e, const void *fp, unsigned fphash __attribute__((unused))) const;
 };
 
 #endif

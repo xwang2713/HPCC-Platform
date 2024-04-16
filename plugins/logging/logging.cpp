@@ -22,7 +22,7 @@
 #include "logging.hpp"
 #include "jlog.hpp"
 
-#define LOGGING_VERSION "LOGGING 1.0.1"
+#define LOGGING_VERSION "LOGGING 1.0.2"
 static const char * compatibleVersions[] = {
     "LOGGING 1.0.0 [66aec3fb4911ceda247c99d6a2a5944c]", // linux version
     LOGGING_VERSION,
@@ -30,7 +30,7 @@ static const char * compatibleVersions[] = {
 
 static const char * EclDefinition =
 "export Logging := SERVICE : time\n"
-"  dbglog(const string src) : c,action,entrypoint='logDbgLog'; \n"
+"  dbglog(const string src) : c,context,action,entrypoint='logDbgLogV2'; \n"
 "  addWorkunitInformation(const varstring txt, unsigned code=0, unsigned severity=0, const varstring source='user') : ctxmethod,action,entrypoint='addWuException'; \n"
 "  addWorkunitWarning(const varstring txt, unsigned code=0, unsigned severity=1, const varstring source='user') : ctxmethod,action,entrypoint='addWuException'; \n"
 "  addWorkunitError(const varstring txt, unsigned code=0, unsigned severity=2, const varstring source='user') : ctxmethod,action,entrypoint='addWuException'; \n"
@@ -41,6 +41,12 @@ static const char * EclDefinition =
 "  varstring getLocalId() : c,context,entrypoint='logGetLocalId'; \n"
 "  varstring getCallerId() : c,context,entrypoint='logGetCallerId'; \n"
 "  varstring generateGloballyUniqueId() : c,entrypoint='logGenerateGloballyUniqueId'; \n"
+"  unsigned4 getElapsedMs() : c,context,entrypoint='logGetElapsedMs'; \n"
+"  varstring getTraceSpanHeader() : c,context,entrypoint='getTraceSpanHeader'; \n"
+"  varstring getTraceStateHeader() : c,context,entrypoint='getTraceStateHeader'; \n"
+"  varstring getTraceID() : c,context,entrypoint='getTraceID'; \n"
+"  varstring getSpanID() : c,context,entrypoint='getSpanID'; \n"
+"  setSpanAttribute(const string name, const string value) : c,context,action,entrypoint='setSpanAttribute'; \n"
 "END;";
 
 LOGGING_API bool getECLPluginDefinition(ECLPluginDefinitionBlock *pb) 
@@ -75,6 +81,18 @@ LOGGING_API void LOGGING_CALL logDbgLog(unsigned srcLen, const char * src)
     }
 }
 
+LOGGING_API void LOGGING_CALL logDbgLogV2(ICodeContext *ctx, unsigned srcLen, const char * src)
+{
+    StringBuffer log(srcLen, src);
+    StringArray loglines;
+    log.replace('\r', ' ');
+    loglines.appendList(log, "\n", false);
+    ForEachItemIn(idx, loglines)
+    {
+        ctx->queryContextLogger().CTXLOG("%s", loglines.item(idx));
+    }
+}
+
 LOGGING_API char *  LOGGING_CALL logGetGlobalId(ICodeContext *ctx)
 {
     StringBuffer ret(ctx->queryContextLogger().queryGlobalId());
@@ -98,4 +116,49 @@ LOGGING_API char * LOGGING_CALL logGenerateGloballyUniqueId()
     StringBuffer ret;
     appendGloballyUniqueId(ret);
     return ret.detach();
+}
+
+LOGGING_API unsigned int LOGGING_CALL logGetElapsedMs(ICodeContext *ctx)
+{
+    return ctx->getElapsedMs();
+}
+
+LOGGING_API char * LOGGING_CALL getTraceID(ICodeContext *ctx)
+{
+    Owned<IProperties> httpHeaders = ctx->queryContextLogger().getSpanContext();
+    StringBuffer ret(httpHeaders->queryProp("traceID"));
+
+    return ret.detach();
+}
+
+LOGGING_API char * LOGGING_CALL getSpanID(ICodeContext *ctx)
+{
+    Owned<IProperties> httpHeaders = ctx->queryContextLogger().getSpanContext();
+    StringBuffer ret(httpHeaders->queryProp("spanID"));
+
+    return ret.detach();
+}
+
+LOGGING_API char * LOGGING_CALL getTraceSpanHeader(ICodeContext *ctx)
+{
+    Owned<IProperties> clientHeaders = ctx->queryContextLogger().getClientHeaders();
+    StringBuffer ret(clientHeaders->queryProp("traceparent"));
+
+    return ret.detach();
+}
+
+LOGGING_API char * LOGGING_CALL getTraceStateHeader(ICodeContext *ctx)
+{
+    Owned<IProperties> clientHeaders = ctx->queryContextLogger().getClientHeaders();
+    StringBuffer ret(clientHeaders->queryProp("tracestate"));
+
+    return ret.detach();
+}
+
+LOGGING_API void LOGGING_CALL setSpanAttribute(ICodeContext *ctx, unsigned nameLen, const char * name, unsigned valueLen, const char * value)
+{
+    StringBuffer attName(nameLen, name);
+    StringBuffer attVal(valueLen, value);
+
+    ctx->queryContextLogger().setSpanAttribute(attName.str(), attVal.str());
 }

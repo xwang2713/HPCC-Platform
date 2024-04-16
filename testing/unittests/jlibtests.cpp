@@ -23,6 +23,7 @@
 #ifdef _USE_CPPUNIT
 #include <memory>
 #include <chrono>
+#include <algorithm>
 #include "jsem.hpp"
 #include "jfile.hpp"
 #include "jdebug.hpp"
@@ -31,11 +32,717 @@
 #include "jlzw.hpp"
 #include "jqueue.hpp"
 #include "jregexp.hpp"
+#include "jsecrets.hpp"
 #include "jutil.hpp"
+#include "junicode.hpp"
+
+#include "opentelemetry/sdk/common/attribute_utils.h"
+#include "opentelemetry/sdk/resource/resource.h"
 
 #include "unittests.hpp"
 
+#define CPPUNIT_ASSERT_EQUAL_STR(x, y) CPPUNIT_ASSERT_EQUAL(std::string(x ? x : ""),std::string(y ? y : ""))
+
 static const unsigned oneMinute = 60000; // msec
+
+class JlibTraceTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JlibTraceTest);
+        //Invalid since tracemanager initialized at component load time 
+        //CPPUNIT_TEST(testTraceDisableConfig);
+        CPPUNIT_TEST(testStringArrayPropegatedServerSpan);
+        CPPUNIT_TEST(testDisabledTracePropegatedValues);
+        CPPUNIT_TEST(testIDPropegation);
+        CPPUNIT_TEST(testTraceConfig);
+        CPPUNIT_TEST(testRootServerSpan);
+        CPPUNIT_TEST(testPropegatedServerSpan);
+        CPPUNIT_TEST(testInvalidPropegatedServerSpan);
+        CPPUNIT_TEST(testInternalSpan);
+        CPPUNIT_TEST(testMultiNestedSpanTraceOutput);
+        CPPUNIT_TEST(testNullSpan);
+        CPPUNIT_TEST(testClientSpanGlobalID);
+        CPPUNIT_TEST(testEnsureTraceID);
+        CPPUNIT_TEST(manualTestsEventsOutput);
+        CPPUNIT_TEST(manualTestsDeclaredFailures);
+        CPPUNIT_TEST(manualTestScopeEnd);
+
+        //CPPUNIT_TEST(testJTraceJLOGExporterprintResources);
+        //CPPUNIT_TEST(testJTraceJLOGExporterprintAttributes);
+        CPPUNIT_TEST(manualTestsDeclaredSpanStartTime);
+    CPPUNIT_TEST_SUITE_END();
+
+    const char * simulatedGlobalYaml = R"!!(global:
+    tracing:
+        disable: false
+        exporterx:
+          type: OTLP
+          endpoint: "localhost:4317"
+          useSslCredentials: true
+          sslCredentialsCACcert: "ssl-certificate"
+        processor:
+          type: batch
+          typex: simple
+    )!!";
+
+    const char * disableTracingYaml = R"!!(global:
+    tracing:
+        disable: true
+    )!!";
+
+    //Mock http headers from request
+    void createMockHTTPHeaders(IProperties * mockHTTPHeaders, bool validOtel)
+    {
+        if (validOtel)
+        {
+            //Trace parent declared in http headers
+            mockHTTPHeaders->setProp("traceparent", "00-beca49ca8f3138a2842e5cf21402bfff-4b960b3e4647da3f-01");
+            mockHTTPHeaders->setProp("tracestate", "hpcc=4b960b3e4647da3f");
+        }
+        else
+        {
+            //valid otel traceparent header name, invalid value
+            mockHTTPHeaders->setProp("traceparent", "00-XYZe5cf21402bfff-4b960b-f1");
+            //invalid otel tracestate header name
+            mockHTTPHeaders->setProp("state", "hpcc=4b960b3e4647da3f");
+        }
+
+        //HPCC specific headers to be propagated
+        mockHTTPHeaders->setProp(kGlobalIdHttpHeaderName, "IncomingUGID");
+        mockHTTPHeaders->setProp(kCallerIdHttpHeaderName, "IncomingCID");
+    }
+
+protected:
+
+    /*void testJTraceJLOGExporterprintAttributes()
+    {
+        StringBuffer out;
+        testJLogExporterPrintAttributes(out, {}, "attributes");
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected non-empty printattributes", true, out.length() == 0);
+
+
+        testJLogExporterPrintAttributes(out, {{"url", "https://localhost"}, {"content-length", 562}, {"content-type", "html/text"}}, "attributes");
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty printattributes", false, out.length() == 0);
+
+        Owned<IPropertyTree> jtraceAsTree;
+        try
+        {
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected leading non-comma char in printattributes", true, out.charAt(0) == ',');
+
+            out.setCharAt(0, '{');
+            out.append("}");
+
+            jtraceAsTree.setown(createPTreeFromJSONString(out.str()));
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            msg.append("Unexpected printAttributes format failure detected: ");
+            e->errorMessage(msg);
+            e->Release();
+            CPPUNIT_ASSERT_MESSAGE(msg.str(), false);
+        }
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected printresources format failure detected", true, jtraceAsTree != nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("attributes"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("attributes/url"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("attributes/content-length"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("attributes/content-type"));
+    }*/
+
+    /*void testJTraceJLOGExporterprintResources()
+    {
+        StringBuffer out;
+        auto dummyAttributes = opentelemetry::sdk::resource::ResourceAttributes
+        {
+            {"service.name", "shoppingcart"},
+            {"service.instance.id", "instance-12"}
+        };
+        auto dummyResources = opentelemetry::sdk::resource::Resource::Create(dummyAttributes);
+
+        testJLogExporterPrintResources(out, dummyResources);
+
+        Owned<IPropertyTree> jtraceAsTree;
+        try
+        {
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty printresources return", false, out.length() == 0);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected leading non-comma char in printresources return", true, out.charAt(0) == ',');
+
+            out.setCharAt(0, '{');
+            out.append("}");
+
+            jtraceAsTree.setown(createPTreeFromJSONString(out.str()));
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            msg.append("Unexpected printresources format failure detected: ");
+            e->errorMessage(msg);
+            e->Release();
+            CPPUNIT_ASSERT_MESSAGE(msg.str(), false);
+        }
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected printresources format failure detected", true, jtraceAsTree != nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("resources"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("resources/service.name"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("resources/service.instance.id"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("resources/telemetry.sdk.language"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("resources/telemetry.sdk.version"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Missing resource attribute detected", true, jtraceAsTree->hasProp("resources/telemetry.sdk.name"));
+    }*/
+
+    //not able to programmatically test yet, but can visually inspect trace output
+    void manualTestsEventsOutput()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("spanWithEventsNoAtts", emptyMockHTTPHeaders);
+            Owned<IProperties> emptyEventAtts = createProperties();
+            serverSpan->addSpanEvent("event1", emptyEventAtts);
+        }
+
+        Owned<IProperties> twoEventAtt = createProperties();
+        twoEventAtt->setProp("key", "value");
+        twoEventAtt->setProp("key2", "");
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("spanWithEvent1Att", emptyMockHTTPHeaders);
+            serverSpan->addSpanEvent("event2", twoEventAtt);
+        }//{ "type": "span", "name": "spanWithEvents1Att", "trace_id": "3b9f55aaf8fab51fb0d73a32db7d704f", "span_id": "2a25a44ae0b3abe0", "start": 1709696036335278770, "duration": 3363911469, "events":[ { "name": "event2", "time_stamp": 1709696038413023245, "attributes": {"key": "value" } } ] }
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("spanWith2Events", emptyMockHTTPHeaders);
+            serverSpan->addSpanEvent("event1", twoEventAtt);
+            serverSpan->addSpanEvent("event2", twoEventAtt);
+        }//{ "type": "span", "name": "spanWith2Events", "trace_id": "ff5c5919b9c5f85913652b77f289bf0b", "span_id": "82f91ca1f9d469c1", "start": 1709698012480805016, "duration": 2811601377, "events":[ { "name": "event1", "time_stamp": 1709698013294323139, "attributes": {"key": "value" } },{ "name": "event2", "time_stamp": 1709698014500350802, "attributes": {"key": "value" } } ] }
+    }
+    //not able to programmatically test yet, but can visually inspect trace output
+    void manualTestsDeclaredSpanStartTime()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        SpanTimeStamp declaredSpanStartTime;
+        declaredSpanStartTime.now(); // must be initialized via now(), or setMSTickTime
+        MilliSleep(125);
+
+        {
+            //duration should be at least 125 milliseconds
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("declaredSpanStartTime", emptyMockHTTPHeaders, &declaredSpanStartTime);
+            //{ "type": "span", "name": "declaredSpanStartTime", "trace_id": "0a2eff24e1996540056745aaeb2f5824", "span_id": "46d0faf8b4da893e",
+            //"start": 1702672311203213259, "duration": 125311051 }
+        }
+
+        auto reqStartMSTick = msTick();
+        // a good test would track chrono::system_clock::now() at the point of span creation
+        // ensure a measurable sleep time between reqStartMSTick and msTickOffsetTimeStamp
+        // then compare OTel reported span start timestamp to span creation-time timestamp
+        SpanTimeStamp msTickOffsetTimeStamp;
+        msTickOffsetTimeStamp.setMSTickTime(reqStartMSTick);
+        //sleep for 50 milliseconds after span creation and mstick offset, expect at least 50 milliseconds duration output
+        MilliSleep(50);
+
+        {
+            SpanTimeStamp nowTimeStamp; //not used, printed out as "start" time for manual comparison
+            nowTimeStamp.now();
+            {
+                OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("msTickOffsetStartTime", emptyMockHTTPHeaders, &msTickOffsetTimeStamp);
+            }
+
+            DBGLOG("MsTickOffset span actual start-time timestamp: %lld", (long long)(nowTimeStamp.systemClockTime).count());
+            //14:49:13.776139   904 MsTickOffset span actual start-time timestamp: 1702669753775893057
+            //14:49:13.776082   904 { "type": "span", "name": "msTickOffsetStartTime", "trace_id": "6e89dd6082ff647daed523089f032240", "span_id": "fd359b41a0a9626d", 
+            //"start": 1702669753725771035, "duration": 50285323 }
+            //Actual start - declared start: 1702669753775893057-1702669753725771035 = 50162022
+        }
+
+        //uninitialized SpanTimeStamp will be ignored, and current time will be used
+        SpanTimeStamp uninitializedTS;
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected initialized spanTimeStamp", false, uninitializedTS.isInitialized());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected initialized spanTimeStamp", true, uninitializedTS.systemClockTime == std::chrono::nanoseconds::zero());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected initialized spanTimeStamp", true, uninitializedTS.steadyClockTime == std::chrono::nanoseconds::zero());
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("uninitializeddeclaredSpanStartTime", emptyMockHTTPHeaders, &uninitializedTS);
+            //sleep for 75 milliseconds after span creation, expect at least 75 milliseconds duration output
+            MilliSleep(75);
+
+            //14:22:37.865509 30396 { "type": "span", "name": "uninitializeddeclaredSpanStartTime", "trace_id": "f7844c5c09b413e008f912ded0e12dec", "span_id": "7fcf9042a090c663", 
+            //"start": 1702668157790080022,
+            //"duration": 75316248 }
+        }
+    }
+
+    //not able to programmatically test yet, but can visually inspect trace output
+    void manualTestsDeclaredFailures()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("defaultErrorSpan", emptyMockHTTPHeaders);
+            serverSpan->recordError();
+        }//{ "type": "span", "name": "defaultErrorSpan", "trace_id": "209b5d8cea0aec9785d2dfa3117e37ad", "span_id": "ab72e76c2f2466c2", "start": 1709675278129335702, "duration": 188292867932, "status": "Error", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675465508149013, "attributes": {"escaped": 0 } } ] }
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("defaultErrorSpanStruct", emptyMockHTTPHeaders);
+            SpanError error;
+            serverSpan->recordError(error);
+        }//{ "type": "span", "name": "defaultErrorSpanStruct", "trace_id": "19803a446b971f2e0bdddc9c00db50fe", "span_id": "04c93a91ab8785a2", "start": 1709675487767044352, "duration": 2287497219, "status": "Error", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675489216412154, "attributes": {"escaped": 0 } } ] }
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("failedErrorSpanEscaped", emptyMockHTTPHeaders);
+            serverSpan->recordError(SpanError("hello", -1, true, true)); //error message hello, no error code, error caused failure, and error caused escape
+        }//{ "type": "span", "name": "failedErrorSpanEscaped", "trace_id": "634f386c18a6140544c980e0d5a15905", "span_id": "e2f59c48f63a8f82", "start": 1709675508231168974, "duration": 7731717678, "status": "Error", "kind": "Server", "description": "hello", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675512164430668, "attributes": {"escaped": 1,"message": "hello" } } ] }
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("failedErrEscapedMsgErrCode", emptyMockHTTPHeaders);
+            serverSpan->recordError(SpanError("hello", 34, true, true)); //error message hello, error code 34, error caused failure, and error caused escape
+        }//failedErrEscapedMsgErrCode
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("containsErrorAndMessageSpan", emptyMockHTTPHeaders);
+            serverSpan->recordError(SpanError("Error Message!!"));
+        }//{ "type": "span", "name": "containsErrorAndMessageSpan", "trace_id": "9a6e00ea309bc0427733f9b2d452f9e2", "span_id": "de63e9c69b64e411", "start": 1709675552302360510, "duration": 5233037523, "status": "Error", "kind": "Server", "description": "Error Message!!", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675555149852711, "attributes": {"escaped": 0,"message": "Error Message!!" } }
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("containsErrorAndMessageFailedNotEscapedSpan", emptyMockHTTPHeaders);
+            serverSpan->recordError(SpanError("Error Message!!", 23, true, false)); 
+        }//{ "type": "span", "name": "containsErrorAndMessageFailedNotEscapedSpan", "trace_id": "02f4b2d215f8230b15063862f8a91e41", "span_id": "c665ec371d6db147", "start": 1709675573581678954, "duration": 3467489486, "status": "Error", "kind": "Server", "description": "Error Message!!", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675576145074240, "attributes": {"code": 23,"escaped": 0,"message": "Error Message!!" } } ] }
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("mockExceptionSpanNotFailedNotEscaped", emptyMockHTTPHeaders);
+            serverSpan->recordException( makeStringExceptionV(76,"Mock exception"), false, false);
+        }//{ "type": "span", "name": "mockExceptionSpanNotFailedNotEscaped", "trace_id": "e01766474db05ce9085943fa3955cd73", "span_id": "7da620e96e10e42c", "start": 1709675595987480704, "duration": 2609091267, "status": "Unset", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675597728975355, "attributes": {"code": 76,"escaped": 0,"message": "Mock exception" } } ] 
+
+        {
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("thrownExceptionSpan", emptyMockHTTPHeaders);
+            try
+            {
+                throw makeStringExceptionV( 356, "Mock thrown exception");
+            }
+            catch (IException *e)
+            {
+                serverSpan->recordException(e, false, true);
+                e->Release();
+            }
+        }//{ "type": "span", "name": "thrownExceptionSpan", "trace_id": "4d6225e1cefdc6823d1134c71c522426", "span_id": "07f7bd070e008f53", "start": 1709675614823881961, "duration": 4665288686, "status": "Unset", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675616485586471, "attributes": {"code": 356,"escaped": 1,"message": "Mock thrown exception" } } ] }
+    }
+    //not able to programmatically test yet, but can visually inspect trace output
+    void manualTestScopeEnd()
+    {
+        Owned<ISpan> savedSpan;
+        {
+            SpanFlags flags = SpanFlags::EnsureTraceId;
+            Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("mySpan", emptyMockHTTPHeaders, flags);
+            DBGLOG("mySpan is alive");
+            savedSpan.set(serverSpan);
+        }//{ "type": "span", "name": "mySpan", "trace_id": "fe266416e7d588113a5131394d913ab4", "span_id": "7ac62328b04442c5", "start": 1709824793826023368, "duration": 16952 }
+        //NB: Duration for the span should be << 100,000,000ns
+        //If logging is asynchronous the log message may appear after the following logging line
+        DBGLOG("mySpan is finished");
+        Sleep(100);
+
+        //Check that the attributes are still accessible even though the span has ended
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        savedSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+        savedSpan.clear();
+    }
+
+    void testTraceDisableConfig()
+    {
+        Owned<IPropertyTree> testTree = createPTreeFromYAMLString(disableTracingYaml, ipt_none, ptr_ignoreWhiteSpace, nullptr);
+        Owned<IPropertyTree> traceConfig = testTree->getPropTree("global");
+
+        //Not valid, due to tracemanager initialized at component load time
+        initTraceManager("somecomponent", traceConfig, nullptr);
+    }
+
+    void testEnsureTraceID()
+    {
+        SpanFlags flags = SpanFlags::EnsureTraceId;
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("noRemoteParentEnsureTraceID", emptyMockHTTPHeaders, flags);
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
+    }
+
+    void testIDPropegation()
+    {
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, true);
+
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        //at this point the serverSpan should have the following context attributes
+        //traceID, spanID, remoteParentSpanID, traceFlags, traceState, globalID, callerID
+
+        //retrieve serverSpan context with the intent to interrogate attributes
+        {
+            Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+            serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+
+            CPPUNIT_ASSERT_MESSAGE("Unexpected GlobalID detected",
+             strsame("IncomingUGID", retrievedSpanCtxAttributes->queryProp(kGlobalIdHttpHeaderName)));
+            CPPUNIT_ASSERT_MESSAGE("Unexpected CallerID detected",
+             strsame("IncomingCID", retrievedSpanCtxAttributes->queryProp(kCallerIdHttpHeaderName)));
+            CPPUNIT_ASSERT_MESSAGE("Unexpected Declared Parent SpanID detected",
+             strsame("4b960b3e4647da3f", retrievedSpanCtxAttributes->queryProp("remoteParentSpanID")));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
+        }
+
+        //retrieve serverSpan context with the intent to propagate it to a remote child span
+        {
+            Owned<IProperties> retrievedClientHeaders = createProperties();
+            serverSpan->getClientHeaders(retrievedClientHeaders.get());
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("getClientHeaders failed to produce traceParent!", true, retrievedClientHeaders->hasProp("traceparent"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Otel traceparent header len detected", (size_t)55,
+             strlen(retrievedClientHeaders->queryProp("traceparent")));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("getClientHeaders failed to produce traceState!", true, retrievedClientHeaders->hasProp("tracestate"));
+            const char * tracestate = retrievedClientHeaders->queryProp("tracestate");
+            CPPUNIT_ASSERT_MESSAGE("Unexpected traceState detected",
+             strsame("hpcc=4b960b3e4647da3f", retrievedClientHeaders->queryProp("tracestate")));
+        }
+    }
+
+    void testTraceConfig()
+    {
+        Owned<IPropertyTree> testTree = createPTreeFromYAMLString(simulatedGlobalYaml, ipt_none, ptr_ignoreWhiteSpace, nullptr);
+        Owned<IPropertyTree> traceConfig = testTree->getPropTree("global");
+
+         initTraceManager("somecomponent", traceConfig, nullptr);
+    }
+
+    void testNullSpan()
+    {
+        if (!queryTraceManager().isTracingEnabled())
+        {
+            DBGLOG("Skipping testNullSpan, tracing is not enabled");
+            return;
+        }
+
+        OwnedSpanScope nullSpan = getNullSpan();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullptr nullspan detected", true, nullSpan != nullptr);
+
+        {
+            Owned<IProperties> headers = createProperties(true);
+            nullSpan->getClientHeaders(headers);
+        }
+
+        OwnedSpanScope nullSpanChild = nullSpan->createClientSpan("nullSpanChild");
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullptr nullSpanChild detected", true, nullSpanChild != nullptr);
+    }
+
+    void testClientSpan()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getSpanContext(retrievedSpanCtxAttributes);
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty spanID detected", true, retrievedSpanCtxAttributes->hasProp("spanID"));
+        const char * serverSpanID = retrievedSpanCtxAttributes->queryProp("spanID");
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty traceID detected", true, retrievedSpanCtxAttributes->hasProp("traceID"));
+        const char * serverTraceID = retrievedSpanCtxAttributes->queryProp("traceID");
+
+        {
+            OwnedSpanScope internalSpan = serverSpan->createClientSpan("clientSpan");
+
+            //retrieve clientSpan context with the intent to propogate otel and HPCC context
+            {
+                Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+                internalSpan->getSpanContext(retrievedSpanCtxAttributes);
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing localParentSpanID detected", true,
+                 retrievedSpanCtxAttributes->hasProp("localParentSpanID"));
+
+                CPPUNIT_ASSERT_MESSAGE("Mismatched localParentSpanID detected",
+                 strsame(serverSpanID, retrievedSpanCtxAttributes->queryProp("localParentSpanID")));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing remoteParentID detected", true,
+                 retrievedSpanCtxAttributes->hasProp("remoteParentID"));
+
+                CPPUNIT_ASSERT_MESSAGE("Unexpected CallerID detected",
+                 strsame(serverTraceID, retrievedSpanCtxAttributes->queryProp("remoteParentID")));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected GlobalID detected", false,
+                retrievedSpanCtxAttributes->hasProp(kGlobalIdHttpHeaderName));
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected CallerID detected", false,
+                retrievedSpanCtxAttributes->hasProp(kCallerIdHttpHeaderName));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Declared Parent SpanID detected", false,
+                retrievedSpanCtxAttributes->hasProp("remoteParentSpanID"));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
+            }
+        }
+    }
+
+    void testInternalSpan()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getSpanContext(retrievedSpanCtxAttributes);
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty spanID detected", true, retrievedSpanCtxAttributes->hasProp("spanID"));
+        const char * serverSpanID = retrievedSpanCtxAttributes->queryProp("spanID");
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty traceID detected", true, retrievedSpanCtxAttributes->hasProp("traceID"));
+        const char * serverTraceID = retrievedSpanCtxAttributes->queryProp("traceID");
+
+        {
+            OwnedSpanScope internalSpan = serverSpan->createInternalSpan("internalSpan");
+
+            //retrieve internalSpan context with the intent to interrogate attributes
+            {
+                Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+                internalSpan->getSpanContext(retrievedSpanCtxAttributes);
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing localParentSpanID detected", true,
+                 retrievedSpanCtxAttributes->hasProp("localParentSpanID"));
+
+                CPPUNIT_ASSERT_MESSAGE("Mismatched localParentSpanID detected",
+                 strsame(serverSpanID, retrievedSpanCtxAttributes->queryProp("localParentSpanID")));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected remoteParentSpanID detected", false,
+                 retrievedSpanCtxAttributes->hasProp("remoteParentSpanID"));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected GlobalID detected", false,
+                 retrievedSpanCtxAttributes->hasProp(kGlobalIdHttpHeaderName));
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected CallerID detected", false,
+                 retrievedSpanCtxAttributes->hasProp(kCallerIdHttpHeaderName));
+
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Declared Parent SpanID detected", false,
+                 retrievedSpanCtxAttributes->hasProp("remoteParentSpanID"));
+
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+                CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
+            }
+        }
+    }
+
+    void testRootServerSpan()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
+
+        //retrieve serverSpan context with the intent to propagate it to a remote child span
+        {
+            Owned<IProperties> retrievedClientHeaders = createProperties();
+            serverSpan->getClientHeaders(retrievedClientHeaders);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("getClientHeaders failed to produce traceParent!", true, retrievedClientHeaders->hasProp("traceparent"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Otel traceparent header len detected", (size_t)55,
+             strlen(retrievedClientHeaders->queryProp("traceparent")));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("detected unexpected tracestate from getClientHeaders", false, retrievedClientHeaders->hasProp("tracestate"));
+        }
+
+        //retrieve serverSpan context with the intent to interrogate attributes
+        {
+            Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+            serverSpan->getSpanContext(retrievedSpanCtxAttributes);
+            //at this point the serverSpan should have the following context attributes
+            //traceID, spanID //but no remoteParentSpanID, globalID, callerID
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected GlobalID detected", false,
+             retrievedSpanCtxAttributes->hasProp(kGlobalIdHttpHeaderName));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected CallerID detected", false,
+             retrievedSpanCtxAttributes->hasProp(kCallerIdHttpHeaderName));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Declared Parent SpanID detected", false,
+             retrievedSpanCtxAttributes->hasProp("remoteParentSpanID"));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
+        }
+    }
+
+    void testInvalidPropegatedServerSpan()
+    {
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, false);
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("invalidPropegatedServerSpan", mockHTTPHeaders);
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getClientHeaders(retrievedSpanCtxAttributes.get());
+
+        const char * traceParent = retrievedSpanCtxAttributes->queryProp("remoteParentSpanID");
+        DBGLOG("testInvalidPropegatedServerSpan: traceparent: %s", traceParent);
+    }
+
+    void testDisabledTracePropegatedValues()
+    {
+        //only interested in propegated values, no local trace/span
+        //usefull if tracemanager.istraceenabled() is false
+        bool isTraceEnabled = queryTraceManager().isTracingEnabled();
+
+        if (isTraceEnabled)
+            return;
+
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, true);
+
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        //at this point the serverSpan should have the following context attributes
+        //remoteParentSpanID, globalID, callerID
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+
+        CPPUNIT_ASSERT_MESSAGE("Unexpected GlobalID detected",
+            strsame("IncomingUGID", retrievedSpanCtxAttributes->queryProp(kGlobalIdHttpHeaderName)));
+        CPPUNIT_ASSERT_MESSAGE("Unexpected CallerID detected",
+            strsame("IncomingCID", retrievedSpanCtxAttributes->queryProp(kCallerIdHttpHeaderName)));
+
+        CPPUNIT_ASSERT_MESSAGE("Unexpected Declared Parent SpanID detected",
+            strsame("4b960b3e4647da3f", retrievedSpanCtxAttributes->queryProp("remoteParentSpanID")));
+    }
+
+    void testMultiNestedSpanTraceOutput()
+    {
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, true);
+
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedSpanScope clientSpan = serverSpan->createClientSpan("clientSpan");
+        OwnedSpanScope internalSpan = clientSpan->createInternalSpan("internalSpan");
+        OwnedSpanScope internalSpan2 = internalSpan->createInternalSpan("internalSpan2");
+
+        StringBuffer out;
+        out.set("{");
+        internalSpan2->toString(out);
+        out.append("}");
+        {
+            Owned<IPropertyTree> jtraceAsTree;
+            try
+            {
+                jtraceAsTree.setown(createPTreeFromJSONString(out.str()));
+            }
+            catch (IException *e)
+            {
+                StringBuffer msg;
+                msg.append("Unexpected toString format failure detected: ");
+                e->errorMessage(msg);
+                e->Release();
+                CPPUNIT_ASSERT_MESSAGE(msg.str(), false);
+            }
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected toString format failure detected", true, jtraceAsTree != nullptr);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing 'TraceID' entry in toString output", true, jtraceAsTree->hasProp("TraceID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing 'SpanID' entry in toString output", true, jtraceAsTree->hasProp("SpanID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing 'Name' entry in toString output", true, jtraceAsTree->hasProp("Name"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing 'Type' entry in toString output", true, jtraceAsTree->hasProp("Type"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing 'ParentSpan/SpanID' entry in toString output", true, jtraceAsTree->hasProp("ParentSpan/SpanID"));
+        }
+    }
+
+    void testClientSpanGlobalID()
+    {
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, true); //includes global ID
+
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedSpanScope clientSpan = serverSpan->createClientSpan("clientSpanWithGlobalID");
+
+        //retrieve serverSpan context with the intent to interrogate attributes
+        {
+            Owned<IProperties> retrievedClientSpanCtxAttributes = createProperties();
+            clientSpan->getSpanContext(retrievedClientSpanCtxAttributes.get());
+
+            CPPUNIT_ASSERT_MESSAGE("Unexpected GlobalID detected",
+             strsame("IncomingUGID", retrievedClientSpanCtxAttributes->queryProp(kGlobalIdHttpHeaderName)));
+            CPPUNIT_ASSERT_MESSAGE("Unexpected CallerID detected",
+             strsame("IncomingCID", retrievedClientSpanCtxAttributes->queryProp(kCallerIdHttpHeaderName)));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedClientSpanCtxAttributes->queryProp("traceID")));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedClientSpanCtxAttributes->queryProp("spanID")));
+        }
+    }
+
+    void testPropegatedServerSpan()
+    {
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, true);
+
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        //at this point the serverSpan should have the following context attributes
+        //traceID, spanID, remoteParentSpanID, traceFlags, traceState, globalID, callerID
+
+        //retrieve serverSpan context with the intent to interrogate attributes
+        {
+            Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+            serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+
+            CPPUNIT_ASSERT_MESSAGE("Unexpected GlobalID detected",
+             strsame("IncomingUGID", retrievedSpanCtxAttributes->queryProp(kGlobalIdHttpHeaderName)));
+            CPPUNIT_ASSERT_MESSAGE("Unexpected CallerID detected",
+             strsame("IncomingCID", retrievedSpanCtxAttributes->queryProp(kCallerIdHttpHeaderName)));
+
+            CPPUNIT_ASSERT_MESSAGE("Unexpected Declared Parent SpanID detected",
+             strsame("4b960b3e4647da3f", retrievedSpanCtxAttributes->queryProp("remoteParentSpanID")));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("traceID")));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
+        }
+
+        //retrieve serverSpan client headers with the intent to propagate them onto the next hop
+        {
+            Owned<IProperties> retrievedClientHeaders = createProperties();
+            serverSpan->getClientHeaders(retrievedClientHeaders.get());
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Otel traceparent header len detected", (size_t)55,
+             strlen(retrievedClientHeaders->queryProp("traceparent")));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("getClientHeaders failed to produce traceState!", true, retrievedClientHeaders->hasProp("tracestate"));
+            const char * tracestate = retrievedClientHeaders->queryProp("tracestate");
+            CPPUNIT_ASSERT_MESSAGE("Unexpected traceState detected",
+             strsame("hpcc=4b960b3e4647da3f", retrievedClientHeaders->queryProp("tracestate")));
+        }
+    }
+
+    void testStringArrayPropegatedServerSpan()
+    {
+         StringArray mockHTTPHeadersSA;
+        //mock opentel traceparent context 
+        mockHTTPHeadersSA.append("traceparent:00-beca49ca8f3138a2842e5cf21402bfff-4b960b3e4647da3f-01");
+        //mock opentel tracestate https://www.w3.org/TR/trace-context/#trace-context-http-headers-format
+        mockHTTPHeadersSA.append("tracestate:hpcc=4b960b3e4647da3f");
+        mockHTTPHeadersSA.append("HPCC-Global-Id:someGlobalID");
+        mockHTTPHeadersSA.append("HPCC-Caller-Id:IncomingCID");
+
+        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("StringArrayPropegatedServerSpan", mockHTTPHeadersSA);
+        //at this point the serverSpan should have the following context attributes
+        //traceID, spanID, remoteParentSpanID, traceFlags, traceState, globalID, callerID
+
+        //retrieve serverSpan context with the intent to interrogate attributes
+        {
+            Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+            serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected GlobalID detected", true,
+             strsame("someGlobalID", retrievedSpanCtxAttributes->queryProp(kGlobalIdHttpHeaderName)));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected CallerID detected", true,
+             strsame("IncomingCID", retrievedSpanCtxAttributes->queryProp(kCallerIdHttpHeaderName)));
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected Declared Parent SpanID detected", true,
+             strsame("4b960b3e4647da3f", retrievedSpanCtxAttributes->queryProp("remoteParentSpanID")));
+        }
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JlibTraceTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibTraceTest, "JlibTraceTest" );
+
 
 class JlibSemTest : public CppUnit::TestFixture
 {
@@ -301,7 +1008,7 @@ protected:
             setValue = !initial;
             clearValue = initial;
         }
-        void start() { threaded.start(); }
+        void start() { threaded.start(false); }
         void join()
         {
             threaded.join();
@@ -470,27 +1177,25 @@ protected:
         unsigned fsize = (unsigned)(((double)nr * (double)rs) / (1024.0 * 1024.0));
 
         fflush(NULL);
-        fprintf(stdout,"\n");
-        fflush(NULL);
 
         for(int j=0; j<2; j++)
         {
             if (j==0)
-                fprintf(stdout, "File size: %d (MB) Cache, ", fsize);
+                DBGLOG("File size: %d (MB) Cache", fsize);
             else
-                fprintf(stdout, "\nFile size: %d (MB) Nocache, ", fsize);
+                DBGLOG("File size: %d (MB) Nocache", fsize);
 
             if (server != NULL)
             {
                 SocketEndpoint ep;
                 ep.set(server, 7100);
                 ifile = createRemoteFile(ep, tmpfile);
-                fprintf(stdout, "Remote: (%s)\n", server);
+                DBGLOG("Remote: (%s)", server);
             }
             else
             {
                 ifile = createIFile(tmpfile);
-                fprintf(stdout, "Local:\n");
+                DBGLOG("Local:");
             }
 
             ifile->remove();
@@ -513,7 +1218,7 @@ protected:
             }
             catch (...)
             {
-                fprintf(stdout, "ifile->setFilePermissions() exception\n");
+                DBGLOG("ifile->setFilePermissions() exception");
             }
 
             unsigned iter = nr / 40;
@@ -537,7 +1242,7 @@ protected:
             double rsec = (double)(msTick() - st)/1000.0;
             unsigned iorate = (unsigned)((double)fsize / rsec);
 
-            fprintf(stdout, "\nwrite - elapsed time = %6.2f (s) iorate = %4d (MB/s)\n", rsec, iorate);
+            DBGLOG("write - elapsed time = %6.2f (s) iorate = %4d (MB/s)", rsec, iorate);
 
             st = msTick();
 
@@ -563,7 +1268,7 @@ protected:
             rsec = (double)(msTick() - st)/1000.0;
             iorate = (unsigned)((double)fsize / rsec);
 
-            fprintf(stdout, "\nread -- elapsed time = %6.2f (s) iorate = %4d (MB/s)\n", rsec, iorate);
+            DBGLOG("read -- elapsed time = %6.2f (s) iorate = %4d (MB/s)", rsec, iorate);
 
             ifileio->Release();
             ifile->remove();
@@ -602,6 +1307,70 @@ CPPUNIT_TEST_SUITE_REGISTRATION( JlibFileIOTestTiming );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibFileIOTestTiming, "JlibFileIOTestTiming" );
 CPPUNIT_TEST_SUITE_REGISTRATION( JlibFileIOTestStress );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibFileIOTestTiming, "JlibFileIOTestStress" );
+
+/* =========================================================== */
+class JlibContainsRelPathsTest : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(JlibContainsRelPathsTest);
+        CPPUNIT_TEST(testWindowsPaths);
+        CPPUNIT_TEST(testPosixPaths);
+    CPPUNIT_TEST_SUITE_END();
+
+    bool testContainsRelPaths(const char * path)
+    {
+        return containsRelPaths(path);
+    };
+public:
+    void testWindowsPaths()
+    {
+        CPPUNIT_ASSERT(testContainsRelPaths("a\\b\\c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths(".\\a\\b\\c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("..\\a\\b\\c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("...\\a\\b\\c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\.\\a\\b\\c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\..\\a\\b\\c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\...\\a\\b\\c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c\\.") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c\\..") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c\\...") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\.\\b\\c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\..\\b\\c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\...\\b\\c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c.d\\e") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c..d\e") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c...d\\e") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("\\a\\b\\c.d.e\\f") == false);
+    }
+    void testPosixPaths()
+    {
+        CPPUNIT_ASSERT(testContainsRelPaths("a/b/c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("~/a/b/c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a~/b/c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c~") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("./a/b/c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("../a/b/c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths(".../a/b/c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/./a/b/c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/../a/b/c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/.../a/b/c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c/.") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c/..") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c/...") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/./c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/../c") == true);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/.../c") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c.d/e") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c..d/e") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c...d/e") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("/a/b/c.d.e/f") == false);
+        CPPUNIT_ASSERT(testContainsRelPaths("abc\\def/../g/h") == true); // The PathSepChar should be '/'.
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(JlibContainsRelPathsTest);
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(JlibContainsRelPathsTest, "JlibContainsRelPathsTest");
 
 /* =========================================================== */
 
@@ -678,7 +1447,7 @@ public:
             //Check the values from the quantile iterator match those that are expected
             unsigned pos = (unsigned)iter.get();
 #if 0
-            printf("(%d,%d) %d=%d\n", numItems, numDivisions, i, pos);
+            DBGLOG("(%d,%d) %d=%d", numItems, numDivisions, i, pos);
 #endif
             if (expected)
                 CPPUNIT_ASSERT_EQUAL(expected[i], pos);
@@ -734,12 +1503,14 @@ class JlibTimingTest : public CppUnit::TestFixture
 {
     CPPUNIT_TEST_SUITE( JlibTimingTest );
         CPPUNIT_TEST(testMsTick);
+        CPPUNIT_TEST(testNsTick);
         CPPUNIT_TEST(testGetCyclesNow);
         CPPUNIT_TEST(testStdChrono);
         CPPUNIT_TEST(testGetTimeOfDay);
         CPPUNIT_TEST(testClockGetTimeReal);
         CPPUNIT_TEST(testClockGetTimeMono);
         CPPUNIT_TEST(testTimestampNow);
+        CPPUNIT_TEST(testTime);
     CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -755,7 +1526,15 @@ public:
         unsigned value = 0;
         for (unsigned i=0; i < iters; i++)
             value += msTick();
-        printf("msTick() %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("msTick() %uns = %u", (msTick()-startTime)/scale, value);
+    }
+    void testNsTick()
+    {
+        unsigned startTime = msTick();
+        unsigned __int64 value = 0;
+        for (unsigned i=0; i < iters; i++)
+            value += nsTick();
+        DBGLOG("nsTick() %uns = %" I64F "u", (msTick()-startTime)/scale, value);
     }
     void testGetCyclesNow()
     {
@@ -763,7 +1542,7 @@ public:
         unsigned value = 0;
         for (unsigned i=0; i < iters; i++)
             value += get_cycles_now();
-        printf("get_cycles_now() %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("get_cycles_now() %uns = %u", (msTick()-startTime)/scale, value);
     }
     void testStdChrono()
     {
@@ -771,7 +1550,7 @@ public:
         unsigned value = 0;
         for (unsigned i=0; i < iters; i++)
             value += std::chrono::high_resolution_clock::now().time_since_epoch().count();
-        printf("std::chrono::high_resolution_clock::now() %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("std::chrono::high_resolution_clock::now() %uns = %u", (msTick()-startTime)/scale, value);
     }
     void testGetTimeOfDay()
     {
@@ -783,7 +1562,7 @@ public:
             gettimeofday(&tv, NULL);
             value += tv.tv_sec;
         }
-        printf("gettimeofday() %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("gettimeofday() %uns = %u", (msTick()-startTime)/scale, value);
     }
     void testClockGetTimeReal()
     {
@@ -795,7 +1574,7 @@ public:
             clock_gettime(CLOCK_REALTIME, &ts);
             value += ts.tv_sec;
         }
-        printf("clock_gettime(REALTIME) %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("clock_gettime(REALTIME) %uns = %u", (msTick()-startTime)/scale, value);
     }
     void testClockGetTimeMono()
     {
@@ -807,7 +1586,7 @@ public:
             clock_gettime(CLOCK_MONOTONIC, &ts);
             value += ts.tv_sec;
         }
-        printf("clock_gettime(MONOTONIC) %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("clock_gettime(MONOTONIC) %uns = %u", (msTick()-startTime)/scale, value);
     }
     void testTimestampNow()
     {
@@ -818,7 +1597,18 @@ public:
         {
             value += getTimeStampNowValue();
         }
-        printf("getTimeStampNowValue() %uns = %u\n", (msTick()-startTime)/scale, value);
+        DBGLOG("getTimeStampNowValue() %uns = %u", (msTick()-startTime)/scale, value);
+    }
+    void testTime()
+    {
+        unsigned startTime = msTick();
+        struct timespec ts;
+        unsigned value = 0;
+        for (unsigned i=0; i < iters; i++)
+        {
+            value += (unsigned)time(nullptr);
+        }
+        DBGLOG("time() %uns = %u", (msTick()-startTime)/scale, value);
     }
 };
 
@@ -932,14 +1722,14 @@ public:
         for (unsigned i2 = 0; i2 < numConsumers; i2++)
         {
             consumers[i2] = new Reader(queue, stopSem, readerWork);
-            consumers[i2]->start();
+            consumers[i2]->start(false);
         }
 
         WriterBase * * producers = new WriterBase *[numProducers];
         for (unsigned i1 = 0; i1 < numProducers; i1++)
         {
             producers[i1] = new Writer(queue, sizePerProducer, buffer + i1 * sizePerProducer, startSem, writerDoneSem, writerWork);
-            producers[i1]->start();
+            producers[i1]->start(false);
         }
 
         cycle_t startTime = get_cycles_now();
@@ -984,11 +1774,11 @@ public:
         unsigned expectedWorkTime = std::max(expectedReadWorkTime, expectedWriteWorkTime);
         if (failures)
         {
-            printf("Fail: Test %u producers %u consumers %u queueItems %u(%u) mismatches fail(@%u=%u)\n", numProducers, numConsumers, queueElements, failures, numClear, (unsigned)failPos, failValue);
+            DBGLOG("Fail: Test %u producers %u consumers %u queueItems %u(%u) mismatches fail(@%u=%u)", numProducers, numConsumers, queueElements, failures, numClear, (unsigned)failPos, failValue);
             ASSERT(failures == 0);
         }
         else
-            printf("Pass: Test %u(@%u) producers %u(@%u) consumers %u queueItems in %ums [%dms]\n", numProducers, writerWork, numConsumers, readerWork, queueElements, timeMs, timeMs-expectedWorkTime);
+            DBGLOG("Pass: Test %u(@%u) producers %u(@%u) consumers %u queueItems in %ums [%dms]", numProducers, writerWork, numConsumers, readerWork, queueElements, timeMs, timeMs-expectedWorkTime);
 
         for (unsigned i4 = 0; i4 < numConsumers; i4++)
         {
@@ -1050,7 +1840,7 @@ public:
         }
         cycle_t stopTime = get_cycles_now();
         unitWorkTimeMs = cycle_to_nanosec(stopTime - startTime) / (1000000 * 10);
-        printf("Work(1) takes %ums\n", unitWorkTimeMs);
+        DBGLOG("Work(1) takes %ums", unitWorkTimeMs);
 
         //How does it scale with number of queue elements?
         for (unsigned elem = 16; elem < 256; elem *= 2)
@@ -1128,7 +1918,7 @@ protected:
         CCycleTimer timer;
         testPatterns(search.get(), patterns);
         if (reportTiming)
-            printf("%u: %u ms\n", length, timer.elapsedMs());
+            DBGLOG("%u: %u ms", length, timer.elapsedMs());
     }
 
     char * generateSearchString(size_t len)
@@ -1326,6 +2116,7 @@ class JlibIPTTest : public CppUnit::TestFixture
         CPPUNIT_TEST(testArrayMarkup);
         CPPUNIT_TEST(testMergeConfig);
         CPPUNIT_TEST(testRemoveReuse);
+        CPPUNIT_TEST(testSpecialTags);
     CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -1885,7 +2676,9 @@ subX:
                 "cpptestval"
                 "</cpptest>");
         MemoryBuffer mb;
-        mb.reserveTruncate(4*1024+1); // Must be > PTREE_COMPRESS_THRESHOLD (see top of jptree.cpp)
+        byte * data = (byte *)mb.reserveTruncate(4*1024+1); // Must be > PTREE_COMPRESS_THRESHOLD (see top of jptree.cpp)
+        for (unsigned i=0; i < mb.length(); i++)
+            data[i] = (byte)i;
 
         testTree->addProp("binprop/subbinprop", "nonbinval1");
         testTree->addPropBin("binprop/subbinprop", mb.length(), mb.toByteArray());
@@ -2046,6 +2839,168 @@ subX:
         CPPUNIT_ASSERT(na1->isArray(nullptr));
         CPPUNIT_ASSERT(na2->isArray(nullptr));
     }
+    void testPtreeEncode(const char *input, const char *expected=nullptr)
+    {
+        static unsigned id = 0;
+        StringBuffer encoded;
+        encodePTreeName(encoded, input);
+        StringBuffer decoded;
+        decodePtreeName(decoded, encoded.str());
+        //DBGLOG("\nptree name[%d]: %s --> %s --> %s", id++, input, encoded.str(), decoded.str());
+        CPPUNIT_ASSERT(streq(input, decoded.str()));
+        if (expected)
+        {
+            CPPUNIT_ASSERT(streq(expected, encoded.str()));
+        }
+    }
+    void testSpecialTags()
+    {
+        try {
+        //Check a null tag is supported and preserved.
+        static constexpr const char * jsonEmptyNameMarkup = R"!!({
+   "": "default",
+   "end": "x"
+  })!!";
+
+            Owned<IPropertyTree> json = createPTreeFromJSONString(jsonEmptyNameMarkup, ipt_none, ptr_ignoreWhiteSpace, nullptr);
+
+            //if we want the final compares to be less fragile (test will have to be updated if formatting changes) we could reparse and compare trees again
+            StringBuffer ml;
+            toJSON(json, ml.clear(), 2, JSON_Format|JSON_SortTags|JSON_HideRootArrayObject);
+            CPPUNIT_ASSERT(streq(ml, jsonEmptyNameMarkup));
+
+            testPtreeEncode("@a/b*c=d\\e.f", "@a_fb_x2A_c_x3D_d_be.f");
+            testPtreeEncode("A/B*C=D\\E.F", "A_fB_x2A_C_x3D_D_bE.F");
+            testPtreeEncode("_x123_blue.berry", "__x123__blue.berry");
+            testPtreeEncode("_>>_here_**", "___x3E3E___here___x2A2A_");
+            testPtreeEncode("出/售\\耐\"'久", "出_f售_b耐_Q_q久");
+            testPtreeEncode("@出售'\"耐久", "@_xE587BAE594AE__q_Q_xE88090E4B985_");
+            testPtreeEncode("出售耐久", "出售耐久");
+            testPtreeEncode("@出/售\\耐'久", "@_xE587BA__f_xE594AE__b_xE88090__q_xE4B985_");
+            testPtreeEncode("出/售\\耐'久", "出_f售_b耐_q久");
+            testPtreeEncode("space space", "space_sspace");
+
+            static constexpr const char * jsonMarkup = R"!!(
+{
+    "Nothing_toEncodeHere": {
+        "@attributes_need_unicode_encoded_出售耐久": "encode",
+        "but_elements_support_it_出售耐久": "no encode",
+        "e出\\n售耐/久@Aa_a": {
+        "@\\naa_bb食品并/林": "atvalue",
+        "abc/d @ \"e'f": ["value"],
+        "": "noname"
+        }
+    }
+}
+)!!";
+
+            static constexpr const char * yamlMarkup = R"!!(
+Nothing_toEncodeHere:
+  attributes_need_unicode_encoded_出售耐久: "encode"
+  but_elements_support_it_出售耐久: ["no encode"]
+  "e出\\n售耐/久@Aa_a":
+    "\\naa_bb食品并/林": "atvalue"
+    "abc/d @ \"e'f": ["value"]
+    "": [noname]
+)!!";
+
+            static constexpr const char * toXMLOutput = R"!!(<Nothing_toEncodeHere attributes__need__unicode__encoded___xE587BAE594AEE88090E4B985_="encode">
+ <but_elements_support_it_出售耐久>no encode</but_elements_support_it_出售耐久>
+ <e出_bn售耐_f久_aAa__a _bnaa__bb_xE9A39FE59381E5B9B6__f_xE69E97_="atvalue">
+  <_0>noname</_0>
+  <abc_fd_s_a_s_Qe_qf>value</abc_fd_s_a_s_Qe_qf>
+ </e出_bn售耐_f久_aAa__a>
+</Nothing_toEncodeHere>
+)!!";
+
+            static constexpr const char * toJSONOutput = R"!!({
+ "Nothing_toEncodeHere": {
+  "@attributes_need_unicode_encoded_出售耐久": "encode",
+  "but_elements_support_it_出售耐久": "no encode",
+  "e出\n售耐/久@Aa_a": {
+   "@\naa_bb食品并/林": "atvalue",
+   "": "noname",
+   "abc/d @ "e'f": "value"
+  }
+ }
+})!!";
+
+            static constexpr const char * toYAMLOutput = R"!!(Nothing_toEncodeHere:
+  attributes_need_unicode_encoded_出售耐久: encode
+  but_elements_support_it_出售耐久:
+  - no encode
+  e出\n售耐/久@Aa_a:
+    \naa_bb食品并/林: atvalue
+    '':
+    - noname
+    abc/d @ "e'f:
+    - value
+)!!";
+
+            Owned<IPropertyTree> jsonTree = createPTreeFromJSONString(jsonMarkup);
+            IPropertyTree *xmlRoot = jsonTree->queryPropTree("*[1]");
+            toXML(xmlRoot, ml.clear(), 0, XML_SortTags|XML_Format);
+            //printf("\nJSONXML:\n%s\n", ml.str());
+            CPPUNIT_ASSERT(streq(toXMLOutput, ml.str()));
+            toJSON(jsonTree, ml.clear(), 0, JSON_SortTags|JSON_HideRootArrayObject|JSON_Format);
+            //printf("\nJSON:\n%s\n", ml.str());
+            CPPUNIT_ASSERT(streq(toJSONOutput, ml.str()));
+
+            Owned<IPropertyTree> yamlTree = createPTreeFromYAMLString(yamlMarkup);
+            xmlRoot = jsonTree->queryPropTree("*[1]");
+            toXML(xmlRoot, ml.clear(), 0, XML_SortTags|XML_Format);
+            //printf("\nYAMLXML:\n%s\n", ml.str());
+            CPPUNIT_ASSERT(streq(toXMLOutput, ml.str()));
+            toYAML(yamlTree, ml.clear(), 0, YAML_SortTags|YAML_HideRootArrayObject);
+            //printf("\nYAML:\n%s\n", ml.str());
+            CPPUNIT_ASSERT(streq(toYAMLOutput, ml.str()));
+
+//build xpath test
+            static constexpr const char * jsonMarkupForXpathTest = R"!!(
+{
+  "A": {
+    "B": {
+      "@a/b.@100": "encoded attribute found",
+      "x\\y~Z@W": "encoded element found",
+      "rst": "element found",
+      "q_n_a": "underscore element found",
+      "element出": "xpath does not support unicode?"
+        }
+    }
+}
+)!!";
+
+            Owned<IPropertyTree> jsonTreeForXpathTest = createPTreeFromJSONString(jsonMarkupForXpathTest);
+
+            StringBuffer xpath;
+            appendPTreeXPathName(xpath.set("A/B/"), "@a/b.@100"); //attribute will be encoded
+            const char *val = jsonTreeForXpathTest->queryProp(xpath);
+            CPPUNIT_ASSERT(val && streq(val, "encoded attribute found")); //xpath works for unicode here because for attributes it gets encoded
+
+            appendPTreeXPathName(xpath.set("A/B/"), "x\\y~Z@W"); //element will be encoded
+            val = jsonTreeForXpathTest->queryProp(xpath);
+            CPPUNIT_ASSERT(val && streq(val, "encoded element found"));
+
+            appendPTreeXPathName(xpath.set("A/B/"), "rst"); //will not be encoded
+            val = jsonTreeForXpathTest->queryProp(xpath);
+            CPPUNIT_ASSERT(val && streq(val, "element found"));
+
+            appendPTreeXPathName(xpath.set("A/B/"), "q_n_a"); //will not be encoded
+            val = jsonTreeForXpathTest->queryProp(xpath);
+            CPPUNIT_ASSERT(val && streq(val, "underscore element found"));
+
+            appendPTreeXPathName(xpath.set("A/B/"), "element出"); //will not be encoded (elements support unicode)
+            val = jsonTreeForXpathTest->queryProp(xpath);
+            CPPUNIT_ASSERT(!val); //PTree can hold unicode in element names but perhaps xpath can not access it?
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            printf("\nPTREE: Exception %d - %s", e->errorCode(), e->errorMessage(msg).str());
+            EXCLOG(e, nullptr);
+            throw;
+        }
+    }
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(JlibIPTTest);
@@ -2159,7 +3114,7 @@ public:
             {
                 LockTestThread * next = new LockTestThread(startSem, endSem, lock, value1, lock, extraValues, numIterations);
                 threads.append(*next);
-                next->start();
+                next->start(false);
             }
 
             cycle_t startCycles = get_cycles_now();
@@ -2169,14 +3124,14 @@ public:
             cycle_t endCycles = get_cycles_now();
             unsigned __int64 expected = (unsigned __int64)numIterations * numThreads;
             unsigned __int64 averageTime = cycle_to_nanosec(endCycles - startCycles) / (numIterations * numThreads);
-            printf("%s@%u/%u threads(%u) %" I64F "uns/iteration lost(%" I64F "d)\n", title, NUMVALUES, NUMLOCKS, numThreads, averageTime, expected - value1);
+            DBGLOG("%s@%u/%u threads(%u) %" I64F "uns/iteration lost(%" I64F "d)", title, NUMVALUES, NUMLOCKS, numThreads, averageTime, expected - value1);
             for (unsigned i3 = 0; i3 < numThreads; i3++)
                 threads.item(i3).join();
             return averageTime;
         }
 
     protected:
-        CIArrayOf<LockTestThread> threads;
+        IArrayOf<LockTestThread> threads;
         Semaphore startSem;
         Semaphore endSem;
         LOCK lock;
@@ -2210,7 +3165,7 @@ public:
     {};
 
     const unsigned numIterations = 1000000;
-    const unsigned numCores = getAffinityCpus();
+    const unsigned numCores = std::max(getAffinityCpus(), 16U);
     void runAllTests()
     {
         DO_TEST(CriticalSection, CriticalBlock, unsigned __int64, 1, 1);
@@ -2243,7 +3198,7 @@ public:
         DO_TEST(ReadWriteLock, WriteLockBlock, unsigned __int64, 5, 1);
         DO_TEST(ReadWriteLock, WriteLockBlock, unsigned __int64, 1, 2);
 
-        printf("Summary\n");
+        DBGLOG("Summary");
         summariseTimings("Uncontended", uncontendedTimes);
         summariseTimings("Minor", minorTimes);
         summariseTimings("Typical", typicalTimes);
@@ -2252,8 +3207,8 @@ public:
 
     void summariseTimings(const char * option, UInt64Array & times)
     {
-        printf("%11s 1x: cs(%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)   "
-                    "5x: cs(%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)\n", option,
+        DBGLOG("%11s 1x: cs(%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)   "
+                    "5x: cs(%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)", option,
                     times.item(0), times.item(4), times.item(8), times.item(12), times.item(14), times.item(19), times.item(23),
                     times.item(2), times.item(6), times.item(10), times.item(13), times.item(15), times.item(21), times.item(25));
     }
@@ -2266,7 +3221,7 @@ private:
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(AtomicTimingTest);
-CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(AtomicTimingTest, "AtomicTimingTest");
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(AtomicTimingTest, "AtomicTimingStressTest");
 
 
 //=====================================================================================================================
@@ -2282,20 +3237,20 @@ public:
     void getSystemTiming()
     {
         const unsigned num = 10000;
-        CpuInfo temp;
+        SystemInfo temp;
         CCycleTimer timer;
         for (unsigned i=0; i < num; i++)
-            temp.getSystemTimes();
-        printf("Time to get system cpu activity = %" I64F "uns\n", timer.elapsedNs()/num);
+            temp.update(ReadAllInfo);
+        DBGLOG("Time to get system cpu activity = %" I64F "uns", timer.elapsedNs()/num);
     }
     void getProcessTiming()
     {
         const unsigned num = 10000;
-        CpuInfo temp;
+        ProcessInfo temp;
         CCycleTimer timer;
         for (unsigned i=0; i < num; i++)
-            temp.getProcessTimes();
-        printf("Time to get process cpu activity = %" I64F "uns\n", timer.elapsedNs()/num);
+            temp.update(ReadAllInfo);
+        DBGLOG("Time to get process cpu activity = %" I64F "uns", timer.elapsedNs()/num);
     }
     void runAllTests()
     {
@@ -2304,25 +3259,25 @@ public:
         getProcessTiming();
         getProcessTiming(); // Second call seems to be faster - so more representative
 
-        CpuInfo prevSystem;
-        CpuInfo prevProcess;
-        CpuInfo curProcess(true, false);
-        CpuInfo curSystem(false, true);
+        SystemInfo prevSystem;
+        ProcessInfo prevProcess;
+        ProcessInfo curProcess(ReadAllInfo);
+        SystemInfo curSystem(ReadAllInfo);
         volatile unsigned x = 0;
         for (unsigned i=0; i < 10; i++)
         {
             prevProcess = curProcess;
             prevSystem = curSystem;
-            curProcess.getProcessTimes();
-            curSystem.getSystemTimes();
-            CpuInfo deltaProcess = curProcess - prevProcess;
-            CpuInfo deltaSystem = curSystem - prevSystem;
+            curProcess.update(ReadAllInfo);
+            curSystem.update(ReadAllInfo);
+            SystemProcessInfo deltaProcess = curProcess - prevProcess;
+            SystemProcessInfo deltaSystem = curSystem - prevSystem;
             if (deltaSystem.getTotalNs())
             {
-                printf(" System: User(%u) System(%u) Total(%u) %u%% Ctx(%" I64F "u)  ",
+                DBGLOG(" System: User(%u) System(%u) Total(%u) %u%% Ctx(%" I64F "u)  ",
                         (unsigned)(deltaSystem.getUserNs() / 1000000), (unsigned)(deltaSystem.getSystemNs() / 1000000), (unsigned)(deltaSystem.getTotalNs() / 1000000),
                         (unsigned)((deltaSystem.getUserNs() * 100) / deltaSystem.getTotalNs()), deltaSystem.getNumContextSwitches());
-                printf(" Process: User(%u) System(%u) Total(%u) %u%% Ctx(%" I64F "u)\n",
+                DBGLOG(" Process: User(%u) System(%u) Total(%u) %u%% Ctx(%" I64F "u)",
                         (unsigned)(deltaProcess.getUserNs() / 1000000), (unsigned)(deltaProcess.getSystemNs() / 1000000), (unsigned)(deltaProcess.getTotalNs() / 1000000),
                         (unsigned)((deltaProcess.getUserNs() * 100) / deltaSystem.getTotalNs()), deltaProcess.getNumContextSwitches());
             }
@@ -2405,15 +3360,15 @@ class JlibCompressionTestsStress : public CppUnit::TestFixture
         CPPUNIT_TEST(test);
     CPPUNIT_TEST_SUITE_END();
 
+    static constexpr size32_t sz = 100*0x100000; // 100MB
+    enum CompressOpt { RowCompress, AllRowCompress, BlockCompress, CompressToBuffer };
 public:
     void test()
     {
         try
         {
-            size32_t sz = 100*0x100000; // 100MB
             MemoryBuffer src;
             src.ensureCapacity(sz);
-            MemoryBuffer compressed;
             const char *aesKey = "012345678901234567890123";
             Owned<ICompressHandlerIterator> iter = getCompressHandlerIterator();
 
@@ -2443,43 +3398,38 @@ public:
                 }
             }
 
-            printf("\nAlgorithm || Compression Time (ms) || Decompression Time (ms) || Compression Ratio\n");
+            DBGLOG("Algorithm(options)  || Comp(ms) || Deco(ms) || 200MB/s (w,r)   || 1GB/s (w,r)     || 5GB/s (w,r)     || Ratio [cLen]");
+            DBGLOG("                    ||          ||          || 2Gb/s           || 10Gb/s          || 50Gb/s          ||");
 
+            unsigned time200MBs = transferTimeMs(sz, 200000000);
+            unsigned time1GBs = transferTimeMs(sz, 1000000000);
+            unsigned time5GBs = transferTimeMs(sz, 5000000000);
+            DBGLOG("%19s || %8u || %8u || %4u(%4u,%4u) || %4u(%4u,%4u) || %4u(%4u,%4u) || %5.2f [%u]", "uncompressed", 0, 0,
+                time200MBs, time200MBs, time200MBs, time1GBs, time1GBs, time1GBs, time5GBs, time5GBs, time5GBs, 1.0, sz);
             ForEach(*iter)
             {
-                compressed.clear();
                 ICompressHandler &handler = iter->query();
-                Owned<ICompressor> compressor = handler.getCompressor(streq("AES", handler.queryType()) ? aesKey: nullptr);
-
-                CCycleTimer timer;
-                compressor->open(compressed, sz);
-                compressor->startblock();
-                const byte *ptr = src.bytes();
-                const byte *ptrEnd = ptr + src.length();
-                while (ptr != ptrEnd)
+                const char * type = handler.queryType();
+                //Ignore unusual compressors with no expanders...
+                if (strieq(type, "randrow"))
+                    continue;
+                const char * options = streq("AES", handler.queryType()) ? aesKey: "";
+                if (streq(type, "LZ4HC"))
                 {
-                    compressor->write(ptr, rowSz);
-                    ptr += rowSz;
+                    testCompressor(handler, "hclevel=3", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=4", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=5", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=6", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=8", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=10", rowSz, src.length(), src.bytes(), RowCompress);
                 }
-                compressor->commitblock();
-                compressor->close();
-                cycle_t compressCycles = timer.elapsedCycles();
-
-                Owned<IExpander> expander = handler.getExpander(streq("AES", handler.queryType()) ? aesKey: nullptr);
-
-                timer.reset();
-                size32_t required = expander->init(compressed.bytes());
-                MemoryBuffer tgt(required);
-                expander->expand(tgt.bufferBase());
-                tgt.setWritePos(required);
-                cycle_t decompressCycles = timer.elapsedCycles();
-
-                float ratio = (float)(src.length()) / compressed.length();
-
-                printf("%9s || %21u || %23u || %17.2f [ %u, %u ]\n", handler.queryType(), (unsigned)cycle_to_millisec(compressCycles), (unsigned)cycle_to_millisec(decompressCycles), ratio, src.length(), compressed.length());
-
-                CPPUNIT_ASSERT(tgt.length() >= sz);
-                CPPUNIT_ASSERT(0 == memcmp(src.bufferBase(), tgt.bufferBase(), sz));
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), RowCompress);
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), CompressToBuffer);
+                if (streq(type, "LZ4"))
+                {
+                    testCompressor(handler, "allrow", rowSz, src.length(), src.bytes(), AllRowCompress); // block doesn't affect the compressor, just tracing
+                    testCompressor(handler, "block", rowSz, src.length(), src.bytes(), BlockCompress); // block doesn't affect the compressor, just tracing
+                }
            }
         }
         catch (IException *e)
@@ -2487,6 +3437,105 @@ public:
             EXCLOG(e, nullptr);
             throw;
         }
+    }
+
+    unsigned transferTimeMs(__int64 size, __int64 bytesPerSecond)
+    {
+        return (unsigned)((size * 1000) / bytesPerSecond);
+    }
+
+    void testCompressor(ICompressHandler &handler, const char * options, size32_t rowSz, size32_t srcLen, const byte * src, CompressOpt opt)
+    {
+        Owned<ICompressor> compressor = handler.getCompressor(options);
+
+        MemoryBuffer compressed;
+        CCycleTimer timer;
+        const byte * ptr = src;
+        switch (opt)
+        {
+            case RowCompress:
+            {
+                compressor->open(compressed, sz);
+                compressor->startblock();
+                const byte *ptrEnd = ptr + srcLen;
+                while (ptr != ptrEnd)
+                {
+                    compressor->write(ptr, rowSz);
+                    ptr += rowSz;
+                }
+                compressor->commitblock();
+                compressor->close();
+                break;
+            }
+            case AllRowCompress:
+            {
+                compressor->open(compressed, sz);
+                compressor->startblock();
+                compressor->write(ptr, sz);
+                compressor->commitblock();
+                compressor->close();
+                break;
+            }
+            case BlockCompress:
+            {
+                void * target = compressed.reserve(sz);
+                unsigned written = compressor->compressBlock(sz, target, srcLen, ptr);
+                compressed.setLength(written);
+                break;
+            }
+            case CompressToBuffer:
+            {
+                compressToBuffer(compressed, srcLen, ptr, handler.queryMethod(), options);
+                break;
+            }
+        }
+
+        cycle_t compressCycles = timer.elapsedCycles();
+        Owned<IExpander> expander = handler.getExpander(options);
+        MemoryBuffer tgt;
+        timer.reset();
+        if (opt==CompressToBuffer)
+        {
+            decompressToBuffer(tgt, compressed, options);
+        }
+        else
+        {
+            size32_t required = expander->init(compressed.bytes());
+            tgt.reserveTruncate(required);
+            expander->expand(tgt.bufferBase());
+            tgt.setWritePos(required);
+        }
+        cycle_t decompressCycles = timer.elapsedCycles();
+
+        float ratio = (float)(srcLen) / compressed.length();
+
+        StringBuffer name(handler.queryType());
+        if (opt == CompressToBuffer)
+            name.append("-c2b");
+        if (options && *options)
+            name.append("-").append(options);
+
+
+        if (name.length() > 19)
+            name.setLength(19);
+
+        unsigned compressTime = (unsigned)cycle_to_millisec(compressCycles);
+        unsigned decompressTime = (unsigned)cycle_to_millisec(decompressCycles);
+        unsigned compressedTime = compressTime + decompressTime;
+        unsigned copyTime200MBs = transferTimeMs(compressed.length(), 200000000);
+        unsigned copyTime1GBs = transferTimeMs(compressed.length(), 1000000000);
+        unsigned copyTime5GBs = transferTimeMs(compressed.length(), 5000000000);
+        unsigned time200MBs = copyTime200MBs + compressedTime;
+        unsigned time1GBs = copyTime1GBs + compressedTime;
+        unsigned time5GBs = copyTime5GBs + compressedTime;
+        DBGLOG("%19s || %8u || %8u || %4u(%4u,%4u) || %4u(%4u,%4u) || %4u(%4u,%4u) || %5.2f [%u]", name.str(), compressTime, decompressTime,
+            time200MBs, copyTime200MBs + compressTime, copyTime200MBs + decompressTime,
+            time1GBs, copyTime1GBs + compressTime, copyTime1GBs + decompressTime,
+            time5GBs, copyTime5GBs + compressTime, copyTime5GBs + decompressTime,
+             ratio, compressed.length());
+
+        CPPUNIT_ASSERT(tgt.length() >= sz);
+        CPPUNIT_ASSERT(0 == memcmp(src, tgt.bufferBase(), sz));
     }
 };
 
@@ -2592,7 +3641,7 @@ class HashTableTests : public CppUnit::TestFixture
             hv = hashc((const byte *)&i,sizeof(i), hv);
             inputHvSum += hv;
             cache.add(i, hv);
-            unsigned lookupHv;
+            unsigned lookupHv = 0;
             CPPUNIT_ASSERT(cache.get(i, lookupHv));
             lookupHvSum += lookupHv;
         }
@@ -2610,5 +3659,699 @@ class HashTableTests : public CppUnit::TestFixture
 CPPUNIT_TEST_SUITE_REGISTRATION( HashTableTests );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( HashTableTests, "HashTableTests" );
 
+class BlockedTimingTests : public CppUnit::TestFixture
+{
+    static constexpr bool trace = false;
+
+    CPPUNIT_TEST_SUITE( BlockedTimingTests );
+        CPPUNIT_TEST(testStandard);
+        CPPUNIT_TEST(testStandard2);
+        CPPUNIT_TEST(testStandard3);
+        CPPUNIT_TEST(testLightweight);
+        CPPUNIT_TEST(testLightweight2);
+    CPPUNIT_TEST_SUITE_END();
+
+    void testStandard()
+    {
+        BlockedTimeTracker tracker;
+
+        __uint64 blockTime;
+        {
+            BlockedSection block(tracker);
+            MilliSleep(15);
+            blockTime = tracker.getWaitingNs();
+        }
+        __uint64 postBlockTime = tracker.getWaitingNs();
+        __uint64 expected = 15000000;
+        CPPUNIT_ASSERT(blockTime >= expected);
+        CPPUNIT_ASSERT(blockTime <= expected + 2000000);
+        CPPUNIT_ASSERT(postBlockTime - blockTime <= 1000000);
+        if (trace)
+            DBGLOG("%" I64F "u %" I64F "u", blockTime-50000000, postBlockTime-blockTime);
+    }
+
+    void testStandard2()
+    {
+        BlockedTimeTracker tracker;
+
+        __uint64 blockTime;
+        {
+            BlockedSection block3(tracker);
+            MilliSleep(10);
+            {
+                BlockedSection block2(tracker);
+                MilliSleep(20);
+                {
+                    BlockedSection block2(tracker);
+                    MilliSleep(3);
+                    blockTime = tracker.getWaitingNs();
+                }
+            }
+        }
+        __uint64 postBlockTime = tracker.getWaitingNs();
+        __uint64 expected = 10000000 + 2 * 20000000 + 3 * 3000000;
+        CPPUNIT_ASSERT(blockTime >= expected);
+        CPPUNIT_ASSERT(blockTime <= expected + 2000000);
+        CPPUNIT_ASSERT(postBlockTime - blockTime <= 1000000);
+        if (trace)
+            DBGLOG("%" I64F "u %" I64F "u", blockTime-expected, postBlockTime-blockTime);
+    }
+
+    void testStandard3()
+    {
+        BlockedTimeTracker tracker;
+
+        __uint64 blockTime;
+        {
+            auto action = COnScopeExit([&](){ tracker.noteComplete(); });
+            auto action2(COnScopeExit([&](){ tracker.noteComplete(); }));
+            tracker.noteWaiting();
+            tracker.noteWaiting();
+
+            MilliSleep(15);
+            blockTime = tracker.getWaitingNs();
+        }
+        __uint64 postBlockTime = tracker.getWaitingNs();
+        __uint64 expected = 15000000 * 2;
+        CPPUNIT_ASSERT(blockTime >= expected);
+        CPPUNIT_ASSERT(blockTime <= expected + 2000000);
+        CPPUNIT_ASSERT(postBlockTime - blockTime <= 1000000);
+        if (trace)
+            DBGLOG("%" I64F "u %" I64F "u", blockTime-50000000, postBlockTime-blockTime);
+    }
+
+    void testLightweight()
+    {
+        LightweightBlockedTimeTracker tracker;
+
+        __uint64 blockTime;
+        {
+            LightweightBlockedSection block(tracker);
+            MilliSleep(50);
+            blockTime = tracker.getWaitingNs();
+        }
+        __uint64 postBlockTime = tracker.getWaitingNs();
+        __uint64 expected = 50000000;
+        CPPUNIT_ASSERT(blockTime >= expected);
+        CPPUNIT_ASSERT(blockTime <= expected + 2000000);
+        CPPUNIT_ASSERT(postBlockTime - blockTime <= 1000000);
+        if (trace)
+            DBGLOG("%" I64F "u %" I64F "u\n", blockTime-50000000, postBlockTime-blockTime);
+    }
+
+    void testLightweight2()
+    {
+        LightweightBlockedTimeTracker tracker;
+
+        __uint64 blockTime;
+        {
+            LightweightBlockedSection block3(tracker);
+            MilliSleep(10);
+            {
+                LightweightBlockedSection block2(tracker);
+                MilliSleep(20);
+                {
+                    LightweightBlockedSection block2(tracker);
+                    MilliSleep(3);
+                    blockTime = tracker.getWaitingNs();
+                }
+            }
+        }
+        __uint64 postBlockTime = tracker.getWaitingNs();
+        __uint64 expected = 10000000 + 2 * 20000000 + 3 * 3000000;
+        CPPUNIT_ASSERT(blockTime >= expected);
+        CPPUNIT_ASSERT(blockTime <= expected + 2000000);
+        CPPUNIT_ASSERT(postBlockTime - blockTime <= 1000000);
+        if (trace)
+            DBGLOG("%" I64F "u %" I64F "u", blockTime-expected, postBlockTime-blockTime);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( BlockedTimingTests );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( BlockedTimingTests, "BlockedTimingTests" );
+
+
+
+
+class JLibUnicodeTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JLibUnicodeTest);
+        CPPUNIT_TEST(testConversions);
+    CPPUNIT_TEST_SUITE_END();
+
+protected:
+
+    void testConvert(UTF32 codepoint, UtfReader::UtfFormat readFormat, unsigned (*writeFunc)(void * vtarget, unsigned maxLength, UTF32 ch))
+    {
+        constexpr unsigned maxlen = 8;
+        byte temp[maxlen];
+        unsigned len;
+        len = writeFunc(temp, maxlen, codepoint);
+
+        UtfReader reader(readFormat, false);
+        reader.set(len, temp);
+        UTF32 value = reader.next();
+        ASSERT_EQUAL(codepoint, value);
+    }
+
+    void testConvertUtf8(UTF32 codepoint)
+    {
+        constexpr unsigned maxlen = 8;
+        byte temp[maxlen];
+        unsigned len;
+        len = writeUtf8(temp, maxlen, codepoint);
+        const byte * data = temp;
+        UTF32 value = readUtf8Character(len, data);
+        ASSERT_EQUAL(codepoint, value);
+        ASSERT_EQUAL(len, (unsigned)(data - temp));
+    }
+
+    void testConvert(UTF32 codepoint)
+    {
+        testConvertUtf8(codepoint);
+        testConvert(codepoint, UtfReader::Utf8, writeUtf8);
+        testConvert(codepoint, UtfReader::Utf16le, writeUtf16le);
+        testConvert(codepoint, UtfReader::Utf16be, writeUtf16be);
+        testConvert(codepoint, UtfReader::Utf32le, writeUtf32le);
+        testConvert(codepoint, UtfReader::Utf32be, writeUtf32be);
+    }
+
+    void testConversions()
+    {
+        unsigned range = 10;
+        for (unsigned low : { 0U, 0x80U, 100U, 0x7fU, 0x7ffU, 0xffffU, 0x0010FFFFU-(range-1U) })
+        {
+            for (unsigned delta = 0; delta < 10; delta++)
+                testConvert(low + delta);
+        }
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JLibUnicodeTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibUnicodeTest, "JLibUnicodeTest" );
+
+#ifdef _USE_OPENSSL
+#include <jencrypt.hpp>
+
+class JLibOpensslAESTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JLibOpensslAESTest);
+        CPPUNIT_TEST(test);
+    CPPUNIT_TEST_SUITE_END();
+
+protected:
+
+    void testOne(unsigned len, const char *intext)
+    {
+        /* A 256 bit key */
+        unsigned char key[] = { 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+                                0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
+                                0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33,
+                                0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31
+                              };
+        constexpr const char * prefix = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        unsigned lenPrefix = strlen(prefix);
+
+        MemoryBuffer ciphertext1, ciphertext2, decrypted1, decrypted2;
+
+        ciphertext1.append(lenPrefix, prefix);
+        ciphertext2.append(lenPrefix, prefix);
+        openssl::aesEncrypt(key, 32, intext, len, ciphertext1);
+        jlib::aesEncrypt(key, 32, intext, len, ciphertext2);
+
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes(), prefix, lenPrefix) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext2.bytes(), prefix, lenPrefix) == 0);
+        if (len)
+            CPPUNIT_ASSERT(ciphertext1.length() > len + lenPrefix);
+        else
+            CPPUNIT_ASSERT(ciphertext1.length() == len + lenPrefix);
+        CPPUNIT_ASSERT(ciphertext1.length() <= len + lenPrefix + 16);
+        CPPUNIT_ASSERT(ciphertext1.length()==ciphertext2.length());
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes(), ciphertext2.bytes(), ciphertext1.length()) == 0);
+        
+        unsigned cipherlen = ciphertext1.length() - lenPrefix;
+
+        /* Decrypt the ciphertext */
+        decrypted1.append(lenPrefix, prefix);
+        openssl::aesDecrypt(key, 32, ciphertext1.bytes()+lenPrefix, cipherlen, decrypted1);
+        CPPUNIT_ASSERT(decrypted1.length() == len+lenPrefix);
+        CPPUNIT_ASSERT(memcmp(decrypted1.bytes(), prefix, lenPrefix) == 0);
+        CPPUNIT_ASSERT(memcmp(decrypted1.bytes()+lenPrefix, intext, len) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes(), ciphertext2.bytes(), ciphertext1.length()) == 0); // check input unchanged
+
+        decrypted2.append(lenPrefix, prefix);
+        jlib::aesDecrypt(key, 32, ciphertext2.bytes()+lenPrefix, cipherlen, decrypted2);
+        CPPUNIT_ASSERT(memcmp(decrypted2.bytes(), prefix, lenPrefix) == 0);
+        CPPUNIT_ASSERT(decrypted2.length() == len + lenPrefix);
+        CPPUNIT_ASSERT(memcmp(decrypted2.bytes() + lenPrefix, intext, len) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes(), ciphertext2.bytes(), ciphertext1.length()) == 0); // check input unchanged
+
+        // Now test in-place decrypt
+        ciphertext1.append(4, "XXXX");   // Marker
+        unsigned decryptedlen = openssl::aesDecryptInPlace(key, 32, (void *)(ciphertext1.bytes() + lenPrefix), cipherlen);
+        CPPUNIT_ASSERT(decryptedlen == len);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes()+lenPrefix, intext, len) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes()+lenPrefix+cipherlen, "XXXX", 4) == 0);
+
+        ciphertext2.append(4, "XXXX");   // Marker
+        decryptedlen = jlib::aesDecryptInPlace(key, 32, (void *)(ciphertext2.bytes() + lenPrefix), cipherlen);
+        CPPUNIT_ASSERT(decryptedlen == len);
+        CPPUNIT_ASSERT(memcmp(ciphertext2.bytes()+lenPrefix, intext, len) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext2.bytes()+lenPrefix+cipherlen, "XXXX", 4) == 0);
+
+        // Now in-place encrypt
+        ciphertext1.clear().append(lenPrefix, prefix).append(len, intext);
+        ciphertext1.append(16, "1234123412341234"); // Filler to be used by AES padding
+        ciphertext1.append(4, "WXYZ");   // Marker - check this is untouched
+        unsigned encryptedlen = openssl::aesEncryptInPlace(key, 32, (void *)(ciphertext1.bytes() + lenPrefix), len, len+16);
+        CPPUNIT_ASSERT(encryptedlen >= len);
+        CPPUNIT_ASSERT(encryptedlen <= len+16);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes()+lenPrefix+len+16, "WXYZ", 4) == 0);
+        CPPUNIT_ASSERT(len == 0 || memcmp(ciphertext1.bytes()+lenPrefix, intext, len) != 0);  // Check it actually did encrypt!
+        decryptedlen = openssl::aesDecryptInPlace(key, 32, (void *)(ciphertext1.bytes() + lenPrefix), encryptedlen);
+        CPPUNIT_ASSERT(decryptedlen == len);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes()+lenPrefix, intext, len) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext1.bytes()+lenPrefix+len+16, "WXYZ", 4) == 0);
+
+        ciphertext2.clear().append(lenPrefix, prefix).append(len, intext);
+        ciphertext2.append(16, "1234123412341234"); // Filler to be used by AES padding
+        ciphertext2.append(4, "ABCD");   // Marker - check this is untouched
+        encryptedlen = jlib::aesEncryptInPlace(key, 32, (void *)(ciphertext2.bytes() + lenPrefix), len, len+16);
+        CPPUNIT_ASSERT(encryptedlen >= len);
+        CPPUNIT_ASSERT(encryptedlen <= len+16);
+        CPPUNIT_ASSERT(memcmp(ciphertext2.bytes()+lenPrefix+len+16, "ABCD", 4) == 0);
+        CPPUNIT_ASSERT(len == 0 || memcmp(ciphertext2.bytes()+lenPrefix, intext, len) != 0);  // Check it actually did encrypt!
+        decryptedlen = jlib::aesDecryptInPlace(key, 32, (void *)(ciphertext2.bytes() + lenPrefix), encryptedlen);
+        CPPUNIT_ASSERT(decryptedlen == len);
+        CPPUNIT_ASSERT(memcmp(ciphertext2.bytes()+lenPrefix, intext, len) == 0);
+        CPPUNIT_ASSERT(memcmp(ciphertext2.bytes()+lenPrefix+len+16, "ABCD", 4) == 0);
+
+        // Test some error cases
+        if (len)
+        {
+            ciphertext1.clear().append(lenPrefix, prefix).append(len, intext);
+            ciphertext1.append(4, "WXYZ");   // Marker - check this is untouched
+            try
+            {
+                encryptedlen = openssl::aesEncryptInPlace(key, 32, (void *)(ciphertext1.bytes() + lenPrefix), len, len);
+                CPPUNIT_ASSERT(!"Should have reported insufficient length");
+            }
+            catch (IException *E)
+            {
+                CPPUNIT_ASSERT(memcmp(ciphertext1.bytes()+lenPrefix+len, "WXYZ", 4) == 0);
+                E->Release();
+            }
+            ciphertext2.clear().append(lenPrefix, prefix).append(len, intext);
+            ciphertext2.append(4, "ABCD");   // Marker - check this is untouched
+            try
+            {
+                encryptedlen = jlib::aesEncryptInPlace(key, 32, (void *)(ciphertext2.bytes() + lenPrefix), len, len);
+                CPPUNIT_ASSERT(!"Should have reported insufficient length");
+            }
+            catch (IException *E)
+            {
+                CPPUNIT_ASSERT(memcmp(ciphertext2.bytes()+lenPrefix+len, "ABCD", 4) == 0);
+                E->Release();
+            }
+        }        
+    }
+
+    void test()
+    {
+        try
+        {
+            /* Message to be encrypted */
+            const char *plaintext = "The quick brown fox jumps over the lazy dog";
+            for (unsigned l = 0; l < strlen(plaintext); l++)
+                testOne(l, plaintext);
+        }
+        catch (IException * e)
+        {
+            EXCLOG(e, "Exception in AES unit test");
+            throw;
+        }
+    }
+
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JLibOpensslAESTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibOpensslAESTest, "JLibOpensslAESTest" );
+#endif
+
+class JLibSecretsTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JLibSecretsTest);
+        CPPUNIT_TEST(setup);
+        CPPUNIT_TEST(testUpdate1);
+        CPPUNIT_TEST(testUpdate2);
+        CPPUNIT_TEST(testBackgroundUpdate);
+        CPPUNIT_TEST(testKeyEncoding);
+    CPPUNIT_TEST_SUITE_END();
+
+    //Each test creates a different instance of the class(!) so member values cannot be used to pass items
+    //from one test to another
+    StringBuffer secretRoot;
+
+protected:
+    void checkSecret(const IPropertyTree * match, const char * key, const char * expectedValue)
+    {
+        if (match)
+        {
+            const char * secretValue = match->queryProp(key);
+            if (secretValue)
+            {
+                CPPUNIT_ASSERT_EQUAL_STR(secretValue, expectedValue);
+            }
+            else
+            {
+                //IPropertyTree doesn't allow blank values, so a missing value is the same as a blank value
+                //We should probably revisit some day, but it is likely to break existing code if we do.
+                CPPUNIT_ASSERT_EQUAL_STR("", expectedValue);
+            }
+        }
+        else
+            CPPUNIT_ASSERT_EQUAL_STR("", expectedValue);
+    }
+    void checkSecret(const char * secret, const char * key, const char * expectedValue)
+    {
+        Owned<const IPropertyTree> match = getSecret("testing", secret);
+        checkSecret(match, key, expectedValue);
+    }
+
+    void checkSecret(ISyncedPropertyTree * secret, const char * key, const char * expectedValue)
+    {
+        Owned<const IPropertyTree> match = secret->getTree();
+        checkSecret(match, key, expectedValue);
+    }
+
+    bool hasSecret(const char * name)
+    {
+        Owned<const IPropertyTree> match = getSecret("testing", name);
+        return match != nullptr;
+    }
+
+    void initPath()
+    {
+        char cwd[1024];
+        CPPUNIT_ASSERT(GetCurrentDirectory(1024, cwd));
+        secretRoot.set(cwd).append(PATHSEPCHAR).append("unittest-secrets");
+        secretRoot.append(PATHSEPCHAR).append("testing"); // catgegory
+    }
+
+    void setup()
+    {
+        char cwd[1024];
+        CPPUNIT_ASSERT(GetCurrentDirectory(1024, cwd));
+        secretRoot.append(cwd).append(PATHSEPCHAR).append("unittest-secrets");
+
+        recursiveRemoveDirectory(secretRoot);
+        CPPUNIT_ASSERT(recursiveCreateDirectory(secretRoot.str()));
+        setSecretMount(secretRoot);
+        setSecretTimeout(100); // Set the timeout so we can check it is working.
+
+        secretRoot.append(PATHSEPCHAR).append("testing"); // catgegory
+        CPPUNIT_ASSERT(recursiveCreateDirectory(secretRoot.str()));
+    }
+
+    void testUpdate1()
+    {
+        initPath(); // secretRoot needs to be called for each test
+
+        CPPUNIT_ASSERT(!hasSecret("secret1"));
+        writeTestingSecret("secret1", "value", "secret1Value");
+        //Secret should not appear yet - null should be cached.
+        CPPUNIT_ASSERT(!hasSecret("secret1"));
+
+        Owned<ISyncedPropertyTree> secret2 = getSyncedSecret("testing", "secret2", nullptr, nullptr);
+        CPPUNIT_ASSERT(!secret2->isValid());
+        CPPUNIT_ASSERT(!secret2->isStale());
+
+        MilliSleep(50);
+        //Secret should not appear yet - null should be cached.
+        CPPUNIT_ASSERT(!hasSecret("secret1"));
+        CPPUNIT_ASSERT(!secret2->isValid());
+        CPPUNIT_ASSERT(!secret2->isStale());
+
+        MilliSleep(100);
+        //Secret1 should now be updated - enough time has passed
+        checkSecret("secret1", "value", "secret1Value");
+        CPPUNIT_ASSERT(!secret2->isValid());
+        CPPUNIT_ASSERT(secret2->isStale());
+
+        //Cleanup
+        writeTestingSecret("secret1", "value", nullptr);
+    }
+
+    void testUpdate2()
+    {
+        initPath(); // secretRoot needs to be called for each test
+
+        Owned<ISyncedPropertyTree> secret3 = getSyncedSecret("testing", "secret3", nullptr, nullptr);
+        unsigned version = secret3->getVersion();
+        CPPUNIT_ASSERT(!secret3->isValid());
+        CPPUNIT_ASSERT(!secret3->isStale());
+        writeTestingSecret("secret3", "value", "secret3Value");
+        CPPUNIT_ASSERT(!secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version, secret3->getVersion());
+
+        //After sleep new value should not have been picked up
+        MilliSleep(50);
+        CPPUNIT_ASSERT(!secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version, secret3->getVersion());
+
+        //After sleep new value should now have been picked up
+        MilliSleep(100);
+        checkSecret("secret3", "value", "secret3Value");
+        unsigned version2 = secret3->getVersion();
+        CPPUNIT_ASSERT(!secret3->isStale());
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT(version != version2);
+
+        //Sleep and check that the hash value has not changed
+        MilliSleep(200);
+        checkSecret("secret3", "value", "secret3Value");
+        CPPUNIT_ASSERT(!secret3->isStale());
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version2, secret3->getVersion());
+
+        //Remove the secret - should have no immediate effect
+        writeTestingSecret("secret3", "value", nullptr);
+        CPPUNIT_ASSERT(!secret3->isStale());
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version2, secret3->getVersion());
+
+        MilliSleep(50);
+        CPPUNIT_ASSERT(!secret3->isStale());
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version2, secret3->getVersion());
+        checkSecret("secret3", "value", "secret3Value");
+
+        MilliSleep(100);
+        CPPUNIT_ASSERT(secret3->isStale()); // Value has gone, but the old value is still returned
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version2, secret3->getVersion());
+        checkSecret("secret3", "value", "secret3Value");
+
+        //Update the value = the change should not be seen until the cache entry expires
+        writeTestingSecret("secret3", "value", "secret3NewValue");
+        CPPUNIT_ASSERT(secret3->isStale());
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version2, secret3->getVersion());
+        checkSecret("secret3", "value", "secret3Value");
+
+        MilliSleep(50);
+        CPPUNIT_ASSERT(secret3->isStale());
+        CPPUNIT_ASSERT(secret3->isValid());
+        CPPUNIT_ASSERT_EQUAL(version2, secret3->getVersion());
+        checkSecret("secret3", "value", "secret3Value");
+
+        MilliSleep(100);
+        //These functions do not check for up to date values, so they return the same as before
+        CPPUNIT_ASSERT(secret3->isStale()); // Value still appears to be out of date
+        CPPUNIT_ASSERT(secret3->isValid());
+
+        //The getVersion() should force the value to be updated
+        unsigned version3 = secret3->getVersion();
+        CPPUNIT_ASSERT(version2 != version3);
+        CPPUNIT_ASSERT(!secret3->isStale()); // New value has now been picked up
+        CPPUNIT_ASSERT(secret3->isValid());
+        checkSecret("secret3", "value", "secret3NewValue");
+
+        //Finally check that writing a blank value is spotted as a change.
+        writeTestingSecret("secret3", "value", "");
+        MilliSleep(150);
+        //Check the version to ensure that the value has been updated
+        CPPUNIT_ASSERT(version3 != secret3->getVersion());
+        CPPUNIT_ASSERT(secret3->isValid());
+        checkSecret("secret3", "value", "");
+
+        //Cleanup
+        writeTestingSecret("secret3", "value", nullptr);
+    }
+
+    void testBackgroundUpdate()
+    {
+        initPath(); // secretRoot needs to be called for each test
+        startSecretUpdateThread(20);    // 100ms expiry, check every 5ms for items expiring in 20ms time.
+
+        //--------- First check that a missed secret is checked in the background ---------
+        Owned<ISyncedPropertyTree> secret4 = getSyncedSecret("testing", "secret4", nullptr, nullptr);
+        CPPUNIT_ASSERT(!secret4->isValid());
+        CPPUNIT_ASSERT(!secret4->isStale());
+
+        //Sleep for less than the update interval
+        MilliSleep(50);
+        CPPUNIT_ASSERT(!secret4->isValid());
+        CPPUNIT_ASSERT(!secret4->isStale());
+
+        //Sleep so the cache entry should have expired, and no data around to make it not stale.
+        MilliSleep(60);
+        CPPUNIT_ASSERT(!secret4->isValid());
+        CPPUNIT_ASSERT(secret4->isStale());
+
+        //--------- Now update the value in the background ---------
+        //First check that a missed secret is checked in the background
+        Owned<ISyncedPropertyTree> secret5 = getSyncedSecret("testing", "secret5", nullptr, nullptr);
+        CPPUNIT_ASSERT(!secret5->isValid());
+        CPPUNIT_ASSERT(!secret5->isStale());
+        //And write a value so it is picked up on the next refresh
+        writeTestingSecret("secret5", "value", "secret5Value");
+
+        //Sleep for less than the update interval
+        MilliSleep(50); // elapsed=50
+        CPPUNIT_ASSERT(!secret5->isValid());
+        CPPUNIT_ASSERT(!secret5->isStale());
+
+        //Sleep so the cache entry should have expired and the value reread since reading ahead
+        MilliSleep(60); // elapsed=110 = 80 + 30
+        CPPUNIT_ASSERT(secret5->isValid());
+        CPPUNIT_ASSERT(!secret5->isStale());
+
+        //Sleep again so it is not accessed within the timeout period - it should now be marked as stale but valid
+        MilliSleep(100); // elapsed=210 = 80 + 80 + 50
+        CPPUNIT_ASSERT(secret5->isValid());
+        CPPUNIT_ASSERT(secret5->isStale());
+
+        //--------- Check that accessing the function marks the value so it is refreshed ---------
+        Owned<ISyncedPropertyTree> secret6 = getSyncedSecret("testing", "secret6", nullptr, nullptr);
+        CPPUNIT_ASSERT(!secret6->isValid());
+        CPPUNIT_ASSERT(!secret6->isStale());
+        //And write a value so it is picked up on the next refresh
+        writeTestingSecret("secret6", "value", "secret6Value");
+
+        //Sleep for less than the update interval
+        MilliSleep(50); // elapsed=50
+        CPPUNIT_ASSERT(!secret6->isValid());
+        CPPUNIT_ASSERT(!secret6->isStale());
+
+        //Sleep so the cache entry should have expired (between 80 and 85ms) and the value reread since reading ahead
+        MilliSleep(60); // elapsed=110 = 50 + 60
+        CPPUNIT_ASSERT(secret6->isValid());
+        CPPUNIT_ASSERT(!secret6->isStale());
+        unsigned version1 = secret6->getVersion(); // Mark the value as accessed, but too early to be refreshed
+        writeTestingSecret("secret6", "value", "secret6Value2");
+
+        MilliSleep(40); // elapsed=150 = 80 + 70
+        CPPUNIT_ASSERT(secret6->isValid());
+        CPPUNIT_ASSERT(!secret6->isStale());
+        unsigned version2 = secret6->getVersion(); // Mark the value as accessed, but too early to be refreshed
+        CPPUNIT_ASSERT(version2 == version1);
+
+        MilliSleep(30); // elapsed=180 = 80 + 80 + 20
+        CPPUNIT_ASSERT(secret6->isValid());
+        CPPUNIT_ASSERT(!secret6->isStale());
+        unsigned version3 = secret6->getVersion(); // Mark the value as accessed, but will now have been refreshed
+        CPPUNIT_ASSERT(version3 != version1);
+        checkSecret(secret4, "value", "");
+        checkSecret(secret5, "value", "secret5Value");
+        checkSecret(secret6, "value", "secret6Value2");
+
+        //Cleanup
+        writeTestingSecret("secret5", "value", nullptr);
+        writeTestingSecret("secret6", "value", nullptr);
+        stopSecretUpdateThread();
+    }
+
+    void testKeyEncoding()
+    {
+        for (auto category : { "abc", "def" })
+        {
+            for (auto name : { "x", "y" })
+            {
+                for (auto vault : { "vaultx", "" })
+                {
+                    for (auto version : { "", "v1" })
+                    {
+                        std::string encoded = testBuildSecretKey(category, name, vault, version);
+
+                        std::string readCategory;
+                        std::string readName;
+                        std::string readVaultId;
+                        std::string readVersion;
+                        testExpandSecretKey(readCategory, readName, readVaultId, readVersion, encoded.c_str());
+
+                        CPPUNIT_ASSERT_EQUAL_STR(category, readCategory.c_str());
+                        CPPUNIT_ASSERT_EQUAL_STR(name, readName.c_str());
+                        CPPUNIT_ASSERT_EQUAL_STR(vault, readVaultId.c_str());
+                        CPPUNIT_ASSERT_EQUAL_STR(version, readVersion.c_str());
+                    }
+                }
+            }
+        }
+    }
+
+    void writeTestingSecret(const char * secret, const char * key, const char * value)
+    {
+        StringBuffer filename;
+        filename.append(secretRoot).append(PATHSEPCHAR).append(secret);
+        CPPUNIT_ASSERT(recursiveCreateDirectory(filename.str()));
+
+        filename.append(PATHSEPCHAR).append(key);
+
+        Owned<IFile> file = createIFile(filename.str());
+        if (value)
+        {
+            Owned<IFileIO> io = file->open(IFOcreate);
+            io->write(0, strlen(value), value);
+        }
+        else
+            file->remove();
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JLibSecretsTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibSecretsTest, "JLibSecretsTest" );
+
+
+
+class JLibStringTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JLibStringTest);
+        CPPUNIT_TEST(testStristr);
+    CPPUNIT_TEST_SUITE_END();
+
+    void testStristr()
+    {
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("abc", "abc"), "abc");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("abc", "ABC"), "abc");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("x", "ABC"), "");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("abcdefgh", "A"), "abcdefgh");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("ABCDEFGH", "a"), "ABCDEFGH");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("abcdefgh", "E"), "efgh");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("ABCDEFGH", "e"), "EFGH");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("abcdefgh", "FGH"), "fgh");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("aabcdefgh", "ABC"), "abcdefgh");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("ababacz", "ABAC"), "abacz");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("", "ABC"), "");
+        CPPUNIT_ASSERT_EQUAL_STR(stristr("ABC", ""), "");
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JLibStringTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibStringTest, "JLibStringTest" );
 
 #endif // _USE_CPPUNIT

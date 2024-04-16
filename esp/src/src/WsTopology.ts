@@ -9,7 +9,7 @@ import * as aspect from "dojo/aspect";
 
 import * as ESPRequest from "./ESPRequest";
 import * as Utility from "./Utility";
-import { Memory } from "src/Memory";
+import { Memory } from "src/store/Memory";
 
 declare const dojoConfig;
 
@@ -225,11 +225,16 @@ export function TpGetServicePlugins(params) {
     return ESPRequest.send("WsTopology", "TpGetServicePlugins", params);
 }
 export function TpDropZoneQuery(params) {
-    return ESPRequest.send("WsTopology", "TpDropZoneQuery", params);
+    const _params = { request: {}, ...params };
+    _params.request = { ...{ ECLWatchVisibleOnly: true }, ...params.request };
+    return ESPRequest.send("WsTopology", "TpDropZoneQuery", _params);
 }
 export function TpGetComponentFile(params) {
     params.handleAs = "text";
     return ESPRequest.send("WsTopology", "TpGetComponentFile", params);
+}
+export function TpListLogFiles(params) {
+    return ESPRequest.send("WsTopology", "TpListLogFiles", params);
 }
 export function TpLogFile(params) {
     return ESPRequest.send("WsTopology", "TpLogFile", params);

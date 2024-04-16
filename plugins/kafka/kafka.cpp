@@ -51,12 +51,6 @@ namespace KafkaPlugin
     const __int32 POLL_TIMEOUT = 1000;
 
     //--------------------------------------------------------------------------
-    // Static Variables
-    //--------------------------------------------------------------------------
-
-    static std::once_flag pubCacheInitFlag;
-
-    //--------------------------------------------------------------------------
     // Static Methods (internal)
     //--------------------------------------------------------------------------
 
@@ -68,9 +62,8 @@ namespace KafkaPlugin
      *                              necessary for the file to exist
      * @param   globalConfigPtr     A pointer to the configuration object that
      *                              will receive any found parameters
-     * @param   traceLevel          The current log trace level
      */
-    static void applyConfig(const char* configFilePath, RdKafka::Conf* globalConfigPtr, int traceLevel)
+    static void applyConfig(const char* configFilePath, RdKafka::Conf* globalConfigPtr)
     {
         if (configFilePath && *configFilePath && globalConfigPtr)
         {
@@ -100,7 +93,7 @@ namespace KafkaPlugin
                             {
                                 DBGLOG("Kafka: Failed to set config param from file %s: '%s' = '%s'; error: '%s'", configFilePath, key.str(), value, errStr.c_str());
                             }
-                            else if (traceLevel > 4)
+                            else if (doTrace(traceKafka))
                             {
                                 DBGLOG("Kafka: Set config param from file %s: '%s' = '%s'", configFilePath, key.str(), value);
                             }
@@ -119,10 +112,9 @@ namespace KafkaPlugin
     // Plugin Classes
     //--------------------------------------------------------------------------
 
-    KafkaStreamedDataset::KafkaStreamedDataset(Consumer* _consumerPtr, IEngineRowAllocator* _resultAllocator, int _traceLevel, __int64 _maxRecords)
+    KafkaStreamedDataset::KafkaStreamedDataset(Consumer* _consumerPtr, IEngineRowAllocator* _resultAllocator, __int64 _maxRecords)
         :   consumerPtr(_consumerPtr),
             resultAllocator(_resultAllocator),
-            traceLevel(_traceLevel),
             maxRecords(_maxRecords)
     {
         shouldRead = true;
@@ -204,7 +196,7 @@ namespace KafkaPlugin
 
                             case RdKafka::ERR__PARTITION_EOF:
                                 // We reached the end of the messages in the partition
-                                if (traceLevel > 4)
+                                if (doTrace(traceKafka))
                                 {
                                     DBGLOG("Kafka: EOF reading message from partition %d", messageObjPtr->partition());
                                 }
@@ -216,7 +208,7 @@ namespace KafkaPlugin
                                 // in some configurations (e.g. more Thor slaves than
                                 // partitions) not all consumers will have a partition
                                 // to read
-                                if (traceLevel > 4)
+                                if (doTrace(traceKafka))
                                 {
                                     DBGLOG("Kafka: Unknown partition while trying to read");
                                 }
@@ -263,7 +255,7 @@ namespace KafkaPlugin
         if (!isAlive() && parentPtr)
         {
             shouldRun = true;
-            Thread::start();
+            Thread::start(false);
         }
     }
 
@@ -290,11 +282,10 @@ namespace KafkaPlugin
 
     //--------------------------------------------------------------------------
 
-    Publisher::Publisher(const std::string& _brokers, const std::string& _topic, __int32 _pollTimeout, int _traceLevel)
+    Publisher::Publisher(const std::string& _brokers, const std::string& _topic, __int32 _pollTimeout)
         :   brokers(_brokers),
             topic(_topic),
-            pollTimeout(_pollTimeout),
-            traceLevel(_traceLevel)
+            pollTimeout(_pollTimeout)
     {
         producerPtr = NULL;
         topicPtr = NULL;
@@ -376,7 +367,7 @@ namespace KafkaPlugin
 
                     // Set any global configurations from file, allowing
                     // overrides of above settings
-                    applyConfig(GLOBAL_CONFIG_FILENAME, globalConfig, traceLevel);
+                    applyConfig(GLOBAL_CONFIG_FILENAME, globalConfig);
 
                     // Set producer callbacks
                     globalConfig->set("event_cb", static_cast<RdKafka::EventCb*>(this), errStr);
@@ -392,7 +383,7 @@ namespace KafkaPlugin
 
                         // Set any topic configurations from file
                         std::string confName = "kafka_publisher_topic_" + topic + ".conf";
-                        applyConfig(confName.c_str(), topicConfPtr, traceLevel);
+                        applyConfig(confName.c_str(), topicConfPtr);
 
                         // Create the topic
                         topicPtr.store(RdKafka::Topic::create(producerPtr, topic, topicConfPtr, errStr), std::memory_order_release);
@@ -459,7 +450,7 @@ namespace KafkaPlugin
 
     void Publisher::event_cb(RdKafka::Event& event)
     {
-        if (traceLevel > 4)
+        if (doTrace(traceKafka))
         {
             switch (event.type())
             {
@@ -495,12 +486,11 @@ namespace KafkaPlugin
 
     //--------------------------------------------------------------------------
 
-    Consumer::Consumer(const std::string& _brokers, const std::string& _topic, const std::string& _consumerGroup, __int32 _partitionNum, int _traceLevel)
+    Consumer::Consumer(const std::string& _brokers, const std::string& _topic, const std::string& _consumerGroup, __int32 _partitionNum)
         :   brokers(_brokers),
             topic(_topic),
             consumerGroup(_consumerGroup),
-            partitionNum(_partitionNum),
-            traceLevel(_traceLevel)
+            partitionNum(_partitionNum)
     {
         consumerPtr = NULL;
         topicPtr = NULL;
@@ -561,7 +551,7 @@ namespace KafkaPlugin
 
                     // Set any global configurations from file, allowing
                     // overrides of above settings
-                    applyConfig(GLOBAL_CONFIG_FILENAME, globalConfig, traceLevel);
+                    applyConfig(GLOBAL_CONFIG_FILENAME, globalConfig);
 
                     // Set consumer callbacks
                     globalConfig->set("event_cb", static_cast<RdKafka::EventCb*>(this), errStr);
@@ -581,7 +571,7 @@ namespace KafkaPlugin
                         // Set any topic configurations from file, allowing
                         // overrides of above settings
                         std::string confName = "kafka_consumer_topic_" + topic + ".conf";
-                        applyConfig(confName.c_str(), topicConfPtr, traceLevel);
+                        applyConfig(confName.c_str(), topicConfPtr);
 
                         // Ensure that some items are set a certain way
                         // by setting them after loading the external conf
@@ -628,7 +618,7 @@ namespace KafkaPlugin
 
         if (startErr == RdKafka::ERR_NO_ERROR)
         {
-            if (traceLevel > 4)
+            if (doTrace(traceKafka))
             {
                 DBGLOG("Kafka: Started Consumer for %s:%d @ %s", topic.c_str(), partitionNum, brokers.c_str());
             }
@@ -654,7 +644,7 @@ namespace KafkaPlugin
             std::ofstream outFile(offsetPath.str(), std::ofstream::trunc);
             outFile << offset;
 
-            if (traceLevel > 4)
+            if (doTrace(traceKafka))
             {
                 DBGLOG("Kafka: Saved offset %lld to %s", offset, offsetPath.str());
             }
@@ -667,7 +657,7 @@ namespace KafkaPlugin
         {
             commitOffset(0);
 
-            if (traceLevel > 4)
+            if (doTrace(traceKafka))
             {
                 DBGLOG("Kafka: Creating initial offset file %s", offsetPath.str());
             }
@@ -676,7 +666,7 @@ namespace KafkaPlugin
 
     void Consumer::event_cb(RdKafka::Event& event)
     {
-        if (traceLevel > 4)
+        if (doTrace(traceKafka))
         {
             switch (event.type())
             {
@@ -701,7 +691,7 @@ namespace KafkaPlugin
      *
      * Class used to create and cache publisher objects and connections
      */
-    static class PublisherCacheObj
+    class PublisherCacheObj
     {
         private:
 
@@ -712,12 +702,19 @@ namespace KafkaPlugin
             /**
              * Constructor
              *
-             * @param   _traceLevel         The current logging level
              */
-            PublisherCacheObj(int _traceLevel)
-                :   traceLevel(_traceLevel)
+            PublisherCacheObj()
             {
 
+            }
+
+            /**
+             * Destructor
+             *
+             */
+            ~PublisherCacheObj()
+            {
+                deleteAll();
             }
 
             void deleteAll()
@@ -741,44 +738,39 @@ namespace KafkaPlugin
 
             /**
              * Remove previously-created objects that have been inactive
-             * for awhile
+             * for awhile; assumes a lock is held while modifying cachedPublishers
              */
             void expire()
             {
-                if (!cachedPublishers.empty())
+                time_t oldestAllowedTime = time(NULL) - OBJECT_EXPIRE_TIMEOUT_SECONDS;
+                __int32 expireCount = 0;
+
+                for (ObjMap::iterator x = cachedPublishers.begin(); x != cachedPublishers.end(); /* increment handled explicitly */)
                 {
-                    CriticalBlock block(lock);
-
-                    time_t oldestAllowedTime = time(NULL) - OBJECT_EXPIRE_TIMEOUT_SECONDS;
-                    __int32 expireCount = 0;
-
-                    for (ObjMap::iterator x = cachedPublishers.begin(); x != cachedPublishers.end(); /* increment handled explicitly */)
+                    // Expire only if the publisher has been inactive and if
+                    // there are no messages in the outbound queue
+                    if (x->second && x->second->getTimeTouched() < oldestAllowedTime && x->second->messagesWaitingInQueue() == 0)
                     {
-                        // Expire only if the publisher has been inactive and if
-                        // there are no messages in the outbound queue
-                        if (x->second && x->second->getTimeTouched() < oldestAllowedTime && x->second->messagesWaitingInQueue() == 0)
-                        {
-                            // Shutdown the attached poller before deleting
-                            x->second->shutdownPoller();
+                        // Shutdown the attached poller before deleting
+                        x->second->shutdownPoller();
 
-                            // Delete the object
-                            delete(x->second);
+                        // Delete the object
+                        delete(x->second);
 
-                            // Erase from map
-                            cachedPublishers.erase(x++);
+                        // Erase from map
+                        cachedPublishers.erase(x++);
 
-                            ++expireCount;
-                        }
-                        else
-                        {
-                            x++;
-                        }
+                        ++expireCount;
                     }
-
-                    if (traceLevel > 4 && expireCount > 0)
+                    else
                     {
-                        DBGLOG("Kafka: Expired %d cached publisher%s", expireCount, (expireCount == 1 ? "" : "s"));
+                        x++;
                     }
+                }
+
+                if (doTrace(traceKafka) && expireCount > 0)
+                {
+                    DBGLOG("Kafka: Expired %d cached publisher%s", expireCount, (expireCount == 1 ? "" : "s"));
                 }
             }
 
@@ -821,13 +813,16 @@ namespace KafkaPlugin
                     else
                     {
                         // Publisher for that set of brokers and topic does not exist; create one
-                        pubObjPtr = new Publisher(brokers, topic, pollTimeout, traceLevel);
+                        pubObjPtr = new Publisher(brokers, topic, pollTimeout);
                         cachedPublishers[key] = pubObjPtr;
 
-                        if (traceLevel > 4)
+                        if (doTrace(traceKafka))
                         {
                             DBGLOG("Kafka: Created and cached new publisher object: %s @ %s", topic.c_str(), brokers.c_str());
                         }
+
+                        // Expire any old publishers before returning the new one
+                        expire();
                     }
                 }
 
@@ -843,80 +838,16 @@ namespace KafkaPlugin
 
             ObjMap          cachedPublishers;   //!< std::map of created Publisher object pointers
             CriticalSection lock;               //!< Mutex guarding modifications to cachedPublishers
-            int             traceLevel;         //!< The current logging level
-    } *publisherCache;
+    };
 
     //--------------------------------------------------------------------------
+    // Singleton Initialization
+    //--------------------------------------------------------------------------
 
-    /** @class  PublisherCacheExpirerObj
-     *          Class used to expire old publisher objects held within publisherCache
-     */
-    static class PublisherCacheExpirerObj : public Thread
+    static Singleton<PublisherCacheObj> publisherCache;
+    static PublisherCacheObj & queryPublisherCache()
     {
-        public:
-
-            PublisherCacheExpirerObj()
-                :   Thread("Kafka::PublisherExpirer"),
-                    shouldRun(false)
-            {
-
-            }
-
-            virtual void start()
-            {
-                if (!isAlive())
-                {
-                    shouldRun = true;
-                    Thread::start();
-                }
-            }
-
-            virtual void stop()
-            {
-                if (isAlive())
-                {
-                    shouldRun = false;
-                    join();
-                }
-            }
-
-            virtual int run()
-            {
-                while (shouldRun)
-                {
-                    if (publisherCache)
-                    {
-                        publisherCache->expire();
-                    }
-
-                    usleep(1000);
-                }
-
-                return 0;
-            }
-
-        private:
-
-            std::atomic_bool    shouldRun;      //!< If true, we should execute our thread's main event loop
-    } *publisherCacheExpirer;
-
-    //--------------------------------------------------------------------------
-    // Lazy Initialization
-    //--------------------------------------------------------------------------
-
-    /**
-     * Make sure the publisher object cache is initialized as well as the
-     * associated background thread for expiring idle publishers.  This is
-     * called only once.
-     *
-     * @param   traceLevel      Current logging level
-     */
-    static void setupPublisherCache(int traceLevel)
-    {
-        KafkaPlugin::publisherCache = new KafkaPlugin::PublisherCacheObj(traceLevel);
-
-        KafkaPlugin::publisherCacheExpirer = new KafkaPlugin::PublisherCacheExpirerObj;
-        KafkaPlugin::publisherCacheExpirer->start();
+        return *publisherCache.query([] () { return new PublisherCacheObj; });
     }
 
     //--------------------------------------------------------------------------
@@ -925,9 +856,7 @@ namespace KafkaPlugin
 
     ECL_KAFKA_API bool ECL_KAFKA_CALL publishMessage(ICodeContext* ctx, const char* brokers, const char* topic, const char* message, const char* key)
     {
-        std::call_once(pubCacheInitFlag, setupPublisherCache, ctx->queryContextLogger().queryTraceLevel());
-
-        Publisher* pubObjPtr = publisherCache->getPublisher(brokers, topic, POLL_TIMEOUT);
+        Publisher* pubObjPtr = queryPublisherCache().getPublisher(brokers, topic, POLL_TIMEOUT);
 
         pubObjPtr->sendMessage(message, key);
 
@@ -936,9 +865,7 @@ namespace KafkaPlugin
 
     ECL_KAFKA_API bool ECL_KAFKA_CALL publishMessage(ICodeContext* ctx, const char* brokers, const char* topic, size32_t lenMessage, const char* message, size32_t lenKey, const char* key)
     {
-        std::call_once(pubCacheInitFlag, setupPublisherCache, ctx->queryContextLogger().queryTraceLevel());
-
-        Publisher*          pubObjPtr = publisherCache->getPublisher(brokers, topic, POLL_TIMEOUT);
+        Publisher*          pubObjPtr = queryPublisherCache().getPublisher(brokers, topic, POLL_TIMEOUT);
         std::string         messageStr(message, rtlUtf8Size(lenMessage, message));
         std::string         keyStr(key, rtlUtf8Size(lenKey, key));
 
@@ -955,7 +882,6 @@ namespace KafkaPlugin
         // C API, so we are basically creating a brand-new connection from
         // scratch.
 
-        int traceLevel = ctx->queryContextLogger().queryTraceLevel();
         __int32 pCount = 0;
         char errstr[512];
         RdKafka::Conf* globalConfig = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
@@ -963,7 +889,7 @@ namespace KafkaPlugin
         if (globalConfig)
         {
             // Load global config to pick up any protocol modifications
-            applyConfig(GLOBAL_CONFIG_FILENAME, globalConfig, traceLevel);
+            applyConfig(GLOBAL_CONFIG_FILENAME, globalConfig);
 
             // rd_kafka_new() takes ownership of the lower-level conf object, which in this case is a
             // pointer currently owned by globalConfig; we need to pass a duplicate
@@ -999,7 +925,7 @@ namespace KafkaPlugin
                     }
                     else
                     {
-                        if (traceLevel > 4)
+                        if (doTrace(traceKafka))
                         {
                             DBGLOG("Kafka: Could not create topic configuration object: %s @ %s", topic, brokers);
                         }
@@ -1007,7 +933,7 @@ namespace KafkaPlugin
                 }
                 else
                 {
-                    if (traceLevel > 4)
+                    if (doTrace(traceKafka))
                     {
                         DBGLOG("Kafka: Could not add brokers: %s @ %s", topic, brokers);
                     }
@@ -1022,7 +948,7 @@ namespace KafkaPlugin
         }
         else
         {
-            if (traceLevel > 4)
+            if (doTrace(traceKafka))
             {
                 DBGLOG("Kafka: Could not create global configuration object: %s @ %s", topic, brokers);
             }
@@ -1038,7 +964,7 @@ namespace KafkaPlugin
 
     ECL_KAFKA_API IRowStream* ECL_KAFKA_CALL getMessageDataset(ICodeContext* ctx, IEngineRowAllocator* allocator, const char* brokers, const char* topic, const char* consumerGroup, __int32 partitionNum, __int64 maxRecords)
     {
-        Consumer* consumerObjPtr = new Consumer(brokers, topic, consumerGroup, partitionNum, ctx->queryContextLogger().queryTraceLevel());
+        Consumer* consumerObjPtr = new Consumer(brokers, topic, consumerGroup, partitionNum);
 
         try
         {
@@ -1050,12 +976,12 @@ namespace KafkaPlugin
             throw;
         }
 
-        return new KafkaStreamedDataset(consumerObjPtr, allocator, ctx->queryContextLogger().queryTraceLevel(), maxRecords);
+        return new KafkaStreamedDataset(consumerObjPtr, allocator, maxRecords);
     }
 
     ECL_KAFKA_API __int64 ECL_KAFKA_CALL setMessageOffset(ICodeContext* ctx, const char* brokers, const char* topic, const char* consumerGroup, __int32 partitionNum, __int64 newOffset)
     {
-        Consumer consumerObj(brokers, topic, consumerGroup, partitionNum, ctx->queryContextLogger().queryTraceLevel());
+        Consumer consumerObj(brokers, topic, consumerGroup, partitionNum);
 
         consumerObj.commitOffset(newOffset);
 
@@ -1098,29 +1024,11 @@ ECL_KAFKA_API bool getECLPluginDefinition(ECLPluginDefinitionBlock* pb)
 
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
-    KafkaPlugin::publisherCache = NULL;
-    KafkaPlugin::publisherCacheExpirer = NULL;
-
     return true;
 }
 
 MODULE_EXIT()
 {
-    // Delete the background thread expiring items from the publisher cache
-    // before deleting the publisher cache
-    if (KafkaPlugin::publisherCacheExpirer)
-    {
-        KafkaPlugin::publisherCacheExpirer->stop();
-        delete(KafkaPlugin::publisherCacheExpirer);
-        KafkaPlugin::publisherCacheExpirer = NULL;
-    }
-
-     if (KafkaPlugin::publisherCache)
-    {
-        KafkaPlugin::publisherCache->deleteAll();
-        delete(KafkaPlugin::publisherCache);
-        KafkaPlugin::publisherCache = NULL;
-    }
-
+    KafkaPlugin::publisherCache.destroy();
     RdKafka::wait_destroyed(3000);
 }

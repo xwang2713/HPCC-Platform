@@ -63,7 +63,7 @@ class JoinSlaveActivity : public CSlaveActivity, implements ILookAheadStopNotify
 
     Owned<IJoinHelper> joinhelper;
     rowcount_t lhsProgressCount = 0, rhsProgressCount = 0;
-    CriticalSection joinHelperCrit;
+    mutable CriticalSection joinHelperCrit;
     IHThorJoinBaseArg *helper;
     IHThorJoinArg *helperjn;
     IHThorDenormalizeArg *helperdn;
@@ -216,7 +216,7 @@ public:
             portbase = queryJobChannel().allocPort(NUMSLAVEPORTS);
             ActPrintLog("SortJoinSlaveActivity::init portbase = %d, mpTagRPC=%d",portbase,(int)mpTagRPC);
             server.setLocalHost(portbase); 
-            sorter.setown(CreateThorSorter(this, server,&container.queryJob().queryIDiskUsage(),&queryJobChannel().queryJobComm(),mpTagRPC));
+            sorter.setown(CreateThorSorter(this, server, &queryJobChannel().queryJobComm(), mpTagRPC));
             server.serialize(slaveData);
         }
 
@@ -272,7 +272,7 @@ public:
                 IThorDataLink *secondaryInput = queryInput(secondaryInputIndex);
                 // NB: lookahead told not to preserveGroups
                 setLookAhead(secondaryInputIndex, createRowStreamLookAhead(this, secondaryInputStream, queryRowInterfaces(secondaryInput), JOIN_SMART_BUFFER_SIZE, ::canStall(secondaryInput),
-                             false, RCUNBOUND, this, &container.queryJob().queryIDiskUsage()), false);
+                             false, RCUNBOUND, this), false);
             }
             secondaryInputStream = queryInputStream(secondaryInputIndex); // either lookahead or underlying stream, depending on whether active or not
         }
@@ -402,7 +402,7 @@ public:
         PARENT::reset();
         if (sorter) return; // JCSMORE loop - shouldn't have to recreate sorter between loop iterations
         if (!islocal && TAG_NULL != mpTagRPC)
-            sorter.setown(CreateThorSorter(this, server,&container.queryJob().queryIDiskUsage(),&queryJobChannel().queryJobComm(),mpTagRPC));
+            sorter.setown(CreateThorSorter(this, server, &queryJobChannel().queryJobComm(), mpTagRPC));
     }
     virtual void kill() override
     {
@@ -458,7 +458,7 @@ public:
             isemptylhs = 0 == iLoaderL->numRows();
             stopLeftInput();
 
-            mergeStats(stats, iLoaderL, spillStatistics);
+            mergeStats(inactiveStats, iLoaderL, spillStatistics);
         }
         IEngineRowStream *rightInputStream = queryInputStream(1);
         if (isemptylhs&&((helper->getJoinFlags()&JFrightouter)==0))
@@ -479,7 +479,7 @@ public:
             rightStream.setown(iLoaderR->load(rightInputStream, abortSoon));
             stopRightInput();
 
-            mergeStats(stats, iLoaderR, spillStatistics);
+            mergeStats(inactiveStats, iLoaderR, spillStatistics);
         }
     }
     bool doglobaljoin()
@@ -587,7 +587,7 @@ public:
         else
             sorter->Gather(secondaryRowIf, secondaryInputStream, secondaryCompare, nullptr, nullptr, nullptr, nullptr, partitionRow, noSortOtherSide(), isUnstable(), abortSoon, nullptr);
 
-        mergeStats(stats, sorter, spillStatistics);
+        mergeStats(inactiveStats, sorter, spillStatistics);
         //MORE: Stats from spilling the primaryStream??
         partitionRow.clear();
         stopOtherInput();
@@ -613,26 +613,24 @@ public:
         }
         return true;
     }
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
-        {
-            bool isSelfJoin = (TAKselfjoin == container.getKind() || TAKselfjoinlight != container.getKind());
+        PARENT::gatherActiveStats(activeStats);
+        bool isSelfJoin = (TAKselfjoin == container.getKind() || TAKselfjoinlight != container.getKind());
 
-            CriticalBlock b(joinHelperCrit);
-            if (!joinhelper) // bit odd, but will leave as was for now.
-            {
-                stats.setStatistic(StNumLeftRows, lhsProgressCount);
-                if (!isSelfJoin)
-                    stats.setStatistic(StNumRightRows, rhsProgressCount);
-            }
-            else
-            {
-                stats.setStatistic(StNumLeftRows, joinhelper->getLhsProgress());
-                if (!isSelfJoin)
-                    stats.setStatistic(StNumRightRows, joinhelper->getRhsProgress());
-            }
+        CriticalBlock b(joinHelperCrit);
+        if (!joinhelper) // bit odd, but will leave as was for now.
+        {
+            activeStats.setStatistic(StNumLeftRows, lhsProgressCount);
+            if (!isSelfJoin)
+                activeStats.setStatistic(StNumRightRows, rhsProgressCount);
         }
-        PARENT::serializeStats(mb);
+        else
+        {
+            activeStats.setStatistic(StNumLeftRows, joinhelper->getLhsProgress());
+            if (!isSelfJoin)
+                activeStats.setStatistic(StNumRightRows, joinhelper->getRhsProgress());
+        }
     }
 };
 

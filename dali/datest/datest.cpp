@@ -74,7 +74,7 @@ static void addTestFile(const char *name,unsigned n)
     Owned<IPropertyTree> fileInfo = createPTree();
     Owned<IFileDescriptor> fileDesc = createFileDescriptor();
     StringBuffer dir;
-    makePhysicalPartName(name, 0, 0, dir, false, DFD_OSdefault);
+    getLFNDirectoryUsingDefaultBaseDir(dir, name, DFD_OSdefault);
     StringBuffer partmask;
     getPartMask(partmask,name,n);
     StringBuffer path;
@@ -116,7 +116,7 @@ void Test_SuperFile()
     queryDistributedFileDirectory().removeEntry(TEST_SUPER_FILE"3",UNKNOWN_USER);
     queryDistributedFileDirectory().removeEntry(TEST_SUPER_FILE"2",UNKNOWN_USER);
 #if 1
-    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"1",UNKNOWN_USER));
+    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"1", UNKNOWN_USER, AccessMode::tbdWrite));
     if (sfile) {
         sfile->removeSubFile(NULL,true);
         sfile.clear();
@@ -131,7 +131,7 @@ void Test_SuperFile()
     }
     sfile.clear();
 #endif
-    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"1",UNKNOWN_USER));
+    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"1", UNKNOWN_USER, AccessMode::tbdRead));
     printf("NumSubFiles = %d\n",sfile->numSubFiles());
 #if 1
     i=0;
@@ -185,7 +185,7 @@ void Test_SuperFile()
     }
     sfile.clear();  // mustn't have owner open when commit transaction
     transaction->rollback();
-    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"2",UNKNOWN_USER));
+    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"2", UNKNOWN_USER, AccessMode::tbdWrite));
     transaction->start();
     sfile->removeSubFile(TEST_SUB_FILE"1",false,false,transaction);
     StringBuffer name(TEST_SUB_FILE"4");
@@ -200,7 +200,7 @@ void Test_SuperFile()
     sfile->addSubFile(TEST_SUPER_FILE"3",false,NULL,false,transaction);
     sfile.clear();  // mustn't have owner open when commit transaction
     transaction->commit();
-    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"4",UNKNOWN_USER));
+    sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"4", UNKNOWN_USER, AccessMode::tbdRead));
     i=0;
     iter.setown(sfile->getSubFileIterator());
     ForEach(*iter) {
@@ -261,13 +261,13 @@ void Test_SuperFile2()
             StringBuffer name(TEST_SUB_FILE);
             name.append(i+1);
             addTestFile(name.str(),i+2);
-            Owned<IDistributedFile> sbfile = queryDistributedFileDirectory().lookup(name,UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+            Owned<IDistributedFile> sbfile = queryDistributedFileDirectory().lookup(name,UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
             printf("adding size = %" I64F "d\n",sbfile->getFileSize(false,false));
             sfile->addSubFile(name);
             printf("sfile size = %" I64F "d\n",sfile->getFileSize(false,false));
         }
         sfile.clear();
-        sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"B1",UNKNOWN_USER));
+        sfile.setown(queryDistributedFileDirectory().lookupSuperFile(TEST_SUPER_FILE"B1", UNKNOWN_USER, AccessMode::tbdWrite));
         printf("NumSubFiles = %d\n",sfile->numSubFiles());
         if (tst==1) {
             sfile->removeSubFile(NULL,false);
@@ -277,7 +277,7 @@ void Test_SuperFile2()
             for (i = 0;i<3;i++) {
                 StringBuffer name(TEST_SUB_FILE);
                 name.append(i+1);
-                Owned<IDistributedFile> sbfile = queryDistributedFileDirectory().lookup(name,UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+                Owned<IDistributedFile> sbfile = queryDistributedFileDirectory().lookup(name,UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
                 printf("removing size = %" I64F "d\n",sbfile->getFileSize(false,false));
                 sfile->removeSubFile(name,false);
                 printf("sfile size = %" I64F "d\n",sfile->getFileSize(false,false));
@@ -291,7 +291,7 @@ void Test_SuperFile2()
 void Test_PartIter()
 {
     unsigned start = msTick();
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup("nhtest::file_name_ssn20030805",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup("nhtest::file_name_ssn20030805",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     Owned<IDistributedFilePartIterator> parts = file->getIterator();
     ForEach(*parts) {
         IDistributedFilePart & thisPart = parts->query(); 
@@ -382,7 +382,7 @@ void testCDfsLogicalFileName()
     lfn=cdlfn.get(); assertex(strcmp(lfn,"file::10.150.10.75::c$::test::file.xyz")==0);
     lfn=cdlfn.get(true); assertex(strcmp(lfn,"file::10.150.10.75::c$::test::file.xyz")==0);
     verifyex(cdlfn.getEp(ep)); 
-    ep.getUrlStr(eps.clear()); assertex(strcmp(eps.str(),"10.150.10.75")==0);
+    ep.getEndpointHostText(eps.clear()); assertex(strcmp(eps.str(),"10.150.10.75")==0);
     verifyex(cdlfn.getExternalPath(path.clear(),path,true)); assertex(strcmp(path.str(),"c:\\test\\file.xyz")==0);
     verifyex(cdlfn.getExternalPath(dir.clear(),path.clear(),true)); assertex(strcmp(path.str(),"file.xyz")==0);
     verifyex(cdlfn.getExternalPath(path.clear(),path,false)); assertex(strcmp(path.str(),"/c$/test/file.xyz")==0);
@@ -393,7 +393,7 @@ void testCDfsLogicalFileName()
     assertex(cdlfn.isExternal());
     lfn=cdlfn.get(); assertex(strcmp(lfn,"file::10.150.10.75:7100::c$::test::file.xyz")==0);
     verifyex(cdlfn.getEp(ep)); 
-    ep.getUrlStr(eps.clear()); assertex(strcmp(eps.str(),"10.150.10.75:7100")==0);
+    ep.getEndpointHostText(eps.clear()); assertex(strcmp(eps.str(),"10.150.10.75:7100")==0);
     verifyex(cdlfn.getExternalPath(path.clear(),path,true)); assertex(strcmp(path.str(),"c:\\test\\file.xyz")==0);
     verifyex(cdlfn.getExternalPath(dir.clear(),path.clear(),true)); assertex(strcmp(path.str(),"file.xyz")==0);
     verifyex(cdlfn.getExternalPath(path.clear(),path,false)); assertex(strcmp(path.str(),"/c$/test/file.xyz")==0);
@@ -403,7 +403,7 @@ void testCDfsLogicalFileName()
     assertex(cdlfn.isForeign());
     assertex(!cdlfn.isExternal());
     verifyex(cdlfn.getEp(ep)); 
-    ep.getUrlStr(eps.clear()); assertex(strcmp(eps.str(),"10.150.10.75")==0);
+    ep.getEndpointHostText(eps.clear()); assertex(strcmp(eps.str(),"10.150.10.75")==0);
     lfn=cdlfn.get(); assertex(strcmp(lfn,"foreign::10.150.10.75::test::file.xyz")==0);
     lfn=cdlfn.get(true); assertex(strcmp(lfn,"test::file.xyz")==0);
     cdlfn.getScopes(scopes.clear()); assertex(strcmp(scopes.str(),"foreign::10.150.10.75::test")==0);
@@ -517,19 +517,19 @@ void Test_DFS()
     dfile->attach("nigel::test::testfile3",UNKNOWN_USER);
     dfile->Release();
     fdesc->Release();
-    IDistributedFile *f = queryDistributedFileDirectory().lookup("nigel::test::testfile2",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    IDistributedFile *f = queryDistributedFileDirectory().lookup("nigel::test::testfile2",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     if (!f)
         printf("failed 1");
     ::Release(f);
-    f = queryDistributedFileDirectory().lookup("nigel::zest::testfile1",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    f = queryDistributedFileDirectory().lookup("nigel::zest::testfile1",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     assertex(!f);
-    f = queryDistributedFileDirectory().lookup("nigel::test::zestfile1",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    f = queryDistributedFileDirectory().lookup("nigel::test::zestfile1",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     assertex(!f);
-    f = queryDistributedFileDirectory().lookup("nigel::test::testfile1",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    f = queryDistributedFileDirectory().lookup("nigel::test::testfile1",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     if (!f)
         printf("failed 2 ");
     ::Release(f);
-    f = queryDistributedFileDirectory().lookup("nigel::test::testfile3",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    f = queryDistributedFileDirectory().lookup("nigel::test::testfile3",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     if (!f)
         printf("failed 3");
     StringBuffer str;
@@ -624,7 +624,7 @@ void Test_DFSU()
     dfile->attach("nigel::test::testfile3u",UNKNOWN_USER);
     dfile->Release();
     fdesc->Release();
-    IDistributedFile *f = queryDistributedFileDirectory().lookup("nigel::test::testfile2u",UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    IDistributedFile *f = queryDistributedFileDirectory().lookup("nigel::test::testfile2u",UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     if (!f)
         printf("failed 1");
     StringBuffer str;
@@ -1021,7 +1021,7 @@ void QTest(bool testput)
 #if 1
                     StringBuffer eps;
                     if (i%100==99) {
-                        PROGLOG("Got %s - %d from %s",str.get(),n,node->endpoint().getUrlStr(eps).str());
+                        PROGLOG("Got %s - %d from %s",str.get(),n,node->endpoint().getEndpointHostText(eps).str());
                         PROGLOG("time taken = %d",msTick()-t1);
                         t1 = msTick();
                     }
@@ -1178,7 +1178,7 @@ public:
 class CQPutTest : public Thread
 {
 public:
-    CQPutTest() : Thread("CQPutTest") { start(); }
+    CQPutTest() : Thread("CQPutTest") { start(false); }
     virtual int run()
     {
         try {
@@ -1193,7 +1193,7 @@ public:
 class CQGetTest : public Thread
 {
 public:
-    CQGetTest() : Thread("CQPutTest") { start(); }
+    CQGetTest() : Thread("CQPutTest") { start(false); }
     virtual int run()
     {
         try {
@@ -1319,7 +1319,7 @@ public:
         conn.setown(querySDS().connect(_path, myProcessSession(), RTM_CREATE_QUERY, 1000000));
 
         id1 = id2 = 0;
-        start();
+        start(false);
     }
     virtual int run()
     {
@@ -1407,7 +1407,7 @@ void TestStress()
         getTest.setown(new CQGetTest());
     }
     TSDSTestPool poolFactory;
-    Owned<IThreadPool> pool = createThreadPool("TSDSTest", &poolFactory);
+    Owned<IThreadPool> pool = createThreadPool("TSDSTest", &poolFactory, false, nullptr);
 
     unsigned path = 0;
     while (count)
@@ -1628,7 +1628,7 @@ void TestStress2()
     conn->changeMode(RTM_LOCK_READ);
     
     Owned<CStressPoolFactory> factory = new CStressPoolFactory();
-    Owned<IThreadPool> threadPool = createThreadPool("Stress2 Thread Pool", factory, NULL, 60);
+    Owned<IThreadPool> threadPool = createThreadPool("Stress2 Thread Pool", factory, false, nullptr, 60);
 
     unsigned totalCount = 0;
     unsigned subCount = 1;
@@ -1818,7 +1818,7 @@ void TestExternal()
 class CSubTest : public Thread
 {
 public:
-    CSubTest(const char *_path) : path(_path) { start(); }
+    CSubTest(const char *_path) : path(_path) { start(false); }
 
     virtual int run()
     {
@@ -2562,8 +2562,8 @@ void TestSDS2()
     CClientTestSDS *t1 = new CClientTestSDS();
     CClientTestSDS *t2 = new CClientTestSDS();
 
-    t1->start();
-    t2->start();
+    t1->start(false);
+    t2->start(false);
 
     t1->join();
     t2->join();
@@ -2694,7 +2694,7 @@ void TestSDS3(IGroup *group)
 
     unsigned nthreads = testParams.ordinality()?atoi(testParams.item(0)):10;
     ReadWriteLock reinitLock;
-    Owned<IThreadPool> pool = createThreadPool("TSDS1", &poolFactory, NULL, nthreads);
+    Owned<IThreadPool> pool = createThreadPool("TSDS1", &poolFactory, false, nullptr, nthreads);
 
     SDS3Params params;
     params.reinitLock = &reinitLock;
@@ -2817,7 +2817,7 @@ void TestNodeSubs()
         }
     } poolFactory;
 
-    Owned<IThreadPool> pool = createThreadPool("TSDSTest", &poolFactory, NULL, 100, 100000);
+    Owned<IThreadPool> pool = createThreadPool("TSDSTest", &poolFactory, false, nullptr, 100, 100000);
 
     unsigned tests = testParams.ordinality() ? atoi(testParams.item(0)) : 10;
     for (unsigned t=0; t<tests; t++)
@@ -3179,7 +3179,7 @@ static void TestCriticalSection()
     }
     unsigned k;
     for (k=0;k<NCCSTHREAD; k++) 
-        threads[k]->start();
+        threads[k]->start(false);
     for (k=0;k<NCCSTHREAD; k++) 
         threads[k]->join();
 }
@@ -3225,7 +3225,7 @@ static void TestMemThreads()
     }
     unsigned k;
     for (k=0;k<NCCSTHREAD; k++) 
-        threads[k]->start();
+        threads[k]->start(false);
     for (k=0;k<NCCSTHREAD; k++) 
         threads[k]->join();
 }
@@ -3292,13 +3292,13 @@ void testMultiConnect()
         void connected(unsigned idx,const SocketEndpoint &ep,ISocket *socket)
         {
             StringBuffer epstr;
-            ep.getUrlStr(epstr);
+            ep.getEndpointHostText(epstr);
             printf("%s suceeded\n",epstr.str());
         }
         void failed(unsigned idx,const SocketEndpoint &ep,int err)
         {
             StringBuffer epstr;
-            ep.getUrlStr(epstr);
+            ep.getEndpointHostText(epstr);
             printf("%s failed (%d)\n",epstr.str(),err);
         }
     } notify;
@@ -3310,8 +3310,8 @@ void testMultiConnect()
 
 void testlockprop(const char *lfn)
 {
-    Owned<IDistributedFile> f1 = queryDistributedFileDirectory().lookup(lfn,UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
-    Owned<IDistributedFile> f2 = queryDistributedFileDirectory().lookup(lfn,UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser);
+    Owned<IDistributedFile> f1 = queryDistributedFileDirectory().lookup(lfn,UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
+    Owned<IDistributedFile> f2 = queryDistributedFileDirectory().lookup(lfn,UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser);
     f1->lockProperties();
     f1->unlockProperties();
     printf("done\n");
@@ -3345,7 +3345,7 @@ int main(int argc, char* argv[])
 #if defined(TEST_MEMTHREADS)
         printf("start...\n");
         TestMemThread2 t("test");
-        t.start();
+        t.start(false);
         t.join();
         printf("end...\n");
         return 0;

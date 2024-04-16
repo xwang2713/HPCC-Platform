@@ -22,9 +22,11 @@
 #include <string>
 #include <exception>
 
-using namespace std;
-
 namespace sxt {
+
+  using std::string;
+  using std::exception;
+  using std::ostream;
 
   class XmlTokenizerException  : public exception{
   public:
@@ -58,7 +60,9 @@ namespace sxt {
       exception::operator= (other);
 
       if (&other != this) {
-        message = other.message; 
+        message = other.message;
+        row = other.row;
+        column = other.column;
       }
 
       return *this; 
@@ -84,15 +88,15 @@ namespace sxt {
 
   protected:
     string message;
-    int row;
-    int column;
+    int row = -1;
+    int column = -1;
   };
 
 inline ostream& operator<<(ostream& output, 
   const XmlTokenizerException& xte) 
 {
     output << "XmlTokenizerException: ";
-    output << xte.message << endl;
+    output << xte.message << std::endl;
     return output;
 }
 

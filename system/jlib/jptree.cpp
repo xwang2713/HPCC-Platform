@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <string>
 #include <tuple>
+#include <algorithm>
 
 #include "platform.h"
 #include "jarray.hpp"
@@ -47,8 +48,9 @@
 #define WARNLEGACYCOMPARE
 #define XMLTAG_CONTENT "<>"
 
-#undef UNIMPLEMENTED
-#define UNIMPLEMENTED throw MakeIPTException(-1, "UNIMPLEMENTED")
+#define UNIMPLEMENTED_IPT throw MakeIPTException(-1, "UNIMPLEMENTED feature in function %s() at %s(%d)", __func__, sanitizeSourceFile(__FILE__), __LINE__)
+
+
 #define CHECK_ATTRIBUTE(X) if (X && isAttribute(X)) throw MakeIPTException(PTreeExcpt_XPath_Unsupported, "Attribute usage invalid here");
 #define AMBIGUOUS_PATH(X,P) { StringBuffer buf; buf.append(X": ambiguous xpath \"").append(P).append("\"");  throw MakeIPTException(PTreeExcpt_XPath_Ambiguity,"%s",buf.str()); }
 
@@ -1028,6 +1030,7 @@ CPTValue::CPTValue(size32_t size, const void *data, bool binary, bool raw, bool 
                 set(newSize, newData);
             }
             free(newData);
+            newData = NULL;
             compressor->Release();  
         }
         catch (...)
@@ -1461,7 +1464,7 @@ void PTree::setProp(const char *xpath, const char *val)
         if (!val)
             removeAttribute(xpath);
         else
-            setAttribute(xpath, val);
+            setAttribute(xpath, val, false);
     }
     else
     {
@@ -1605,7 +1608,7 @@ void PTree::addProp(const char *xpath, const char *val)
     if (!xpath || '\0' == *xpath)
         addLocal((size32_t)strlen(val)+1, val);
     else if (isAttribute(xpath))
-        setAttribute(xpath, val);
+        setAttribute(xpath, val, false);
     else if ('[' == *xpath)
     {
         aindex_t pos = getChildMatchPos(xpath);
@@ -1636,7 +1639,7 @@ void PTree::appendProp(const char *xpath, const char *val)
         StringBuffer newVal;
         getProp(xpath, newVal);
         newVal.append(val);
-        setAttribute(xpath, newVal.str());
+        setAttribute(xpath, newVal.str(), false);
     }
     else if ('[' == *xpath)
     {
@@ -1718,7 +1721,7 @@ void PTree::setPropInt64(const char * xpath, __int64 val)
     {
         char buf[23];
         numtostr(buf, val);
-        setAttribute(xpath, buf);
+        setAttribute(xpath, buf, false);
     }
     else
     {
@@ -1747,7 +1750,7 @@ void PTree::addPropInt64(const char *xpath, __int64 val)
     {
         char buf[23];
         numtostr(buf, val);
-        setAttribute(xpath, buf);
+        setAttribute(xpath, buf, false);
     }
     else if ('[' == *xpath)
     {
@@ -1769,6 +1772,67 @@ void PTree::addPropInt64(const char *xpath, __int64 val)
             child->addPropInt64(qualifier, val);
         else
             setPropInt64(path, val);
+    }
+}
+
+void PTree::setPropReal(const char * xpath, double val)
+{
+    if (!xpath || '\0' == *xpath)
+    {
+        std::string s = std::to_string(val);
+        setLocal((size32_t)s.length()+1, s.c_str());
+    }
+    else if (isAttribute(xpath))
+    {
+        std::string s = std::to_string(val);
+        setAttribute(xpath, s.c_str(), false);
+    }
+    else
+    {
+        const char *prop;
+        IPropertyTree *branch = splitBranchProp(xpath, prop, true);
+
+        if (isAttribute(prop))
+            branch->setPropReal(prop, val);
+        else
+        {
+            IPropertyTree *propBranch = queryCreateBranch(branch, prop);
+            propBranch->setPropReal(NULL, val);
+        }
+    }
+}
+
+void PTree::addPropReal(const char *xpath, double val)
+{
+    if (!xpath || '\0' == *xpath)
+    {
+        std::string s = std::to_string(val);
+        addLocal((size32_t)s.length()+1, s.c_str());
+    }
+    else if (isAttribute(xpath))
+    {
+        std::string s = std::to_string(val);
+        setAttribute(xpath, s.c_str(), false);
+    }
+    else if ('[' == *xpath)
+    {
+        std::string s = std::to_string(val);
+        aindex_t pos = getChildMatchPos(xpath);
+        if ((aindex_t) -1 == pos)
+            throw MakeIPTException(-1, "addPropInt64: qualifier unmatched %s", xpath);
+        addLocal((size32_t)s.length()+1, s.c_str(), false, pos);
+    }
+    else
+    {
+        IPropertyTree *parent, *child;
+        StringAttr path, qualifier;
+        resolveParentChild(xpath, parent, child, path, qualifier);
+        if (parent != this)
+            parent->addPropReal(path, val);
+        else if (child)
+            child->addPropReal(qualifier, val);
+        else
+            setPropReal(path, val);
     }
 }
 
@@ -1851,7 +1915,7 @@ bool PTree::renameProp(const char *xpath, const char *newName)
     if (strcmp(xpath,"/")==0)   // rename of self allowed assuming no parent
         setName(newName);
     else if ('[' == *xpath)
-        UNIMPLEMENTED;
+        UNIMPLEMENTED_IPT;
     else if (isAttribute(xpath))
     {
         StringBuffer val;
@@ -3443,7 +3507,7 @@ bool PTree::checkPattern(const char *&xxpath) const
             for (;;)
             {
                 if (matchElem->isBinary(tProp))
-                    UNIMPLEMENTED;
+                    UNIMPLEMENTED_IPT;
                 const char *rhs;
                 unsigned rhslength;
                 if (quoteEnd)
@@ -3619,10 +3683,18 @@ bool LocalPTree::removeAttribute(const char *key)
     return true;
 }
 
-void LocalPTree::setAttribute(const char *key, const char *val)
+void LocalPTree::setAttribute(const char *inputkey, const char *val, bool encoded)
 {
-    if (!key)
+    if (!inputkey)
         return;
+    const char *key = inputkey;
+    if (encoded)
+    {
+        if (*key!='~')
+            encoded=false;
+        else
+            key++;
+    }
     if (!validateXMLTag(key+1))
         throw MakeIPTException(-1, "Invalid xml attribute: %s", key);
     if (!val)
@@ -3639,8 +3711,8 @@ void LocalPTree::setAttribute(const char *key, const char *val)
     {
         attrs = (AttrValue *)realloc(attrs, (numAttrs+1)*sizeof(AttrValue));
         v = new(&attrs[numAttrs++]) AttrValue;  // Initialize new AttrValue
-        if (!v->key.set(key))
-            v->key.setPtr(isnocase() ? AttrStr::createNC(key) : AttrStr::create(key));
+        if (!v->key.set(inputkey)) //AttrStr will not return encoding marker when get() is called
+            v->key.setPtr(isnocase() ? AttrStr::createNC(inputkey) : AttrStr::create(inputkey));
     }
     if (arrayOwner)
     {
@@ -3812,7 +3884,7 @@ void CAtomPTree::freeAttrArray(AttrValue *a, unsigned n)
     }
 }
 
-void CAtomPTree::setAttribute(const char *key, const char *val)
+void CAtomPTree::setAttribute(const char *key, const char *val, bool encoded)
 {
     if (!key)
         return;
@@ -3864,6 +3936,9 @@ void CAtomPTree::setAttribute(const char *key, const char *val)
         v = &newattrs[numAttrs];
         if (!v->key.set(key))
             v->key.setPtr(attrHT->addkey(key, isnocase()));
+        //shared via atom table, may want to add this later... escaped and unescaped versions should be considered unique
+        //if (encoded)
+        //    v->key.setEncoded();
         if (!v->value.set(val))
             v->value.setPtr(attrHT->addval(val));
         numAttrs++;
@@ -5941,6 +6016,8 @@ IPTreeMaker *createRootLessPTreeMaker(byte flags, IPropertyTree *root, IPTreeNod
 static IPTreeMaker *createDefaultPTreeMaker(byte flags, PTreeReaderOptions readFlags)
 {
     bool noRoot = 0 != ((unsigned)readFlags & (unsigned)ptr_noRoot);
+    if (0 != ((unsigned)readFlags & (unsigned)ptr_encodeExtNames))
+        return new CPTreeEncodeNamesMaker(flags, NULL, NULL, noRoot);
     return new CPTreeMaker(flags, NULL, NULL, noRoot);
 }
 
@@ -6214,7 +6291,7 @@ class CStringBufferMarkupIOAdapter : public CInterfaceOf<IIOStream>
 public:
     CStringBufferMarkupIOAdapter(StringBuffer &_out) : out(_out) { }
     virtual void flush() override { }
-    virtual size32_t read(size32_t len, void * data) override { UNIMPLEMENTED; return 0; }
+    virtual size32_t read(size32_t len, void * data) override { UNIMPLEMENTED_IPT; }
     virtual size32_t write(size32_t len, const void * data) override { out.append(len, (const char *)data); return len; }
 };
 
@@ -6281,7 +6358,7 @@ void checkWriteJSONDelimiter(IIOStream &out, bool &delimit)
 
 static void writeJSONNameToStream(IIOStream &out, const char *name, unsigned indent, bool &delimit)
 {
-    if (!name || !*name)
+    if (!name)
         return;
     checkWriteJSONDelimiter(out, delimit);
     if (indent)
@@ -6350,7 +6427,14 @@ static void _toJSON(const IPropertyTree *tree, IIOStream &out, unsigned indent, 
     {
         if (!name || !*name)
             name = "__unnamed__";
-        writeJSONNameToStream(out, name, (flags & JSON_Format) ? indent : 0, delimit);
+        if (!isPTreeNameEncoded(tree))
+            writeJSONNameToStream(out, name, (flags & JSON_Format) ? indent : 0, delimit);
+        else
+        {
+            StringBuffer decoded;
+            decodePtreeName(decoded, name);
+            writeJSONNameToStream(out, decoded.str(), (flags & JSON_Format) ? indent : 0, delimit);
+        }
     }
 
     checkWriteJSONDelimiter(out, delimit);
@@ -6380,7 +6464,14 @@ static void _toJSON(const IPropertyTree *tree, IIOStream &out, unsigned indent, 
                     const char *val = it->queryValue();
                     if (val)
                     {
-                        writeJSONNameToStream(out, key, (flags & JSON_Format) ? indent+1 : 0, delimit);
+                        if (!isPTreeAttributeNameEncoded(tree, key))
+                            writeJSONNameToStream(out, key, (flags & JSON_Format) ? indent+1 : 0, delimit);
+                        else
+                        {
+                            StringBuffer decoded;
+                            decodePtreeName(decoded, key);
+                            writeJSONNameToStream(out, decoded.str(), (flags & JSON_Format) ? indent+1 : 0, delimit);
+                        }
                         if (flags & JSON_SanitizeAttributeValues)
                             writeJSONValueToStream(out, val, delimit, isHiddenWhenSanitized(val));
                         else
@@ -6517,7 +6608,7 @@ void printJSON(const IPropertyTree *tree, unsigned indent, byte flags)
     printf("%s", json.str());
 }
 
-void dbglogJSON(const IPropertyTree *tree, unsigned indent, unsigned flags)
+void dbglogJSON(const IPropertyTree *tree, unsigned indent, byte flags)
 {
     StringBuffer json;
     toJSON(tree, json, indent, flags);
@@ -7201,8 +7292,6 @@ protected:
         if ('\"'!=nextChar)
             expecting("\"");
         readString(name);
-        if (!name.length())
-            error("empty JSON id");
         readNext();
         skipWS();
         if (':'!=nextChar)
@@ -7351,18 +7440,22 @@ public:
             else if ('#'==*name)
             {
                 dbgassertex(retValue && isValueBinary);
-                *isValueBinary = false;
+                if (isValueBinary)
+                    *isValueBinary = false;
                 if (0 == strncmp(name+1, "value", 5)) // this is a special IPT JSON prop name, representing a 'complex' value
                 {
                     if ('\0' == *(name+6)) // #value
                     {
-                        retValue->swapWith(value);
+                        if (retValue)
+                            retValue->swapWith(value);
                         return;
                     }
                     else if (streq(name+6, "bin")) // #valuebin
                     {
-                        *isValueBinary = true;
-                        JBASE64_Decode(value.str(), *retValue);
+                        if (isValueBinary)
+                            *isValueBinary = true;
+                        if (retValue)
+                            JBASE64_Decode(value.str(), *retValue);
                         return;
                     }
                 }
@@ -8015,7 +8108,7 @@ IPropertyTree *createPTreeFromJSONString(const char *json, byte flags, PTreeRead
     Owned<IPTreeMaker> _iMaker;
     if (!iMaker)
     {
-        iMaker = createDefaultPTreeMaker(flags, readFlags);
+        iMaker = createDefaultPTreeMaker(flags, (PTreeReaderOptions)(readFlags|ptr_encodeExtNames));
         _iMaker.setown(iMaker);
     }
     Owned<IPTreeReader> reader = createJSONStringReader(json, *iMaker, readFlags);
@@ -8028,7 +8121,7 @@ IPropertyTree *createPTreeFromJSONString(unsigned len, const char *json, byte fl
     Owned<IPTreeMaker> _iMaker;
     if (!iMaker)
     {
-        iMaker = createDefaultPTreeMaker(flags, readFlags);
+        iMaker = createDefaultPTreeMaker(flags, (PTreeReaderOptions)(readFlags|ptr_encodeExtNames));
         _iMaker.setown(iMaker);
     }
     Owned<IPTreeReader> reader = createJSONBufferReader(json, len, *iMaker, readFlags);
@@ -8210,7 +8303,7 @@ IPropertyTree *createPTreeFromHttpParameters(const char *nameWithAttrs, IPropert
             continue;
         if (skipLeadingDotParameters && key.charAt(0)=='.')
             continue;
-        const char *value = parameters->queryProp(key);
+        const char *value = iter->queryPropValue();
         if (!value || !*value)
             continue;
         ensureHttpParameter(content, key, value);
@@ -8328,7 +8421,7 @@ void mergeConfiguration(IPropertyTree & target, const IPropertyTree & source, co
         bool first = false;
         bool endprior = false;
         bool sequence = checkInSequence(child, seqname, first, endprior);
-        if (first && (!name || isScalarItem(child))) //arrays of unamed objects or scalars are replaced
+        if (first && (!name || isScalarItem(child))) //arrays of unnamed objects or scalars are replaced
             target.removeProp(tag);
 
         IPropertyTree * match = ensureMergeConfigTarget(target, tag, altname ? altNameAttribute : "@name", name, sequence);
@@ -8428,6 +8521,29 @@ static void applyEnvironmentConfig(IPropertyTree & target, const char * cptPrefi
     }
 }
 
+void applyProperties(IPropertyTree * target, const IProperties * source)
+{
+    Owned<IPropertyIterator> iter = source->getIterator();
+    ForEach(*iter)
+    {
+        const char * name = iter->getPropKey();
+        const char * value = iter->queryPropValue();
+        target->setProp(name, value);
+    }
+}
+
+void applyProperty(IPropertyTree * target, const char * source)
+{
+    const char * equals = strchr(source, '=');
+    if (equals)
+    {
+        StringBuffer prop(equals - source, source);
+        target->setProp(prop, equals + 1);
+    }
+    else
+        target->setPropBool(source, true);
+}
+
 IPropertyTree * createPTreeFromYAML(const char * yaml)
 {
     if (*yaml == '{')
@@ -8479,7 +8595,7 @@ static void applyCommandLineOption(IPropertyTree * config, const char * option, 
     config->setProp(path, value);
 }
 
-static void applyCommandLineOption(IPropertyTree * config, const char * option, std::initializer_list<const char *> ignoreOptions)
+static void applyCommandLineOption(IPropertyTree * config, const char * option, std::initializer_list<const std::string> ignoreOptions)
 {
     const char * eq = strchr(option, '=');
     StringBuffer name;
@@ -8492,8 +8608,20 @@ static void applyCommandLineOption(IPropertyTree * config, const char * option, 
     }
     else
     {
-        //MORE: Support --x- and --x+?
-        val = "1";
+        unsigned len = strlen(option);
+        if (len == 0)
+            return;
+
+        //support --option+ as --option=1 and --option- as --option=0 for eclcc compatibility
+        char last = option[len-1];
+        if ((last == '+') || (last == '-'))
+        {
+            name.append(len-1, option);
+            option = name;
+            val = (last == '+') ? "1" : "0";
+        }
+        else
+            val = "1";
     }
     if (stdContains(ignoreOptions, option))
         return;
@@ -8503,6 +8631,7 @@ static void applyCommandLineOption(IPropertyTree * config, const char * option, 
 static CriticalSection configCS;
 static Owned<IPropertyTree> componentConfiguration;
 static Owned<IPropertyTree> globalConfiguration;
+static StringBuffer componentName;
 
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
@@ -8540,7 +8669,13 @@ Owned<IPropertyTree> getGlobalConfigSP()
     return getGlobalConfig();
 }
 
-jlib_decl IPropertyTree * loadArgsIntoConfiguration(IPropertyTree *config, const char * * argv, std::initializer_list<const char *> ignoreOptions)
+const char * queryComponentName()
+{
+    //componentName is thread safe, since initialised when config is first loaded, and not modified afterwards
+    return componentName.str();
+}
+
+jlib_decl IPropertyTree * loadArgsIntoConfiguration(IPropertyTree *config, const char * * argv, std::initializer_list<const std::string> ignoreOptions)
 {
     for (const char * * pArg = argv; *pArg; pArg++)
     {
@@ -8561,7 +8696,6 @@ static void holdLoop()
 }
 #endif
 
-#if defined(__linux__)
 static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfiguration(IPropertyTree *componentDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute);
 
 class CConfigUpdater : public CInterface
@@ -8577,15 +8711,47 @@ class CConfigUpdater : public CInterface
     CriticalSection notifyFuncCS;
     unsigned notifyFuncId = 0;
     std::unordered_map<unsigned, ConfigUpdateFunc> notifyConfigUpdates;
+    std::vector<unsigned> pendingInitializeFuncIds;
 
 public:
-    CConfigUpdater(const char *_absoluteConfigFilename, IPropertyTree *_componentDefault, const char * * argv, const char * _componentTag, const char * _envPrefix, const char *_legacyFilename, IPropertyTree * (_mapper)(IPropertyTree *), const char *_altNameAttribute)
-        : absoluteConfigFilename(_absoluteConfigFilename), componentDefault(_componentDefault), componentTag(_componentTag), envPrefix(_envPrefix), legacyFilename(_legacyFilename), mapper(_mapper), altNameAttribute(_altNameAttribute)
+    CConfigUpdater()
     {
+    }
+    bool isInitialized() const
+    {
+        return args.ordinality(); // NB: null terminated, so always >=1 if initialized
+    }
+    void init(const char *_absoluteConfigFilename, IPropertyTree *_componentDefault, const char * * argv, const char * _componentTag, const char * _envPrefix, const char *_legacyFilename, IPropertyTree * (_mapper)(IPropertyTree *), const char *_altNameAttribute)
+    {
+        dbgassertex(!isInitialized());
+        absoluteConfigFilename.set(_absoluteConfigFilename);
+        componentDefault.set(_componentDefault);
+        componentTag.set(_componentTag);
+        envPrefix.set(_envPrefix);
+        legacyFilename.set(_legacyFilename);
+        mapper = _mapper;
+        altNameAttribute.set(_altNameAttribute);
         while (const char *arg = *argv++)
             args.append(arg);
         args.append(nullptr);
 
+        Owned<IPropertyTree> config = getComponentConfig();
+        Owned<IPropertyTree> global = getGlobalConfig();
+        while (pendingInitializeFuncIds.size())
+        {
+            unsigned notifyFuncId = pendingInitializeFuncIds.back();
+            pendingInitializeFuncIds.pop_back();
+            ConfigUpdateFunc notifyFunc = notifyConfigUpdates[notifyFuncId];
+            notifyFunc(config, global);
+        }
+    }
+    bool startMonitoring()
+    {
+#if !defined(__linux__) // file moinitoring only supported in Linux (because createFileEventWatcher only implemented in Linux at the moment)
+        return false;
+#endif
+        if (0 == absoluteConfigFilename.length() || (nullptr != fileWatcher.get()))
+            return false;
         auto updateFunc = [&](const char *filename, FileWatchEvents events)
         {
             bool changed = containsFileWatchEvents(events, FileWatchEvents::closedWrite) && streq(filename, configFilename);
@@ -8608,26 +8774,15 @@ public:
                  */
                 componentConfiguration.setown(std::get<1>(result));
                 globalConfiguration.setown(std::get<2>(result));
+                if (!componentName)
+                    componentConfiguration->getProp("@name", componentName);
 
                 /* NB: we are still holding 'configCS' at this point, blocking all other thread access.
                    However code in callbacks may call e.g. getComponentConfig() and re-enter the crit */
-                for (const auto &item: notifyConfigUpdates)
-                {
-                    try
-                    {
-                        item.second(oldComponentConfiguration, oldGlobalConfiguration);
-                    }
-                    catch (IException *e)
-                    {
-                        EXCLOG(e, "CConfigUpdater callback");
-                        e->Release();
-                    }
-                }
-
+                executeCallbacks(oldComponentConfiguration, oldGlobalConfiguration);
                 absoluteConfigFilename.set(std::get<0>(result).c_str());
             }
         };
-
         fileWatcher.setown(createFileEventWatcher(updateFunc));
 
         // watch the path, not the filename, because the filename might not be seen if directories are moved, softlinks are changed..
@@ -8636,58 +8791,95 @@ public:
         configFilename.set(filename);
         fileWatcher->add(path, FileWatchEvents::anyChange);
         fileWatcher->start();
+        return true;
     }
-    unsigned addNotifyFunc(ConfigUpdateFunc notifyFunc)
+    void executeCallbacks(IPropertyTree *oldComponentConfiguration, IPropertyTree *oldGlobalConfiguration)
+    {
+        for (const auto &item: notifyConfigUpdates)
+        {
+            try
+            {
+                item.second(oldComponentConfiguration, oldGlobalConfiguration);
+            }
+            catch (IException *e)
+            {
+                EXCLOG(e, "CConfigUpdater callback");
+                e->Release();
+            }
+        }
+    }
+    unsigned addNotifyFunc(ConfigUpdateFunc notifyFunc, bool callWhenInstalled)
     {
         CriticalBlock b(notifyFuncCS);
         notifyFuncId++;
         notifyConfigUpdates[notifyFuncId] = notifyFunc;
+        if (callWhenInstalled)
+        {
+            if (isInitialized())
+                notifyFunc(getComponentConfigSP(), getGlobalConfigSP());
+            else
+            {
+                // If the configuration is not yet be loaded, track notify callbacks that
+                // want to be initialized on install, and call during CConfigUpdater::init.
+                pendingInitializeFuncIds.push_back(notifyFuncId);
+            }
+        }
         return notifyFuncId;
     }
     bool removeNotifyFunc(unsigned funcId)
     {
         CriticalBlock b(notifyFuncCS);
-        return notifyConfigUpdates.erase(funcId) > 0;
+        auto it = notifyConfigUpdates.find(funcId);
+        if (it == notifyConfigUpdates.end())
+            return false;
+
+        ConfigUpdateFunc notifyFunc = it->second;
+        notifyConfigUpdates.erase(it);
+        if (!isInitialized())
+        {
+           auto it = std::remove(pendingInitializeFuncIds.begin(), pendingInitializeFuncIds.end(), funcId);
+           pendingInitializeFuncIds.erase(it, pendingInitializeFuncIds.end());
+        }
+        return true;
     }
 };
 
-static Owned<CConfigUpdater> configFileUpdater;
-
-unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc)
+static CConfigUpdater *configFileUpdater = nullptr;
+MODULE_INIT(INIT_PRIORITY_JPTREE)
 {
-#ifdef _CONTAINERIZED
-    if (!configFileUpdater)
-        WARNLOG("installConfigUpdateHook(): configuration updater not installed");
-    else
-        return configFileUpdater->addNotifyFunc(notifyFunc);
-#endif
-    return 0;
+    configFileUpdater = new CConfigUpdater();
+    return true;
+}
+
+MODULE_EXIT()
+{
+    ::Release(configFileUpdater);
+    configFileUpdater = nullptr;
+}
+
+unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc, bool callWhenInstalled)
+{
+    if (!configFileUpdater) // NB: installConfigUpdateHook should always be called after configFileUpdater is initialized
+        return 0;
+    return configFileUpdater->addNotifyFunc(notifyFunc, callWhenInstalled);
 }
 
 void removeConfigUpdateHook(unsigned notifyFuncId)
 {
     if (0 == notifyFuncId)
         return;
-#ifdef _CONTAINERIZED
-    if (!configFileUpdater)
-    {
-        WARNLOG("removeConfigUpdateHook(): configuration updater not installed");
+    if (!configFileUpdater) // NB: removeConfigUpdateHook should always be called after configFileUpdater is initialized
         return;
-    }
     if (!configFileUpdater->removeNotifyFunc(notifyFuncId))
         WARNLOG("removeConfigUpdateHook(): notifyFuncId %u not installed", notifyFuncId);
-#endif
-}
-#else
-unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc)
-{
-    return 0;
 }
 
-void removeConfigUpdateHook(unsigned notifyFuncId)
+void executeConfigUpdaterCallbacks()
 {
+    if (!configFileUpdater) // NB: executeConfigUpdaterCallbacks should always be called after configFileUpdater is initialized
+        return;
+    configFileUpdater->executeCallbacks(componentConfiguration, globalConfiguration);
 }
-#endif // __linux__
 
 void CConfigUpdateHook::clear()
 {
@@ -8706,9 +8898,7 @@ void CConfigUpdateHook::installOnce(ConfigUpdateFunc callbackFunc, bool callWhen
         id = configCBId.load(std::memory_order_acquire);
         if ((unsigned)-1 == id)
         {
-            if (callWhenInstalled)
-                callbackFunc(getComponentConfigSP(), getGlobalConfigSP());
-            id = installConfigUpdateHook(callbackFunc);
+            id = installConfigUpdateHook(callbackFunc, callWhenInstalled);
             configCBId.store(id, std::memory_order_release);
         }
     }
@@ -8797,7 +8987,10 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
     else
     {
         if (legacyFilename && checkFileExists(legacyFilename))
+        {
             delta.setown(createPTreeFromXMLFile(legacyFilename, ipt_caseInsensitive));
+            newGlobalConfig.set(delta->queryPropTree("global"));
+        }
 
         if (delta && mapper)
             delta.setown(mapper(delta));
@@ -8847,8 +9040,10 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
 
 jlib_decl IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute, bool monitor)
 {
-    if (componentConfiguration)
+    assertex(configFileUpdater); // NB: loadConfiguration should always be called after configFileUpdater is initialized
+    if (configFileUpdater->isInitialized())
         throw makeStringExceptionV(99, "Configuration for component %s has already been initialised", componentTag);
+
     auto result = doLoadConfiguration(componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
 
     componentConfiguration.setown(std::get<1>(result));
@@ -8861,19 +9056,19 @@ jlib_decl IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, con
      * 
      * NB: most uses of config do not rely on being notified to update state, i.e. most query the config
      * on-demand, which means this mechanism is sufficient to cover most cases.
+     * 
+     * In bare-metal the monitoring mechanism will similarly spot any legacy config file changes, e.g.
+     * that would be refreshed during a 'service hpcc-init setup'.
+     * Some bare-metal code relies on directly interrogating the environment, for those situations, there is
+     * also a default triggering mechanism (see executeConfigUpdaterCallbacks in daclient.cpp) that will cause any
+     * installed config hooks to be called when an environment change is detected e.g when pushed to Dali)
      */
 
-#if defined(__linux__) && defined(_CONTAINERIZED)
-    /* In bare-metal - there is no auto process/component restart mechanism, so everything would need to be
-     * hooked to ensure state is reflected correctly. Therefore this mechanism is disabled in bare-metal for now.
-     */ 
+    configFileUpdater->init(std::get<0>(result).c_str(), componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
     if (monitor)
-    {
-        // If modern generated config, track and monitor updates
-        if (std::get<0>(result).length()) // config filename
-            configFileUpdater.setown(new CConfigUpdater(std::get<0>(result).c_str(), componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute));
-    }
-#endif
+        configFileUpdater->startMonitoring();
+
+    initTraceManager(componentTag, componentConfiguration.get(), globalConfiguration.get());
     return componentConfiguration.getLink();
 }
 
@@ -8894,6 +9089,24 @@ jlib_decl IPropertyTree * loadConfiguration(const char * defaultYaml, const char
         componentDefault.setown(createPTree(componentTag));
 
     return loadConfiguration(componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute, monitor);
+}
+
+void replaceComponentConfig(IPropertyTree *newComponentConfig, IPropertyTree *newGlobalConfig)
+{
+    {
+        CriticalBlock b(configCS);
+        componentConfiguration.set(newComponentConfig);
+        globalConfiguration.set(newGlobalConfig);
+    }
+    executeConfigUpdaterCallbacks();
+}
+
+void initNullConfiguration()
+{
+    if (componentConfiguration || globalConfiguration)
+        throw makeStringException(99, "Configuration has already been initialised");
+    componentConfiguration.setown(createPTree());
+    globalConfiguration.setown(createPTree());
 }
 
 class CYAMLBufferReader : public CInterfaceOf<IPTreeReader>
@@ -8929,7 +9142,7 @@ public:
 
     virtual void loadSequence(const char *tagname)
     {
-        if (!tagname || !*tagname) //if unmapped (unnamed) sequences are possible have to decide how to name them in the ptree, later
+        if (!tagname)
             throw makeStringException(99, "libyaml parser expected sequence name");
 
         yaml_event_t event;
@@ -8975,7 +9188,7 @@ public:
     {
         bool binaryContent = false;
         StringBuffer content;
-        if (tagname && *tagname)
+        if (tagname)
             iEvent->beginNode(tagname, sequence, parser.offset);
 
         yaml_event_t event;
@@ -9137,7 +9350,7 @@ IPropertyTree *createPTreeFromYAMLString(unsigned len, const char *yaml, byte fl
     Owned<IPTreeMaker> _iMaker;
     if (!iMaker)
     {
-        iMaker = createDefaultPTreeMaker(flags, readFlags);
+        iMaker = createDefaultPTreeMaker(flags, (PTreeReaderOptions)(readFlags|ptr_encodeExtNames));
         _iMaker.setown(iMaker);
     }
     Owned<IPTreeReader> reader = createYAMLBufferReader(yaml, len, *iMaker, readFlags);
@@ -9295,18 +9508,31 @@ public:
 
 static void _toYAML(const IPropertyTree *tree, YAMLEmitter &yaml, byte flags, bool root=false, bool isArrayItem=false)
 {
-    const char *name = tree->queryName();
-    if (!root && !isArrayItem)
+    bool hiddenRootArrayObject = false;
+    //Having to decode is the uncommon case.  Keep overhead low by only using a StringAttr here, and if we do have to decode, take the hit then and use an adapter (StringAttrBuilder).
+    StringAttr decoded;
     {
-        if (!name || !*name)
-            name = "__unnamed__";
-        yaml.writeName(name);
+        const char *name = tree->queryName();
+        hiddenRootArrayObject = isRootArrayObjectHidden(root, name, flags);
+        if (!root && !isArrayItem)
+        {
+            if (!name || !*name)
+                name = "__unnamed__";
+            else if (isPTreeNameEncoded(tree))
+            {
+                {
+                    StringAttrBuilder decodedBuilder(decoded);
+                    decodePtreeName(decodedBuilder, name);
+                }
+                name = decoded.str();
+            }
+            yaml.writeName(name);
+        }
     }
 
     Owned<IAttributeIterator> it = tree->getAttributes(true);
     bool hasAttributes = it->first();
     bool complex = (hasAttributes || tree->hasChildren());
-    bool hiddenRootArrayObject = isRootArrayObjectHidden(root, name, flags);
 
     if (!hiddenRootArrayObject)
     {
@@ -9317,9 +9543,18 @@ static void _toYAML(const IPropertyTree *tree, YAMLEmitter &yaml, byte flags, bo
         {
             ForEach(*it)
             {
-                const char *key = it->queryName()+1;
+                const char *key = it->queryName();
+                if (isPTreeAttributeNameEncoded(tree, key))
+                {
+                    {
+                        decoded.clear();
+                        StringAttrBuilder decodedAtBuilder(decoded);
+                        decodePtreeName(decodedAtBuilder, key);
+                    }
+                    key = decoded.str();
+                }
                 const char *val = it->queryValue();
-                yaml.writeAttribute(key, val, isSanitizedAndHidden(val, flags, true));
+                yaml.writeAttribute(key+1, val, isSanitizedAndHidden(val, flags, true));
             }
         }
     }
@@ -9368,7 +9603,25 @@ static void _toYAML(const IPropertyTree *tree, YAMLEmitter &yaml, byte flags, bo
         if (endprior)
             yaml.endSequence();
         if (first)
-            yaml.beginSequence(hiddenRootArrayObject ? nullptr : element.queryName());
+        {
+            const char *name = nullptr;
+            if (!hiddenRootArrayObject)
+            {
+                if (!isPTreeNameEncoded(&element))
+                    name = element.queryName();
+                else
+                {
+                    {
+                        decoded.clear();
+                        StringAttrBuilder decodedBuilder(decoded);
+                        decodePtreeName(decodedBuilder, element.queryName());
+                    }
+                    name = decoded.str();
+                }
+            }
+
+            yaml.beginSequence(name);
+        }
 
         _toYAML(&element, yaml, flags, false, sequence);
     }
@@ -9448,7 +9701,7 @@ void saveYAML(IIOStream &stream, const IPropertyTree *tree, unsigned indent, uns
 
 jlib_decl IPropertyTree * getCostsConfiguration()
 {
-    return getComponentConfigSP()->getPropTree("costs");
+    return getComponentConfigSP()->getPropTree("cost");
 }
 
 void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropertyTree & source, const char * sourceName)
@@ -9464,4 +9717,511 @@ void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropert
         else
             target.setProp(targetName, source.queryProp(sourceName));
     }
+}
+
+inline void checkEndHexSequence(StringBuffer &s, bool &hexSequence)
+{
+    if (hexSequence)
+    {
+        //close current hex stream sequence
+        s.append('_');
+        hexSequence = false;
+    }
+}
+inline bool isValidPTreeNameChar(const char *ch, unsigned remaining, unsigned &chlen, bool isatt, bool first)
+{
+    chlen = 0;
+    if (!ch || !*ch || !remaining)
+        return false;
+    chlen = utf8CharLen((const unsigned char *)ch, remaining);
+    if (0==chlen)
+    {
+        chlen=1;
+        return false;
+    }
+    if (chlen>1)
+        return !isatt;  //attributes do not seem to currently support multibyte characters in their names
+    if (first)
+        return isValidXPathStartChr(*ch);
+    return isValidXPathChr(*ch);
+}
+
+const char *findFirstInvalidPTreeNameChar(const char *ch, unsigned remaining)
+{
+    if (!ch)
+        return nullptr;
+    if (remaining==0 || *ch=='\0') //empty name still needs to trigger a special encoding
+        return ch;
+    bool isatt;
+    if ('@'==*ch)
+    {
+        isatt=true;
+        ch++;
+        remaining--;
+    }
+    else
+        isatt=false;
+
+    if (!remaining)
+        return nullptr;
+
+    unsigned chlen = 0;
+    if (!isValidPTreeNameChar(ch, remaining, chlen, isatt, true))
+        return ch;
+    if (remaining<chlen)
+        return nullptr;
+    ch += chlen;
+    remaining -= chlen;
+    while (remaining)
+    {
+        if (!isValidPTreeNameChar(ch, remaining, chlen, isatt, false))
+            return ch;
+        if (remaining<=chlen)
+            return nullptr;
+        ch += chlen;
+        remaining -= chlen;
+    }
+    return nullptr;
+}
+
+const char *findFirstInvalidPTreeNameChar(const char *ch)
+{
+    if (!ch)
+        return nullptr;
+    return findFirstInvalidPTreeNameChar(ch, strlen(ch));
+}
+
+static inline bool checkAppendValidPTreeNameChar(StringBuffer &s, const char *ch, unsigned remaining, unsigned &chlen, bool isatt, bool first, bool &hexSequence)
+{
+    if (!isValidPTreeNameChar(ch, remaining, chlen, isatt, first))
+        return false;
+    checkEndHexSequence(s, hexSequence);
+    s.append(chlen, ch);
+    return true;
+}
+
+inline void appendPTreeNameSpecialEncoding(StringBuffer &s, const char *enc, bool &hexSequence)
+{
+    checkEndHexSequence(s, hexSequence);
+    s.append('_');
+    s.append(enc);
+}
+
+inline StringBuffer &encodePTreeNameUtf8Char(StringBuffer &s, const char *&ch, unsigned &remaining, bool isatt, bool &hexSequence, bool &first)
+{
+    unsigned chlen = 1;
+    if (first && (*ch=='@'))
+    {
+        s.append('@');
+        ch++;
+        remaining--;
+        if (remaining==0 || *ch=='\0')
+            return s;
+    }
+    if (*ch!='_' && checkAppendValidPTreeNameChar(s, ch, remaining, chlen, isatt, first, hexSequence))
+    {
+        remaining -= chlen;
+        ch += chlen;
+        first = false;
+        return s;
+    }
+    switch (*ch)
+    {
+        case '_':
+            appendPTreeNameSpecialEncoding(s, "_", hexSequence);
+            break;
+        case ' ':
+            appendPTreeNameSpecialEncoding(s, "s", hexSequence);
+            break;
+        case '@':
+            appendPTreeNameSpecialEncoding(s, "a", hexSequence);
+            break;
+        case '\\':
+            appendPTreeNameSpecialEncoding(s, "b", hexSequence);
+            break;
+        case '/':
+            appendPTreeNameSpecialEncoding(s, "f", hexSequence);
+            break;
+        case '\n':
+            appendPTreeNameSpecialEncoding(s, "n", hexSequence);
+            break;
+        case '\"':
+            appendPTreeNameSpecialEncoding(s, "Q", hexSequence);
+            break;
+        case '\r':
+            appendPTreeNameSpecialEncoding(s, "r", hexSequence);
+            break;
+        case '\'':
+            appendPTreeNameSpecialEncoding(s, "q", hexSequence);
+            break;
+        case '\t':
+            appendPTreeNameSpecialEncoding(s, "t", hexSequence);
+            break;
+        default:
+            {
+                if (!hexSequence)
+                {
+                    s.append("_x");
+                    hexSequence = true;
+                }
+                appendDataAsHex(s, chlen, (const void *)ch);
+            }
+            break;
+    }
+    ch += chlen;
+    remaining -= chlen;
+    if (first)
+        first = false;
+    return s;
+}
+
+StringBuffer &encodePTreeName(StringBuffer &s, unsigned size, const char *value, const char *startEncoding)
+{
+    if (!value || !size)
+        return s.append("_0");
+    bool isattr = ('@'==*value);
+    if (isattr && size==1)
+        return s.append("@_0");
+    //preallocate some space, with expansion of characters to avoid constant reallocation while appending below
+    s.ensureCapacity(size + size/2);
+    if (startEncoding)
+    {
+        //see if we have any existing escape characters to expand ('_' ==> "__")
+        const void *realStart = memchr(value, '_', startEncoding - value);
+        if (realStart)
+            startEncoding = (const char *) realStart;
+        unsigned skipSize = startEncoding-value;
+        if (skipSize > size)
+            return s;
+        s.append(skipSize, value);
+        value = startEncoding;
+        size -= skipSize;
+    }
+    bool hexSequence = false;
+    bool first = true;
+    while (size)
+        encodePTreeNameUtf8Char(s, value, size, isattr, hexSequence, first);
+    checkEndHexSequence(s, hexSequence);
+    return s;
+}
+
+StringBuffer &encodePTreeName(StringBuffer &s, const char *value, const char *startEncoding)
+{
+    if (!value)
+        return s.append("_0");
+    return encodePTreeName(s, strlen(value), value, startEncoding);
+}
+
+//Only encode the PTREE XPATH name if necessary. That matches the way internal PTREE names are stored allowing the resulting XPATH to be used directly
+StringBuffer &appendPTreeXPathName(StringBuffer &s, unsigned size, const char *value)
+{
+    if (!size || !value)
+        return s.append("_0");
+    const char *startEncoding = findFirstInvalidPTreeNameChar(value, size);
+    if (!startEncoding)
+        return s.append(value);
+    return encodePTreeName(s, size, value, startEncoding);
+}
+
+StringBuffer &appendPTreeXPathName(StringBuffer &s, const char *value)
+{
+    if (isEmptyString(value))
+        return s;
+    return appendPTreeXPathName(s, strlen(value), value);
+}
+
+void markPTreeNameEncoded(IPropertyTree *tree)
+{
+    if (!tree)
+        return;
+    PTree *pt = static_cast<PTree*>(tree);
+    pt->markNameEncoded();
+}
+
+bool isPTreeNameEncoded(const IPropertyTree *tree)
+{
+    if (!tree)
+        return false;
+    const PTree *pt = static_cast<const PTree*>(tree);
+    return pt->isNameEncoded();
+}
+
+void setPTreeAttribute(IPropertyTree *tree, const char *name, const char *value, bool markEncoded)
+{
+    if (!tree || isEmptyString(name))
+        return;
+    PTree *pt = static_cast<PTree*>(tree);
+    pt->setAttribute(name, value, markEncoded);
+}
+
+bool isPTreeAttributeNameEncoded(const IPropertyTree *tree, const char *name)
+{
+    if (!tree || isEmptyString(name))
+        return false;
+    const PTree *pt = static_cast<const PTree*>(tree);
+    return pt->isAttributeNameEncoded(name);
+}
+
+bool isNullPtreeName(const char * name, bool isEncoded)
+{
+    if (isEmptyString(name))
+        return true;
+    return isEncoded && streq(name, "_0");
+}
+
+static void decodePTreeNameHexEncoding(StringBuffer &s, const char *&input, unsigned &_remaining)
+{
+    //use local variables to avoid indirect reference
+    unsigned remaining = _remaining;
+    byte ch = 0;
+    while (remaining >= 2 && *input!='_')
+    {
+        byte high = hex2num(*input++);
+        ch = (high << 4) | hex2num(*input++);
+        remaining -= 2;
+        s.append(ch);
+    }
+    if (remaining && (*input=='_'))
+    {
+        input++;
+        remaining--;
+    }
+    _remaining=remaining;
+}
+
+static void decodePTreeNameEncoding(StringBuffer &s, const char *&input, unsigned &_remaining)
+{
+    //use local variables to avoid indirect reference
+    unsigned remaining = _remaining;
+    if (*input!='_')
+        return;
+    input++;
+    remaining--;
+    if (remaining==0)
+    {
+        _remaining=remaining;
+        return;
+    }
+    if (*input=='x')
+    {
+        input++;
+        remaining--;
+        decodePTreeNameHexEncoding(s, input, remaining);
+        _remaining=remaining;
+        return;
+    }
+    switch (*input)
+    {
+        case '0': //we only currently use this for empy names (including "@" with no tail)
+            break;
+        case '_':
+            s.append('_');
+            break;
+        case 'a':
+            s.append('@');
+            break;
+        case 'b':
+            s.append('\\');
+            break;
+        case 'f':
+            s.append('/');
+            break;
+        case 'n':
+            s.append('\n');
+            break;
+        case 'Q':
+            s.append('\"');
+            break;
+        case 'r':
+            s.append('\r');
+            break;
+        case 's':
+            s.append(' ');
+            break;
+        case 'q':
+            s.append('\'');
+            break;
+        case 't':
+            s.append('\t');
+            break;
+        default: //shouldn't get here since encoding can't be done externally, but treat as if not encoded
+            s.append('_').append(*input);
+            break;
+    }
+    input++;
+    remaining--;
+    _remaining=remaining;
+}
+
+StringBuffer &decodePtreeName(StringBuffer &s, const char *input, unsigned remaining)
+{
+    if (!input || !remaining)
+        return s;
+    s.ensureCapacity(remaining); //preallocate for the multiple appends to follow.. decode should generally be less than or equal to number of input bytes
+    while (remaining)
+    {
+        if ('_'!=*input)
+        {
+            s.append(*input);
+            input++;
+            remaining--;
+        }
+        else
+            decodePTreeNameEncoding(s, input, remaining);
+    }
+    return s;
+}
+
+StringBuffer &decodePtreeName(StringBuffer &s, const char *name)
+{
+    if (isEmptyString(name))
+        return s;
+    return decodePtreeName(s, name, strlen(name));
+}
+
+// 'expert' config helper methods
+StringBuffer &getExpertOptPath(const char *opt, StringBuffer &out)
+{
+#ifdef _CONTAINERIZED
+    if (opt)
+        return out.append("expert/@").append(opt);
+    return out.append("expert");
+#else
+    if (opt)
+        return out.append("Debug/@").append(opt);
+    return out.append("Debug");
+#endif
+}
+
+bool hasExpertOpt(const char *opt)
+{
+    StringBuffer xpath;
+    getExpertOptPath(opt, xpath);
+    return getComponentConfigSP()->hasProp(xpath);
+}
+
+bool getExpertOptBool(const char *opt, bool dft)
+{
+    StringBuffer xpath;
+    getExpertOptPath(opt, xpath);
+    return getComponentConfigSP()->getPropBool(xpath, dft);
+}
+
+__int64 getExpertOptInt64(const char *opt, __int64 dft)
+{
+    StringBuffer xpath;
+    getExpertOptPath(opt, xpath);
+    return getComponentConfigSP()->getPropInt64(xpath, dft);
+}
+
+double getExpertOptReal(const char *opt, double dft)
+{
+    StringBuffer xpath;
+    getExpertOptPath(opt, xpath);
+    return getComponentConfigSP()->getPropReal(xpath, dft);
+}
+
+StringBuffer &getExpertOptString(const char *opt, StringBuffer &out)
+{
+    StringBuffer xpath;
+    getExpertOptPath(opt, xpath);
+    getComponentConfigSP()->getProp(xpath, out);
+    return out;
+}
+
+void setExpertOpt(const char *opt, const char *value)
+{
+    StringBuffer xpath;
+    getExpertOptPath(nullptr, xpath);
+    Owned<IPropertyTree> config = getComponentConfigSP();
+    if (!config->hasProp(xpath))
+        config->setPropTree(xpath);
+    getExpertOptPath(opt, xpath.clear());
+    config->setProp(xpath, value);
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+
+//HPCC-30752 This should move inside PTree to allow a more efficient hash calculation and possible caching.
+//Currently the values are not persisted so the implementation could change.  That may change in the future.
+unsigned getPropertyTreeHash(const IPropertyTree & source, unsigned hashcode)
+{
+    if (source.isBinary())
+    {
+        MemoryBuffer mb;
+        source.getPropBin(nullptr, mb);
+        hashcode = hashc((const byte *)mb.bufferBase(), mb.length(), hashcode);
+    }
+    else
+    {
+        const char * value = source.queryProp(nullptr);
+        if (value)
+            hashcode = hashcz((const byte *)value, hashcode);
+    }
+
+    Owned<IAttributeIterator> aiter = source.getAttributes();
+    ForEach(*aiter)
+    {
+        hashcode = hashcz((const byte *)aiter->queryName(), hashcode);
+        hashcode = hashcz((const byte *)aiter->queryValue(), hashcode);
+    }
+
+    Owned<IPropertyTreeIterator> iter = source.getElements("*");
+    ForEach(*iter)
+    {
+        IPropertyTree & child = iter->query();
+        hashcode = hashcz((const byte *)child.queryName(), hashcode);
+        hashcode = getPropertyTreeHash(child, hashcode);
+    }
+    return hashcode;
+}
+
+class SyncedPropertyTreeWrapper : extends CInterfaceOf<ISyncedPropertyTree>
+{
+public:
+    SyncedPropertyTreeWrapper(IPropertyTree * _tree) : tree(_tree)
+    {
+    }
+
+    virtual const IPropertyTree * getTree() const override
+    {
+        return LINK(tree);
+    }
+
+    virtual bool getProp(MemoryBuffer & result, const char * xpath) const override
+    {
+        if (!tree)
+            return false;
+        return tree->getPropBin(xpath, result);
+    }
+
+    virtual bool getProp(StringBuffer & result, const char * xpath) const override
+    {
+        if (!tree)
+            return false;
+        return tree->getProp(xpath, result);
+    }
+
+    virtual unsigned getVersion() const override
+    {
+        return 0;
+    }
+
+    virtual bool isStale() const override
+    {
+        return false;
+    }
+
+    virtual bool isValid() const override
+    {
+        return tree != nullptr;
+    }
+
+protected:
+    Linked<IPropertyTree> tree;
+};
+
+ISyncedPropertyTree * createSyncedPropertyTree(IPropertyTree * tree)
+{
+    return new SyncedPropertyTreeWrapper(tree);
 }

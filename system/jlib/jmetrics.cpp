@@ -13,10 +13,11 @@
 
 #include "jmetrics.hpp"
 #include "jlog.hpp"
+#include <regex>
 
 using namespace hpccMetrics;
 
-static Singleton<MetricsReporter> metricsReporter;
+static Singleton<MetricsManager> metricsManager;
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
     return true;
@@ -24,24 +25,112 @@ MODULE_INIT(INIT_PRIORITY_STANDARD)
 
 MODULE_EXIT()
 {
-    delete metricsReporter.queryExisting();
+    metricsManager.destroy();
 }
 
 
-struct hpccMetrics::SinkInfo
+HistogramMetric::HistogramMetric(const char *_name, const char *_desc, StatisticMeasure _units, const std::vector<__uint64> &_bucketLimits, const MetricMetaData &_metaData) :
+    MetricBase(_name, _desc, MetricType::METRICS_HISTOGRAM, _units, _metaData)
 {
-    explicit SinkInfo(MetricSink *_pSink) : pSink{_pSink} {}
-    MetricSink *pSink = nullptr;             // ptr to the sink
-    std::vector<std::string> reportMetrics;   // vector of metrics to report (empty for none)
-};
-
-MetricsReporter &hpccMetrics::queryMetricsReporter()
-{
-    return *metricsReporter.query([] { return new MetricsReporter; });
+    buckets.reserve(_bucketLimits.size());
+    for (auto &b: _bucketLimits)
+    {
+        buckets.emplace_back(Bucket{b});
+    }
 }
 
 
-MetricsReporter::~MetricsReporter()
+void HistogramMetric::recordMeasurement(__uint64 measurement)
+{
+    CriticalBlock block(cs);
+    sum += measurement;                // sum of all measurements
+    findBucket(measurement).count++;   // count by buckets
+}
+
+
+std::vector<__uint64> HistogramMetric::queryHistogramValues() const
+{
+    std::vector<__uint64> histogramValues;
+    histogramValues.reserve(buckets.size()+1);
+    CriticalBlock block(cs);
+    for (auto const &bucket: buckets)
+    {
+        histogramValues.push_back(bucket.count);
+    }
+    histogramValues.push_back(inf.count);
+    return histogramValues;
+}
+
+
+std::vector<__uint64> HistogramMetric::queryHistogramBucketLimits() const
+{
+    std::vector<__uint64> limits;
+    limits.reserve(buckets.size());
+    for (auto const &bucket: buckets)
+    {
+        limits.emplace_back(bucket.limit);
+    }
+    return limits;
+}
+
+
+HistogramMetric::Bucket &HistogramMetric::findBucket(__uint64 measurement)
+{
+    for (auto &b: buckets)
+    {
+        if (measurement <= b.limit)
+        {
+            return b;
+        }
+    }
+    return inf;
+}
+
+
+ScaledHistogramMetric::ScaledHistogramMetric(const char *_name, const char *_desc, StatisticMeasure _units, const std::vector<__uint64> &_bucketLimits, double _limitsToMeasurementUnitsScaleFactor, const MetricMetaData &_metaData) :
+    HistogramMetric{_name, _desc, _units, _bucketLimits, _metaData}
+{
+    for (auto &b: buckets)
+    {
+        b.limit = (__uint64)((double)(b.limit) * _limitsToMeasurementUnitsScaleFactor);
+    }
+    outputScaleFactor = 1.0 / _limitsToMeasurementUnitsScaleFactor;
+}
+
+
+std::vector<__uint64> ScaledHistogramMetric::queryHistogramBucketLimits() const
+{
+    std::vector<__uint64> limits;
+    limits.reserve(buckets.size());
+    for (auto const &bucket: buckets)
+    {
+        limits.emplace_back(bucket.limit * outputScaleFactor);
+    }
+    return limits;
+}
+
+
+MetricsManager &hpccMetrics::queryMetricsManager()
+{
+    return *metricsManager.query([] { return new MetricsManager; });
+}
+
+
+MetricsManager::MetricsManager()
+{
+    try
+    {
+        nameValidator = "^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$";
+    }
+    catch (std::regex_error &regex_error)
+    {
+        throw makeStringExceptionV(MSGAUD_operator, "Metrics manager initialized name validator regex with invalid expression, code=%d, what=%s",
+                                   regex_error.code(), regex_error.what());
+    }
+}
+
+
+MetricsManager::~MetricsManager()
 {
     for (auto const &sinkIt : sinks)
     {
@@ -51,39 +140,88 @@ MetricsReporter::~MetricsReporter()
 }
 
 
-void MetricsReporter::init(IPropertyTree *pMetricsTree)
+void MetricsManager::init(IPropertyTree *pMetricsTree)
 {
     Owned<IPropertyTreeIterator> sinkElementsIt = pMetricsTree->getElements("sinks");
     initializeSinks(sinkElementsIt);
 }
 
 
-void MetricsReporter::addMetric(const std::shared_ptr<IMetric> &pMetric)
+// returns true if the metric was unique when added, false if an existing metric was found.
+bool MetricsManager::addMetric(const std::shared_ptr<IMetric> &pMetric)
 {
-    std::unique_lock<std::mutex> lock(metricVectorMutex);
-    auto it = metrics.find(pMetric->queryName());
-    if (it == metrics.end())
+    bool rc = false;
+    std::string name = pMetric->queryName();
+
+    // Ensure metric name follows naming convention
+    try
     {
-        metrics.insert({pMetric->queryName(), pMetric});
-    }
-    else
-    {
-        //If there is a match only report an error if the metric has not been destroyed in the meantime
-        auto match = it->second.lock();
-        if (match)
+        if (std::regex_match(name, nameValidator))
+        {
+            auto metaData = pMetric->queryMetaData();
+            std::unique_lock<std::mutex> lock(metricVectorMutex);
+            for (auto &metaDataIt: metaData)
+            {
+                name.append(".").append(metaDataIt.value);
+            }
+
+            auto it = metrics.find(name);
+            if (it == metrics.end())
+            {
+                metrics.insert({name, pMetric});
+                rc = true;
+            }
+            else
+            {
+                // If there is a match only report an error if the metric has not been destroyed in the meantime
+                auto match = it->second.lock();
+                if (match)
+                {
+#ifdef _DEBUG
+                    // In debug throw an exception so the developer knows when a duplicate metric name is being added
+                    throw makeStringExceptionV(MSGAUD_operator, "addMetric - Attempted to add duplicate named metric with name '%s'", name.c_str());
+#else
+                    // In release notify the operator of the error, but don't prevent the system from loading
+                    OERRLOG("addMetric - Adding a duplicate named metric '%s', old metric replaced", name.c_str());
+#endif
+                }
+                else
+                {
+                    rc = true;  // old metric no longer present, so it's considered unique
+                }
+                it->second = pMetric;
+            }
+        }
+        else
         {
 #ifdef _DEBUG
-            throw MakeStringException(MSGAUD_operator, "addMetric - Attempted to add duplicate named metric with name '%s'", pMetric->queryName().c_str());
+            // In debug throw an exception to notify the developer of the invalid name
+            throw makeStringExceptionV(MSGAUD_operator, "addMetric - Attempted to add metric with invalid name ('%s')", name.c_str());
 #else
-            OERRLOG("addMetric - Adding a duplicate named metric '%s', old metric replaced", pMetric->queryName().c_str());
+            // In release notify the operator of the error, but don't prevent the system from loading
+            OERRLOG("addMetric - Metric name is not valid '%s', metric not added", name.c_str());
 #endif
         }
-        it->second = pMetric;
     }
+
+    // Handle exception from regex match
+    catch (std::regex_error &regex_error)
+    {
+#ifdef _DEBUG
+        // In debug throw an exception so the developer knows there is a regex error
+        throw makeStringExceptionV(MSGAUD_operator, "Metrics manager failed to validate metric name, regex match error, code=%d, what=%s",
+                                   regex_error.code(), regex_error.what());
+#else
+        // In release notify the operator of the error, but don't prevent the system from loading
+        OERRLOG("addMetric - Regex match failed validating metric '%s'", name.c_str());
+#endif
+    }
+
+    return rc;
 }
 
 
-void MetricsReporter::startCollecting()
+void MetricsManager::startCollecting()
 {
     for (auto const &sinkIt : sinks)
     {
@@ -92,7 +230,7 @@ void MetricsReporter::startCollecting()
 }
 
 
-void MetricsReporter::stopCollecting()
+void MetricsManager::stopCollecting()
 {
     for (auto const &sinkIt : sinks)
     {
@@ -101,7 +239,7 @@ void MetricsReporter::stopCollecting()
 }
 
 
-std::vector<std::shared_ptr<IMetric>> MetricsReporter::queryMetricsForReport(const std::string &sinkName)
+std::vector<std::shared_ptr<IMetric>> MetricsManager::queryMetricsForReport(const std::string &sinkName)
 {
     std::vector<std::shared_ptr<IMetric>> reportMetrics;
     reportMetrics.reserve(metrics.size());
@@ -132,13 +270,13 @@ std::vector<std::shared_ptr<IMetric>> MetricsReporter::queryMetricsForReport(con
     }
     else
     {
-        throw MakeStringException(MSGAUD_operator, "queryMetricsForReport - sink name %s not found", sinkName.c_str());
+        throw makeStringExceptionV(MSGAUD_operator, "queryMetricsForReport - sink name %s not found", sinkName.c_str());
     }
     return reportMetrics;
 }
 
 
-void MetricsReporter::initializeSinks(IPropertyTreeIterator *pSinkIt)
+void MetricsManager::initializeSinks(IPropertyTreeIterator *pSinkIt)
 {
     for (pSinkIt->first(); pSinkIt->isValid(); pSinkIt->next())
     {
@@ -152,7 +290,7 @@ void MetricsReporter::initializeSinks(IPropertyTreeIterator *pSinkIt)
         // Make sure both name and type are provided
         if (cfgSinkType.isEmpty() || cfgSinkName.isEmpty())
         {
-            throw MakeStringException(MSGAUD_operator, "initializeSinks - All sinks definitions must specify a name and a type");
+            throw makeStringException(MSGAUD_operator, "initializeSinks - All sinks definitions must specify a name and a type");
         }
 
         //
@@ -168,7 +306,7 @@ void MetricsReporter::initializeSinks(IPropertyTreeIterator *pSinkIt)
 }
 
 
-MetricSink *MetricsReporter::getSinkFromLib(const char *type, const char *sinkName, const IPropertyTree *pSettingsTree)
+MetricSink *MetricsManager::getSinkFromLib(const char *type, const char *sinkName, const IPropertyTree *pSettingsTree)
 {
     std::string libName;
 
@@ -187,29 +325,58 @@ MetricSink *MetricsReporter::getSinkFromLib(const char *type, const char *sinkNa
             pSink = getInstanceProc(sinkName, pSettingsTree);
             if (pSink == nullptr)
             {
-                throw MakeStringException(MSGAUD_operator, "getSinkFromLib - Unable to get sink instance");
+                throw makeStringException(MSGAUD_operator, "getSinkFromLib - Unable to get sink instance");
             }
         }
         else
         {
-            throw MakeStringException(MSGAUD_operator, "getSinkFromLib - Unable to get shared procedure (getSinkInstance)");
+            throw makeStringException(MSGAUD_operator, "getSinkFromLib - Unable to get shared procedure (getSinkInstance)");
         }
     }
     else
     {
-        throw MakeStringException(MSGAUD_operator, "getSinkFromLib - Unable to load sink lib (%s)", libName.c_str());
+        throw makeStringExceptionV(MSGAUD_operator, "getSinkFromLib - Unable to load sink lib (%s)", libName.c_str());
     }
     return pSink;
 }
 
+// Method for use when testing
+void MetricsManager::addSink(MetricSink *pSink, const char *name)
+{
+    //
+    // Add the sink if it does not already exist, otherwise delete the sink because
+    // we are taking ownership.
+    auto sinkIt = sinks.find(name);
+    if (sinkIt == sinks.end())
+    {
+        sinks.insert({std::string(name), std::unique_ptr<SinkInfo>(new SinkInfo(pSink))});
+    }
+    else
+    {
+        delete pSink;
+    }
+}
 
-PeriodicMetricSink::PeriodicMetricSink(const char *name, const char *type, const IPropertyTree *pSettingsTree) :
-    MetricSink(name, type),
+
+const char *MetricsManager::queryUnitsString(StatisticMeasure units) const
+{
+    switch (units)
+    {
+    case SMeasureCount:  return "count";
+    case SMeasureTimeNs: return "ns";
+    case SMeasureSize:   return "bytes";
+    }
+    return nullptr;
+}
+
+
+PeriodicMetricSink::PeriodicMetricSink(const char *_name, const char *_type, const IPropertyTree *_pSettingsTree) :
+    MetricSink(_name, _type),
     collectionPeriodSeconds{60}
 {
-    if (pSettingsTree->hasProp("@period"))
+    if (_pSettingsTree->hasProp("@period"))
     {
-        collectionPeriodSeconds = pSettingsTree->getPropInt("@period");
+        collectionPeriodSeconds = _pSettingsTree->getPropInt("@period");
     }
 }
 
@@ -223,9 +390,9 @@ PeriodicMetricSink::~PeriodicMetricSink()
 }
 
 
-void PeriodicMetricSink::startCollection(MetricsReporter *_pReporter)
+void PeriodicMetricSink::startCollection(MetricsManager *_pManager)
 {
-    pReporter = _pReporter;
+    pManager = _pManager;
     prepareToStartCollecting();
     isCollecting = true;
     collectThread = std::thread(&PeriodicMetricSink::collectionThread, this);
@@ -266,4 +433,56 @@ void PeriodicMetricSink::doStopCollecting()
     isCollecting = false;
     collectThread.join();
     collectingHasStopped();
+}
+
+
+std::shared_ptr<CounterMetric> hpccMetrics::registerCounterMetric(const char *name, const char* desc, StatisticMeasure units, const MetricMetaData &metaData)
+{
+    return createMetricAndAddToManager<CounterMetric>(name, desc, units, metaData);
+}
+
+
+std::shared_ptr<GaugeMetric> hpccMetrics::registerGaugeMetric(const char *name, const char* desc, StatisticMeasure units, const MetricMetaData &metaData)
+{
+    return createMetricAndAddToManager<GaugeMetric>(name, desc, units, metaData);
+}
+
+
+std::shared_ptr<GaugeMetricFromCounters> hpccMetrics::registerGaugeFromCountersMetric(const char *name, const char* desc, StatisticMeasure units,
+                                                                         const std::shared_ptr<CounterMetric> &pBeginCounter, const std::shared_ptr<CounterMetric> &pEndCounter,
+                                                                         const MetricMetaData &metaData)
+{
+    //
+    // std::make_shared is not used so that there are separate memory allocations for the object (metric) and the shared pointer control structure. This ensures
+    // the vmt for the control structure does not live in memory allocated by a shared object (dll) that could be unloaded. If make_shared is used and a shared
+    // object is unloaded, the vmt is also deleted which causes unpredictable results during weak pointer access.
+    std::shared_ptr<GaugeMetricFromCounters> pMetric = std::shared_ptr<GaugeMetricFromCounters>(new GaugeMetricFromCounters(name, desc, units, pBeginCounter, pEndCounter, metaData));
+    queryMetricsManager().addMetric(pMetric);
+    return pMetric;
+}
+
+
+std::shared_ptr<HistogramMetric> hpccMetrics::registerHistogramMetric(const char *name, const char* desc, StatisticMeasure units, const std::vector<__uint64> &bucketLimits, const MetricMetaData &metaData)
+{
+    std::shared_ptr<HistogramMetric> pMetric = std::shared_ptr<HistogramMetric>(new HistogramMetric(name, desc, units, bucketLimits, metaData));
+    queryMetricsManager().addMetric(pMetric);
+    return pMetric;
+}
+
+
+std::shared_ptr<ScaledHistogramMetric> hpccMetrics::registerScaledHistogramMetric(const char *name, const char* desc, StatisticMeasure units, const std::vector<__uint64> &bucketLimits,
+                                                                               double limitsToMeasurementUnitsScaleFactor, const MetricMetaData &metaData)
+{
+    std::shared_ptr<ScaledHistogramMetric> pMetric = std::shared_ptr<ScaledHistogramMetric>(new ScaledHistogramMetric(name, desc, units, bucketLimits, limitsToMeasurementUnitsScaleFactor, metaData));
+    queryMetricsManager().addMetric(pMetric);
+    return pMetric;
+}
+
+
+std::shared_ptr<ScaledHistogramMetric> hpccMetrics::registerCyclesToNsScaledHistogramMetric(const char *name, const char* desc, const std::vector<__uint64> &bucketLimits, const MetricMetaData &metaData)
+{
+    double nsToCyclesScaleFactor = 1.0 / getCycleToNanoScale();
+    std::shared_ptr<ScaledHistogramMetric> pMetric = std::shared_ptr<ScaledHistogramMetric>(new ScaledHistogramMetric(name, desc, SMeasureTimeNs, bucketLimits, nsToCyclesScaleFactor, metaData));
+    queryMetricsManager().addMetric(pMetric);
+    return pMetric;
 }

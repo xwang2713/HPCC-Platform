@@ -25,6 +25,7 @@
 #include "bindutil.hpp"
 #include "seclib.hpp"
 
+
 class CMethodInfo : public CInterface
 {
 public:
@@ -92,6 +93,7 @@ interface IEspHttpBinding
     virtual int onGetSoapBuilder(IEspContext &context, CHttpRequest* request, CHttpResponse* response,  const char *serv, const char *method)=0;
     virtual int onGetJsonBuilder(IEspContext &context, CHttpRequest* request, CHttpResponse* response,  const char *serv, const char *method)=0;
     virtual int onGetReqSampleXml(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *serv, const char *method)=0;
+    virtual int onGetUnrestricted(CHttpRequest* request, CHttpResponse* response, const char *serviceName, const char *methodName, sub_service sstype)=0;
     virtual int onGetRespSampleXml(IEspContext &context, CHttpRequest* request, CHttpResponse* response,    const char *serv, const char *method)=0;
     virtual int onGetRespSampleJson(IEspContext &context, CHttpRequest* request, CHttpResponse* response,    const char *serv, const char *method)=0;
     virtual int onGetReqSampleJson(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *serv, const char *method)=0;
@@ -111,9 +113,24 @@ interface IEspWsdlSections
 //  virtual MethodInfoArray & queryQualifiedNames(IEspContext& ctx)=0;
     virtual int getQualifiedNames(IEspContext& ctx, MethodInfoArray & methods)=0;
     virtual int getXsdDefinition(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda)=0;
+    virtual int getServiceXmlFilename(StringBuffer &filename)=0;
     virtual int getWsdlMessages(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda)=0;
     virtual int getWsdlPorts(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda)=0;
     virtual int getWsdlBindings(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda)=0;
+};
+
+interface IEspCorsAllowedOrigin : extends IInterface
+{
+    virtual bool match(const char *origin, const char *method) const = 0;
+    virtual const char *queryAllowedMethodsCSV() const = 0;
+    virtual bool isAllowedHeader(const char *header) const = 0;
+    virtual const char *getAllowedHeadersCSV(const char *requestedHeaders, StringBuffer &allowedHeadersCSV) const = 0;
+    virtual const char *queryMaxAge() const = 0;
+};
+
+interface IEspCorsHelper : extends IInterface
+{
+    virtual const IEspCorsAllowedOrigin *find(const char *origin, const char *method) const = 0;
 };
 
 class esp_http_decl EspHttpBinding :
@@ -175,6 +192,8 @@ private:
     StringArray             domainAuthResourcesWildMatch;
     std::set<sub_service>   unrestrictedSSTypes;
 
+    Owned<IEspCorsHelper> corsHelper;
+
     void getXMLMessageTag(IEspContext& ctx, bool isRequest, const char *method, StringBuffer& tag);
 
 protected:
@@ -210,7 +229,7 @@ public:
     virtual const char* getRootPage(IEspContext* ctx) {return NULL;}
 
     virtual StringBuffer &generateNamespace(IEspContext &context, CHttpRequest* request, const char *serv, const char *method, StringBuffer &ns);
-    virtual void getSchemaLocation(IEspContext &context, CHttpRequest* request, StringBuffer &schemaLocation );
+    virtual void getSchemaLocation(IEspContext &context, CHttpRequest* request, StringBuffer &ns, StringBuffer &schemaLocation );
 
     static int formatHtmlResultSet(IEspContext &context, const char *serv, const char *method, const char *resultsXml, StringBuffer &html);
     int formatResultsPage(IEspContext &context, const char *serv, const char *method, StringBuffer &results, StringBuffer &page);
@@ -309,6 +328,7 @@ public:
         return onGet(request, response);
     }
 
+    virtual int onGetUnrestricted(CHttpRequest* request, CHttpResponse* response, const char *serviceName, const char *methodName, sub_service sstype);
     virtual int onGetReqSampleXml(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *serv, const char *method);
     virtual int onGetRespSampleXml(IEspContext &context, CHttpRequest* request, CHttpResponse* response,    const char *serv, const char *method);
     virtual int onGetRespSampleJson(IEspContext &context, CHttpRequest* request, CHttpResponse* response,    const char *serv, const char *method);
@@ -328,6 +348,7 @@ public:
 //  MethodInfoArray &queryQualifiedNames(IEspContext& ctx) { m_methods.popAll(); getQualifiedNames(ctx,m_methods); return m_methods;};
 
     int getXsdDefinition(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda){return 0;};
+    int getServiceXmlFilename(StringBuffer &filename) {return 0;};
     int getWsdlMessages(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda);
     int getWsdlPorts(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda);
     int getWsdlBindings(IEspContext &context, CHttpRequest *request, StringBuffer &content, const char *service, const char *method, bool mda);
@@ -336,7 +357,6 @@ public:
     virtual int getMethodHelp(IEspContext &context, const char *serv, const char *method, StringBuffer &page);
     bool isMethodInService(IEspContext& context, const char *servname, const char *methname);
 
-    virtual int getMethodHtmlForm(IEspContext &context, CHttpRequest* request, const char *serv, const char *method, StringBuffer &page, bool bIncludeFormTag){return 0;}
     virtual bool hasSubService(IEspContext &context, const char *name);
 
     virtual IRpcRequestBinding *createReqBinding(IEspContext &context, IHttpMessage *ireq, const char *service, const char *method){return NULL;}
@@ -401,13 +421,31 @@ public:
     bool isUnrestrictedSSType(sub_service ss) const;
     void setABoolHash(const char* csv, BoolHash& hash) const;
     bool isCORSRequest(const char* originHeader);
+    const IEspCorsAllowedOrigin *findCorsAllowedOrigin(const char *origin, const char *method) const
+    {
+        if (!corsHelper)
+            return nullptr;
+        return corsHelper->find(origin, method);
+    }
     bool canRedirectAfterAuth(const char* url) const;
 
     static void escapeSingleQuote(StringBuffer& src, StringBuffer& escaped);
 
+    virtual bool getDefaultClientVersion(double &ver) {ver=0; return true;}
+
+    double getVersion(IEspContext &context)
+    {
+        double version = context.getClientVersion();
+        if (version == 0.0)
+        {
+            getDefaultClientVersion(version);
+        }
+        return version;
+    }
+
 protected:
     virtual bool basicAuth(IEspContext* ctx);
-    int getWsdlOrXsd(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method, bool isWsdl);
+    int getServiceWsdlOrXsd(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method, bool isWsdl);
     virtual bool getSchema(StringBuffer& schema, IEspContext &ctx, CHttpRequest* req, const char *service, const char *method,bool standalone);
     virtual void appendSchemaNamespaces(IPropertyTree *namespaces, IEspContext &ctx, CHttpRequest* req, const char *service, const char *method){}
     void generateSampleXml(bool isRequest, IEspContext &context, CHttpRequest* request, CHttpResponse* response,    const char *serv, const char *method);
@@ -415,14 +453,17 @@ protected:
     void generateSampleJson(bool isRequest, IEspContext &context, CHttpRequest* request, StringBuffer &content, const char *serv, const char *method);
     void generateSampleJson(bool isRequest, IEspContext &context, CHttpRequest* request, CHttpResponse* response,    const char *serv, const char *method);
     void generateSampleXmlFromSchema(bool isRequest, IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *serv, const char *method, const char * schemaxml);
-    virtual void getSoapMessage(StringBuffer& soapmsg, IEspContext &context, CHttpRequest* request, const char *serv, const char *method);
-    virtual void getJsonMessage(StringBuffer& jsonmsg, IEspContext &context, CHttpRequest* request, const char *serv, const char *method);
+    virtual void getSoapMessage(StringBuffer& soapmsg, IEspContext &context, CHttpRequest* request, const char *serviceQName, const char *methodQName);
+    virtual void getJsonMessage(StringBuffer& jsonmsg, IEspContext &context, CHttpRequest* request, const char *serviceQName, const char *methodQName);
     void onBeforeSendResponse(IEspContext& context, CHttpRequest* request,MemoryBuffer& contentconst,
                             const char *serviceName, const char* methodName);
     void validateResponse(IEspContext& context, CHttpRequest* request,MemoryBuffer& contentconst,
                             const char *serviceName, const char* methodName);
     void sortResponse(IEspContext& context, CHttpRequest* request,MemoryBuffer& contentconst,
                             const char *serviceName, const char* methodName);
+
+    void getServiceSchema(IEspContext& context, CHttpRequest* request, const char *serviceQName, const char *methodQName,
+                          double version, bool isWsdl, bool addAnnotations,  StringBuffer &schema);
 };
 
 inline bool isEclIdeRequest(CHttpRequest *request)

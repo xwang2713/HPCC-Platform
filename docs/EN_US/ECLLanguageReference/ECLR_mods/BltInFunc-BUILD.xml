@@ -23,9 +23,11 @@
   );</emphasis></para>
 
   <para><emphasis role="bold">[</emphasis><emphasis>attrname</emphasis>
-  :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef
-  </emphasis><emphasis role="bold">[, </emphasis><emphasis>options
-  </emphasis><emphasis role="bold">] );</emphasis></para>
+  :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef</emphasis>
+  <emphasis role="bold">[,</emphasis><emphasis>indexfile</emphasis><emphasis
+  role="bold">]</emphasis> <emphasis role="bold">[,
+  </emphasis><emphasis>options </emphasis><emphasis role="bold">]
+  );</emphasis></para>
 
   <para><emphasis role="bold">[</emphasis><emphasis>attrname</emphasis>
   :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef, dataset,
@@ -62,43 +64,58 @@
             <entry><emphasis>indexrec</emphasis></entry>
 
             <entry>Optional. The RECORD structure of the fields in the
-            indexfile that contains key and file position information for
-            referencing into the <emphasis>baserecset</emphasis>. Field names
-            and types must match the <emphasis>baserecset</emphasis> fields
-            (REAL and DECIMAL value type fields are not supported). This may
-            also contain additional fields not present in the
-            <emphasis>baserecset</emphasis> (computed fields). If omitted, all
-            fields in the <emphasis>baserecset</emphasis> are used. The last
-            field must be the name of an UNSIGNED8 field defined using the
-            {VIRTUAL(filepposition)} function in the DATASET declaration of
-            the <emphasis>baserecset</emphasis>.</entry>
-          </row>
-
-          <row>
-            <entry><emphasis>keys</emphasis></entry>
-
-            <entry>The RECORD structure of fields in the
             <emphasis>indexfile</emphasis> that contains key and file position
             information for referencing into the
             <emphasis>baserecset</emphasis>. Field names and types must match
             the <emphasis>baserecset</emphasis> fields (REAL and DECIMAL value
             type fields are not supported). This may also contain additional
-            fields not present in the <emphasis>baserecset</emphasis>. If
-            omitted, all fields in the <emphasis>baserecset</emphasis> are
-            used.</entry>
+            fields not present in the <emphasis>baserecset</emphasis>
+            (computed fields). If omitted, all fields in the
+            <emphasis>baserecset</emphasis> are used. The last field must be
+            the name of an UNSIGNED8 field defined using the
+            {VIRTUAL(filepposition)} field modifier in the DATASET declaration
+            of the <emphasis>baserecset</emphasis>.</entry>
+          </row>
+
+          <row>
+            <entry><emphasis>keys</emphasis></entry>
+
+            <entry>The RECORD structure of key fields that reference into the
+            <emphasis>baserecset</emphasis> (the "search terms" for the
+            INDEX). Key fields may be <emphasis>baserecset</emphasis> fields
+            or computed fields. REAL and DECIMAL types are not supported as
+            "search term" fields. If omitted, all fields in the
+            <emphasis>baserecset</emphasis> are used. This RECORD structure is
+            typically defined inline within the BUILD using curly braces ({}),
+            but may also be a separately defined RECORD structure. If the
+            RECORD structure is separately defined it must meet the same
+            requirements as used by the TABLE() function (the RECORD structure
+            must define the type, name, and source of the data for each
+            field), otherwise the BUILD action will not syntax check.</entry>
           </row>
 
           <row>
             <entry><emphasis>payload</emphasis></entry>
 
-            <entry>The RECORD structure of the <emphasis>indexfile</emphasis>
-            that contains additional fields not used as keys . If the name of
-            the <emphasis>baserecset</emphasis> is in the structure, it
-            specifies "all other fields not already named in the keys
-            parameter." This may contain fields not present in the
-            <emphasis>baserecset</emphasis> (computed fields). These fields do
-            not take up space in the non-leaf nodes of the index and cannot be
-            referenced in a KEYED() filter clause</entry>
+            <entry>The RECORD structure of the <emphasis>indexfile
+            </emphasis>that contains additional fields not used as "search
+            term" keys. This may contain fields from the
+            <emphasis>baserecordset</emphasis> and/or computed fields. If the
+            name of the <emphasis>baserecset</emphasis> is in this structure,
+            it specifies "all other fields not already named in the keys
+            parameter" are added. The payload fields do not take up space in
+            the non-leaf nodes of the index and cannot be referenced in a
+            KEYED() filter clause. Any field with the {BLOB} modifier (to
+            allow more than 32K of data per index entry) is stored within the
+            <emphasis>indexfile</emphasis>, but not with the rest of the
+            record; accessing the BLOB data requires an additional seek. This
+            RECORD structure is typically defined inline within the INDEX
+            using curly braces ({}), but may also be a separately defined
+            RECORD structure. If the RECORD structure is separately defined it
+            must meet the same requirements as used by the TABLE() function
+            (the RECORD structure must define the type, name, and source of
+            the data for each field), otherwise the BUILD action will not
+            syntax check.</entry>
           </row>
 
           <row>
@@ -119,6 +136,13 @@
             <entry><emphasis>indexdef</emphasis></entry>
 
             <entry>The name of the INDEX attribute to build.</entry>
+          </row>
+
+          <row>
+            <entry><emphasis>dataset</emphasis></entry>
+
+            <entry>The name of the DATASET to use when you omit the base
+            dataset parameter from the INDEX definition.</entry>
           </row>
 
           <row>
@@ -182,11 +206,11 @@
         <primary>DISTRIBUTED</primary>
       </indexterm>]</emphasis><emphasis role="bold">[, COMPRESSED<indexterm>
         <primary>COMPRESSION</primary>
-      </indexterm>( LZW<indexterm>
+      </indexterm>( <emphasis>option</emphasis><indexterm>
         <primary>LZW</primary>
-      </indexterm> | ROW<indexterm>
+      </indexterm><indexterm>
         <primary>ROW</primary>
-      </indexterm> | FIRST<indexterm>
+      </indexterm> <indexterm>
         <primary>FIRST</primary>
       </indexterm>) ] [, WIDTH<indexterm>
         <primary>WIDTH</primary>
@@ -389,14 +413,17 @@
             <row>
               <entry><emphasis role="bold">COMPRESSED</emphasis></entry>
 
-              <entry>Specifies the type of compression used. If omitted, the
-              default is LZW, a variant of the Lempel-Ziv-Welch algorithm.
-              Specifying ROW compresses index entries based on differences
-              between contiguous rows (for use with fixed-length records,
-              only), and is recommended for use in circumstances where
-              speedier decompression time is more important than the amount of
-              compression achieved. FIRST compresses common leading elements
-              of the key (recommended only for timing comparison use).</entry>
+              <entry><para>Optional. Specifies the index should be compressed
+              using the type of compression specified. If omitted, the default
+              is <emphasis role="bold">LZW</emphasis>, a variant of the
+              Lempel-Ziv-Welch algorithm. </para></entry>
+            </row>
+
+            <row>
+              <entry><emphasis>option</emphasis></entry>
+
+              <entry>See <link linkend="IDXCOMP2">Indexes and
+              Compression</link> for options.</entry>
             </row>
 
             <row>
@@ -440,7 +467,7 @@
 
               <entry>A value between zero (0) and one (1.0 = 100%) indicating
               the maximum percentage of skew to allow before the job fails
-              (the default skew is 1.0 / &lt;number of slaves on
+              (the default skew is 1.0 / &lt;number of worker nodes on
               cluster&gt;).</entry>
             </row>
 
@@ -449,7 +476,7 @@
 
               <entry>Optional. A value between zero (0) and one (1.0 = 100%)
               indicating the desired maximum percentage of skew to allow (the
-              default skew is 1.0 / &lt;number of slaves on
+              default skew is 1.0 / &lt;number of worker nodes on
               cluster&gt;).</entry>
             </row>
 
@@ -583,8 +610,6 @@
           </tbody>
         </tgroup>
       </informaltable></para>
-
-    <para></para>
   </sect2>
 
   <sect2 id="BUILD_an_Access_Index">
@@ -647,49 +672,99 @@ BUILD(Vehicles,{lname,filepos},'vkey::lname');
       STRING20 lname,
       UNSIGNED8 filepos{VIRTUAL(fileposition)}},
       FLAT);
-BUILD(Vehicles,{st,city},{lname},'vkey::st.city');
- //build key into Vehicles dataset on state and city
- //payload the last name</programlisting>
+BUILD(Vehicles,{st,city},{lname},'vkey::st.city1');
+//build key into Vehicles dataset on state and city
+//payload the last name
+
+//same index build using non-inline RECORD structures
+
+SearchTerms := RECORD
+  Vehicles.st;
+  Vehicles.city;
+END; 
+Payload := RECORD
+  Vehicles.lname;
+END; 
+BUILD(Vehicles,SearchTerms,Payload,'vkey::st.city2');
+</programlisting>
   </sect2>
 
   <sect2 id="BUILD_from_an_INDEX_Definition">
     <title>BUILD from an INDEX Definition</title>
 
     <para><emphasis role="bold">[</emphasis><emphasis>attrname</emphasis>
-    :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef
-    </emphasis><emphasis role="bold">[, </emphasis><emphasis>options
-    </emphasis><emphasis role="bold">] );</emphasis></para>
+    :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef</emphasis>
+    <emphasis role="bold">[,</emphasis><emphasis>indexfile</emphasis><emphasis
+    role="bold">]</emphasis> <emphasis role="bold">[,
+    </emphasis><emphasis>options </emphasis><emphasis role="bold">]
+    );</emphasis></para>
 
     <para>Form 3 creates an index file by using a previously defined INDEX
-    definition.</para>
+    definition. </para>
+
+    <para>You can also use this form to build an index based upon two MERGEd
+    indexes. To write a MERGEd index to disk, you must use the BUILD action
+    and include the optional <emphasis>indexfile</emphasis> parameter.</para>
 
     <para>Example:</para>
 
-    <programlisting>nameKey := INDEX(mainTable,{surname,forename,filepos},'name.idx');
+    <programlisting lang="ECL" role="NOTrunnable">nameKey := INDEX(mainTable,{surname,forename,filepos},'name.idx');
 BUILD(nameKey); //gets all info from the INDEX definition
+
+// BUILDing a MERGEd index
+BUILD(MERGE(idx1,idx2,'~idx::MergedIndex');
 </programlisting>
 
+    <para>See Also: <link linkend="MERGE">MERGE</link></para>
+  </sect2>
+
+  <sect2 id="SepIndexFromDS" role="brk">
+    <title>Separating INDEX from DATASET</title>
+
     <para><emphasis role="bold">[</emphasis><emphasis>attrname</emphasis>
-    :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef, dataset
+    :=<emphasis role="bold"> ] BUILD(</emphasis><emphasis> indexdef, dataset,
     </emphasis><emphasis role="bold">[, </emphasis><emphasis>options
     </emphasis><emphasis role="bold">] );</emphasis></para>
 
-    <para>Form 4 creates an index file on a dataset using a previously defined
-    INDEX definition.</para>
+    <para>Form 4 allows you to separate the index from the dataset, making it
+    easy to use the INDEX form that does not require a dataset first
+    parameter.</para>
 
-    <para>This is used to build an index where the dataset definition is
-    complex. This allows the index to be logically separated from the dataset
-    from which it is created. This is especially useful when the dataset
-    definition is very complicated (Mb of source) because when the index is
-    subsequently used in a query, all the code to create it is also
-    parsed.</para>
+    <para>The usual way of defining and building an INDEX is in terms of the
+    dataset that is used to create it, using an INDEX declaration where the
+    dataset is named as the first parameter of the INDEX. This is fine when
+    the dataset is relatively simple, but there are downsides:</para>
 
-    <para>Example:</para>
+    <itemizedlist>
+      <listitem>
+        <para>The INDEX can't be logically separated from the dataset it was
+        created from.</para>
+      </listitem>
 
-    <programlisting>ds = DATASET(100, TRANSFORM({ unsigned id }, SELF.id := COUNTER));
-i := INDEX({ unsigned id }, 'myIndex');
-BUILD(i, ds);
-</programlisting>
+      <listitem>
+        <para>If the dataset is very complicated (Mb of source), when the
+        index is subsequently used in a query all the code to create it is
+        also parsed.</para>
+      </listitem>
+    </itemizedlist>
+
+    <para>This form of BUILD allows the two to be separated, so you can omit
+    the base dataset parameter from the INDEX definition and just specify the
+    dataset to use in the BUILD action. The fields are automatically mapped
+    (by field name) from the dataset to the index.</para>
+
+    <para>Examples:</para>
+
+    <para><programlisting>//usual way to BUILD an INDEX:
+ds1 = DATASET(100, TRANSFORM({ UNSIGNED id }, SELF.id := COUNTER));
+i1 := INDEX(ds1, { id }, 'myIndex'); //specifies the dataset to always use
+BUILD(i1);
+
+//Separated way to BUILD an INDEX:
+ds2 = DATASET(100, TRANSFORM({ UNSIGNED id }, SELF.id := COUNTER));
+i2 := INDEX({ UNSIGNED id }, 'myIndex');
+BUILD(i2, ds2);       //builds the i2 INDEX from the ds2 dataset
+</programlisting></para>
   </sect2>
 
   <sect2 id="BUILD_a_Query_Library">
@@ -746,6 +821,74 @@ END;
 #WORKUNIT('name','Ppass.FilterDsLib')
 BUILD(FilterDsLib1);
 </programlisting>
+  </sect2>
+
+  <sect2 id="IDXCOMP2" role="brk">
+    <title>Indexes and Compression</title>
+
+    <para><emphasis role="bold">Compression Options:</emphasis></para>
+
+    <informaltable colsep="1" frame="all" rowsep="1">
+      <tgroup cols="2">
+        <colspec align="left" colwidth="122.40pt" />
+
+        <colspec />
+
+        <tbody>
+          <row>
+            <entry><emphasis role="bold">LZW</emphasis></entry>
+
+            <entry>The default compression. It is a variant of the
+            Lempel-Ziv-Welch algorithm. It remains the default for backward
+            compatibility.</entry>
+          </row>
+
+          <row>
+            <entry><emphasis role="bold">ROW</emphasis></entry>
+
+            <entry>Compresses index entries based on differences between rows
+            (<emphasis role="bold">for use with fixed-length records
+            only</emphasis>). It typically does not compress as well as LZW,
+            but takes up less space in memory because the rows are expanded on
+            demand.</entry>
+          </row>
+
+          <row>
+            <entry><emphasis role="bold">'inplace'</emphasis></entry>
+
+            <entry>Causes the index to be built using the inplace compression
+            format. The payload defaults to using lz4 compression.</entry>
+          </row>
+
+          <row>
+            <entry><emphasis role="bold"><emphasis
+            role="bold">'inplace:lz4hc'</emphasis> </emphasis></entry>
+
+            <entry>Causes inplace compression on the key fields and lz4hc
+            compression on the payload. The resulting index can be smaller
+            than using lz4.</entry>
+          </row>
+        </tbody>
+      </tgroup>
+    </informaltable>
+
+    <para>The inplace index compression format (introduced in version 9.2.0)
+    improves compression of keyed fields and allows them to be searched
+    without decompression. The original index compression implementation
+    decompresses the rows when they are read from disk.</para>
+
+    <para>Because the branch nodes can be searched without decompression more
+    branch nodes fit into memory which can improve search performance. The lz4
+    compression used for the payload is significantly faster at decompressing
+    leaf pages than the previous LZW compression.</para>
+
+    <para>Whether performance is better with lz4hc (a high-compression variant
+    of lz4) on the payload fields depends on the access characteristics of the
+    data and how much of the index is cached in memory.</para>
+
+    <para>If you attempt to read an index with the inplace compression format
+    on a system that does not support them, you will receive an error
+    message.</para>
 
     <para>See Also: <link linkend="INDEX_record_structure">INDEX</link>, <link
     linkend="JOIN">JOIN</link>, <link linkend="FETCH">FETCH</link>, <link

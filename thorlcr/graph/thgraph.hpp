@@ -32,12 +32,14 @@
 #undef barrier
 
 #define LONGTIMEOUT (25*60*1000)
+#define SHORTTIMEOUT (60*1000)
 #define MEDIUMTIMEOUT 30000
 #define DEFAULT_MAX_ACTINITWAITTIME_MINS (2*60) // 2hrs
 #define DEFAULT_MAXLFN_BLOCKTIME_MINS 25 // 25 mins
 
 #include <unordered_map>
 #include <string>
+#include <memory>
 
 #include "jlib.hpp"
 #include "jarray.hpp"
@@ -69,6 +71,29 @@
 #define THORDATALINK_COUNT_MASK         (RCMAX>>2)                                  // mask to extract count value only
 
 
+/* These percentages are used to determine the amount roxiemem allocated
+ * from total system memory.
+ *
+ * For historical reasons the default in bare-metal has always been a
+ * conservative 75% of system memory, leaving 25% free for the heap/OS etc.
+ * In container mode a more aggresive default of 90% is used.
+ *
+ * In bare-metal, these percentages do not apply if
+ * 'globalMemorySize' and/or 'masterMemorySize' are configured.
+ * 
+ * In container mode, workerMemory and/or masterMemory can be used to override
+ * these default percentages. However, the defaults percentages will stil be
+ * used to give a warning if the workerMemory or masterMemory totals exceed the
+ * defaults.
+ */
+
+#ifdef _CONTAINERIZED
+constexpr float defaultPctSysMemForRoxie = 90.0;
+#else
+constexpr float defaultPctSysMemForRoxie = 75.0;
+#endif
+
+
 
 enum ActivityAttributes { ActAttr_Source=1, ActAttr_Sink=2 };
 const static roxiemem::RoxieHeapFlags defaultHeapFlags = roxiemem::RHFscanning;
@@ -92,12 +117,7 @@ interface ICodeContextExt : extends ICodeContext
 {
     virtual IConstWUResult *getExternalResult(const char * wuid, const char *name, unsigned sequence) = 0;
     virtual IConstWUResult *getResultForGet(const char *name, unsigned sequence) = 0;
-};
-
-interface IDiskUsage : extends IInterface
-{
-    virtual void increase(offset_t usage, const char *key=NULL) = 0;
-    virtual void decrease(offset_t usage, const char *key=NULL) = 0;
+    virtual void gatherStats(CRuntimeStatisticCollection &mergedStats) const = 0;
 };
 
 interface IBackup;
@@ -180,6 +200,7 @@ class CFileUsageEntry : public CInterface
     unsigned usage;
     graph_id graphId;
     WUFileKind fileKind;
+    offset_t size = 0;
 public:
     CFileUsageEntry(const char *_name, graph_id _graphId, WUFileKind _fileKind, unsigned _usage) :name(_name), graphId(_graphId), fileKind(_fileKind), usage(_usage) { }
     unsigned queryUsage() const { return usage; }
@@ -189,16 +210,19 @@ public:
     void decUsage() { --usage; }
 
     const char *queryFindString() const { return name; }
+    inline void setSize(offset_t _size) { size = _size; }
+    inline offset_t getSize() const { return size; }
 };
 
 typedef IIteratorOf<CFileUsageEntry> IFileUsageIterator;
 
 interface IGraphTempHandler : extends IInterface
 {
-    virtual void registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind=WUFileStandard, StringArray *clusters=NULL) = 0;
+    virtual CFileUsageEntry * registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind=WUFileStandard, StringArray *clusters=NULL) = 0;
     virtual void deregisterFile(const char *name, bool kept=false) = 0;
     virtual void clearTemps() = 0;
     virtual IFileUsageIterator *getIterator() = 0;
+    virtual offset_t getActiveUsageSize() = 0;
 };
 
 class CGraphDependency : public CInterface
@@ -275,7 +299,7 @@ class CActivityCodeContext : implements ICodeContextExt
     ICodeContextExt *ctx = nullptr;
     CGraphBase *containerGraph = nullptr;
     CGraphBase *parent = nullptr;
-    CRuntimeStatisticCollection *stats = nullptr;
+    std::unique_ptr<CRuntimeStatisticCollection> stats;
     mutable CriticalSection contextCrit;
     std::unordered_map<std::string, Owned<ISectionTimer>> functionTimers;
 
@@ -287,7 +311,12 @@ public:
         containerGraph = _containerGraph;
         ctx = _ctx;
     }
-    void setStats(CRuntimeStatisticCollection *_stats) { stats = _stats; }
+    void setStats(const StatisticsMapping &mapping)
+    {
+        dbgassertex(!stats);
+        stats.reset(new CRuntimeStatisticCollection(mapping));
+    }
+    virtual void gatherStats(CRuntimeStatisticCollection &mergedStats) const override { mergedStats.merge(*stats); }
     virtual const char *loadResource(unsigned id) { return ctx->loadResource(id); }
     virtual void setResultBool(const char *name, unsigned sequence, bool value) { ctx->setResultBool(name, sequence, value); }
     virtual void setResultData(const char *name, unsigned sequence, int len, const void * data) { ctx->setResultData(name, sequence, len, data); }
@@ -318,6 +347,7 @@ public:
     virtual const char *cloneVString(const char *str) const { return ctx->cloneVString(str); }
     virtual const char *cloneVString(size32_t len, const char *str) const { return ctx->cloneVString(len, str); }
     virtual char *getWuid() { return ctx->getWuid(); }
+    virtual unsigned getWorkflowId() const { return ctx->getWorkflowId(); }
     virtual void getExternalResultRaw(unsigned & tlen, void * & tgt, const char * wuid, const char * stepname, unsigned sequence, IXmlToRowTransformer * xmlTransformer, ICsvToRowTransformer * csvTransformer) { ctx->getExternalResultRaw(tlen, tgt, wuid, stepname, sequence, xmlTransformer, csvTransformer); }
     virtual void executeGraph(const char * graphName, bool realThor, size32_t parentExtractSize, const void * parentExtract) { ctx->executeGraph(graphName, realThor, parentExtractSize, parentExtract); }
     virtual char * getExpandLogicalName(const char * logicalName) { return ctx->getExpandLogicalName(logicalName); }
@@ -375,6 +405,10 @@ public:
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name);
 
     virtual void addWuExceptionEx(const char * text, unsigned code, unsigned severity, unsigned audience, const char * source) override { ctx->addWuExceptionEx(text, code, severity, audience, source); }
+    virtual unsigned getElapsedMs() const override
+    {
+        return ctx->getElapsedMs();
+    }
 };
 
 
@@ -429,6 +463,7 @@ public:
     int getOptInt(const char *prop, int defVal=0) const;
     unsigned getOptUInt(const char *prop, unsigned defVal=0) const { return (unsigned)getOptInt(prop, defVal); }
     __int64 getOptInt64(const char *prop, __int64 defVal=0) const;
+    double getOptReal(const char *prop, double defVal) const;
     unsigned __int64 getOptUInt64(const char *prop, unsigned __int64 defVal=0) const { return (unsigned __int64)getOptInt64(prop, defVal); }
     void ActPrintLog(const char *format, ...)  __attribute__((format(printf, 2, 3)));
     void ActPrintLog(IException *e, const char *format, ...) __attribute__((format(printf, 3, 4)));
@@ -540,10 +575,10 @@ public:
     }
     virtual bool removeTemp(const char *name) = 0;
 // IGraphTempHandler
-    virtual void registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters);
-    virtual void deregisterFile(const char *name, bool kept=false);
-    virtual void clearTemps();
-    virtual IFileUsageIterator *getIterator()
+    virtual CFileUsageEntry * registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters) override;
+    virtual void deregisterFile(const char *name, bool kept=false) override;
+    virtual void clearTemps() override;
+    virtual IFileUsageIterator *getIterator() override
     {
         class CIterator : implements IFileUsageIterator, public CInterface
         {
@@ -558,6 +593,7 @@ public:
         };
         return new CIterator(tmpFiles);
     }
+    virtual offset_t getActiveUsageSize() override;
 };
 
 class graph_decl CGraphStub : public CInterface, implements IThorChildGraph
@@ -756,8 +792,8 @@ public:
     void executeChildGraphs(size32_t parentExtractSz, const byte *parentExtract);
     void doExecute(size32_t parentExtractSz, const byte *parentExtract, bool checkDependencies);
     void doExecuteChild(size32_t parentExtractSz, const byte *parentExtract);
-    void executeChild(size32_t & retSize, void * & ret, size32_t parentExtractSz, const byte *parentExtract);
     void setResults(IThorGraphResults *results);
+    virtual cost_type getDiskAccessCost() = 0;
     virtual void executeChild(size32_t parentExtractSz, const byte *parentExtract, IThorGraphResults *results, IThorGraphResults *graphLoopResults);
     virtual void executeChild(size32_t parentExtractSz, const byte *parentExtract);
     virtual bool serializeStats(MemoryBuffer &mb) override { return false; }
@@ -810,13 +846,12 @@ interface ILoadedDllEntry;
 interface IConstWorkUnit;
 class CThorCodeContextBase;
 
-class graph_decl CJobBase : public CInterface, implements IDiskUsage, implements IExceptionHandler
+class graph_decl CJobBase : public CInterfaceOf<IInterface>, implements IExceptionHandler
 {
 protected:
     CriticalSection crit;
     Linked<ILoadedDllEntry> querySo;
     IUserDescriptor *userDesc;
-    offset_t maxDiskUsage, diskUsage;
     StringAttr key, graphName;
     bool aborted, pausing, resumed;
     StringBuffer wuid, user, scope, token;
@@ -829,7 +864,7 @@ protected:
     bool timeActivities;
     unsigned channelsPerSlave;
     unsigned numChannels;
-    unsigned maxActivityCores, globalMemoryMB, sharedMemoryMB;
+    unsigned maxActivityCores, queryMemoryMB, sharedMemoryMB;
     unsigned forceLogGraphIdMin, forceLogGraphIdMax;
     Owned<IContextLogger> logctx;
     Owned<IPerfMonHook> perfmonhook;
@@ -840,7 +875,7 @@ protected:
     bool usePackedAllocator;
     rank_t myNodeRank;
     Owned<IPropertyTree> graphXGMML;
-    unsigned memorySpillAtPercentage, sharedMemoryLimitPercentage;
+    unsigned memorySpillAtPercentage;
     CriticalSection sharedAllocatorCrit;
     Owned<IThorAllocator> sharedAllocator;
     bool jobEnded = false;
@@ -866,8 +901,6 @@ protected:
     SafePluginMap *pluginMap;
     virtual void endJob();
 public:
-    IMPLEMENT_IINTERFACE;
-
     CJobBase(ILoadedDllEntry *querySo, const char *graphName);
     virtual void beforeDispose() override;
 
@@ -899,6 +932,7 @@ public:
     virtual IGraphTempHandler *createTempHandler(bool errorOnMissing) = 0;
     void addDependencies(IPropertyTree *xgmml, bool failIfMissing=true);
     void addSubGraph(IPropertyTree &xgmml);
+    void applyMemorySettings(const char *context);
 
     void checkAndReportLeaks(roxiemem::IRowManager *rowManager);
     bool queryUseCheckpoints() const;
@@ -912,12 +946,10 @@ public:
     virtual __int64 getWorkUnitValueInt(const char *prop, __int64 defVal) const = 0;
     virtual StringBuffer &getWorkUnitValue(const char *prop, StringBuffer &str) const = 0;
     virtual bool getWorkUnitValueBool(const char *prop, bool defVal) const = 0;
+    virtual double getWorkUnitValueReal(const char *prop, double defVal) const = 0;
     const char *queryWuid() const { return wuid.str(); }
     const char *queryUser() const { return user.str(); }
     const char *queryScope() const { return scope.str(); }
-    IDiskUsage &queryIDiskUsage() const { return *(IDiskUsage *)this; }
-    void setDiskUsage(offset_t _diskUsage) { diskUsage = _diskUsage; }
-    offset_t queryMaxDiskUsage() const { return maxDiskUsage; }
     mptag_t querySlaveMpTag() const { return slavemptag; }
     unsigned querySlaves() const { return slaveGroup->ordinality(); }
     unsigned queryNodes() const { return nodeGroup->ordinality()-1; }
@@ -934,6 +966,7 @@ public:
     unsigned getOptUInt(const char *opt, unsigned dft=0) { return (unsigned)getOptInt(opt, dft); }
     __int64 getOptInt64(const char *opt, __int64 dft=0);
     unsigned __int64 getOptUInt64(const char *opt, unsigned __int64 dft=0) { return (unsigned __int64)getOptInt64(opt, dft); }
+    double getOptReal(const char *prop, double defValue=0);
     IThorAllocator *querySharedAllocator() const { return sharedAllocator; }
     unsigned getWfid() const { return graphXGMML->getPropInt("@wfid"); }
     virtual IThorAllocator *getThorAllocator(unsigned channel);
@@ -943,11 +976,6 @@ public:
 
 //
     virtual void addCreatedFile(const char *file) { assertex(false); }
-    virtual __int64 addNodeDiskUsage(unsigned node, __int64 sz) { assertex(false); return 0; }
-
-// IDiskUsage
-    virtual void increase(offset_t usage, const char *key=NULL);
-    virtual void decrease(offset_t usage, const char *key=NULL);
 
 // IExceptionHandler
     virtual bool fireException(IException *e) = 0;
@@ -1085,12 +1113,12 @@ protected:
     bool timeActivities; // purely for access efficiency
     bool receiving, cancelledReceive, initialized, reInit;
     Owned<IThorGraphResults> ownedResults; // NB: probably only to be used by loop results
-    CRuntimeStatisticCollection stats;
+    const StatisticsMapping &statsMapping;
 
 public:
     CActivityBase(CGraphElementBase *container, const StatisticsMapping &statsMapping);
     ~CActivityBase();
-    CRuntimeStatisticCollection &queryStats() { return stats; }
+    const StatisticsMapping &queryStatsMapping() const { return statsMapping; }
     inline activity_id queryId() const { return container.queryId(); }
     CGraphElementBase &queryContainer() const { return container; }
     CJobBase &queryJob() const { return container.queryJob(); }
@@ -1161,6 +1189,7 @@ public:
     int getOptInt(const char *prop, int defVal=0) const { return container.getOptInt(prop, defVal); }
     unsigned getOptUInt(const char *prop, unsigned defVal=0) const { return container.getOptUInt(prop, defVal); }
     __int64 getOptInt64(const char *prop, __int64 defVal=0) const { return container.getOptInt64(prop, defVal); }
+    double getOptReal(const char *prop, double defVal=0) const { return container.getOptReal(prop, defVal); }
     unsigned __int64 getOptUInt64(const char *prop, unsigned __int64 defVal=0) const { return container.getOptUInt64(prop, defVal); }
 };
 
@@ -1199,7 +1228,7 @@ interface IExpander;
 interface IThorFileCache : extends IInterface
 {
     virtual bool remove(const char *filename, unsigned crc) = 0;
-    virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilenae, IPartDescriptor &partDesc, IExpander *expander=nullptr, const StatisticsMapping & _statMapping=diskLocalStatistics) = 0;
+    virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilenae, IPartDescriptor &partDesc, IExpander *expander=nullptr, const StatisticsMapping & _statMapping=diskLocalStatistics, size32_t blockedFileIOSize=0) = 0;
 };
 
 class graph_decl CThorResourceBase : implements IThorResource, public CInterface

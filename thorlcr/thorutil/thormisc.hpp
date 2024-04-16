@@ -34,6 +34,7 @@
 #include "thexception.hpp"
 #include "thorcommon.hpp"
 #include "thor.hpp"
+#include "jstats.h"
 
 #ifdef GRAPH_EXPORTS
     #define graph_decl DECL_EXPORT
@@ -104,14 +105,24 @@
 #define THOROPT_VALIDATE_FILE_TYPE    "validateFileType"        // validate file type compatibility, e.g. if on fire error if XML reading CSV    (default = true)
 #define THOROPT_MIN_REMOTE_CQ_INDEX_SIZE_MB "minRemoteCQIndexSizeMb" // minimum size of index file to enable server side handling                (default = 0, meaning use heuristic to determin)
 #define THOROPT_KJ_ASSUME_PRIMARY "keyedJoinAssumePrimary"      // assume primary part exists (don't check when mapping, which can be slow)
+#define THOROPT_COMPRESS_SORTOVERFLOW "compressSortOverflow"    // If global sort spills, compress the merged overflow file                      (default = true)
+#define THOROPT_TIME_ACTIVITIES "timeActivities"                // Time activities (default=true)
+#define THOROPT_MAX_ACTIVITY_CORES "maxActivityCores"           // controls number of default threads to use for very parallel phases (like sort/parallel join helper). (default = # of h/w cores)
+#define THOROPT_THOR_ROWCRC "THOR_ROWCRC"                       // Use a CRC checking row allocator (default=false)
+#define THOROPT_THOR_PACKEDALLOCATOR "THOR_PACKEDALLOCATOR"     // Use packed roxiemem row allocators by default (default=true)
+#define THOROPT_MEMORY_SPILL_AT "memorySpillAt"                 // The threshold (%) that roxiemem will request memory to be reduced (default=80)
+#define THOROPT_FAIL_ON_LEAKS "failOnLeaks"                     // If any leaks are detected at the end of graph, fail the query (default=false)
+#define THOROPT_SOAP_TRACE_LEVEL "soapTraceLevel"               // The trace SOAP level (default=1)
+#define THOROPT_SORT_ALGORITHM "sortAlgorithm"                  // The algorithm used to sort records (quicksort/mergesort)
+#define THOROPT_COMPRESS_ALLFILES "compressAllOutputs"          // Compress all output files (default: bare-metal=off, cloud=on)
+#define THOROPT_AVOID_RENAME "avoidRename"                      // Avoid rename, write directly to target physical filenames (no temp file)
+
 
 #define INITIAL_SELFJOIN_MATCH_WARNING_LEVEL 20000  // max of row matches before selfjoin emits warning
 
 #define THOR_SEM_RETRY_TIMEOUT 2
 
 // Logging
-extern graph_decl const LogMsgJobInfo thorJob;
-
 enum ThorExceptionAction { tea_null, tea_warning, tea_abort, tea_shutdown };
 
 enum RegistryCode:unsigned { rc_register, rc_deregister };
@@ -120,9 +131,10 @@ enum RegistryCode:unsigned { rc_register, rc_deregister };
 #define destroyThorRow(ptr)         free(ptr)
 #define reallocThorRow(ptr, size)   realloc(ptr, size)
 
-
 //statistics gathered by the different activities
 extern graph_decl const StatisticsMapping spillStatistics;
+extern graph_decl const StatisticsMapping jhtreeCacheStatistics;
+extern graph_decl const StatisticsMapping soapcallStatistics;
 extern graph_decl const StatisticsMapping basicActivityStatistics;
 extern graph_decl const StatisticsMapping groupActivityStatistics;
 extern graph_decl const StatisticsMapping hashJoinActivityStatistics;
@@ -133,11 +145,16 @@ extern graph_decl const StatisticsMapping keyedJoinActivityStatistics;
 extern graph_decl const StatisticsMapping lookupJoinActivityStatistics;
 extern graph_decl const StatisticsMapping loopActivityStatistics;
 extern graph_decl const StatisticsMapping diskReadActivityStatistics;
+extern graph_decl const StatisticsMapping diskReadPartStatistics;
 extern graph_decl const StatisticsMapping diskWriteActivityStatistics;
 extern graph_decl const StatisticsMapping sortActivityStatistics;
 
 extern graph_decl const StatisticsMapping graphStatistics;
+extern graph_decl const StatisticsMapping indexDistribActivityStatistics;
+extern graph_decl const StatisticsMapping soapcallActivityStatistics;
 
+extern graph_decl const StatisticsMapping indexReadFileStatistics;
+extern graph_decl const StatisticsMapping hashDedupActivityStatistics;
 
 class BooleanOnOff
 {
@@ -219,7 +236,7 @@ public:
 
 class graph_decl CTimeoutTrigger : public CInterface, implements IThreaded
 {
-    bool running;
+    std::atomic<bool> running;
     Semaphore todo;
     CriticalSection crit;
     unsigned timeout;
@@ -236,7 +253,7 @@ public:
     {
         running = (timeout!=0);
         if (running)
-            threaded.start();
+            threaded.start(false);
     }
     virtual void beforeDispose() override
     {
@@ -268,7 +285,7 @@ public:
     void stop() { running = false; todo.signal(); }
     void inform(IException *e)
     {
-        LOG(MCdebugProgress, thorJob, "INFORM [%s]", description.get());
+        LOG(MCdebugProgress, "INFORM [%s]", description.get());
         CriticalBlock block(crit);
         if (exception.get())
             e->Release();
@@ -283,7 +300,7 @@ public:
         CriticalBlock block(crit);
         IException *e = exception.getClear();
         if (e)
-            LOG(MCdebugProgress, thorJob, "CLEARING TIMEOUT [%s]", description.get());
+            LOG(MCdebugProgress, "CLEARING TIMEOUT [%s]", description.get());
         todo.signal();
         return e;
     }
@@ -348,7 +365,6 @@ public:
 #define DEFAULT_THORSLAVEPORT 20100
 #define DEFAULT_SLAVEPORTINC 20
 #define DEFAULT_QUERYSO_LIMIT 10
-#define DEFAULT_LINGER_SECS 10
 
 class graph_decl CFifoFileCache : public CSimpleInterface
 {
@@ -504,11 +520,11 @@ extern graph_decl IThorException *MakeThorFatal(IException *e, int code, const c
 extern graph_decl IThorException *ThorWrapException(IException *e, const char *msg, ...) __attribute__((format(printf, 2, 3)));
 extern graph_decl void setExceptionActivityInfo(CGraphElementBase &container, IThorException *e);
 
-extern graph_decl void GetTempName(StringBuffer &name, const char *prefix=NULL,bool altdisk=false);
-extern graph_decl void SetTempDir(unsigned slaveNum, const char *name, const char *tempPrefix, bool clear);
-extern graph_decl void ClearDir(const char *dir);
-extern graph_decl void ClearTempDirs();
-extern graph_decl const char *queryTempDir(bool altdisk=false);  
+extern graph_decl void GetTempFilePath(StringBuffer &name, const char *suffix);
+extern graph_decl void GetTempFileName(StringBuffer &name, const char *suffix);
+extern graph_decl void SetTempDir(const char *rootTempDir, const char *uniqueSubDir, const char *tempPrefix, bool clearDir);
+extern graph_decl void ClearTempDir();
+extern graph_decl const char *queryTempDir();
 extern graph_decl void loadCmdProp(IPropertyTree *tree, const char *cmdProp);
 
 extern graph_decl void ensureDirectoryForFile(const char *fName);
@@ -533,6 +549,7 @@ extern graph_decl ICommunicator &queryNodeComm();
 extern graph_decl IGroup &queryClusterGroup();
 extern graph_decl IGroup &querySlaveGroup();
 extern graph_decl IGroup &queryDfsGroup();
+extern graph_decl IGroup &queryLocalGroup();
 extern graph_decl unsigned queryClusterWidth();
 extern graph_decl unsigned queryNodeClusterWidth();
 
@@ -590,6 +607,17 @@ inline void readUnderlyingType(MemoryBuffer &mb, T &v)
 constexpr unsigned thorDetailedLogLevel = 200;
 constexpr LogMsgCategory MCthorDetailedDebugInfo(MCdebugInfo(thorDetailedLogLevel));
 
+class graph_decl CThorPerfTracer : protected PerfTracer
+{
+    PerfTracer perf;
+    StringAttr workunit;
+    unsigned subGraphId;
+public:
+    void start(const char *workunit, unsigned subGraphId, double interval);
+    void stop();
+};
+
+extern graph_decl void saveWuidToFile(const char *wuid);
 
 #endif
 

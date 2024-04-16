@@ -65,7 +65,7 @@ void usage(const char *exe)
     printf("-disconnect <ip>:<port> -- forcably disconnect a clients connection\n");
     printf("-permissions <logicalname> <user> <password> -- get file permissions\n");
     printf("-unlock <connection_id> [close] -- forcibly disconnect an sds lock\n"); 
-    printf("                                   (use id's given by '-locks'\n");
+    printf("                                   (use the ConnectionId in hex given by '-locks'\n");
     printf("-settracetransactions    -- trace dali transactions\n");
     printf("-settraceslowtransactions <millisecond-threshold> -- trace slow dali transactions\n");
     printf("-cleartracetransactions  -- stop tracing dali transactions\n");
@@ -119,7 +119,7 @@ void timeQorSDS(bool timeq)
 
     if (timeq) {
         StringBuffer qname("TESTINGQ_");
-        ep.getUrlStr(qname);
+        ep.getEndpointHostText(qname);
         qconn.setown(createNamedQueueConnection(0));
         channel.setown(qconn->open(qname.str()));
         while (channel->probe()) {
@@ -132,7 +132,7 @@ void timeQorSDS(bool timeq)
     }
     else {
         subname.append("TESTSDS_");
-        ep.getUrlStr(subname);
+        ep.getEndpointHostText(subname);
         StringBuffer fullname("TESTING/");
         fullname.append(subname);
         sdssubid = querySDS().subscribe(fullname.str(), testsdssub);
@@ -279,7 +279,7 @@ void dirParts(const char *ip,const char *dir)
 
 void partInfo(const char *name,unsigned copy)
 {
-    Owned<IDistributedFile> f = queryDistributedFileDirectory().lookup(name,UNKNOWN_USER, false, false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> f = queryDistributedFileDirectory().lookup(name,UNKNOWN_USER, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
     if (f) {
         Owned<IDistributedFilePartIterator> parts = f->getIterator();
         unsigned partno = 0;
@@ -379,9 +379,9 @@ void backupList(const char *cluster)
         rank_t r;
         StringBuffer str;
         for (r=0;r<n;r++) {
-            group->queryNode(r).endpoint().getUrlStr(str.clear());
+            group->queryNode(r).endpoint().getEndpointHostText(str.clear());
             str.append(' ');
-            group->queryNode((r+1)%n).endpoint().getUrlStr(str);
+            group->queryNode((r+1)%n).endpoint().getEndpointHostText(str);
             printf("%s\n",str.str());
         }
     }
@@ -455,8 +455,8 @@ void nqPingPong(const char *q,const char *q2)
     threads[0].num = 1;
     threads[1].q = q;
     threads[1].num = 2;
-    threads[0].start();
-    threads[1].start();
+    threads[0].start(false);
+    threads[1].start(false);
     threads[0].join();
     threads[1].join();
 }
@@ -532,6 +532,8 @@ int main(int _argc, char* argv[])
     }
 
     try {
+        initNullConfiguration();
+
         Owned<IGroup> group = createIGroup(epa);
         assertex(group);
         initClientProcess(group, DCR_DaliDiag, 0, NULL, NULL, MP_WAIT_FOREVER);

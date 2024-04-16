@@ -28,4 +28,5 @@ project (AllProjects)
 
 include ( udplib.cmake)
 include ( udptransport.cmake)
+include ( udpsim.cmake)
 

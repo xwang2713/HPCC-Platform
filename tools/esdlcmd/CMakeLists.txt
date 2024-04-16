@@ -24,6 +24,7 @@
 
 
 project( esdlcmd )
+SET(CMAKE_UNITY_BUILD FALSE)
 
 include(${HPCC_SOURCE_DIR}/esp/scm/smcscm.cmake)
 
@@ -37,6 +38,7 @@ set ( SRCS
          ${CMAKE_CURRENT_SOURCE_DIR}/esdlcmd_monitor.cpp
          ${CMAKE_CURRENT_SOURCE_DIR}/esdl-publish.cpp
          ${CMAKE_CURRENT_SOURCE_DIR}/esdlcmdutils.cpp
+         ${CMAKE_CURRENT_SOURCE_DIR}/esdlcmd_manifest.cpp
          ${ESPSCM_GENERATED_DIR}/ws_esdlconfig_esp.cpp
     )
 
@@ -64,7 +66,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/common/thorhelper
     )
 
-ADD_DEFINITIONS( -D_CONSOLE )
+ADD_DEFINITIONS( -D_CONSOLE -DWsESDLConfig_API_LOCAL )
 if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_COMPILER_IS_CLANGXX)
     ADD_DEFINITIONS( -O0 )
 endif ()

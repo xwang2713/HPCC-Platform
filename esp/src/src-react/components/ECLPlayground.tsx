@@ -1,21 +1,22 @@
 import * as React from "react";
 import { ReflexContainer, ReflexElement, ReflexSplitter } from "../layouts/react-reflex";
-import { getTheme, PrimaryButton, IconButton, IIconProps, Link, Dropdown, IDropdownOption } from "@fluentui/react";
+import { PrimaryButton, IconButton, IIconProps, Link, Dropdown, IDropdownOption, TextField, useTheme } from "@fluentui/react";
+import { scopedLogger } from "@hpcc-js/util";
 import { useOnEvent } from "@fluentui/react-hooks";
 import { mergeStyleSets } from "@fluentui/style-utilities";
 import { ECLEditor, IPosition } from "@hpcc-js/codemirror";
-import { Workunit } from "@hpcc-js/comms";
+import { Workunit, WUUpdate } from "@hpcc-js/comms";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { DojoAdapter } from "../layouts/DojoAdapter";
 import { pushUrl } from "../util/history";
 import { darkTheme } from "../themes";
 import { InfoGrid } from "./InfoGrid";
-import { Results } from "./Results";
+import { TabbedResults } from "./Results";
 import { ECLSourceEditor } from "./SourceEditor";
-import { TargetClusterTextField } from "./forms/Fields";
+import { TargetClusterOption, TargetClusterTextField } from "./forms/Fields";
 import nlsHPCC from "src/nlsHPCC";
 
-import "eclwatch/css/cmDarcula.css";
+const logger = scopedLogger("../components/ECLPlayground.tsx");
 
 interface ECLPlaygroundProps {
     wuid?: string;
@@ -73,6 +74,12 @@ const playgroundStyles = mergeStyleSets({
                     borderLeft: borderStyle,
                     borderRight: borderStyle
                 }
+            },
+            ".ms-Label": {
+                marginRight: "12px"
+            },
+            ".ms-Label::after": {
+                paddingRight: 0
             }
         },
     },
@@ -113,6 +120,16 @@ const playgroundStyles = mergeStyleSets({
     samplesDropdown: {
         ".ms-Dropdown": {
             width: "240px"
+        }
+    },
+    publishWrapper: {
+        display: "flex",
+        ".ms-TextField-wrapper": {
+            display: "flex",
+            marginLeft: "18px"
+        },
+        ".ms-TextField-errorMessage": {
+            display: "none"
         }
     },
     outputButtons: {
@@ -185,15 +202,14 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
 
     const [cluster, setCluster] = React.useState("");
     const [wuState, setWuState] = React.useState("");
+    const [queryName, setQueryName] = React.useState("");
+    const queryNameRef = React.useRef(null);
+    const [queryNameErrorMsg, setQueryNameErrorMsg] = React.useState("");
+    const [showSubmitBtn, setShowSubmitBtn] = React.useState(true);
 
-    const submitWU = React.useCallback(async () => {
-        const wu = await Workunit.create({ baseUrl: "" });
-
-        await wu.update({ QueryText: editor.ecl() });
-        await wu.submit(cluster);
-
-        wu.watchUntilComplete(changes => {
-            setWuState(wu.State);
+    const playgroundResults = React.useCallback((wu, action = "submit") => {
+        setWuState(wu.State);
+        if (document.location.hash.includes("play")) {
             if (wu.isFailed()) {
                 pushUrl(`/play/${wu.Wuid}`);
                 setWorkunit(wu);
@@ -201,11 +217,44 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
                 setOutputMode(OutputMode.ERRORS);
             } else if (wu.isComplete()) {
                 pushUrl(`/play/${wu.Wuid}`);
+                if (action === "publish") {
+                    wu.publish(queryName);
+                    setWuState("Published");
+                }
                 setWorkunit(wu);
                 setOutputMode(OutputMode.RESULTS);
             }
-        });
-    }, [cluster, editor, setOutputMode, setWorkunit]);
+        } else {
+            if (wu.isComplete()) {
+                logger.info(`${nlsHPCC.Playground} ${nlsHPCC.Finished} (${wu.Wuid})`);
+            }
+        }
+    }, [editor, queryName, setOutputMode, setWorkunit]);
+
+    const submitWU = React.useCallback(async () => {
+        const wu = await Workunit.create({ baseUrl: "" });
+
+        await wu.update({ Jobname: queryName, QueryText: editor.ecl() });
+        await wu.submit(cluster);
+
+        wu.watchUntilComplete(changes => playgroundResults(wu));
+    }, [cluster, editor, playgroundResults, queryName]);
+
+    const publishWU = React.useCallback(async () => {
+        if (queryName === "") {
+            setQueryNameErrorMsg(nlsHPCC.ValidationErrorRequired);
+            queryNameRef.current.focus();
+        } else {
+            setQueryNameErrorMsg("");
+
+            const wu = await Workunit.create({ baseUrl: "" });
+
+            await wu.update({ Jobname: queryName, QueryText: editor.ecl() });
+            await wu.submit(cluster, WUUpdate.Action.Compile);
+
+            wu.watchUntilComplete(changes => playgroundResults(wu, "publish"));
+        }
+    }, [cluster, editor, playgroundResults, queryName, setQueryNameErrorMsg]);
 
     const handleKeyUp = React.useCallback((evt) => {
         switch (evt.key) {
@@ -230,16 +279,38 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
 
     return <div className={playgroundStyles.toolBar}>
         <div className={playgroundStyles.controlsWrapper}>
-            <PrimaryButton text={nlsHPCC.Submit} onClick={submitWU} />
+            {showSubmitBtn ? (
+                <PrimaryButton text={nlsHPCC.Submit} onClick={submitWU} />
+            ) : (
+                <PrimaryButton text={nlsHPCC.Publish} onClick={publishWU} />
+            )}
             <TargetClusterTextField
                 key="target-cluster"
                 label={nlsHPCC.Target}
+                excludeRoxie={false}
+                required={true}
+                selectedKey={cluster}
                 className={playgroundStyles.inlineDropdown}
-                onChange={React.useCallback((evt, option) => setCluster(option.key.toString()), [setCluster])}
-                optional={false}
-                selectedKey={cluster ? cluster : undefined}
-                options={[]}
+                onChange={React.useCallback((evt, option: TargetClusterOption) => {
+                    const selectedCluster = option.key.toString();
+                    if (option?.queriesOnly) {
+                        setShowSubmitBtn(false);
+                    } else {
+                        setShowSubmitBtn(true);
+                    }
+                    setCluster(selectedCluster);
+                }, [setCluster])}
             />
+            <div className={playgroundStyles.publishWrapper}>
+                <TextField
+                    label={nlsHPCC.Name}
+                    name="jobName"
+                    componentRef={queryNameRef}
+                    required={!showSubmitBtn}
+                    errorMessage={queryNameErrorMsg}
+                    onChange={(evt, value) => setQueryName(value)}
+                />
+            </div>
             <div className={playgroundStyles.outputButtons}>
                 <IconButton
                     iconProps={warningIcon}
@@ -269,12 +340,14 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
 export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props) => {
 
     const { wuid } = props;
-    const theme = getTheme();
+    const theme = useTheme();
 
     const [outputMode, setOutputMode] = React.useState<OutputMode>(OutputMode.ERRORS);
     const [workunit, setWorkunit] = React.useState<Workunit>();
     const [editor, setEditor] = React.useState<ECLEditor>();
     const [query, setQuery] = React.useState("");
+    const [selectedEclSample, setSelectedEclSample] = React.useState("");
+    const [eclContent, setEclContent] = React.useState("");
     const [eclSamples, setEclSamples] = React.useState<IDropdownOption[]>([]);
 
     React.useEffect(() => {
@@ -296,23 +369,44 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
             .then(response => response.json())
             .then(json => setEclSamples(
                 json.items.map(item => {
+                    if (item.selected && !wuid) setSelectedEclSample(item.filename);
                     return { key: item.filename, text: item.name };
                 })
             ));
 
         if (editor) {
             if (theme.semanticColors.link === darkTheme.palette.themePrimary) {
-                editor.setOption("theme", "darcula");
+                editor.option("theme", "darcula");
+            } else {
+                editor.option("theme", "default");
             }
         }
     }, [wuid, editor, theme]);
 
+    React.useEffect(() => {
+        fetch(`/esp/files/eclwatch/ecl/${selectedEclSample}`)
+            .then(response => {
+                if (response.status && response.status === 200 && response.body) {
+                    response.text().then(sample => {
+                        if (sample.toLowerCase().indexOf("<!doctype") < 0) {
+                            setEclContent(sample);
+                        }
+                    });
+                }
+            });
+    }, [selectedEclSample]);
+
+    React.useEffect(() => {
+        if (!editor) return;
+        editor.ecl(eclContent);
+    }, [editor, eclContent]);
+
     const handleThemeToggle = React.useCallback((evt) => {
         if (!editor) return;
         if (evt.detail && evt.detail.dark === true) {
-            editor.setOption("theme", "darcula");
+            editor.option("theme", "darcula");
         } else {
-            editor.setOption("theme", "default");
+            editor.option("theme", "default");
         }
     }, [editor]);
     useOnEvent(document, "eclwatch-theme-toggle", handleThemeToggle);
@@ -324,16 +418,9 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                 label="Sample"
                 className={`${playgroundStyles.inlineDropdown} ${playgroundStyles.samplesDropdown}`}
                 options={eclSamples}
+                selectedKey={selectedEclSample}
                 placeholder="Select sample ECL..."
-                onChange={(evt, item) => {
-                    fetch(`/esp/files/eclwatch/ecl/${item.key}`)
-                        .then(async response => {
-                            if (response.status && response.status === 200 && response.body) {
-                                const eclSample = await response.text();
-                                editor.ecl(eclSample);
-                            }
-                        });
-                }}
+                onChange={(evt, item) => { setSelectedEclSample(item.key.toString()); }}
             />
         </div>
         <ReflexContainer orientation="horizontal">
@@ -363,7 +450,7 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                     <InfoGrid wuid={workunit?.Wuid} />
 
                 ) : outputMode === OutputMode.RESULTS ? (
-                    <Results wuid={workunit?.Wuid} />
+                    <TabbedResults wuid={workunit?.Wuid} />
 
                 ) : outputMode === OutputMode.VIS ? (
                     <div style={{ height: "calc(100% - 25px)" }}>

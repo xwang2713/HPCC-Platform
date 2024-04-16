@@ -31,7 +31,8 @@ public:
     {
         try
         {
-            fileContents.loadFile(filename, false);
+            Owned<IFile> ifile = createIFile(filename);
+            fileContents.loadFile(ifile);
             const char *xml = fileContents.str();
             StringBuffer body;
             // Check for signature
@@ -180,7 +181,8 @@ bool ResourceManifest::checkResourceFilesExist()
     ForEach(*resources)
     {
         const char *filepath = resources->query().queryProp("@originalFilename");
-        if (!checkFileExists(filepath))
+        Owned<IFile> ifile = createIFile(filepath);
+        if (!ifile->exists())
         {
             UERRLOG("Error: RESOURCE file '%s' does not exist", filepath);
             return false;
@@ -208,46 +210,53 @@ void ResourceManifest::addToArchive(IPropertyTree *archive)
     ForEach(*resources)
     {
         IPropertyTree &item = resources->query();
-        const char *md5 = item.queryProp("@md5");
-        const char *filename = item.queryProp("@filename");
-        MemoryBuffer content;
-        if (isSigned)
+        if (item.hasProp("@jfrogUser"))
         {
-            if (md5)
-            {
-                VStringBuffer xpath("Resource[@filename='%s'][@md5='%s']", filename, md5);
-                if (!additionalFiles->hasProp(xpath.str()))
-                {
-                    IPropertyTree *resTree = additionalFiles->addPropTree("Resource", createPTree("Resource"));
-                    resTree->setProp("@filename", filename);
-                    resTree->setProp("@md5", md5);
-                    loadResource(filename, content);
-                    resTree->setPropBin(NULL, content.length(), content.toByteArray());
-                }
-            }
-            else
-                throw makeStringExceptionV(0, "Signed manifest %s must provide MD5 values for referenced resource %s", absFilename.str(), filename);
+            additionalFiles->addPropTree("Resource", LINK(&item));
         }
         else
         {
-            const char *respath = item.queryProp("@resourcePath");
-            VStringBuffer xpath("Resource[@resourcePath='%s']", respath);
-            if (!additionalFiles->hasProp(xpath.str()))
+            const char *md5 = item.queryProp("@md5");
+            const char *filename = item.queryProp("@filename");
+            MemoryBuffer content;
+            if (isSigned)
             {
-                IPropertyTree *resTree = additionalFiles->addPropTree("Resource", createPTree("Resource"));
-                const char *filepath = item.queryProp("@originalFilename");
-                resTree->setProp("@originalFilename", filepath);
-                resTree->setProp("@resourcePath", respath);
-                loadResource(filepath, content);
-                resTree->setPropBin(NULL, content.length(), content.toByteArray());
+                if (md5)
+                {
+                    VStringBuffer xpath("Resource[@filename='%s'][@md5='%s']", filename, md5);
+                    if (!additionalFiles->hasProp(xpath.str()))
+                    {
+                        IPropertyTree *resTree = additionalFiles->addPropTree("Resource", createPTree("Resource"));
+                        resTree->setProp("@filename", filename);
+                        resTree->setProp("@md5", md5);
+                        loadResource(filename, content);
+                        resTree->setPropBin(NULL, content.length(), content.toByteArray());
+                    }
+                }
+                else
+                    throw makeStringExceptionV(0, "Signed manifest %s must provide MD5 values for referenced resource %s", absFilename.str(), filename);
             }
-        }
-        if (md5)
-        {
-            StringBuffer calculated;
-            md5_data(content, calculated);
-            if (!strieq(calculated, md5))
-                throw makeStringExceptionV(0, "MD5 mismatch on file %s in manifest %s", filename, absFilename.str());
+            else
+            {
+                const char *respath = item.queryProp("@resourcePath");
+                VStringBuffer xpath("Resource[@resourcePath='%s']", respath);
+                if (!additionalFiles->hasProp(xpath.str()))
+                {
+                    IPropertyTree *resTree = additionalFiles->addPropTree("Resource", createPTree("Resource"));
+                    const char *filepath = item.queryProp("@originalFilename");
+                    resTree->setProp("@originalFilename", filepath);
+                    resTree->setProp("@resourcePath", respath);
+                    loadResource(filepath, content);
+                    resTree->setPropBin(NULL, content.length(), content.toByteArray());
+                }
+            }
+            if (md5)
+            {
+                StringBuffer calculated;
+                md5_data(content, calculated);
+                if (!strieq(calculated, md5))
+                    throw makeStringExceptionV(0, "MD5 mismatch on file %s in manifest %s", filename, absFilename.str());
+            }
         }
     }
 
@@ -272,7 +281,8 @@ void addManifestResourcesToArchive(IPropertyTree *archive, const char *filename)
 
 bool isManifestFileValid(const char *filename)
 {
-    if (!checkFileExists(filename))
+    Owned<IFile> ifile = createIFile(filename);
+    if (!ifile->exists())
     {
         UERRLOG("Error: MANIFEST file '%s' does not exist", filename);
         return false;

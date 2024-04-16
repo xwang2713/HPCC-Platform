@@ -281,6 +281,7 @@ protected:
     const void **rows = nullptr;
     void **stableTable = nullptr;
     bool throwOnOom = true; // tested during array expansion (resize())
+    bool useMergeSort = true;
     EmptyRowSemantics emptyRowSemantics = ers_forbidden;
     StableSortFlag stableSort = stableSort_none;
     rowidx_t maxRows = 0;  // Number of rows that can fit in the allocated memory.
@@ -544,6 +545,7 @@ interface IThorRowCollectorCommon : extends IInterface, extends IThorArrayLock
     virtual unsigned __int64 getStatistic(StatisticKind kind) = 0;
     virtual bool hasSpilt() const = 0; // equivalent to numOverlows() >= 1
     virtual void setTracingPrefix(const char *tracing) = 0;
+    virtual void reset() = 0;
 };
 
 interface IThorRowLoader : extends IThorRowCollectorCommon
@@ -556,7 +558,6 @@ interface IThorRowCollector : extends IThorRowCollectorCommon
 {
     virtual void setEmptyRowSemantics(EmptyRowSemantics emptyRowSemantics) = 0;
     virtual IRowWriter *getWriter() = 0;
-    virtual void reset() = 0;
     virtual IRowStream *getStream(bool shared=false, CThorExpandingRowArray *allMemRows=NULL) = 0;
     virtual bool spill(bool critical) = 0; // manual spill. Returns true if anything spilt
     virtual bool flush() = 0; // manual flush (free array space and potentially ptr table)

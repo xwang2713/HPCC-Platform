@@ -8,12 +8,13 @@
 
 #include "dasds.hpp"
 #include "daaudit.hpp"
+#include "daqueue.hpp"
 #include "saserver.hpp"
 #include "workunit.hpp"
 #include "wujobq.hpp"
 #include "environment.hpp"
+#include "jconfig.hpp"
 
-#ifndef _CONTAINERIZED
 //not currently created or used in the containerized version
 
 //#define TESTING
@@ -33,7 +34,7 @@ class CSashaQMonitorServer: public ISashaServer, public Thread
     StringArray cnames;
     IArrayOf<IJobQueue> queues;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaQMonitorServer()
         : Thread("CSashaQMonitorServer")
@@ -48,7 +49,7 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
@@ -70,36 +71,58 @@ public:
     {
         if (!qlist||!*qlist)
             return false;
-        if (!qinitdone) {
+        if (!qinitdone)
+        {
             qinitdone = true;
             StringArray qs;
             qs.appendListUniq(qlist, ",");
             if (!qs.ordinality())
                 return false;
+            StringArray tna;
+#ifdef _CONTAINERIZED
+            Owned<IStringIterator> cnaIter = config::getContainerTargets("thor", nullptr);
+            if (!cnaIter->first())
+                return false;
+            while (true)
+            {
+                SCMStringBuffer target;
+                cnaIter->str(target);
+                tna.append(target.str());
+                if (!cnaIter->next())
+                    break;
+            }
+#else
             StringArray cna;
             StringArray gna;
-            StringArray tna;
             StringArray qna;
             if (getEnvironmentThorClusterNames(cna,gna,tna,qna)==0)
                 return false;
-            ForEachItemIn(i1,tna) {
+#endif
+            ForEachItemIn(i1,tna)
+            {
                 const char *qname = tna.item(i1); // JCSMORE - ThorQMon/@queues is actually matching targets, rename property to @targets ?
                 bool ok = false;
-                ForEachItemIn(i2,qs) {
-                    if (WildMatch(qname,qs.item(i2),true)) {
+                ForEachItemIn(i2,qs)
+                {
+                    if (WildMatch(qname,qs.item(i2),true))
+                    {
                         ok = true;
                         break;
                     }
                 }
-                if (ok) {
+                if (ok)
+                {
                 // see if already done
-                    ForEachItemIn(i2,qnames) {
-                        if (strcmp(qname,qnames.item(i2))==0) {
+                    ForEachItemIn(i2,qnames)
+                    {
+                        if (strcmp(qname,qnames.item(i2))==0)
+                        {
                             ok = false;
                             break;
                         }
                     }
-                    if (ok) {
+                    if (ok)
+                    {
                         qnames.append(qname);
                         cnames.append(tna.item(i1));
                     }
@@ -110,7 +133,7 @@ public:
     }
 
 
-    bool doSwitch(const char *wuid,const char *cluster)
+    bool doSwitch(const char *item, const char *wuid, const char *cluster)
     {
         class cQswitcher: public CInterface, implements IQueueSwitcher
         {
@@ -145,7 +168,7 @@ public:
                     return NULL;
                 return q->take(wuid);
             }
-            void putQ(const char * qname, const char * wuid, void * qitem)
+            void putQ(const char * qname, void * qitem)
             {
                 IJobQueue *q = findQueue(qname);
                 if (q)
@@ -162,7 +185,7 @@ public:
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         Owned<IWorkUnit> wu = factory->updateWorkUnit(wuid);
         if (wu)
-            return wu->switchThorQueue(cluster, &switcher);
+            return wu->switchThorQueue(cluster, &switcher, item);
         return false;
     }
 
@@ -175,31 +198,37 @@ public:
 
         // see if can find candidate on another queue
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
-        ForEachItemIn(i1,queues) {
-            if (i1!=qi) {
+        ForEachItemIn(i1,queues)
+        {
+            if (i1!=qi)
+            {
                 IJobQueue &srcq = queues.item(i1);
                 CJobQueueContents qc;
                 srcq.copyItems(qc);
                 Owned<IJobQueueIterator> iter = qc.getIterator();
-                ForEach(*iter) {
+                ForEach(*iter)
+                {
                     const char *wuidGraph = iter->query().queryWUID();
-                    if (!isEmptyString(wuidGraph)) {
-                        const char *sep = strchr(wuidGraph, '/');
-                        StringAttr wuid;
-                        if (sep)
-                            wuid.set(wuidGraph, sep-wuidGraph);
-                        else
-                            wuid.set(wuidGraph);
+                    if (!isEmptyString(wuidGraph))
+                    {
+                        StringArray sArray;
+                        sArray.appendList(wuidGraph, "/");
+                        assertex(3 == sArray.ordinality());
+                        const char *wuid = sArray.item(1);
                         Owned<IConstWorkUnit> wu = factory->openWorkUnit(wuid);
-                        if (wu) {
+                        if (wu)
+                        {
                             SCMStringBuffer allowedClusters;
-                            if (wu->getAllowedClusters(allowedClusters).length()) {
+                            if (wu->getAllowedClusters(allowedClusters).length())
+                            {
                                 StringArray acs;
                                 acs.appendListUniq(allowedClusters.str(), ",");
                                 bool found = true;
-                                ForEachItemIn(i,acs) {
+                                const char *cn = cnames.item(qi);
+                                ForEachItemIn(i,acs)
+                                {
                                     if (strcmp(cnames.item(qi),acs.item(i))==0) 
-                                        return doSwitch(wuid,acs.item(i));
+                                        return doSwitch(wuidGraph, wuid, acs.item(i));
                                 }
                             }
                         }
@@ -212,46 +241,79 @@ public:
 
     int run()
     {
-        Owned<IPropertyTree> qmonprops = serverConfig->getPropTree("ThorQMon");
-        if (!qmonprops)
-            qmonprops.setown(createPTree("ThorQMon"));
+        Owned<IPropertyTree> qmonprops;
+        if (isContainerized())
+            qmonprops.set(serverConfig);
+        else
+        {
+            qmonprops.setown(serverConfig->getPropTree("ThorQMon"));
+            if (!qmonprops)
+                qmonprops.setown(createPTree("ThorQMon"));
+        }
         unsigned interval = qmonprops->getPropInt("@interval",DEFAULT_QMONITOR_INTERVAL); // probably always 1
-        unsigned autoswitch = qmonprops->getPropInt("@switchMinTime",0);
         if (!interval)
             return 0;
-        if (!initQueueNames(qmonprops->queryProp("@queues")))
+
+        // In bare-metal, historically autoswitching has been disabled by default.
+        // However, it is usually enabled in the environment.xml in most deployments.
+        // To simplify the containerized configuration, we set autoswitching period to match the interval by default.
+        unsigned autoSwitchDefault = isContainerized() ? interval : 0;
+
+        unsigned autoswitch = qmonprops->getPropInt("@switchMinTime", autoSwitchDefault);
+
+        const char *configQueues = qmonprops->queryProp("@queues");
+        if (!configQueues && isContainerized())
+            configQueues = "*"; // NB: this is the bare-metal default too (from stock environment.xml)
+        if (!initQueueNames(configQueues))
             return 0;
         Owned<IRemoteConnection> conn = querySDS().connect("Status/Servers", myProcessSession(), 0, 100000);
-        if (!conn) {
+        if (!conn)
+        {
             OERRLOG("cannot connect to Status/Servers");
             return -1;
         }
         unsigned *qidlecount = new unsigned[qnames.ordinality()];
-        ForEachItemIn(i1,qnames) {
+        ForEachItemIn(i1,qnames)
+        {
             StringBuffer qname(qnames.item(i1));
-            qname.append(".thor");
+            qname.append(THOR_QUEUE_EXT);
             queues.append(*createJobQueue(qname.str()));
             qidlecount[i1] = 0;
         }
         unsigned sleeptime = autoswitch?1:interval;
         unsigned moninter = interval;
-        while (!stopped) {
+        while (!stopped)
+        {
             stopsem.wait(60*1000*sleeptime);
             if (stopped)
                 break;
             moninter-=sleeptime;
-            if (autoswitch||(moninter==0)) { // always true at moment
-                try {
+            if (autoswitch||(moninter==0)) // always true at moment
+            {
+                try
+                {
                     conn->reload();
-                    ForEachItemIn(qi,qnames) {
+                    ForEachItemIn(qi,qnames)
+                    {
+                        StringBuffer thorQName;
                         const char *qname = qnames.item(qi);
-                        StringBuffer xpath;
-                        xpath.appendf("Server[@queue=\"%s.thor\"]/WorkUnit",qname);
-                        Owned<IPropertyTreeIterator> iter = conn->queryRoot()->getElements(xpath.str());
+                        getClusterThorQueueName(thorQName, qname);
+                        Owned<IPropertyTreeIterator> iter = conn->queryRoot()->getElements("Server[@queue]");
                         StringArray wuids;
-                        ForEach(*iter) {
-                            IPropertyTree &wu = iter->query();
-                            wuids.append(wu.queryProp(NULL));
+                        ForEach(*iter)
+                        {
+                            IPropertyTree &server = iter->query();
+                            const char *wuid = server.queryProp("WorkUnit");
+                            if (isEmptyString(wuid))
+                                continue;
+                            const char *queues = server.queryProp("@queue");
+                            if (isEmptyString(queues))
+                                continue;
+                            StringArray queueList;
+                            queueList.appendList(queues, ",");
+                            if (!queueList.contains(thorQName))
+                                continue;
+                            wuids.append(wuid);
                         }
                         unsigned enqueued=0;
                         unsigned connected=0;
@@ -265,14 +327,18 @@ public:
                             qidlecount[qi] = 0;
                     }
                 }
-                catch (IException *e) {
+                catch (IException *e)
+                {
                     StringBuffer s;
                     EXCLOG(e, "QMONITOR");
                     e->Release();
                 }
-                if (autoswitch) {
-                    ForEachItemIn(qi2,qnames) {
-                        if (qidlecount[qi2]>autoswitch) {   // > not >= to get conservative estimate of how long idle
+                if (autoswitch)
+                {
+                    ForEachItemIn(qi2,qnames)
+                    {
+                        if (qidlecount[qi2]>autoswitch) // > not >= to get conservative estimate of how long idle
+                        {
                             if (switchQueues(qi2))
                                 break; // only switch one per cycle (bit of cop-out)
                         }
@@ -296,5 +362,3 @@ ISashaServer *createSashaQMonitorServer()
     sashaQMonitorServer = new CSashaQMonitorServer();
     return sashaQMonitorServer;
 }
-
-#endif // !_CONTAINERIZED

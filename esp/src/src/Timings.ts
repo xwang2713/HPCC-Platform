@@ -20,14 +20,27 @@ class TimingColumn extends Column {
     }
 }
 
+const columns = ["label", "start", "end", "icon", "color", "series", "depth"];
+
 export class WUTimelinePatched extends WUTimeline {
 
     constructor() {
         super();
-        this._gantt.bucketHeight(16);
+        this
+            .columns(columns)
+            .bucketColumn("icon")
+            ;
+        this._gantt
+            .bucketHeight(22)
+            .gutter(4)
+            .overlapTolerence(-100)
+            .oddSeriesBackground("transparent")
+            .evenSeriesBackground("transparent")
+            ;
+        this._gantt["_series_idx"] = -1;
         this.strokeWidth(0);
         this.tooltipHTML(d => {
-            return d[d.length - 1].calcTooltip(); 
+            return d[d.length - 1].calcTooltip();
         });
     }
 
@@ -39,6 +52,9 @@ export class WUTimelinePatched extends WUTimeline {
             if (row[2] === undefined || row[2] === null) {
                 row[2] = row[1];
             }
+            row[5] = null;
+            row.push(row[6]);
+            row[6] = (row[6]?.ScopeName?.split(":")?.length - 1) || 0;
             return row;
         }));
         return this;
@@ -259,6 +275,9 @@ export class Timings {
                                     break;
                                 case "cnt":
                                     props[scopeProperty.Name] = +scopeProperty.RawValue;
+                                    break;
+                                case "cost":
+                                    props[scopeProperty.Name] = +scopeProperty.RawValue / 1000000;
                                     break;
                                 case "cpu":
                                 case "skw":

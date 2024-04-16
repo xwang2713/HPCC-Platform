@@ -44,12 +44,18 @@
 #include "enginecontext.hpp"
 #include <regex>
 
+#if defined (__linux__) || defined(__FreeBSD__)  || defined(__APPLE__)
+#include <execinfo.h> // comment out if not present
+#define HAS_BACKTRACE
+#endif
+
 #if PY_MAJOR_VERSION >=3
   #define Py_TPFLAGS_HAVE_ITER 0
 #endif
 
-#if PY_MINOR_VERSION < 7
+#if PY_VERSION_HEX < 0x03070000
   #define USE_CUSTOM_NAMEDTUPLES
+  #define INIT_PY_THREADS
 #endif
 
 static const char * compatibleVersions[] = {
@@ -130,6 +136,14 @@ static void failx(const char *message, ...)
     StringBuffer msg;
     msg.append("pyembed: ").valist_appendf(message,args);
     va_end(args);
+#ifdef HAS_BACKTRACE
+    void *stack[5];
+    unsigned nFrames = backtrace(stack, 5);
+    char** strs = backtrace_symbols(stack, nFrames);
+    for (unsigned i = 0; i < nFrames; ++i)
+        msg.append("\n  ").append(strs[i]);
+    free(strs);
+#endif
     rtlFail(0, msg.str());
 }
 
@@ -382,6 +396,9 @@ static bool releaseContext(bool isPooled)
     return false;
 }
 
+// GILUnblock ensures the we release the Python "Global interpreter lock" for the appropriate duration
+
+
 // Use a global object to ensure that the Python interpreter is initialized on main thread
 
 static HINSTANCE keepLoadedHandle;
@@ -423,7 +440,9 @@ public:
         Py_Initialize();
         const wchar_t *argv[] = { nullptr };
         PySys_SetArgvEx(0, (wchar_t **) argv, 0);
+#ifdef INIT_PY_THREADS
         PyEval_InitThreads();
+#endif
         preservedScopes.setown(PyDict_New());
         tstate = PyEval_SaveThread();
         skipPythonCleanup = true;
@@ -475,30 +494,6 @@ public:
     {
         return initialized;
     }
-    PyFrameObject *pushDummyFrame()
-    {
-        PyThreadState* threadstate = PyThreadState_GET();
-        if (!threadstate->frame)
-        {
-            OwnedPyObject globals = PyDict_New();
-            OwnedPyObject locals = PyDict_New();
-            OwnedPyX<PyCodeObject> code = PyCode_NewEmpty("<dummy>","<dummy>", 0);
-            checkPythonError();
-            PyFrameObject *frame = PyFrame_New(threadstate, code, globals, locals);
-            checkPythonError();
-            threadstate->frame = frame;
-            return frame;
-        }
-        return NULL;
-    }
-
-    void popDummyFrame(PyFrameObject *frame)
-    {
-        PyThreadState* threadstate = PyThreadState_GET();
-        if (threadstate->frame == frame)
-            threadstate->frame = NULL;
-    }
-
 
     PyObject *getActivityContextTupleType()
     {
@@ -545,9 +540,7 @@ public:
             OwnedPyObject recname = PyUnicode_FromString("namerec");     // MORE - do we care what the name is?
             OwnedPyObject ntargs = PyTuple_Pack(2, recname.get(), pnames.get());
             checkPythonError();
-            OwnedPyX<PyFrameObject> frame = pushDummyFrame();
             mynamedtupletype.setown(PyObject_CallObject(namedtuple, ntargs));
-            popDummyFrame(frame);
             checkPythonError();
             PyDict_SetItem(namedtupleTypes, pnames, mynamedtupletype);
         }
@@ -754,7 +747,8 @@ void PythonThreadContext::addManifestFiles(ICodeContext *codeCtx)
         IEngineContext *engine = codeCtx->queryEngineContext();
         if (engine)
         {
-            const StringArray &manifestModules = engine->queryManifestFiles("pyzip");
+            StringArray manifestModules;
+            engine->getManifestFiles("pyzip", manifestModules);
             if (manifestModules.length())
             {
                 PyObject *sysPath = PySys_GetObject((char *) "path");
@@ -763,11 +757,14 @@ void PythonThreadContext::addManifestFiles(ICodeContext *codeCtx)
                 ForEachItemIn(idx, manifestModules)
                 {
                     const char *path = manifestModules.item(idx);
-                    DBGLOG("Manifest zip %s", path);
-                    OwnedPyObject newPath = PyUnicode_FromString(path);
-                    PyList_Insert(sysPath, 0, newPath);
-                    checkPythonError();
-                    engine->onTermination(Python3xGlobalState::removePath, manifestModules.item(idx), true);
+                    if (path)
+                    {
+                        DBGLOG("Manifest zip %s", path);
+                        OwnedPyObject newPath = PyUnicode_FromString(path);
+                        PyList_Insert(sysPath, 0, newPath);
+                        checkPythonError();
+                        engine->onTermination(Python3xGlobalState::removePath, manifestModules.item(idx), true);
+                    }
                 }
             }
         }
@@ -2138,3 +2135,13 @@ extern DECL_EXPORT void syntaxCheck(size32_t & __lenResult, char * & __result, c
 }
 
 } // namespace
+
+extern "C" DECL_EXPORT IEmbedContext* py3GetEmbedContext()
+{
+    return new py3embed::Python3xEmbedContext;
+}
+
+extern "C" DECL_EXPORT void py3SyntaxCheck(size32_t & __lenResult, char * & __result, const char *funcname, size32_t charsBody, const char * body, const char *argNames, const char *compilerOptions, const char *persistOptions)
+{
+    py3embed::syntaxCheck(__lenResult, __result, funcname, charsBody, body, argNames, compilerOptions, persistOptions);
+}

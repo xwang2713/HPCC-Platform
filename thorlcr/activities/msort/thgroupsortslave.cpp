@@ -48,15 +48,20 @@ public:
         helper = (IHThorSortArg *)queryHelper();
         iCompare = helper->queryCompare();
         unstable = helper->getAlgorithmFlags()&TAFunstable;
+        unsigned spillPriority = container.queryGrouped() ? SPILL_PRIORITY_GROUPSORT : SPILL_PRIORITY_LARGESORT;
+        iLoader.setown(createThorRowLoader(*this, iCompare, unstable ? stableSort_none : stableSort_earlyAlloc, rc_mixed, spillPriority));
         setRequireInitData(false);
         appendOutputLinked(this);
     }
-    virtual void start()
+    virtual void reset() override
+    {
+        PARENT::reset();
+        iLoader->reset();
+    }
+    virtual void start() override
     {
         ActivityTimer s(slaveTimerStats, timeActivities);
         PARENT::start();
-        unsigned spillPriority = container.queryGrouped() ? SPILL_PRIORITY_GROUPSORT : SPILL_PRIORITY_LARGESORT;
-        iLoader.setown(createThorRowLoader(*this, queryRowInterfaces(input), iCompare, unstable ? stableSort_none : stableSort_earlyAlloc, rc_mixed, spillPriority));
         eoi = false;
         if (container.queryGrouped())
             out.setown(iLoader->loadGroup(inputStream, abortSoon));
@@ -65,26 +70,15 @@ public:
         if (0 == iLoader->numRows())
             eoi = true;
     }
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
-        {
-            CriticalBlock block(loaderCs);
-            mergeStats(stats, iLoader, spillStatistics);
-        }
-        PARENT::serializeStats(mb);
+        PARENT::gatherActiveStats(activeStats);
+        if (hasStarted())
+            setStats(activeStats, iLoader, spillStatistics);
     }
-
-    virtual void stop()
+    virtual void stop() override
     {
         out.clear();
-        if (hasStarted())
-        {
-            {
-                CriticalBlock block(loaderCs);
-                mergeStats(stats, iLoader, spillStatistics);
-            }
-            iLoader.clear();
-        }
         PARENT::stop();
     }
     CATCH_NEXTROW()

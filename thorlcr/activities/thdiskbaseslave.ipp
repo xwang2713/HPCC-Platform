@@ -38,7 +38,7 @@ protected:
     StringAttr filename, logicalFilename;
     unsigned __int64 fileBaseOffset;
     const char *kindStr;
-    CRuntimeStatisticCollection fileStats;
+    CRuntimeStatisticCollection closedPartFileStats;
     CDiskReadSlaveActivityBase &activity;
     CriticalSection inputCs; // Prevent input from being changed while mergeStats() or other functions are executing
 
@@ -54,7 +54,7 @@ public:
     virtual const void *nextRow() = 0;
     virtual void gatherStats(CRuntimeStatisticCollection & merged)
     {
-        merged.merge(fileStats);
+        merged.merge(closedPartFileStats);
     }
     virtual unsigned __int64 queryProgress() { return 0; }
 
@@ -91,19 +91,18 @@ protected:
     mutable ThorDataLinkMetaInfo cachedMetaInfo;
     Owned<CDiskPartHandlerBase> partHandler;
     Owned<IExpander> eexp;
-    rowcount_t diskProgress = 0;
-    std::vector<OwnedPtr<CRuntimeStatisticCollection>> subFileStats;
-
+    unsigned fileTableStart = NotFound;
 public:
     CDiskReadSlaveActivityBase(CGraphElementBase *_container, IHThorArg *_helper);
     const char *queryLogicalFilename(unsigned index);
     IThorRowInterfaces * queryProjectedDiskRowInterfaces();
-    void mergeSubFileStats(IPartDescriptor *partDesc, IExtRowStream *partStream);
+    void mergeFileStats(IPartDescriptor *partDesc, IExtRowStream *partStream);
     virtual void start() override;
 
 // IThorSlaveActivity
     virtual void init(MemoryBuffer &data, MemoryBuffer &slaveData);
     virtual void kill();
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const;
     virtual void serializeStats(MemoryBuffer &mb);
 friend class CDiskPartHandlerBase;
 };
@@ -127,18 +126,18 @@ protected:
     unsigned usageCount;
     CDfsLogicalFileName dlfn;
     StringBuffer tempExternalName;
-    CriticalSection outputCs;  // Ensure outputIO remains valid for the duration of mergeStats()
+    CFileUsageEntry * tmpUsage = nullptr;
 
     void open();
     void removeFiles();
     void close();
     virtual void write() = 0;
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const;
 
 public:
     CDiskWriteSlaveActivityBase(CGraphElementBase *container);
     virtual void init(MemoryBuffer &data, MemoryBuffer &slaveData);
     virtual void abort();
-    virtual void serializeStats(MemoryBuffer &mb);
 
 // ICopyFileProgress
     virtual CFPmode onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize);

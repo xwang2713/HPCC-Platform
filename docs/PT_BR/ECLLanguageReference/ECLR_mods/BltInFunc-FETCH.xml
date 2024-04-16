@@ -169,7 +169,7 @@
 
     <para>Exemplo:</para>
 
-    <programlisting>PtblRec := RECORD
+    <programlisting lang="ECL" role="NeedsFileToRun">PtblRec := RECORD
   STRING2  State := Person.per_st;
   STRING20 City  := Person.per_full_city;
   STRING25 Lname := Person.per_last_name;
@@ -178,7 +178,7 @@ END;
 
 PtblOut := OUTPUT(TABLE( Person,PtblRec),,'RTTEMP::TestFetch');
 Ptbl := DATASET('RTTEMP::TestFetch',
-      {PtblRec,UNSIGNED8 __fpos {virtual(fileposition)}},
+      {PtblRec,UNSIGNED8 __fpos {VIRTUAL(fileposition)}},
       FLAT);
 
 Bld := BUILD(Ptbl,

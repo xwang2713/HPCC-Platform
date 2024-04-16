@@ -30,6 +30,8 @@ endif()
 
 project( unittests )
 
+include(${HPCC_SOURCE_DIR}/esp/scm/espscm.cmake)
+
 set (    SRCS
          unittests.cpp
          remotetests.cpp
@@ -38,7 +40,14 @@ set (    SRCS
          cryptotests.cpp
          hqltests.cpp
          esdltests.cpp
+         loggingtests.cpp
          txSummarytests.cpp
+         accessmaptests.cpp
+         fxpptests.cpp
+         ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/fxpp/FragmentedXmlPullParser.cpp
+         ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/fxpp/FragmentedXmlAssistant.cpp
+         ${CMAKE_BINARY_DIR}/generated/ws_loggingservice_esp.cpp
+         datamaskingtests.cpp
     )
 
 if (NOT CONTAINERIZED)
@@ -47,6 +56,8 @@ set (    SRCS
          configmgr/ConfigMgrUnitTests.cpp
          configmgr/ConfigMgrTemplateTests.cpp
          configmgr/ConfigMgrHPCCTests.cpp
+         metrics/MetricFrameworkTests.cpp
+         metrics/PeriodicSinkTests.cpp
     )
 endif ()
 
@@ -63,16 +74,22 @@ include_directories (
          ./../../common/deftype
          ./../../system/security/cryptohelper
          ./../../configuration/configmgr/configmgrlib
+         ${HPCC_SOURCE_DIR}/system/masking/include
          ${HPCC_SOURCE_DIR}/system/xmllib
          ${HPCC_SOURCE_DIR}/rtl/eclrtl
          ${HPCC_SOURCE_DIR}/rtl/include
          ${HPCC_SOURCE_DIR}/common/dllserver
          ${HPCC_SOURCE_DIR}/ecl/hql
-         ${HPCC_SOURCE_DIR}/configuration/configmgr/RapidJSON/include
          ${HPCC_SOURCE_DIR}/esp/bindings
+         ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp
          ${HPCC_SOURCE_DIR}/esp/esdllib
+         ${HPCC_SOURCE_DIR}/esp/esdlscriptlib
+         ${HPCC_SOURCE_DIR}/esp/logging
+         ${HPCC_SOURCE_DIR}/esp/logging/logginglib
+         ${HPCC_SOURCE_DIR}/esp/logging/loggingmanager
          ${HPCC_SOURCE_DIR}/esp/platform
          ${HPCC_SOURCE_DIR}/esp/services/common
+         ${HPCC_SOURCE_DIR}/tools/hidl
          ${CMAKE_BINARY_DIR}/generated
          ${CMAKE_BINARY_DIR}
          ${CMAKE_BINARY_DIR}/oss
@@ -92,6 +109,7 @@ target_link_libraries ( unittests
          thorhelper
          esphttp
          esdllib
+         logginglib
          ${CPPUNIT_LIBRARIES}
     )
 

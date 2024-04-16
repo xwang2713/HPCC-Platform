@@ -132,6 +132,7 @@ private:
     bool readLogDateTimeFromLogLine(const char* lineStart, const unsigned lineLength, ReadLog& readLogReq,
         CDateTime& dt, StringBuffer& logFieldTime);
     void readLastNRowsToArray(const char* logName, OwnedIFileIO rIO, ReadLog& readLogReq, StringArray& returnBuf);
+    void validateFilePath(const char *file, const char *fileType, const char *compType, const char *compName);
 
 public:
     IMPLEMENT_IINTERFACE;
@@ -159,6 +160,8 @@ public:
     bool onTpSetMachineStatus(IEspContext &context,IEspTpSetMachineStatusRequest  &req, IEspTpSetMachineStatusResponse &resp);
 
     bool onTpSwapNode(IEspContext &context,IEspTpSwapNodeRequest  &req, IEspTpSwapNodeResponse &resp);
+
+    bool onTpListLogFiles(IEspContext &context, IEspTpListLogFilesRequest &req, IEspTpListLogFilesResponse &resp);
 
     bool onTpXMLFile(IEspContext &context,IEspTpXMLFileRequest  &req, IEspTpXMLFileResponse &resp);
 

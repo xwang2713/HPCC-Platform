@@ -1471,7 +1471,7 @@ class DummyContext: implements ICodeContext
     virtual char *getPlatform() { throwUnexpected(); } // caller frees return string.
     virtual unsigned getPriority() const { throwUnexpected(); }
     virtual char *getWuid() { throwUnexpected(); } // caller frees return string.
-
+    virtual unsigned getWorkflowId() const { throwUnexpected(); }
     // Exception handling
 
     virtual void addWuException(const char*, unsigned int, unsigned int, const char*) { throwUnexpected(); } //n.b. this might be better named: it should only be used for adding user-generated exceptions (via the logging plug-in) --- there's a call in IAgentContext which takes a source argument too
@@ -1528,6 +1528,7 @@ class DummyContext: implements ICodeContext
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) { throwUnexpected(); }
     virtual IEngineRowAllocator * getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, unsigned flags) const { throwUnexpected(); }
     virtual void addWuExceptionEx(const char*, unsigned int, unsigned int, unsigned int, const char*) override { throwUnexpected(); }
+    virtual unsigned getElapsedMs() const  override { throwUnexpected(); }
 
 };
 
@@ -1893,7 +1894,7 @@ IHqlExpression * combineMask(IHqlExpression * left, IHqlExpression * right)
     return createBoolExpr(no_ne, newTest, ensureExprType(zero, bandType));
 }
 
-bool constantComparison(IHqlExpression * field, IHqlExpression * expr, HqlExprArray & values)
+static bool extractConstantComparison(IHqlExpression * field, IHqlExpression * expr, HqlExprCopyArray & values)
 {
     IHqlExpression * left = expr->queryChild(0);
     IHqlExpression * right = expr->queryChild(1);
@@ -1904,8 +1905,7 @@ bool constantComparison(IHqlExpression * field, IHqlExpression * expr, HqlExprAr
             return false;
         if (!right->queryValue())
             return false;
-        if (values.find(*right) == NotFound)
-            values.append(*LINK(right));
+        values.append(*right);
         return true;
     case no_in:
         {
@@ -1913,17 +1913,47 @@ bool constantComparison(IHqlExpression * field, IHqlExpression * expr, HqlExprAr
                 return false;
             if (right->getOperator() != no_list)
                 return false;
-            ForEachChild(i, right)
-            {
-                IHqlExpression * cur = right->queryChild(i);
-                if (values.find(*cur) == NotFound)
-                    values.append(*LINK(cur));
-            }
+            if (!right->isConstant())
+                return false;
+            unwindChildren(values, right);
             return true;
         }
     }
     return false;
 }
+
+static void removeDuplicatesAndLink(HqlExprArray & result, const HqlExprCopyArray & values)
+{
+    //Assume that items are not duplicated - the memory usage is not significant, reallocation is.
+    result.ensureCapacity(values.ordinality());
+
+    if (values.ordinality() <= 10)
+    {
+        //Special case small lists with a faster O(N^2) algorithm.
+        ForEachItemIn(i, values)
+        {
+            IHqlExpression & cur = values.item(i);
+            if (!result.contains(cur))
+                result.append(OLINK(cur));
+        }
+    }
+    else
+    {
+        //This list can get quite large, so rather than using result.contains(cur), which would be O(N^2)
+        //use the transformextra which is slightly slower, but O(N).
+        TransformMutexBlock lock;
+        ForEachItemIn(i, values)
+        {
+            IHqlExpression & cur = values.item(i);
+            if (!cur.queryTransformExtra())
+            {
+                result.append(OLINK(cur));
+                cur.setTransformExtra(&cur);
+            }
+        }
+    }
+}
+
 
 bool isFilteredWithin(IHqlExpression * expr, IHqlExpression * dataset, HqlExprArray & filters)
 {
@@ -2049,36 +2079,42 @@ IHqlExpression * foldOrExpr(IHqlExpression * expr, bool fold_x_op_not_x)
     }
 
     //optimize x=a|x=b|x=c to x in (a,b,c)
-    HqlExprArray constantValues;
+    HqlExprCopyArray constantValues;
     for (unsigned idx4 = 0; idx4 < transformedArgs.ordinality()-1; idx4++)
     {
         IHqlExpression & cur = transformedArgs.item(idx4);
-        constantValues.kill();
-
-        if (constantComparison(NULL, &cur, constantValues))
+        if (extractConstantComparison(NULL, &cur, constantValues))
         {
-            bool merged = false;
+            UnsignedArray combinedExprIndexes;
             IHqlExpression * compare = cur.queryChild(0);
-            for (unsigned idx5 = idx4+1; idx5 < transformedArgs.ordinality(); )
+            for (unsigned idx5 = idx4+1; idx5 < transformedArgs.ordinality(); idx5++)
             {
                 IHqlExpression & cur2 = transformedArgs.item(idx5);
-                if (constantComparison(compare, &cur2, constantValues))
+                if (extractConstantComparison(compare, &cur2, constantValues))
                 {
-                    merged = true;
-                    transformedArgs.remove(idx5);
+                    //Save the list of expression indexes so they can be removed later
+                    combinedExprIndexes.append(idx5);
                 }
-                else
-                    idx5++;
             }
 
-            if (merged)
+            if (combinedExprIndexes.ordinality())
             {
+                //Avoid deduping and linking the expressions until we know we are going to combine them
+                HqlExprArray linkedValues;
+                removeDuplicatesAndLink(linkedValues, constantValues);
+
                 //MORE: Should promote all items in the list to the same type.
                 IHqlExpression & first = constantValues.item(0);
-                IHqlExpression * list = createValue(no_list, makeSetType(first.getType()), constantValues);
+                IHqlExpression * list = createValue(no_list, makeSetType(first.getType()), linkedValues);
                 OwnedHqlExpr combined = createBoolExpr(no_in, LINK(compare), list);
                 transformedArgs.replace(*combined.getClear(), idx4);
+
+                //Remove the expressions after the new expression has been created, so that linking can be avoided
+                ForEachItemInRev(i, combinedExprIndexes)
+                    transformedArgs.remove(combinedExprIndexes.item(i));
             }
+
+            constantValues.kill();
         }
     }
 
@@ -2413,6 +2449,21 @@ static IHqlExpression * foldHashXX(IHqlExpression * expr)
     return createConstant(expr->queryType()->castFrom(true, (__int64)hashCode));
 }
 
+//If cond has value condValue, can expr be simplified by removing an unnecessary IF()?
+static IHqlExpression * optimizeIfBranch(IHqlExpression * expr, IHqlExpression * cond, bool condValue)
+{
+    if (!expr)
+        return expr;
+    if (expr->getOperator() != no_if)
+        return expr;
+    if (expr->queryChild(0) != cond)
+        return expr;
+
+    if (condValue)
+        return optimizeIfBranch(expr->queryChild(1), cond, true);
+    else
+        return optimizeIfBranch(expr->queryChild(2), cond, false);
+}
 
 //---------------------------------------------------------------------------
 
@@ -2960,10 +3011,10 @@ IHqlExpression * foldConstantOperator(IHqlExpression * expr, unsigned foldOption
                 return LINK(branch);
             }
 
-            if (expr->queryChild(2))
+            IHqlExpression * falseValue = expr->queryChild(2);
+            if (falseValue)
             {
                 IHqlExpression * trueValue = expr->queryChild(1);
-                IHqlExpression * falseValue = expr->queryChild(2);
                 if (trueValue == falseValue)        // occurs in generated code...
                     return LINK(trueValue);
 
@@ -2990,6 +3041,31 @@ IHqlExpression * foldConstantOperator(IHqlExpression * expr, unsigned foldOption
                     }
                     if (ret)
                         return ret.getClear();
+                }
+
+                //IF (cond, IF(cond, b, c), IF (cond, d, e)) -> IF (cond, b, e)
+                IHqlExpression * newTrueExpr = optimizeIfBranch(trueValue, child, true);
+                IHqlExpression * newFalseExpr = optimizeIfBranch(falseValue, child, false);
+                if ((trueValue != newTrueExpr) || (falseValue != newFalseExpr))
+                {
+                    //The following should be good for datasets and datarows.  However, the current logic to merge
+                    //projects into IFs if they are not shared is a bit flawed - and this causes many cases to get
+                    //worse.
+                    if (!expr->isDataset() && !expr->isDatarow())
+                    {
+                        HqlExprArray args;
+                        args.append(*LINK(child));
+                        //An IF() action could theoretically evaluate to a null action (in the future...)
+                        //Protect against that by creating a null action for the true branch.
+                        if (newTrueExpr)
+                            args.append(*LINK(newTrueExpr));
+                        else
+                            args.append(*createNullExpr(expr));
+                        if (newFalseExpr)
+                            args.append(*LINK(newFalseExpr));
+                        unwindChildren(args, expr, 3);
+                        return expr->clone(args);
+                    }
                 }
             }
             break;
@@ -4885,7 +4961,7 @@ IHqlExpression * NullFolderMixin::foldNullDataset(IHqlExpression * expr)
     case no_hqlproject:
     case no_projectrow:
         {
-            if (isNullProject(expr, false, false))
+            if (isNullProject(expr, false, false) && !expr->hasAttribute(prefetchAtom))
                 return removeParentNode(expr);
             if (isNull(child))
                 return replaceWithNull(expr);
@@ -5454,6 +5530,8 @@ IHqlExpression * CExprFolderTransformer::doFoldTransformed(IHqlExpression * unfo
             if (newTransform)
                 args.replace(*newTransform.getClear(), 1);
             removeAttribute(args, _selectorSequence_Atom);
+            //local is a nop for NORMALIZE, but would modify the meaning of the DATASET
+            removeAttribute(args, localAtom);
 
             return createDataset(no_dataset_from_transform, args);
         }

@@ -194,6 +194,10 @@ using socket_t = int;
 #include <thread>
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+
+#if defined(_USE_OPENSSLV3)
+    #define OPENSSL_API_COMPAT 0x10100000L
+#endif
 #include <openssl/err.h>
 #include <openssl/md5.h>
 #include <openssl/ssl.h>
@@ -231,6 +235,9 @@ inline const unsigned char *ASN1_STRING_get0_data(const ASN1_STRING *asn1) {
 #include <brotli/decode.h>
 #include <brotli/encode.h>
 #endif
+
+#include "platform.h"
+#include "jlog.hpp"
 
 /*
  * Declaration
@@ -545,10 +552,10 @@ inline void default_socket_options(socket_t sock) {
              reinterpret_cast<char *>(&yes), sizeof(yes));
 #else
 #ifdef SO_REUSEPORT
-  setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<void *>(&yes),
+  (void)setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<void *>(&yes),
              sizeof(yes));
 #else
-  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<void *>(&yes),
+  (void)setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<void *>(&yes),
              sizeof(yes));
 #endif
 #endif
@@ -1842,12 +1849,15 @@ socket_t create_socket(const char *host, int port, int socket_flags,
     if (sock == INVALID_SOCKET) { continue; }
 
 #ifndef _WIN32
-    if (fcntl(sock, F_SETFD, FD_CLOEXEC) == -1) { continue; }
+    if (fcntl(sock, F_SETFD, FD_CLOEXEC) == -1) {
+      close_socket(sock);
+      continue;
+    }
 #endif
 
     if (tcp_nodelay) {
       int yes = 1;
-      setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char *>(&yes),
+      (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char *>(&yes),
                  sizeof(yes));
     }
 
@@ -1855,7 +1865,7 @@ socket_t create_socket(const char *host, int port, int socket_flags,
 
     if (rp->ai_family == AF_INET6) {
       int no = 0;
-      setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<char *>(&no),
+      (void)setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<char *>(&no),
                  sizeof(no));
     }
 
@@ -3246,7 +3256,6 @@ template <typename CTX, typename Init, typename Update, typename Final>
 inline std::string message_digest(const std::string &s, Init init,
                                   Update update, Final final,
                                   size_t digest_length) {
-  using namespace std;
 
   std::vector<unsigned char> md(digest_length, 0);
   CTX ctx;
@@ -3254,9 +3263,9 @@ inline std::string message_digest(const std::string &s, Init init,
   update(&ctx, s.data(), s.size());
   final(md.data(), &ctx);
 
-  stringstream ss;
+  std::stringstream ss;
   for (auto c : md) {
-    ss << setfill('0') << setw(2) << hex << (unsigned int)c;
+    ss << std::setfill('0') << std::setw(2) << std::hex << (unsigned int)c;
   }
   return ss.str();
 }
@@ -3356,12 +3365,11 @@ inline std::pair<std::string, std::string> make_digest_authentication_header(
     const Request &req, const std::map<std::string, std::string> &auth,
     size_t cnonce_count, const std::string &cnonce, const std::string &username,
     const std::string &password, bool is_proxy = false) {
-  using namespace std;
 
-  string nc;
+  std::string nc;
   {
-    stringstream ss;
-    ss << setfill('0') << setw(8) << hex << cnonce_count;
+    std::stringstream ss;
+    ss << std::setfill('0') << std::setw(8) << std::hex << cnonce_count;
     nc = ss.str();
   }
 
@@ -3375,7 +3383,7 @@ inline std::pair<std::string, std::string> make_digest_authentication_header(
   std::string algo = "MD5";
   if (auth.find("algorithm") != auth.end()) { algo = auth.at("algorithm"); }
 
-  string response;
+  std::string response;
   {
     auto H = algo == "SHA-256"
                  ? detail::SHA_256
@@ -3619,7 +3627,7 @@ inline ssize_t Stream::write(const std::string &s) {
 template <typename... Args>
 inline ssize_t Stream::write_format(const char *fmt, const Args &... args) {
   const auto bufsiz = 2048;
-  std::array<char, bufsiz> buf;
+  std::array<char, bufsiz> buf{""};
 
 #if defined(_MSC_VER) && _MSC_VER < 1900
   auto sn = _snprintf_s(buf.data(), bufsiz - 1, buf.size() - 1, fmt, args...);
@@ -4600,7 +4608,7 @@ inline void ClientImpl::close_socket(Socket &socket,
 }
 
 inline bool ClientImpl::read_response_line(Stream &strm, Response &res) {
-  std::array<char, 2048> buf;
+  std::array<char, 2048> buf{""};
 
   detail::stream_line_reader line_reader(strm, buf.data(), buf.size());
 
@@ -4630,7 +4638,11 @@ inline bool ClientImpl::send(const Request &req, Response &res) {
     }
 
     if (!is_alive) {
-      if (!create_and_connect_socket(socket_)) { return false; }
+      if (!create_and_connect_socket(socket_))
+      {
+        OERRLOG("HTTPLIB Error create_and_connect_socket failed");
+        return false;
+      }
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
       // TODO: refactoring
@@ -4643,7 +4655,11 @@ inline bool ClientImpl::send(const Request &req, Response &res) {
           }
         }
 
-        if (!scli.initialize_ssl(socket_)) { return false; }
+        if (!scli.initialize_ssl(socket_))
+        {
+          OERRLOG("HTTPLIB Error initialize_ssl failed");
+          return false;
+        }
       }
 #endif
     }
@@ -4658,7 +4674,11 @@ inline bool ClientImpl::send(const Request &req, Response &res) {
   if (close_connection || !ret) { stop_core(); }
 
   if (!ret) {
-    if (error_ == Error::Success) { error_ = Error::Unknown; }
+    if (error_ == Error::Success)
+    {
+        OERRLOG("HTTPLIB process_socket unknown error");
+        error_ = Error::Unknown;
+    }
   }
 
   return ret;
@@ -5868,6 +5888,7 @@ inline bool SSLClient::initialize_ssl(Socket &socket) {
       [&](SSL *ssl) {
         if (server_certificate_verification_) {
           if (!load_certs()) {
+            OERRLOG("HTTPLIB Error loading ssl certs");
             error_ = Error::SSLLoadingCerts;
             return false;
           }
@@ -5875,6 +5896,7 @@ inline bool SSLClient::initialize_ssl(Socket &socket) {
         }
 
         if (SSL_connect(ssl) != 1) {
+          OERRLOG("HTTPLIB Error connecting ssl");
           error_ = Error::SSLConnection;
           return false;
         }
@@ -5883,6 +5905,7 @@ inline bool SSLClient::initialize_ssl(Socket &socket) {
           verify_result_ = SSL_get_verify_result(ssl);
 
           if (verify_result_ != X509_V_OK) {
+            OERRLOG("HTTPLIB Error verifying server certificate SSL_get_verify_result %ld", verify_result_);
             error_ = Error::SSLServerVerification;
             return false;
           }
@@ -5890,11 +5913,13 @@ inline bool SSLClient::initialize_ssl(Socket &socket) {
           auto server_cert = SSL_get_peer_certificate(ssl);
 
           if (server_cert == nullptr) {
+            OERRLOG("HTTPLIB Error getting server certificate SSL_get_peer_certificate");
             error_ = Error::SSLServerVerification;
             return false;
           }
 
           if (!verify_host(server_cert)) {
+            OERRLOG("HTTPLIB Error self verifying server certificate verify_host");
             X509_free(server_cert);
             error_ = Error::SSLServerVerification;
             return false;

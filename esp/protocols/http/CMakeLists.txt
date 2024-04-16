@@ -64,16 +64,20 @@ include_directories(
     ./../../../system/security/shared
     ./../../../system/security/LdapSecurity
     ./../../../system/security/zcrypt
-    ./../../../system/mp 
+    ./../../../system/mp
     ./../../../dali/base
     ./../../../common/workunit
     ${HPCC_SOURCE_DIR}/common/thorhelper
+    ${HPCC_SOURCE_DIR}/esp/esdllib
     )
 
 add_definitions(-DESPHTTP_EXPORTS -DESP_TIMING -D_USRDLL -DESP_PLUGIN -DTXSUMMARY_EXPORTS)
-
+if(USE_OPENLDAP)
+    add_definitions(-D_USE_OPENLDAP)
+endif()
 HPCC_ADD_LIBRARY(esphttp SHARED ${SRCS})
 add_dependencies(esphttp  espscm)
+
 install(TARGETS esphttp RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR})
 target_link_libraries(
     esphttp
@@ -84,6 +88,7 @@ target_link_libraries(
     dalibase
     thorhelper      # this should not be dependent on the engine helper dll
     workunit        # neither should it be dependent on the wokunit dll
+    esdllib
     )
 
 if(LIBMEMCACHED_FOUND)

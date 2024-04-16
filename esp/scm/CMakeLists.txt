@@ -32,11 +32,13 @@ include ( ${CMAKE_CURRENT_SOURCE_DIR}/additional.cmake)
 set (SCM_BUILD OFF)
 
 
-ADD_CUSTOM_TARGET( 
+ADD_CUSTOM_TARGET(
   espscm ALL
   DEPENDS ${ESP_GENERATED_INCLUDES}
 )
 
-if (WIN32)
-  ADD_DEPENDENCIES(espscm copy_libssl)
+if (NOT VCPKG_APPLOCAL_DEPS)
+  if (WIN32)
+    ADD_DEPENDENCIES(espscm copy_libssl)
+  endif()
 endif()

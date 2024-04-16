@@ -127,7 +127,7 @@ private:
         {
             m_pWorkerThread = new CThreaded("CGenerateJSFactoryThread");
             IThreaded* pIThreaded = this;
-            m_pWorkerThread->init(pIThreaded);
+            m_pWorkerThread->init(pIThreaded, false);
         }
 
         void refresh(IConstEnvironment* pConstEnv)
@@ -258,28 +258,11 @@ private:
         {
           m_pWorkerThread = new CThreaded("CConfigFileMonitorThread");
           IThreaded* pIThreaded = this;
-          m_pWorkerThread->init(pIThreaded);
+          m_pWorkerThread->init(pIThreaded, false);
         }
       };
 
-      static CConfigFileMonitorThread* getInstance()
-      {
-        static Owned<CConfigFileMonitorThread> s_configFileMonitorSingleton;
-        static CSingletonLock slock;
-
-        if (slock.lock() == true)
-        {
-          if (s_configFileMonitorSingleton.get() == NULL)
-          {
-            s_configFileMonitorSingleton.setown(new CWsDeployFileInfo::CConfigFileMonitorThread(CONFIG_MONITOR_CHECK_INTERVAL, CONFIG_MONITOR_TIMEOUT_PERIOD));
-            s_configFileMonitorSingleton->init();
-          }
-
-          slock.unlock();
-        }
-
-        return s_configFileMonitorSingleton.get();
-      };
+      static CConfigFileMonitorThread* getInstance();
 
     protected:
       CThreaded* m_pWorkerThread;
@@ -341,7 +324,7 @@ private:
             m_quitThread = false;
             m_pWorkerThread = new CThreaded("CClientAliveThread");
             IThreaded* pIThreaded = this;
-            m_pWorkerThread->init(pIThreaded);
+            m_pWorkerThread->init(pIThreaded, false);
         }
 
         void signal()
@@ -393,7 +376,7 @@ private:
       m_quitThread = false;
       m_pWorkerThread = new CThreaded("CLockerAliveThread");
       IThreaded* pIThreaded = this;
-      m_pWorkerThread->init(pIThreaded);
+      m_pWorkerThread->init(pIThreaded, false);
     }
 
     void signal()
@@ -667,7 +650,7 @@ public:
             if (m_threadPool == NULL)
             {
                 IThreadFactory* pThreadFactory = new CCloudTaskThreadFactory();
-                m_threadPool.setown(createThreadPool("WsDeploy Cloud Task Thread Pool", pThreadFactory, NULL, pComputers->numChildren()));
+                m_threadPool.setown(createThreadPool("WsDeploy Cloud Task Thread Pool", pThreadFactory, false, nullptr, pComputers->numChildren()));
                 pThreadFactory->Release();
             }
             else
@@ -679,7 +662,7 @@ public:
 
             Owned<IPropertyTreeIterator> iter = pComputers->getElements(XML_TAG_COMPUTER);
             StringBuffer localip;
-            queryHostIP().getIpText(localip);
+            queryHostIP().getHostText(localip);
 
             ForEach(*iter)
             {
@@ -792,7 +775,7 @@ public:
     const char* getUser() {return m_user.str();}
     const char* getNewEnv() {return m_newEnv.str();}
     const char* getNewEnvId() {return m_newEnvId.str();}
-    const char* getCurIp(){ if (m_curIp.length() == 0) queryHostIP().getIpText(m_curIp); return m_curIp.str(); }
+    const char* getCurIp(){ if (m_curIp.length() == 0) queryHostIP().getHostText(m_curIp); return m_curIp.str(); }
 
 private:
     CWsDeployFileInfo* m_pFileInfo;

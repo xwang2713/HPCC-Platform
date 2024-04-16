@@ -126,7 +126,7 @@ class NSplitterSlaveActivity : public CSlaveActivity, implements ISharedSmartBuf
         void start()
         {
             stopped = false;
-            threaded.start();
+            threaded.start(true);
         }
         virtual void stop()
         {
@@ -226,8 +226,8 @@ public:
                     if (spill)
                     {
                         StringBuffer tempname;
-                        GetTempName(tempname, "nsplit", true); // use alt temp dir
-                        smartBuf.setown(createSharedSmartDiskBuffer(this, tempname.str(), numOutputs, queryRowInterfaces(input), &container.queryJob().queryIDiskUsage()));
+                        GetTempFilePath(tempname, "nsplit");
+                        smartBuf.setown(createSharedSmartDiskBuffer(this, tempname.str(), numOutputs, queryRowInterfaces(input)));
                         ActPrintLog("Using temp spill file: %s", tempname.str());
                     }
                     else

@@ -19,21 +19,26 @@
 
 # Utility script for stopping a local cluster started by startall.sh
 wait=0
+force=0
 CLUSTERNAME=mycluster
+UNINSTALL_ELK=1
 
 while [ "$#" -gt 0 ]; do
   arg=$1
   case "${arg}" in
       -w) wait=1
          ;;
+      -f) force=1
+         ;;
       -n) shift
          CLUSTERNAME=$1
          ;;
-      -e) UNINSTALL_ELK=1
+      -e) UNINSTALL_ELK=0
+         echo "elastic4hpcclogs will not be stopped..."
          ;;
       *) echo "Usage: stoptall.sh [options]"
          echo "    -w  Wait for all pods to terminate"
-         echo "    -e  Uninstall light-weight Elastic Stack"
+         echo "    -e  Suppress deletion of elastic4hpcclogs"
          exit
          ;;
     esac
@@ -42,14 +47,26 @@ done
 
 helm uninstall $CLUSTERNAME
 helm uninstall localfile
+helm uninstall myprometheus4hpccmetrics
+helm uninstall myloki4hpcclogs
 kubectl delete jobs --all
 kubectl delete networkpolicy --all
+
 if [[ $UNINSTALL_ELK == 1 ]] ; then
   echo "Uninstalling myelastic4hpcclogs:"
-  echo "PLEASE NOTE: Elastic Search declares PVC(s) which might require explicit manual removal if no longer needed."
   helm uninstall myelastic4hpcclogs
-  kubectl get pvc
+
+  echo "Deleting Elasticsearch PVC..."
+  kubectl delete pvc elasticsearch-master-elasticsearch-master-0
 fi
+
+if [[ $force == 1 ]] ; then
+  sleep 1
+  for f in `kubectl get pods | grep -v ^NAME | awk '{print $1}'` ; do
+    kubectl delete pod $f --force --grace-period=0
+  done
+fi
+
 if [[ $wait == 1 ]] ; then
   sleep 2
   while (kubectl get pods | grep -q ^NAME) ; do

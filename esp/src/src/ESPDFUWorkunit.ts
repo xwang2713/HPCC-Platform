@@ -171,22 +171,22 @@ const Workunit = declare([ESPUtil.Singleton, ESPUtil.Monitor], { // jshint ignor
             "JobNameOrig": this.JobName
         };
 
-        const context = this;
-        FileSpray.UpdateDFUWorkunit({
+        return FileSpray.UpdateDFUWorkunit({
             request: outerRequest
-        }).then(function (response) {
-            context.refresh();
         });
     },
     submit(target) {
     },
-    fetchXML(onFetchXML) {
-        FileSpray.DFUWUFile({
+    fetchXML(onFetchXML?) {
+        return FileSpray.DFUWUFile({
             request: {
                 Wuid: this.Wuid
             }
         }).then(function (response) {
-            onFetchXML(response);
+            if (onFetchXML) {
+                onFetchXML(response);
+            }
+            return response;
         });
     },
     _resubmit(clone, resetWorkflow, callback) {

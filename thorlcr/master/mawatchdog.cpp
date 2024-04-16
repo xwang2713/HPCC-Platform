@@ -54,26 +54,25 @@ public:
         {
             markdead = false;
             StringBuffer epstr;
-            ep.getUrlStr(epstr);
-            LOG(MCdebugProgress, thorJob, "Watchdog : Marking Machine as Up! [%s]", epstr.str());
+            ep.getEndpointHostText(epstr);
+            LOG(MCdebugProgress, "Watchdog : Marking Machine as Up! [%s]", epstr.str());
         }
     }   
 };
 
 
-CMasterWatchdogBase::CMasterWatchdogBase() : threaded("CMasterWatchdogBase")
+CMasterWatchdog::CMasterWatchdog(bool startNow) : threaded("CMasterWatchdogBase")
 {
     stopped = true;
     watchdogMachineTimeout = globals->getPropInt("@slaveDownTimeout", DEFAULT_SLAVEDOWNTIMEOUT);
     if (watchdogMachineTimeout <= HEARTBEAT_INTERVAL*10)
         watchdogMachineTimeout = HEARTBEAT_INTERVAL*10;
     watchdogMachineTimeout *= 1000;
-#ifdef _WIN32
-    threaded.adjustPriority(+1); // it is critical that watchdog packets get through.
-#endif
+    if (startNow)
+        start();
 }
 
-CMasterWatchdogBase::~CMasterWatchdogBase()
+CMasterWatchdog::~CMasterWatchdog()
 {
     stop();
     ForEachItemInRev(i, state)
@@ -83,24 +82,27 @@ CMasterWatchdogBase::~CMasterWatchdogBase()
     }
 }
 
-void CMasterWatchdogBase::start()
+void CMasterWatchdog::start()
 {
     if (stopped)
     {
         PROGLOG("Starting watchdog");
         stopped = false;
-        threaded.init(this);
+        threaded.init(this, false);
+#ifdef _WIN32
+        threaded.adjustPriority(+1); // it is critical that watchdog packets get through.
+#endif
     }
 }
 
-void CMasterWatchdogBase::addSlave(const SocketEndpoint &slave)
+void CMasterWatchdog::addSlave(const SocketEndpoint &slave)
 {
     synchronized block(mutex);
     CMachineStatus *mstate=new CMachineStatus(slave);
     state.append(mstate);
 }
 
-void CMasterWatchdogBase::removeSlave(const SocketEndpoint &slave)
+void CMasterWatchdog::removeSlave(const SocketEndpoint &slave)
 {
     synchronized block(mutex);
     CMachineStatus *ms = findSlave(slave);
@@ -110,7 +112,7 @@ void CMasterWatchdogBase::removeSlave(const SocketEndpoint &slave)
     }
 }
 
-CMachineStatus *CMasterWatchdogBase::findSlave(const SocketEndpoint &ep)
+CMachineStatus *CMasterWatchdog::findSlave(const SocketEndpoint &ep)
 {
     ForEachItemInRev(i, state)
     {
@@ -122,22 +124,25 @@ CMachineStatus *CMasterWatchdogBase::findSlave(const SocketEndpoint &ep)
 }
 
 
-void CMasterWatchdogBase::stop()
+void CMasterWatchdog::stop()
 {
-    threaded.adjustPriority(0); // restore to normal before stopping
     {
         synchronized block(mutex);
         if (stopped)
             return;
-        LOG(MCdebugProgress, thorJob, "Stopping watchdog");
         stopped = true;
     }
+
+    LOG(MCdebugProgress, "Stopping watchdog");
+#ifdef _WIN32
+    threaded.adjustPriority(0); // restore to normal before stopping
+#endif
     stopReading();
     threaded.join();
-    LOG(MCdebugProgress, thorJob, "Stopped watchdog");
+    LOG(MCdebugProgress, "Stopped watchdog");
 }
 
-void CMasterWatchdogBase::checkMachineStatus()
+void CMasterWatchdog::checkMachineStatus()
 {
     synchronized block(mutex);
     ForEachItemInRev(i, state)
@@ -146,13 +151,13 @@ void CMasterWatchdogBase::checkMachineStatus()
         if (!mstate->alive)
         {
             StringBuffer epstr;
-            mstate->ep.getUrlStr(epstr);
+            mstate->ep.getEndpointHostText(epstr);
             if (mstate->markdead)
                 abortThor(MakeThorOperatorException(TE_AbortException, "Watchdog has lost contact with Thor slave: %s (Process terminated or node down?)", epstr.str()), TEC_Watchdog);
             else
             {
                 mstate->markdead = true;
-                LOG(MCdebugProgress, thorJob, "Watchdog : Marking Machine as Down! [%s]", epstr.str());
+                LOG(MCdebugProgress, "Watchdog : Marking Machine as Down! [%s]", epstr.str());
                 //removeSlave(mstate->ep); // more TBD
             }
         }
@@ -162,19 +167,13 @@ void CMasterWatchdogBase::checkMachineStatus()
     }
 }
 
-unsigned CMasterWatchdogBase::readPacket(HeartBeatPacketHeader &hb, MemoryBuffer &mb)
+unsigned CMasterWatchdog::readPacket(HeartBeatPacketHeader &hb, MemoryBuffer &mb)
 {
     mb.clear();
     unsigned read = readData(mb);
     if (read)
     {
-        if (read < sizeof(HeartBeatPacketHeader))
-        {
-            IWARNLOG("Receive Monitor Packet: wrong size, got %d, less than HeartBeatPacketHeader size", read);
-            return 0;
-        }
-        //Cast is to avoid warning about writing to an object with non trivial copy assignment
-        memcpy(reinterpret_cast<void *>(&hb), mb.readDirect(sizeof(HeartBeatPacketHeader)), sizeof(HeartBeatPacketHeader));
+        hb.deserialize(mb);
         if (read != hb.packetSize)  // check for corrupt packets
         {
             IWARNLOG("Receive Monitor Packet: wrong size, expected %d, got %d", hb.packetSize, read);
@@ -188,33 +187,33 @@ unsigned CMasterWatchdogBase::readPacket(HeartBeatPacketHeader &hb, MemoryBuffer
     return 0;
 }
 
-void CMasterWatchdogBase::threadmain()
+unsigned CMasterWatchdog::readData(MemoryBuffer &mb)
 {
-    LOG(MCdebugProgress, thorJob, "Started watchdog");
+    CMessageBuffer msg;
+    if (!queryNodeComm().recv(msg, RANK_ALL, MPTAG_THORWATCHDOG, NULL, watchdogMachineTimeout))
+        return 0;
+    mb.swapWith(msg);
+    return mb.length();
+}
+void CMasterWatchdog::stopReading()
+{
+    queryNodeComm().cancel(0, MPTAG_THORWATCHDOG);
+}
+
+void CMasterWatchdog::threadmain()
+{
+    LOG(MCdebugProgress, "Started watchdog");
     unsigned lastbeat=msTick();
     unsigned lastcheck=lastbeat;
 
     retrycount = 0;
-    try
+    while (!stopped)
     {
-        while (!stopped)
+        try
         {
             HeartBeatPacketHeader hb;
             MemoryBuffer progressData;
-            unsigned sz = 0;
-            try
-            {
-                sz = readPacket(hb, progressData);
-            }
-            catch (IMP_Exception *e)
-            {
-                if (MPERR_link_closed != e->errorCode())
-                    throw;
-                const SocketEndpoint &ep = e->queryEndpoint();
-                StringBuffer epStr;
-                ep.getUrlStr(epStr);
-                abortThor(MakeThorOperatorException(TE_AbortException, "Watchdog has lost connectivity with Thor slave: %s (Process terminated or node down?)", epStr.str()), TEC_Watchdog);
-            }
+            unsigned sz = readPacket(hb, progressData);
             if (stopped)
                 break;
             else if (sz)
@@ -234,8 +233,8 @@ void CMasterWatchdogBase::threadmain()
                 else
                 {
                     StringBuffer epstr;
-                    hb.sender.getUrlStr(epstr);
-                    LOG(MCdebugProgress, thorJob, "Watchdog : Unknown Machine! [%s]", epstr.str()); //TBD
+                    hb.sender.getEndpointHostText(epstr);
+                    LOG(MCdebugProgress, "Watchdog : Unknown Machine! [%s]", epstr.str()); //TBD
                 }
             }
             unsigned now=msTick();
@@ -250,92 +249,33 @@ void CMasterWatchdogBase::threadmain()
                 lastbeat = msTick();
             }
         }
-    }
-    catch (IException *e)
-    {
-        FLLOG(MCexception(e), thorJob, e,"Watchdog Server Exception");
-        e->Release();
+        catch (IMP_Exception *e)
+        {
+            if (MPERR_link_closed != e->errorCode())
+            {
+                FLLOG(MCexception(e), e,"Watchdog Server Exception");
+                e->Release();
+            }
+            else
+            {
+                const SocketEndpoint &ep = e->queryEndpoint();
+                StringBuffer epStr;
+                ep.getEndpointHostText(epStr);
+                abortThor(MakeThorOperatorException(TE_AbortException, "Watchdog has lost connectivity with Thor slave: %s (Process terminated or node down?)", epStr.str()), TEC_Watchdog);
+            }
+        }
+        catch (IException *e)
+        {
+            FLLOG(MCexception(e), e,"Watchdog Server Exception");
+            e->Release();
+            // NB: it is important to continue with master watchdog, to continue to consume packets from workers
+        }
     }
 }
 
-
-class CMasterWatchdogUDP : public CMasterWatchdogBase
-{
-    ISocket *sock;
-public:
-    CMasterWatchdogUDP(bool startNow)
-    {
-        sock = ISocket::udp_create(getFixedPort(TPORT_watchdog));
-        if (startNow)
-            start();
-    }
-    ~CMasterWatchdogUDP()
-    {
-        ::Release(sock);
-    }
-    virtual unsigned readData(MemoryBuffer &mb)
-    {
-        size32_t read;
-        try
-        {
-            sock->readtms(mb.reserveTruncate(UDP_DATA_MAX), sizeof(HeartBeatPacketHeader), UDP_DATA_MAX, read, watchdogMachineTimeout);
-        }
-        catch (IJSOCK_Exception *e)
-        {
-            if ((e->errorCode()!=JSOCKERR_timeout_expired)&&(e->errorCode()!=JSOCKERR_broken_pipe)&&(e->errorCode()!=JSOCKERR_graceful_close))
-                throw;
-            e->Release();
-            return 0; // will retry
-        }
-        return read;
-    }
-    virtual void stopReading()
-    {
-        if (sock)
-        {
-            SocketEndpoint masterEp(getMasterPortBase());
-            StringBuffer ipStr;
-            masterEp.getIpText(ipStr);
-            Owned<ISocket> sock = ISocket::udp_connect(getFixedPort(masterEp.port, TPORT_watchdog), ipStr.str());
-            // send empty packet, stopped set, will cease reading
-            HeartBeatPacketHeader hb;
-            hb.packetSize = sizeof(HeartBeatPacketHeader);
-            sock->write(&hb, sizeof(HeartBeatPacketHeader));
-            sock->close();
-        }
-    }
-};
-
 /////////////////////
 
-class CMasterWatchdogMP : public CMasterWatchdogBase
+CMasterWatchdog *createMasterWatchdog(bool startNow)
 {
-public:
-    CMasterWatchdogMP(bool startNow)
-    {
-        if (startNow)
-            start();
-    }
-    virtual unsigned readData(MemoryBuffer &mb)
-    {
-        CMessageBuffer msg;
-        if (!queryNodeComm().recv(msg, RANK_ALL, MPTAG_THORWATCHDOG, NULL, watchdogMachineTimeout))
-            return 0;
-        mb.swapWith(msg);
-        return mb.length();
-    }
-    virtual void stopReading()
-    {
-        queryNodeComm().cancel(0, MPTAG_THORWATCHDOG);
-    }
-};
-
-/////////////////////
-
-CMasterWatchdogBase *createMasterWatchdog(bool udp, bool startNow)
-{
-    if (udp)
-        return new CMasterWatchdogUDP(startNow);
-    else
-        return new CMasterWatchdogMP(startNow);
+    return new CMasterWatchdog(startNow);
 }

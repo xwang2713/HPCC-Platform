@@ -68,6 +68,17 @@ public:
     virtual bool onSetProtected(IEspContext& context, IEspSetProtectedRequest& req, IEspResultResponse& resp) override;
     virtual bool onSetUnprotected(IEspContext& context, IEspSetUnprotectedRequest& req, IEspResultResponse& resp) override;
     virtual bool onGetProtectedList(IEspContext& context, IEspGetProtectedListRequest& req, IEspResultResponse& resp) override;
+    virtual bool onGetConnections(IEspContext& context, IEspGetConnectionsRequest& req, IEspResultResponse& resp) override;
+    virtual bool onGetClients(IEspContext& context, IEspGetClientsRequest& req, IEspResultResponse& resp) override;
+    virtual bool onGetSDSStats(IEspContext& context, IEspGetSDSStatsRequest& req, IEspResultResponse& resp) override;
+    virtual bool onGetSDSSubscribers(IEspContext& context, IEspGetSDSSubscribersRequest& req, IEspResultResponse& resp) override;
+    virtual bool onDisconnectClientConnection(IEspContext& context, IEspDisconnectClientConnectionRequest& req, IEspResultResponse& resp) override;
+    virtual bool onListSDSLocks(IEspContext& context, IEspListSDSLocksRequest& req, IEspResultResponse& resp) override;
+    virtual bool onUnlockSDSLock(IEspContext& context, IEspUnlockSDSLockRequest& req, IEspResultResponse& resp) override;
+    virtual bool onSaveSDSStore(IEspContext& context, IEspSaveSDSStoreRequest& req, IEspResultResponse& resp) override;
+    virtual bool onSetTraceTransactions(IEspContext& context, IEspSetTraceTransactionsRequest& req, IEspResultResponse& resp) override;
+    virtual bool onSetTraceSlowTransactions(IEspContext& context, IEspSetTraceSlowTransactionsRequest& req, IEspResultResponse& resp) override;
+    virtual bool onClearTraceTransactions(IEspContext& context, IEspClearTraceTransactionsRequest& req, IEspResultResponse& resp) override;
 };
 
 class CWSDaliSoapBindingEx : public CWSDaliSoapBinding

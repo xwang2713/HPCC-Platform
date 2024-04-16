@@ -1,0 +1,2057 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE section PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+"http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
+<chapter id="ContainerConfigurationValuesCHAPTER">
+  <title>Configuration Values</title>
+
+  <para>This chapter describes the configuration of HPCC Systems for a
+  Kubernetes Containerized deployment. The following sections detail how
+  configurations are supplied to helm charts, how to find out what options are
+  available and some details of the configuration file structure. Subsequent
+  sections will also provide a brief walk through of some of the contents of
+  the default <emphasis>values.yaml</emphasis> file used in configuring the
+  HPCC Systems for a containerized deployment.</para>
+
+  <sect1 id="Intro_Containerized_Environments" role="nobrk">
+    <title>The Container Environment</title>
+
+    <para>One of the ideas behind our move to the cloud was to try and
+    simplify the system configuration while also delivering a solution
+    flexible enough to meet the demands of our community while taking
+    advantage of container features without sacrificing performance.</para>
+
+    <para>The entire HPCC Systems configuration in the container space, is
+    governed by a single file, a <emphasis>values.yaml</emphasis> file, and
+    its associated schema (<emphasis>values-schema.json</emphasis>)
+    file.</para>
+
+    <sect2 id="WhatIsValues.Yaml">
+      <title>The <emphasis>values.yaml</emphasis> and how it is used</title>
+
+      <para>The supplied stock <emphasis>values.yaml</emphasis> file provided
+      in the HPCC Systems repository is the delivered configuration values for
+      the "hpcc" Helm chart. The <emphasis>values.yaml</emphasis> file is used
+      by the Helm chart to control how HPCC Systems is deployed to the cloud.
+      This <emphasis>values.yaml</emphasis> file is a single file used to
+      configure and get an HPCC Systems instance up and running on Kubernetes.
+      The <emphasis>values.yaml</emphasis> file defines everything that
+      happens to configure and/or define your system for a containerized
+      deployment. You should use the values file provided as a basis for
+      modeling customizations for your deployment specific to your
+      requirements.</para>
+
+      <para>The HPCC Systems<emphasis> values.yaml</emphasis> file can be
+      found in the HPCC Systems github repository. To use the HPCC Systems
+      Helm chart, first add the hpcc chart repository using Helm, then access
+      the Helm chart values from the charts in that repository.</para>
+
+      <para>For example, when you add the "hpcc" repository, as recommended
+      prior to installing the Helm chart with the following command:</para>
+
+      <programlisting>helm repo add hpcc https://hpcc-systems.github.io/helm-chart
+</programlisting>
+
+      <para>You can now view the HPCC Systems delivered charts and see the
+      values there by issuing:</para>
+
+      <programlisting>helm show values hpcc/hpcc</programlisting>
+
+      <para>You can capture the output of this command, look at how the
+      defaults are configured and use it as a basis for your
+      customization.</para>
+    </sect2>
+
+    <sect2 id="Values-SchemaJSONFile" role="brk">
+      <title>The values-schema.json</title>
+
+      <para>The <emphasis>values-schema.json</emphasis> is a JSON file that
+      declares what is valid and what is not within the sum total of the
+      merged values that are passed into Helm at install time. It defines what
+      values are allowed, and validates the values file against them. All the
+      core items are declared in the schema file, which contains comments and
+      descriptions. While the default <emphasis>values.yaml</emphasis> file
+      also contains comments on the most important elements.</para>
+
+      <para>If you wanted to know what options are available for any
+      particular component then the schema is a good place to start. If the
+      value exists and is allowed per the schema it can then be added when you
+      install.</para>
+
+      <para>The schema file typically contains (for a property) a name and a
+      description. It will often include details of the type, and items it can
+      contain, or if it is a list or dictionary. For instance:</para>
+
+      <programlisting>    "roxie": { 
+      "description": "roxie process",
+      "type": "array"
+      "items": { "$ref": "#/definitions/roxie" }
+    },</programlisting>
+
+      <para>Each plane, in the schema file has a list of properties generally
+      containing a prefix (path), a subpath (subpath), and additional
+      properties. For example, for a storage plane the schema file has a list
+      of properties including the prefix. The "planes" in this case are a
+      reference ($ref) to another section. The schema file is complete, and
+      contains everything required including descriptions which should be
+      relatively self-explanatory.</para>
+
+      <programlisting>    "storage": {
+      "type": "object",
+      "properties": {
+        "hostGroups": {
+          "$ref": "#/definitions/hostGroups"
+        },
+        "planes": {
+          "$ref": "#/definitions/storagePlanes"
+        }
+      },
+      "additionalProperties": false
+</programlisting>
+
+      <para>Note the <emphasis>additionalProperties</emphasis> value typically
+      at the end of each section in the schema. It specifies whether the
+      values allow for additional properties or not. If that
+      <emphasis>additionalProperties</emphasis> value is present and set to
+      false, then no other properties are allowed and the property list is
+      complete.</para>
+
+      <para>In working with the HPCC Systems <emphasis>values.yaml</emphasis>,
+      the values file must validate against this schema. If there is a value
+      that is not allowed as defined in the schema file it will not start and
+      instead generate an ERROR.</para>
+    </sect2>
+  </sect1>
+
+  <sect1 id="TheValuesYaml_FileAndRelated" role="nobrk">
+    <title>HPCC Systems Components and the <emphasis>values.yaml</emphasis>
+    File</title>
+
+    <para>The HPCC Systems Helm charts all ship with stock/default values.
+    These Helm charts have a set of default values ideally to be used as a
+    guide in configuring your deployment. Generally, every HPCC Systems
+    component is a list. That list defines the properties for each instance of
+    the component.</para>
+
+    <para>This section will provide additional details and any noteworthy
+    insight for the HPCC Systems components defined in the
+    <emphasis>values.yaml</emphasis> file.</para>
+
+    <sect2 id="YAMLHPCC_Components">
+      <title>The HPCC Systems Components</title>
+
+      <para>One of the key differences between the bare-metal and
+      container/cloud is that in bare-metal storage is directly tied to the
+      Thor or the Thor worker nodes, and the Roxie worker nodes, or even in
+      the case of the ECLCC Server the DLLs. In containers these are
+      completely separate and anything having to do with files is defined in
+      the <emphasis>values.yaml</emphasis>.</para>
+
+      <para>In containers component instances run dynamically. For instance,
+      if you have configured your system to use a 50-way Thor, then a 50-way
+      Thor will be spawned when a job is queued to it. When that job is
+      finished that Thor instance will disappear. This is the same pattern for
+      the other components as well.</para>
+
+      <para>Every component should have a resources entry, in the delivered
+      <emphasis>values.yaml</emphasis> file the resources are present but
+      commented out as indicated here.</para>
+
+      <para><programlisting>  #resources:
+  #  cpu: "1"
+  #  memory: "4G"
+</programlisting>The stock values file will work and allow you to stand up a
+      functional system, however you should define the component resources in
+      a manner that corresponds best to your operational strategy.</para>
+
+      <sect3 id="YML_HPCCSystemsServices">
+        <title>The Systems Services</title>
+
+        <para>Most of the HPCC Systems components have a service definition
+        entry, similar to the resources entry. All the components that have
+        service definitions follow this same pattern.</para>
+
+        <para>Any service related info needs to be under a service object, for
+        example:</para>
+
+        <para><programlisting>  service:
+    servicePort: 7200
+    visibility: local
+</programlisting></para>
+
+        <para>This applies to most all of the HPCC Systems components, ESP,
+        Dali, dafilesrv, and Sasha. Roxie's specification is slightly
+        different, in that it has its service defined under "roxieservice".
+        Each Roxie can then have multiple "roxieservice" definitions. (see
+        schema).</para>
+      </sect3>
+
+      <sect3 id="DALI_ValueYAML" role="brk">
+        <title>Dali</title>
+
+        <para>When configuring Dali, which also has a resources section, it is
+        going to want plenty of memory and a good amount of CPU as well. It is
+        very important to define these carefully. Otherwise Kubernetes could
+        assign all the pods to the same virtual machine and components
+        fighting for memory will crush them. Therefore more memory assigned
+        the better. If you define these wrong and a process uses more memory
+        than configured, Kubernetes will kill the pod.</para>
+      </sect3>
+
+      <sect3 id="DAFLESRV_DFURVR_YMLSECT">
+        <title>Components: dafilesvrs, dfuserver</title>
+
+        <para>The HPCC Systems components of dafilesvrs, eclccservers,
+        dfuserver, are declared as lists in the YAML file, as is the ECL
+        Agent.</para>
+
+        <para>Consider the dfuserver which is in the delivered HPCC Systems
+        <emphasis>values.yaml</emphasis> as:</para>
+
+        <programlisting>dfuserver:
+- name: dfuserver
+  maxJobs: 1</programlisting>
+
+        <para>If you were to add a mydfuserver as follows</para>
+
+        <para><programlisting>dfuserver:
+- name: dfuserver
+  maxJobs: 1
+- name: mydfuserver
+  maxJobs: 1
+</programlisting>In this scenario you would have another item here named
+        mydfuserver and it would show up in ECLWatch and you can submit items
+        to that.</para>
+
+        <para>If you wanted to add another dfuserver, you can add that to the
+        list similarly. You can likewise instantiate other components by
+        adding them to their respective lists.</para>
+      </sect3>
+
+      <sect3 id="VALYml_ECLCCServer">
+        <title>ECL Agent and ECLCC Server</title>
+
+        <para>Values of note for the ECL Agent and ECLCC Server.</para>
+
+        <para><emphasis role="bold">useChildProcess</emphasis> -- As defined
+        in the schema, launches each workunit compile as a child process
+        rather than in its own container. When you submit a job or query to
+        compile it gets queued and processed, with this option set to true it
+        will spawn a child process utilizing almost no additional overhead in
+        starting. Ideal for sending many small jobs to compile. However,
+        because each compile job is no longer executed as an independent pod
+        with it's own resource specifications, but instead runs as a child
+        process within the ECLCC Server pod itself, the ECLCC Server pod must
+        be defined with adequate resources for itself (minimal for listening
+        to the queue etc.) and all the jobs it may have to run in
+        parallel.</para>
+
+        <para>For example, imagine <emphasis>maxJobs</emphasis> is set to 4,
+        and 4 large queries are queued rapidly, that will mean 4 child
+        processes are launched each consuming cpu and memory within the ECLCC
+        Server pod. With the component configured with
+        <emphasis>useChildProcesses</emphasis> set to true, each job will run
+        in the same pod (up to the value of <emphasis>maxJobs</emphasis> in
+        parallel). Therefore with <emphasis>useChildProcesses</emphasis>
+        enabled, the component resources must be defined such that the pod has
+        enough resources to handle the resource demands of all those jobs to
+        be able to run in parallel.</para>
+
+        <para>With useChildProcess enabled it could be rather expensive in
+        most cloud pricing models, and rather wasteful if there aren't any
+        jobs running. Instead you can set this
+        <emphasis>useChildprocess</emphasis> to false (the default) to start a
+        pod to compile each query with only the required memory for the job
+        which will be disposed of when done. Now this model also has
+        overheard, perhaps 20 seconds to a minute to spawn the Kubernetes
+        cluster to process the job. Which may not be ideal for an environment
+        which is sending several small jobs, but rather larger jobs which
+        would minimize the effect of the overhead in starting the Kubernetes
+        cluster.</para>
+
+        <para>Setting <emphasis>useChildProcess</emphasis> to false better
+        allows for the possibility of dynamic scaling. For jobs which would
+        take a long while to compile, the extra (start up) overhead is
+        minimal, and that would be the ideal case to have the
+        <emphasis>useChildProcess</emphasis> as false. Setting
+        <emphasis>useChildProcess</emphasis> to false only allows 1 pod per
+        compile, though there is an attribute for putting a time limit on that
+        compilation.</para>
+
+        <para><emphasis role="bold">ChildProcessTimeLimit</emphasis> is the
+        time limit (in seconds) for child process compilation before aborting
+        and using a separate container, when the
+        <emphasis>useChildProcesses</emphasis> is false.</para>
+
+        <para><emphasis role="bold">maxActive</emphasis> -- The maximum number
+        of jobs that can be run in parallel. Again use caution because each
+        job will need enough memory to run. For instance, if
+        <emphasis>maxActive</emphasis> is set to 2000, you could submit a very
+        big job and in that case spawn some 2000 jobs using a considerable
+        amount of resources, which could potentially run up a rather expensive
+        compilation bill, again depending on your cloud provider and your
+        billing plan.</para>
+      </sect3>
+
+      <sect3 id="ValYML_Sasha">
+        <title>Sasha</title>
+
+        <para>The configuration for Sasha is an outlier as it is a dictionary
+        type structure and not a list. You can't have more than one archiver
+        or dfuwu-archiver as that is a value limitation, you can choose to
+        either have the service or not (set the 'disabled' value to
+        true).</para>
+      </sect3>
+
+      <sect3 id="ValYML_Thor">
+        <title>Thor</title>
+
+        <para>Thor instances run dynamically, as do the other components in
+        containers. The configuration for Thor also consists of a list of Thor
+        instances. Each instance dynamically spawns a collection of pods
+        (manager + N workers) when jobs are queued to it. When idle there are
+        no worker (or manager) pods running.</para>
+
+        <para>If you wanted a 50-way Thor you set the number of workers, the
+        <emphasis role="bold">numWorkers</emphasis> value to 50 and you would
+        have a 50-way Thor. As indicated in the following example:</para>
+
+        <para><programlisting>thor:
+- name: thor
+  prefix: thor
+  numWorkers: 50</programlisting></para>
+
+        <para>In doing so, ideally you should rename the resource to something
+        which clearly describes it, such as <emphasis>thor_50</emphasis> as in
+        the following example.</para>
+
+        <para><programlisting>- name: thor_50</programlisting></para>
+
+        <para>Updating the <emphasis>numWorkers</emphasis> value will restart
+        the Thor agent listening to the queue, causing all new jobs to use the
+        new configuration.</para>
+
+        <para><emphasis role="bold">maxJobs</emphasis> -- Controls the number
+        of jobs, specifically <emphasis>maxJobs</emphasis> sets the maximum
+        number of jobs.</para>
+
+        <para><emphasis role="bold">maxGraphs</emphasis> -- Limits the maximum
+        amount of graphs. It generally makes sense to keep this value below or
+        at the same number as <emphasis>maxJobs</emphasis>, since not all jobs
+        submit graphs and when they do the Thor jobs are not executing graphs
+        all the time. If there are more than 2 submitted (Thor) graphs, the
+        second would be blocked until the next Thor instance becomes
+        available.</para>
+
+        <para>The idea here is that jobs may spend significant amount of time
+        outside of graphs, such as waiting on a workflow state (outside of the
+        Thor engine itself), blocked on a persist, or updating super files,
+        etc. Then it makes sense for Thor to have a higher limit of concurrent
+        jobs (<emphasis>maxJobs</emphasis>) than graphs
+        (<emphasis>maxGraphs</emphasis> / Thor instances). Since Thor
+        instances (graphs) are relatively expensive (lots of pods/higher
+        resource use), while workflow pods (jobs) are comparatively
+        cheap.</para>
+
+        <para>Thus, the delivered (example) chart values defines
+        <emphasis>maxJobs</emphasis> to be greater than
+        <emphasis>maxGraphs</emphasis>. Jobs queued to a Thor aren't always
+        running graphs. Therefore it can make sense to have more of these
+        jobs, which are not consuming a large Thor and all its resources, but
+        restrict the max number of Thor instances running.</para>
+
+        <para>Thor has 3 components (that correspond to the resource
+        sections).</para>
+
+        <orderedlist>
+          <listitem>
+            <para>Workflow</para>
+          </listitem>
+
+          <listitem>
+            <para>Manager</para>
+          </listitem>
+
+          <listitem>
+            <para>Workers</para>
+          </listitem>
+        </orderedlist>
+
+        <para>The Manager and Workers are launched together and consume quite
+        a bit of resoures (and nodes) typically. While the Workflow is
+        inexpensive and usually doesn't require as many resources. You might
+        expect in a Kubernetes world, many of them would co-exist on the same
+        node (and therefore be inexpensive). So it makes sense for
+        <emphasis>maxJobs</emphasis> to be higher, and
+        <emphasis>maxGraphs</emphasis> to be lower</para>
+
+        <para>In Kubernetes, jobs run independently in their own pods. While
+        in bare-metal we can have jobs that could affect other jobs because
+        they are running in the same process space.</para>
+      </sect3>
+
+      <sect3 id="YAML_Thor_and_hThor_Memory">
+        <title>Thor and hThor Memory</title>
+
+        <para>The Thor and hThor <emphasis>memory</emphasis> sections allow
+        the resource memory of the component to be refined into different
+        areas.</para>
+
+        <para>For example, the "workerMemory" for a Thor defined as:</para>
+
+        <programlisting>thor:
+- name: thor
+  prefix: thor
+  numWorkers: 2
+  maxJobs: 4
+  maxGraphs: 2
+  managerResources:
+    cpu: "1"
+    memory: "2G"
+  workerResources:
+    cpu: "4"
+    memory: "4G"
+  workerMemory:
+    query: "3G"
+    thirdParty: "500M"
+  eclAgentResources:
+    cpu: "1"
+    memory: "2G"</programlisting>
+
+        <para>The "<emphasis>workerResources</emphasis>" section will tell
+        Kubernetes to resource 4G per worker pod. By default Thor will reserve
+        90% of this memory to use for HPCC query memory (roxiemem). The
+        remaining 10% is left for all other non-row based (roxiemem) usage,
+        such as general heap, OS overheads, etc. There is no allowance for any
+        3rd party library, plugins, or embedded language usage within this
+        default. In other words, if for example embedded Python allocates 4G,
+        the process will soon fail with an out of memory error, when it starts
+        to use any memory, since it was expecting 90% of that 4G to be freely
+        available to use for itself.</para>
+
+        <para>These defaults can be overridden by the memory sections. In this
+        example, <emphasis>workerMemory.query</emphasis> defines that 3G of
+        the available resourced memory should be assigned to query memory, and
+        500M to "thirdParty" uses.</para>
+
+        <para>This limits the HPCC Systems memory
+        <emphasis>roxiemem</emphasis> usage to exactly 3G, leaving 1G free
+        other purposes. The "thirdParty" is not actually allocated, but is
+        used solely as part of the running total, to ensure that the
+        configuration doesn't specify a total in this section larger than the
+        resources section, e.g., if "thirdParty" was set to "2G" in the above
+        section, there would be a runtime complaint when Thor ran that the
+        definition exceeded the resource limit.</para>
+
+        <para>It is also possible to override the default recommended
+        percentage (90% by default), by setting
+        <emphasis>maxMemPercentage</emphasis>. If "query" is not defined, then
+        it is calculated to be the recommended max memory minus the defined
+        memory (e.g., "thirdParty").</para>
+
+        <para>In Thor there are 3 resource areas,
+        <emphasis>eclAgent</emphasis>, <emphasis>ThorManager</emphasis>, and
+        <emphasis>ThorWorker</emphasis>(s). Each has a *Resource area that
+        defines their Kubernetes resource needs, and a corresponding *Memory
+        section that can be used to override default memory allocation
+        requirements.</para>
+
+        <para>These settings can also be overridden on a per query basis, via
+        workunit options following the pattern:
+        &lt;memory-section-name&gt;.&lt;property&gt;. For example:
+        #option('workerMemory.thirdParty', "1G");</para>
+
+        <para><emphasis role="bold">Note:</emphasis> Currently there is only
+        "query" (HPCC roxiemem usage) and "thirdParty" for all/any 3rd party
+        usage. It's possible that further categories will be added in future,
+        like "python" or "java" - that specifically define memory uses for
+        those targets.</para>
+      </sect3>
+    </sect2>
+  </sect1>
+
+  <sect1 id="Delivered_HPCC_ValuesYaml">
+    <title>The HPCC Systems <emphasis>values.yaml</emphasis> file</title>
+
+    <para>The delivered HPCC systems <emphasis>values.yaml</emphasis> file is
+    more of an example providing a basic type configuration which should be
+    customized for your specific needs. One of the main ideas behind the
+    values file is to be able to relatively easily customize it to your
+    specific scenario. The delivered chart is set up to be sensible enough to
+    understand, while also allowing for relatively easy customization to
+    configure a system to your specific requirements. This section will take a
+    closer look at some aspects of the delivered
+    <emphasis>values.yaml</emphasis>.</para>
+
+    <para>The delivered HPCC Systems Values file primarily consists of the
+    following areas:</para>
+
+    <para><informaltable>
+        <tgroup cols="3">
+          <tbody>
+            <row>
+              <entry>global</entry>
+
+              <entry>storage</entry>
+
+              <entry>visibilities</entry>
+            </row>
+
+            <row>
+              <entry>data planes</entry>
+
+              <entry>certificates</entry>
+
+              <entry>security</entry>
+            </row>
+
+            <row>
+              <entry>secrets</entry>
+
+              <entry>components</entry>
+
+              <entry></entry>
+            </row>
+          </tbody>
+        </tgroup>
+      </informaltable></para>
+
+    <para>The subsequent sections will examine some of these more closely and
+    why each of them is there.</para>
+
+    <sect2 id="ValYAML_STorage">
+      <title>Storage</title>
+
+      <para>Containerized Storage is another key concept that differs from
+      bare-metal. There are a few differences between container and bare-metal
+      storage. The Storage section is fairly well defined between the schema
+      file, and the <emphasis>values.yaml</emphasis>. A good approach towards
+      storage is to clearly understand your storage needs, and to outline
+      them, and once you have that basic structure in mind the schema can help
+      to fill in the details. The schema should have a decent description for
+      each attribute. All storage should be defined via planes. There is a
+      relevant comment in the <emphasis>values.yaml</emphasis> further
+      describing storage.</para>
+
+      <programlisting>## storage:
+##
+## 1. If an engine component has the dataPlane property set, 
+#       then that plane will be the default data location for that component.
+## 2. If there is a plane definition with a category of "data" 
+#       then the first matching plane will be the default data location
+##
+## If a data plane contains the storageClass property then an implicit pvc 
+#       will be created for that data plane.
+##
+## If plane.pvc is defined, a Persistent Volume Claim must exist with that name, 
+#       storageClass and storageSize are not used.
+##
+## If plane.storageClass is defined, storageClassName: &lt;storageClass&gt;
+## If set to "-", storageClassName: "", which disables dynamic provisioning
+## If set to "", choosing the default provisioner.  
+#       (gp2 on AWS, standard on GKE, AWS &amp; OpenStack)
+##
+## plane.forcePermissions=true is required by some types of provisioned
+## storage, where the mounted filing system has insufficient permissions to be
+## read by the hpcc pods. Examples include using hostpath storage (e.g. on
+## minikube and docker for desktop), or using NFS mounted storage.
+</programlisting>
+
+      <para>There are different categories of storage, for an HPCC Systems
+      deployment you must have at a minimum a dali category, a dll category,
+      and at least 1 data category. These types are generally applicable for
+      every configuration in addition to other optional categories of
+      data.</para>
+
+      <para>All storage should be in a storage plane definition. This is best
+      described in the comment in the storage definition in the values
+      file.</para>
+
+      <programlisting>planes:
+  #   name: &lt;required&gt;
+  #   prefix: &lt;path&gt;                        # Root directory for accessing the plane 
+                                            # (if pvc defined), 
+  #                                         # or url to access plane.
+  #   category: data|dali|lz|dll|spill|temp # What category of data is stored on this plane?
+  #
+  # For dynamic pvc creation:
+  #   storageClass: ''
+  #   storageSize: 1Gi
+  #
+  # For persistent storage:
+  #   pvc: &lt;name&gt;                           # The name of the persistant volume claim
+  #   forcePermissions: false
+  #   hosts: [ &lt;host-list&gt; ]                 # Inline list of hosts
+  #   hostGroup: &lt;name&gt;                     # Name of the host group for bare-metal 
+  #                                         # must match the name of the storage plane..
+  #
+  # Other options:
+  #   subPath: &lt;relative-path&gt;              # Optional sub directory within &lt;prefix&gt; 
+  #                                         # to use as the root directory
+  #   numDevices: 1                         # number of devices that are part of the plane
+  #   secret: &lt;secret-id&gt;                   # what secret is required to access the files.  
+  #                                         # This could optionally become a list if required 
+                                            # (or add secrets:).
+
+  #   defaultSprayParts: 4                  # The number of partitions created when spraying 
+                                            # (default: 1)
+
+  #   cost:                                 # The storage cost
+  #     storageAtRest: 0.0135               # Storage at rest cost: cost per GiB/month</programlisting>
+
+      <para>Each plane has 3 required fields: The name, the category and the
+      prefix.</para>
+
+      <para>When the system is installed,using the stock supplied values it
+      will create a storage volume which has 1 GB capacity via the following
+      properties.</para>
+
+      <para>For example:</para>
+
+      <programlisting>- name: dali
+  storageClass: ""
+  storageSize: 1Gi
+  prefix: "/var/lib/HPCCSystems/dalistorage"
+  category: dali
+</programlisting>
+
+      <para>Most commonly the prefix: defines the path within the container
+      where the storage is mounted. The prefix can be a URL for blob storage.
+      All pods will use the (prefix: ) path to access the storage.</para>
+
+      <para>For the above example, when you look at the storage list, the
+      <emphasis>storageSize</emphasis> will create a volume with 1 GB
+      capacity. The prefix will be the path, the category is used to limit
+      access to the data, and to minimize the number of volumes accessible
+      from each component.</para>
+
+      <para>The dynamic storage lists in the <emphasis>values.yaml</emphasis>
+      file are characterized by the storageClass: and storageSize:
+      values.</para>
+
+      <para><emphasis role="bold">storageClass</emphasis>: defines which
+      storage provisioner should be used to allocate the storage. A blank
+      storage class indicates it should use the default cloud providers
+      storage class.</para>
+
+      <para><emphasis role="bold">storageSize</emphasis>: As indicated in the
+      example, defines the capacity of the volume.</para>
+
+      <sect3 id="YAML_StorageCategory">
+        <title>Storage Category</title>
+
+        <para>Storage category is used to indicate the kind of data that is
+        being stored in that location. Different planes are used for the
+        different categories to isolate the different types of data from each
+        other, but also because they often require different performance
+        characteristics. A named plane may only store one category of data.
+        The following sections look at the currently supported categories of
+        data used in our containerized deployment.</para>
+
+        <para><programlisting> category: data|dali|lz|dll|spill|temp  # What category of data is stored on this plane?</programlisting></para>
+
+        <para>The system itself can write out to any data plane. This is how
+        the data category can help to improve performance. For example, if you
+        have an index, Roxie would want rapid access to data, versus other
+        components.</para>
+
+        <para>Some components may use only 1 category, some can use several.
+        The values file can contain more than one storage plane definition for
+        each category. The first storage plane in the list for each category
+        is used as the default location to store that category of data. These
+        categories minimize the exposure of plane data to components that
+        don't need them. For example the ECLCC Server component does not need
+        to know about landing zones, or where Dali stores its data, so it only
+        mounts the plane categories it needs.</para>
+      </sect3>
+
+      <sect3 id="YML_EphemeralStorage">
+        <title>Ephemeral Storage</title>
+
+        <para>Ephemeral storage is allocated when the HPCC Systems cluster is
+        installed and deleted when the chart is uninstalled. This is helpful
+        in keeping cloud costs down but may not be appropriate for your
+        data.</para>
+
+        <para>In your system, you would want to override the delivered stock
+        value(s) with storage appropriate for your specific needs. The
+        supplied values create ephemeral or temporary persistent volumes that
+        get automatically deleted when the chart is uninstalled. You probably
+        want the storage to be persistent. You should customize the storage to
+        a more suitable configuration for your needs.</para>
+      </sect3>
+
+      <sect3 id="YAML_Persist_storage">
+        <title>Persistent Storage</title>
+
+        <para>Kubernetes uses persistent volume claims (pvcs) to provide
+        access to data storage. HPCC Systems supports cloud storage through
+        the cloud provider that can be exposed through these persistent volume
+        claims.</para>
+
+        <para>Persistent Volume Claims can be created by overriding the
+        storage values in the delivered Helm chart. The values in the
+        <emphasis
+        role="boldIt">examples/local/values-localfile.yaml</emphasis> provided
+        override the corresponding entries in the original delivered stock
+        HPCC Systems helm chart. The localfile chart creates persistent
+        storage volumes. You can use the
+        <emphasis>values-localfile.yaml</emphasis> directly (as demonstrated
+        in separate docs/tutorials) or you can use it as a basis for creating
+        your own override chart.</para>
+
+        <para>To define a storage plane that utilizes a PVC, you must decide
+        on where that data will reside. You create the storage directories,
+        with the appropriate names and then you can install the localfiles
+        Helm chart to create the volumes to use the local storage option, such
+        as in the following example:</para>
+
+        <programlisting>helm install mycluster hpcc/hpcc -f examples/local/values-localfile.yaml</programlisting>
+
+        <para><emphasis role="bold">Note: </emphasis>The settings for the
+        PVC's must be ReadWriteMany, except for Dali which can be
+        ReadWriteOnce.</para>
+
+        <para>There are a number of resources, blogs, tutorials, even
+        developer videos that provide step-by-step detail for creating
+        persistent storage volumes.</para>
+      </sect3>
+
+      <sect3 id="CYML_BareMEtalStorage">
+        <title>Bare Metal Storage</title>
+
+        <para>There are two aspects to using bare-metal storage in the
+        Kubernetes system. The first is the <emphasis>hostGroups</emphasis>
+        entry in the storage section which provides named lists of hosts. The
+        <emphasis>hostGroups</emphasis> entries can take one of two forms.
+        This is the most common form, and directly associates a list of host
+        names with a name:</para>
+
+        <programlisting>storage: 
+  hostGroups: 
+  - name:  &lt;name&gt; "The name of the host group" 
+    hosts: [ "a list of host names" ] 
+</programlisting>
+
+        <para>The second form allows one host group to be derived from
+        another:</para>
+
+        <programlisting>storage: 
+  hostGroups: 
+  - name: "The name of the host group process" 
+    hostGroup: "Name of the hostgroup to create a subset of" 
+    count: &lt;Number of hosts in the subset&gt; 
+    offset: &lt;the first host to include in the subset&gt;  
+    delta: &lt;Cycle offset to apply to the hosts&gt; 
+</programlisting>
+
+        <para>Some typical examples with bare-metal clusters are smaller
+        subsets of the host, or the same hosts, but storing different parts on
+        different nodes, for example:</para>
+
+        <programlisting>storage: 
+  hostGroups: 
+  - name: groupABCDE # Explicit list of hosts 
+    hosts: [A, B, C, D, E] 
+  - name groupCDE # Subset of the group last 3 hosts 
+    hostGroup: groupABCDE 
+    count: 3 
+    offset: 2  
+  - name groupDEC # Same set of hosts, but different part-&gt;host mapping 
+    hostGroup: groupCDE 
+    delta: 1</programlisting>
+
+        <para>The second aspect is to add a property to the storage plane
+        definition to indicate which hosts are associated with it. There are
+        two options:</para>
+
+        <itemizedlist>
+          <listitem>
+            <para><emphasis role="bold">hostGroup: &lt;name&gt;</emphasis> The
+            name of the host group for bare-metal. The name of the hostGroup
+            must match the name of the storage plane.</para>
+          </listitem>
+
+          <listitem>
+            <para><emphasis role="bold">hosts:
+            &lt;list-of-namesname&gt;</emphasis> An inline list of hosts.
+            Primarily useful for defining one-off external landing
+            zones.</para>
+          </listitem>
+        </itemizedlist>
+
+        <para>For Example:</para>
+
+        <programlisting>storage: 
+  planes: 
+  - name: demoOne 
+    category: data 
+    prefix: "/home/demo/temp" 
+    hostGroup: groupABCD # The name of the hostGroup 
+  - name: myDropZone 
+    category: lz 
+    prefix: "/home/demo/mydropzone" 
+    hosts: [ 'mylandingzone.com' ] # Inline reference to an external host. </programlisting>
+      </sect3>
+
+      <sect3 id="CV_RemoteStorage" role="brk">
+        <title>Remote Storage</title>
+
+        <para>You can configure your HPCC Systems cloud deployment to access
+        logical files from other remote environments. You configure this
+        remote storage by adding a "remote" section to your helm chart.</para>
+
+        <para>The <emphasis>storage.remote</emphasis> section is a list of
+        named remote environments that define the remote service url and a
+        section that maps the remote plane names to local plane names. The
+        local planes referenced are special planes with the category 'remote'.
+        They are read-only and only exposed to the engines which can read from
+        them.</para>
+
+        <para>For Example:</para>
+
+        <programlisting>storage:
+  planes:
+...
+  - name: hpcc2-stddata
+    pvc: hpcc2-stddata-pv
+    prefix: "/var/lib/HPCCSystems/hpcc2/hpcc-stddata"
+    category: remote
+  - name: hpcc2-fastdata
+    pvc: hpcc2-fastdata-pv
+    prefix: "/var/lib/HPCCSystems/hpcc2/hpcc-fastdata"
+    category: remote
+  remote:
+  - name: hpcc2
+    service: http://20.102.22.31:8010
+    planes:
+    - remote: data
+      local: hpcc2-stddata
+    - remote: fastdata
+      local: hpcc2-fastdata</programlisting>
+
+        <para>This example defines a remote target called "hpcc2" whose DFS
+        service url is http://20.102.22.31:8010 and whose local plane is
+        "hpcc2data". The local plane must be defined such that it shares the
+        same storage as the remote environment. This is expected to be done
+        via a PVC that has been pre-configured to use the same storage.</para>
+
+        <para>To access the logical file in ECL use the following
+        format:</para>
+
+        <programlisting>ds := DATASET('~remote::hpcc2::somescope1::somelfn1', rec);</programlisting>
+
+        <para></para>
+      </sect3>
+    </sect2>
+
+    <sect2 id="StorageItems_HPCC_Systems_Coomponents" role="brk">
+      <title>Storage Items for HPCC Systems Components</title>
+
+      <sect3 id="YML-DOC_GenData-Storage">
+        <title>General Data Storage</title>
+
+        <para>General data files generated by HPCC are stored stored in data.
+        For Thor, data storage costs could likely be significant. Sequential
+        access speed is important, but random access is much less so. For
+        ROXIE, speed of random access is likely to be most important.</para>
+      </sect3>
+
+      <sect3>
+        <title>LZ</title>
+
+        <para>LZ or lz, utilized for landing zone data. This is where we would
+        put raw data coming into the system. A landing zone where external
+        users can read and write files. HPCC Systems can import from or export
+        files to a landing zone. Typically performance is less of an issue, it
+        could be blob/s3 bucket storage, accessed either directly or via an
+        NFS mount.</para>
+      </sect3>
+
+      <sect3>
+        <title>dali</title>
+
+        <para>The location of the dali metadata store, which needs to support
+        fast random access.</para>
+      </sect3>
+
+      <sect3>
+        <title>dll</title>
+
+        <para>Where the compiled ECL queries are stored. The storage needs to
+        allow shared objects to be directly loaded from it efficiently.</para>
+
+        <para>If you wanted both Dali and dll data on the same plane, it is
+        possible to use the same prefix for both subpath properties. Both
+        would use the same prefix, but should have different subpaths.</para>
+      </sect3>
+
+      <sect3>
+        <title>sasha</title>
+
+        <para>This is the location where archived workunits, etc are stored
+        and it is typically less speed critical, requiring lower storage
+        costs.</para>
+      </sect3>
+
+      <sect3>
+        <title>spill</title>
+
+        <para>An optional category where the spill files are written out to.
+        Local NVMe disks are potentially a good choice for this.</para>
+      </sect3>
+
+      <sect3>
+        <title>temp</title>
+
+        <para>An optional category where temp files can be written to.</para>
+      </sect3>
+    </sect2>
+
+    <sect2 id="Egress-HYAML" role="brk">
+      <title>Egress</title>
+
+      <para>In order to allow clusters to be securely locked down but still
+      allow access to the services they need there is an egress mechanism.
+      Egress provides a similar mechanism to Ingress, by being able to define
+      which endpoints and ports components are permitted to connect to.</para>
+
+      <para>Most HPCC Systems components have their own auto-generated network
+      policies. The generated network policies typically work to limit ingress
+      and egress to inter-component communication, or expected external
+      service ingress only.</para>
+
+      <para>For instance, in a default deployed system with network policies
+      enforced, a query running (on hThor, Thor, or Roxie), will not be able
+      to connect with a 3rd party service, such as an LDAP service or log
+      stack.</para>
+
+      <para>In the default configuration, any pod with Kube API access will
+      also have access to any external endpoint. This is because a
+      <emphasis>NetworkPolicy</emphasis> is generated for egress access for
+      components that need access to the Kube API. However,
+      <emphasis>global.egress.kubeApiCidr</emphasis> and
+      <emphasis>global.egress.kubeApiPort</emphasis> in the values.yaml should
+      be configured in a secure system to lock this egress access down so that
+      it only exposes egress access to the Kube API endpoint.</para>
+
+      <para>We have added a mechanism similar to the visibilities definitions,
+      which allows named egress sections, which can then be referenced per
+      component.</para>
+
+      <para>For example:</para>
+
+      <programlisting>global:
+  egress:
+    engineEgress:
+    - to:
+        - ipBlock:
+            cidr: 201.13.21.0/24
+        - ipBlock:
+            cidr: 142.250.187.0/24
+      ports:
+        - protocol: TCP
+          port: 6789
+        - protocol: TCP
+          port: 7890
+...
+
+thor:
+...
+  egress: engineEgress</programlisting>
+
+      <para>Note that the name 'engineEgress' is an arbitrary name, any name
+      can be chosen, and any number of these named egress sections can be
+      defined.</para>
+
+      <para>For more information, please see the <emphasis>egress:</emphasis>
+      section in the default stock/delivered HPCC Systems YAML file. The
+      <emphasis>values.yaml</emphasis> file can be found under the helm/hpcc/
+      directory on the HPCC Systems github repository:</para>
+
+      <para><ulink
+      url="https://github.com/hpcc-systems/HPCC-Platform">https://github.com/hpcc-systems/HPCC-Platform</ulink></para>
+    </sect2>
+
+    <sect2>
+      <title>The Security Values</title>
+
+      <para>This section will look at the <emphasis>values.yaml</emphasis>
+      sections dealing with the system security components.</para>
+
+      <sect3>
+        <title>Certificates</title>
+
+        <para>The certificates section can be used to enable the cert-manager
+        to generate TLS certificates for each component in the HPCC Systems
+        deployment.</para>
+
+        <programlisting>certificates:
+  enabled: false
+  issuers:
+    local:
+      name: hpcc-local-issuer</programlisting>
+
+        <para>In the delivered YAML file certificates are not enabled, as
+        illustrated above. You must first install the cert-manager to use this
+        feature.</para>
+      </sect3>
+
+      <sect3 id="ValYAML_Secrets">
+        <title>Secrets</title>
+
+        <para>The Secrets section contains a set of categories, each of which
+        contain a list of secrets. The Secrets section is where to get info
+        into the system if you don't want it in the source. Such as code with
+        embedded code, you can have that defined in the code sign sections. If
+        you have information that you don't want public but need to run it you
+        could use secrets. There is a category named "eclUser" which is where
+        you would put secrets that you want to be readable directly from ECL
+        code. Other secret categories, including the "ecl" category, are read
+        internally by system components and not exposed directly to ECL
+        code.</para>
+      </sect3>
+
+      <sect3>
+        <title>Vaults</title>
+
+        <para>Vaults is another way to do Secrets. The vaults section mirrors
+        the secret section but leverages <emphasis>HashiCorp Vault</emphasis>
+        for the storage of secrets. There is a category for vaults named
+        "eclUser". The intent of the eclUser vault category is to be readable
+        directly from ECL code. Only add vault configurations to the "eclUser"
+        category that you want ECL users to be able to access. Other vault
+        categories, including the "ecl" category, are read internally by
+        system components and not exposed directly to ECL code.</para>
+      </sect3>
+
+      <sect3 id="CV_CrossOriginRes">
+        <title>Cross Origin Resource Handling</title>
+
+        <para>Cross-origin resource sharing (CORS) is a mechanism for
+        integrating applications in different domains. CORS defines how client
+        web applications in one domain can interact with resources in another
+        domain. You can configure CORS support settings in the ESP section of
+        the values.yaml file as illustrated below: </para>
+
+        <programlisting>esp:
+- name: eclwatch
+  application: eclwatch
+  auth: ldap
+  replicas: 1
+  # The following 'corsAllowed' section is used to configure CORS support
+  #   origin - the origin to support CORS requests from
+  #   headers - the headers to allow for the given origin via CORS
+  #   methods - the HTTP methods to allow for the given origin via CORS
+  #
+  corsAllowed:
+  # origin starting with https will only allow https CORS
+  - origin: https://*.example2.com
+    headers:
+    - "X-Custom-Header"
+    methods:
+    - "GET"
+  # origin starting with http will allow http or https CORS
+  - origin: http://www.example.com
+    headers:
+    - "*"
+    methods:
+    - "GET"
+    - "POST" </programlisting>
+      </sect3>
+    </sect2>
+
+    <sect2>
+      <title>Visibilities</title>
+
+      <para>The visibilities section can be used to set labels, annotations,
+      and service types for any service with the specified visibility.</para>
+    </sect2>
+
+    <sect2 id="Replicas-Resources-YAML">
+      <title>Replicas and Resources</title>
+
+      <para>Other noteworthy values in the charts that have bearing on HPCC
+      Systems set up and configuration.</para>
+
+      <sect3 id="REPLICAS_">
+        <title>Replicas</title>
+
+        <para>replicas: defines how many replica nodes come up, how many pods
+        run to balance a load. To illustrate, if you have a 1-way Roxie and
+        set replicas to 2 you would have 2, 1-way Roxies.</para>
+      </sect3>
+
+      <sect3 id="RESOURCES_ValuesYAML">
+        <title>Resources</title>
+
+        <para>Most all components have a resources section which defines how
+        many resources are assigned to that component. In the stock delivered
+        values files, the resources: sections are there for illustration
+        purposes only, and are commented out. Any cloud deployment that will
+        be performing any non-trivial function, these values should be
+        properly defined with adequate resources for each component, in the
+        same way you would allocate adequate physical resources in a data
+        center. Resources should be set up in accordance with your specific
+        system requirements and the environment you would be running them in.
+        Improper resource definition can result in running out of memory
+        and/or Kubernetes eviction, since the system could use unbound amounts
+        of resources, such as memory, and nodes will get overwhelmed, at which
+        point Kubernetes will started evicting pods. Therefore if your
+        deployment is seeing frequent evictions, you may want to adjust your
+        resource allocation.</para>
+
+        <para><programlisting>  #resources:
+  #  cpu: "1"
+  #  memory: "4G"
+</programlisting>Every component should have a resources entry, but some
+        components such as Thor have multiple resources. The manager, worker,
+        eclagent components all have different resource requirements.</para>
+      </sect3>
+    </sect2>
+
+    <sect2 id="ENV_values_yaml">
+      <title>Environment Values</title>
+
+      <para>You can define environment variables in a YAML file. The
+      environment values are defined under the <emphasis>global.env</emphasis>
+      portion of the provided HPCC Systems values.yaml file. These values are
+      specified as a list of name value pairs as illustrated below.</para>
+
+      <programlisting>global:
+  env:
+  - name: SMTPserver 
+    value: mysmtpserver</programlisting>
+
+      <para>The global.env section of the supplied values.yaml file adds
+      default environment variables for all components. You can also specify
+      environment variables for the individual components. Refer to the schema
+      for setting this value for individual components.</para>
+
+      <para>To add environment values you can insert them into your
+      customization configuration YAML file when you deploy your containerized
+      HPCC Systems.</para>
+
+      <sect3>
+        <title>Environment Variables for Containerized Systems</title>
+
+        <para>There are several settings in environment.conf for bare-metal
+        systems. While many environment.conf settings are not valid for
+        containers, some can be useful. In a cloud deployment, these settings
+        are inherited from environment variables. These environment variables
+        are configurable using the values yaml either globally, or at the
+        component level.</para>
+
+        <para>Some of those variables are available for container and cloud
+        deployments and can be set using the Helm chart. The following
+        bare-metal environment.conf values have these equivalent values which
+        can be set for containerized instances.</para>
+
+        <para><informaltable>
+            <tgroup cols="2">
+              <tbody>
+                <row>
+                  <entry><emphasis role="bold">Environment.conf
+                  Value</emphasis></entry>
+
+                  <entry><emphasis role="bold">Helm Environment
+                  Variable</emphasis></entry>
+                </row>
+
+                <row>
+                  <entry>skipPythonCleanup</entry>
+
+                  <entry>SKIP_PYTHON_CLEANUP</entry>
+                </row>
+
+                <row>
+                  <entry>jvmlibpath</entry>
+
+                  <entry>JAVA_LIBRARY_PATH</entry>
+                </row>
+
+                <row>
+                  <entry>jvmoptions</entry>
+
+                  <entry>JVM_OPTIONS</entry>
+                </row>
+
+                <row>
+                  <entry>classpath</entry>
+
+                  <entry>CLASSPATH</entry>
+                </row>
+              </tbody>
+            </tgroup>
+          </informaltable></para>
+
+        <para>The following example sets the environment variable to skip
+        Python cleanup on the Thor component:</para>
+
+        <para><programlisting>thor: 
+  env: 
+  - name: SKIP_PYTHON_CLEANUP 
+    value: true</programlisting></para>
+      </sect3>
+    </sect2>
+
+    <sect2 id="CNT_IndexBuildPlane">
+      <title>Index Build Plane</title>
+
+      <para>Define the <emphasis>indexBuildPlane</emphasis> value as a helm
+      chart option to allow index files to be written by default to a
+      different data plane. Unlike flat files, index files have different
+      requirements. The index files benefit from quick random access storage.
+      Ordinarily flat files and index files are output to the defined default
+      data plane(s). Using this option you can define that index files are
+      built on a separate data plane from other common files. This chart value
+      can be supplied at a component or global level.</para>
+
+      <para>For example, adding the value to a global level under
+      globlal.storage :</para>
+
+      <programlisting>global:
+  storage:
+    indexBuildPlane: myindexplane</programlisting>
+
+      <para>Optionally, you could add it at the component level, as
+      follows:</para>
+
+      <programlisting>thor:
+- name: thor
+  prefix: thor
+  numWorkers: 2
+  maxJobs: 4
+  maxGraphs: 2
+  indexBuildPlane: myindexplane</programlisting>
+
+      <para>When this value is set at the component level it would override
+      the value set at the global level.</para>
+    </sect2>
+  </sect1>
+
+  <sect1 id="CV_Pods-Nodes">
+    <title>Pods and Nodes</title>
+
+    <para>One of the key features of Kubernetes is its ability to schedule
+    pods on to nodes in the cluster. A pod is the smallest and simplest unit
+    in the Kubernetes environment that you can create or deploy. A node is
+    either a physical or virtual "worker" machine in Kubernetes.</para>
+
+    <para>The task of scheduling pods to specific nodes in the cluster is
+    handled by the kube-scheduler. The default behavior of this component is
+    to filter nodes based on the resource requests and limits of each
+    container in the created pod. Feasible nodes are then scored to find the
+    best candidate for the pod placement. The scheduler also takes into
+    account other factors such as pod affinity and anti-affinity, taints and
+    tolerations, pod topology spread constraints, and the node selector
+    labels. The scheduler can be configured to use these different algorithms
+    and policies to optimize the pod placement according to your cluster’s
+    needs.</para>
+
+    <para>You can deploy these values either using the values.yaml file or you
+    can place into a file and have Kubernetes instead read the values from the
+    supplied file. See the above section <emphasis>Customization
+    Techniques</emphasis> for more information about customizing your
+    deployment.</para>
+
+    <sect2 id="YAML_FileStruct_Placement">
+      <title>Placements</title>
+
+      <para>Placements is a term used by HPCC Systems, which Kubernetes refers
+      to as the scheduler or scheduling/assigning. In order to avoid confusion
+      within the HPCC Systems and ECL specific scheduler terms, refer to
+      Kubernetes scheduling as placements. Placements are a value in an HPCC
+      Systems configuration which is at a level above items, such as the
+      nodeSelector, Toleration, Affinity and Anti-Affinity, and
+      TopologySpreadConstraints.</para>
+
+      <para>The placement is responsible for finding the best node for a pod.
+      Most often placement is handled automatically by Kubernetes. You can
+      constrain a Pod so that it can only run on particular set of
+      Nodes.</para>
+
+      <para>Placements would then be used to ensure that pods or jobs that
+      want nodes with specific characteristics are placed on those
+      nodes.</para>
+
+      <para>For instance a Thor cluster could be targeted for machine learning
+      using nodes with a GPU. Another job may want nodes with a good amount
+      more memory or another for more CPU.</para>
+
+      <para>Using placements you can configure the Kubernetes scheduler to use
+      a "pods" list to apply settings to pods.</para>
+
+      <para>For example:</para>
+
+      <programlisting> placements:
+   - pods: [list]
+     placement:
+       &lt;supported configurations&gt;</programlisting>
+
+      <sect3 id="PlacementScope">
+        <title>Placement Scope</title>
+
+        <para>Use pod patterns to apply the scope for the placements.</para>
+
+        <para>The pods: [list] item can contain one of the following:</para>
+
+        <informaltable colsep="1" frame="all" rowsep="1">
+          <tgroup cols="2">
+            <colspec colwidth="125.55pt" />
+
+            <colspec />
+
+            <tbody>
+              <row>
+                <entry>Type: &lt;component&gt;</entry>
+
+                <entry>Covers all pods/jobs under this type of component. This
+                is commonly used for HPCC Systems components. For example, the
+                <emphasis>type:thor</emphasis> which will apply to any of the
+                Thor type components; thoragent, thormanager, thoragent and
+                thorworker, etc.</entry>
+              </row>
+
+              <row>
+                <entry>Target: &lt;name&gt;</entry>
+
+                <entry>The "name" field of each component, typical usage for
+                HPCC Systems components referrs to the cluster name. For
+                example <emphasis>Roxie: -name: roxie</emphasis> which will be
+                the "Roxie" target (cluster). You can also define multiple
+                targets with each having a unique name such as "roxie",
+                "roxie2", "roxie-web" etc.</entry>
+              </row>
+
+              <row>
+                <entry>Pod: &lt;name&gt;</entry>
+
+                <entry>This is the "Deployment" metadata name from the name of
+                the array item of a type. For example, "eclwatch-", "mydali-",
+                "thor-thoragent" using a regular expression is preferred since
+                Kubernetes will use the metadata name as a prefix and
+                dynamically generate the pod name such as,
+                eclwatch-7f4dd4dd44cb-c0w3x.</entry>
+              </row>
+
+              <row>
+                <entry>Job name:</entry>
+
+                <entry>The job name is typically a regular expression as well,
+                since the job name is generated dynamically. For example, a
+                compile job compile-54eB67e567e, could use "compile-" or
+                "compile-.*" or "^compile-.*$"</entry>
+              </row>
+
+              <row>
+                <entry>All:</entry>
+
+                <entry>Applies for all HPCC Systems components. The default
+                placements for pods delivered is [all]</entry>
+              </row>
+            </tbody>
+          </tgroup>
+        </informaltable>
+
+        <para>Regardless of the order the placements appear in the
+        configuration, they will be processed in the following order: "all",
+        "type", "target", and then "pod"/"job".</para>
+
+        <sect4>
+          <title>Mixed combinations</title>
+
+          <para>NodeSelector, taints and tolerations, and other values can all
+          be placed on the same pods: [list] both per zone and per node on
+          Azure <programlisting>placements:
+- pods: ["eclwatch","roxie-workunit","^compile-.*$","mydali"]
+  placement:
+    nodeSelector:
+      name: npone</programlisting></para>
+        </sect4>
+      </sect3>
+    </sect2>
+
+    <sect2 id="S2NodeSelection">
+      <title>Node Selection</title>
+
+      <para>In a Kubernetes container environment, there are several ways to
+      schedule your nodes. The recommended approaches all use label selectors
+      to facilitate the selection. Generally, you may not need to set such
+      constraints; as the scheduler usually does reasonably acceptable
+      placement automatically. However, with some deployments you may want
+      more control over specific pods.</para>
+
+      <para>Kubernetes uses the following methods to choose where to schedule
+      pods:</para>
+
+      <para><itemizedlist>
+          <listitem>
+            <para>nodeSelector field matching against node labels</para>
+          </listitem>
+
+          <listitem>
+            <para>Affinity and anti-affinity</para>
+          </listitem>
+
+          <listitem>
+            <para>Taints and Tolerations</para>
+          </listitem>
+
+          <listitem>
+            <para>nodeName field</para>
+          </listitem>
+
+          <listitem>
+            <para>Pod topology spread constraints</para>
+          </listitem>
+        </itemizedlist></para>
+
+      <sect3 id="CV_NodeLabels">
+        <title>Node Labels</title>
+
+        <para>Kubernetes nodes have labels. Kubernetes has a standard set of
+        labels used for nodes in a cluster. You can also manually attach
+        labels which is recommended as the value of these labels is
+        cloud-provider specific and not guaranteed to be reliable.</para>
+
+        <para>Adding labels to nodes allows you to schedule pods to nodes or
+        groups of nodes. You can then use this functionality to ensure that
+        specific pods only run on nodes with certain properties.</para>
+      </sect3>
+
+      <sect3 id="CV_nodeSelector">
+        <title>The nodeSelector</title>
+
+        <para>The nodeSelector is a field in the Pod specification that allows
+        you to specify a set of node labels that must be present on the target
+        node for the Pod to be scheduled there. It is the simplest form of
+        node selection constraint. It selects nodes based on the labels, but
+        it has some limitations. It only supports one label key and one label
+        value. If you wanted to match multiple labels or use more complex
+        expressions, you need to use node Affinity.</para>
+
+        <para>Add the nodeSelector field to your pod specification and specify
+        the node labels you want the target node to have. You must have the
+        node labels defined in the job and pod. Then you need to specify each
+        node group the node label to use. Kubernetes only schedules the pod
+        onto nodes that have the labels you specify.</para>
+
+        <para>The following example shows the nodeSelector placed in the pods
+        list. This example schedules "all" HPCC components to use the node
+        pool with the label group: "hpcc".</para>
+
+        <para><programlisting> placements:
+   - pods: ["all"]
+     placement:
+       nodeSelector:
+         group: "hpcc"</programlisting></para>
+
+        <para><emphasis role="bold">Note:</emphasis> The label group:hpcc
+        matches the node pool label:hpcc.</para>
+
+        <para>This next example shows how to configure a node pool to prevent
+        scheduling a Dali component onto this node pool labelled with the key
+        spot: via the value false. As this kind of node is not always
+        available and could get revoked therefore you would not want to use
+        the spot node pool for Dali components. This is an example for how to
+        configure a specific type (Dali) of HPCC Systems component not to use
+        a particular node pool.</para>
+
+        <para><programlisting> placements:
+   - pods: ["type:dali"]
+     placement:
+       nodeSelector:
+         spot: "false"</programlisting></para>
+
+        <para>When using nodeSelector, multiple nodeSelectors can be applied.
+        If duplicate keys are defined, only the last one prevails.</para>
+      </sect3>
+
+      <sect3 id="CV-TAINTS_TOLERATIONS">
+        <title>Taints and Tolerations</title>
+
+        <para>Taints and Tolerations are types of Kubernetes node constraints
+        also referred to by node Affinity. Only one affinity can be applied to
+        a pod. If a pod matches multiple placement 'pods' lists, then only the
+        last affinity definition will apply.</para>
+
+        <para>Taints and tolerations work together to ensure that pods are not
+        scheduled onto inappropriate nodes. Tolerations are applied to pods,
+        and allow (but do not require) the pods to schedule onto nodes with
+        matching taints. Taints are the opposite -- they allow a node to repel
+        a set of pods. One way to deploy using taints, is to set to repel all
+        but a specific node. Then that pod can be scheduled onto another node
+        that is tolerate.</para>
+
+        <para>For example, Thor workers should all be on the appropriate type
+        of VM. If a big Thor job comes along – then the taints level repels
+        any pods that attempt to be scheduled onto a node that does not meet
+        the requirements.</para>
+
+        <para>For more information and examples of our Taints, Tolerations,
+        and Placements please review our developer documentation:</para>
+
+        <para><ulink
+        url="???">https://github.com/hpcc-systems/HPCC-Platform/blob/master/helm/hpcc/docs/placements.md</ulink></para>
+
+        <sect4 id="CSP_TaintsandTolerationsExamples">
+          <title>Taints and Tolerations Examples</title>
+
+          <para>The following examples illustrate how some taints and
+          tolerations can be applied.</para>
+
+          <para>Kubernetes can schedule a pod on to any node pool without a
+          taint. In the following examples Kubernetes can only schedule the
+          two components to the node pools with these exact labels, group and
+          gpu.</para>
+
+          <para><programlisting> placements:
+   - pods: ["all"]
+     tolerations:
+       key: "group"
+         operator: "Equal" 
+           value: "hpcc"
+             effect: "NoSchedule"         </programlisting></para>
+
+          <programlisting>placements:
+   - pods: ["type:thor"] 
+     tolerations: 
+        key: "gpu" 
+        operator: "Equal" 
+        value: "true" 
+        effect: "NoSchedule" </programlisting>
+
+          <para>Multiple tolerations can also be used. The following example
+          has two tolerations, group and gpu.</para>
+
+          <programlisting>#The settings will be applied to all thor pods/jobs and myeclccserver pod and job
+- pods: ["thorworker-", "thor-thoragent", "thormanager-","thor-eclagent","hthor-"]
+  placement:
+    nodeSelector:
+      app: tf-gpu
+    tolerations:
+    - key: "group"
+      operator: "Equal"
+      value: "hpcc"
+      effect: "NoSchedule" 
+    - key: "gpu"
+      operator: "Equal" 
+      value: "true"
+      effect: "NoSchedule"
+</programlisting>
+
+          <para>In this example the nodeSelector is preventing the Kubernetes
+          scheduler from deploying any/all to this node pool. Without taints
+          the scheduler could deploy to any pods onto the node pool. By
+          utilizing the nodeSelector, the taint will force the pod to deploy
+          only to the pods who match that node label. There are two
+          constraints then, in this example one from the node pool and the
+          other from the pod.</para>
+        </sect4>
+      </sect3>
+
+      <sect3 id="CV_TopologySpreadConstraints">
+        <title>Topology Spread Constraints</title>
+
+        <para>You can use topology spread constraints to control how pods are
+        spread across your cluster among failure-domains such as regions,
+        zones, nodes, and other user-defined topology domains. This can help
+        to achieve high availability as well as efficient resource
+        utilization. You can set cluster-level constraints as a default, or
+        configure topology spread constraints for individual workloads. The
+        Topology Spread Constraints <emphasis
+        role="bold">topologySpreadConstraints</emphasis> requires Kubernetes
+        v1.19+.or better.</para>
+
+        <para>For more information see:</para>
+
+        <para><ulink
+        url="https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/">https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/</ulink>
+        and</para>
+
+        <para><ulink
+        url="https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/">https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/</ulink></para>
+
+        <para>Using the "topologySpreadConstraints" example, there are two
+        node pools which have "hpcc=nodepool1" and "hpcc=nodepool2"
+        respectively. The Roxie pods will be evenly scheduled on the two node
+        pools.</para>
+
+        <para>After deployment you can verify by issuing the following
+        command:</para>
+
+        <programlisting>kubectl get pod -o wide | grep roxie</programlisting>
+
+        <para>The placements code:</para>
+
+        <programlisting>- pods: ["type:roxie"]
+  placement:
+    topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: hpcc
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          roxie-cluster: "roxie"</programlisting>
+      </sect3>
+
+      <sect3 id="CV_Affinity-AntiAffinity">
+        <title>Affinity and Anti-Affinity`</title>
+
+        <para>Affinity and anti-affinity expands the types of constraints that
+        you can define. The affinity and anti-affinity rules are still based
+        on the labels. In addition to the labels, they provide rules that
+        guide Kubernetes’ scheduler where to place pods based on specific
+        criteria. The affinity/anti-affinity language is more expressive than
+        simple labels and gives you more control over the selection
+        logic.</para>
+
+        <para>The are two main kinds of affinity, Node Affinity and Pod
+        Affinity.</para>
+
+        <sect4 id="CS-Node-Affiniy">
+          <title>Node Affinity</title>
+
+          <para>Node affinity is similar to the nodeSelector concept that
+          allows you to constrain which nodes your pod can be scheduled onto
+          based on the node labels. These are used to constrain the nodes that
+          can receive a pod by matching labels of those nodes. Node affinity
+          and anti-affinity can only be used to set positive affinities that
+          attract pods to the node. These are used to constrain the nodes that
+          can receive a pod by matching labels to those nodes. Node affinity
+          and anti-affinity can only be used to set positive affinities that
+          attract pods to the node.</para>
+
+          <para>There is no schema check for the content of affinity. Only one
+          affinity can be applied to a pod or job. If a pod/job matches
+          multiple placement pods lists, then only the last affinity
+          definition applies.</para>
+
+          <para>For more information, see <ulink
+          url="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/">https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/</ulink></para>
+
+          <para>There are two types of node affinity:</para>
+
+          <para><emphasis>requiredDuringSchedulingIgnoredDuringExecution:</emphasis>
+          The scheduler can't schedule the pod unless this rule is met. This
+          function is similar to the nodeSelector, but with a more expressive
+          syntax.</para>
+
+          <para><emphasis>preferredDuringSchedulingIgnoredDuringExecution</emphasis>:
+          The scheduler tries to find a node that meets the rule. If a
+          matching node is not available, the scheduler still schedules the
+          pod.</para>
+
+          <para>You can specify node affinities using the
+          .<emphasis>spec.affinity.nodeAffinity</emphasis> field in your pod
+          spec.</para>
+        </sect4>
+
+        <sect4>
+          <title>Pod Affinity</title>
+
+          <para>Pod affinity or Inter-Pod Affinity is used to constrain the
+          nodes that can receive a pod by matching the labels of the existing
+          pods already running on to those nodes. Pod affinity and
+          anti-affinity can be either an attracting affinity or a repelling
+          anti-affinity.</para>
+
+          <para>Inter-Pod Affinity works very similarly to Node Affinity but
+          have some important differences. The "hard" and "soft" modes are
+          indicated using the same
+          <emphasis>requiredDuringSchedulingIgnoredDuringExecution</emphasis>
+          and
+          <emphasis>preferredDuringSchedulingIgnoredDuringExecution</emphasis>
+          fields. However, these should be nested under the
+          <emphasis>spec.affinity.podAffinity</emphasis> or
+          <emphasis>spec.affinity.podAntiAffinity</emphasis> fields depending
+          on whether you want to increase or reduce the Pod's affinity.</para>
+        </sect4>
+
+        <sect4>
+          <title>Affinity Example</title>
+
+          <para>The following code illustrates an example of affinity:</para>
+
+          <programlisting>- pods: ["thorworker-.*"]
+  placement:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: kubernetes.io/e2e-az-name
+              operator: In
+              values:
+              - e2e-az1
+              - e2e-az2</programlisting>
+
+          <para>In the following schedulerName section the, the "affinity"
+          settings can also be included with that example.</para>
+
+          <para><emphasis role="bold">Note:</emphasis> The "affinity" value in
+          the "schedulerName" field is only supported in Kubernetes 1.20.0
+          beta and later versions.</para>
+        </sect4>
+      </sect3>
+
+      <sect3 id="CV_schedulerName">
+        <title>schedulerName</title>
+
+        <para>The <emphasis role="bold">schedulerName</emphasis> field
+        specifies the name of the scheduler that is responsible for scheduling
+        a pod or a task. In Kubernetes, you can configure multiple schedulers
+        with different names and profiles to run simultaneously in the
+        cluster.</para>
+
+        <para>Only one "schedulerName" can be applied to any pod/job.</para>
+
+        <para>A schedulerName example:</para>
+
+        <programlisting>- pods: ["target:roxie"]
+  placement:
+    schedulerName: "my-scheduler"
+#The settings will be applied to all thor pods/jobs and myeclccserver pod and job
+- pods: ["target:myeclccserver", "type:thor"]
+  placement:
+    nodeSelector:
+      app: "tf-gpu"
+    tolerations:
+    - key: "gpu"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+</programlisting>
+      </sect3>
+    </sect2>
+  </sect1>
+
+  <sect1 id="MoreHelmANDYAML">
+    <title>Helm and Yaml Basics</title>
+
+    <para>This section is intended to provide some basic information to help
+    you in getting started with your HPCC Systems containerized deployment.
+    There are numerous resources available for learning about Kubernetes,
+    Helm, and YAML files. For more information about using these tools, or for
+    cloud or container deployments, please refer to the respective
+    documentation.</para>
+
+    <para>In the previous section, we touched on the
+    <emphasis>values.yaml</emphasis> file and the
+    <emphasis>values-schema.json</emphasis> file. This section expands on some
+    of those concepts and how they might be applied when using the
+    containerized version of the HPCC Systems platform.</para>
+
+    <sect2 id="TheValuesYamlFileStruct">
+      <title>The <emphasis>values.yaml</emphasis> File Structure</title>
+
+      <para>The <emphasis>values.yaml</emphasis> file is a YAML file which is
+      a format frequently used for configuration files. The construct that
+      makes up the bulk of a YAML file is the key-value pair, sometimes
+      referred to as a dictionary. The key-value pair construct consists of a
+      key that points to some value(s). These values are defined by the
+      schema.</para>
+
+      <para>In these configuration files the indentation used to represent
+      document structure relationship is quite important. Leading spaces are
+      significant and tabs are not allowed.</para>
+
+      <para>YAML files are made up mainly of two types of elements:
+      dictionaries and lists.</para>
+
+      <sect3 id="YAML_Dictionary">
+        <title>Dictionary</title>
+
+        <para>Dictionaries are collections of key-value mappings. All keys are
+        case-sensitive and the indentation is also crucial. These keys must be
+        followed by a colon (:) and a space. Dictionaries can also be
+        nested.</para>
+
+        <para>For example:</para>
+
+        <programlisting>    logging: 
+       detail: 80 
+</programlisting>
+
+        <para>This is an example of a dictionary for logging.</para>
+
+        <para>Dictionaries in passed in values files, such as in the
+        <emphasis>myoverrides.yaml</emphasis> file in the example below, will
+        be merged into the corresponding dictionaries in the existing values,
+        starting with the default values from the delivered hpcc helm
+        chart.</para>
+
+        <para><programlisting>helm install myhpcc hpcc/hpcc -f myoverrides.yaml</programlisting></para>
+
+        <para>Any pre-existing values in a dictionary that are not overridden
+        will continue to be present in the merged result. However, you can
+        override the contents of a dictionary by setting it to null.</para>
+      </sect3>
+
+      <sect3 id="YAML_Lists">
+        <title>Lists</title>
+
+        <para>Lists are groups of elements beginning at the same indentation
+        level starting with a - (a hyphen and a space). Every element of the
+        list is indented at the same level and starts with a hyphen and a
+        space. Lists can also be nested, and they can even be lists of
+        dictionaries.</para>
+
+        <para>An example of a list of dictionaries, with placement.tolerations
+        as a nested list.:</para>
+
+        <para><programlisting>placements:
+- pods: ["all"]
+  placement:
+    tolerations:
+    - key: "kubernetes.azure.com/scalesetpriority"
+</programlisting></para>
+
+        <para>The list entry here is denoted using the hyphen, which is an
+        entry item in the list, which itself is a dictionary with nested
+        attributes. Then the next hyphen (at that same indentation level) is
+        the next entry in that list. A list can be a list of simple value
+        elements, or the elements can themselves be lists or
+        dictionaries.</para>
+      </sect3>
+
+      <sect3 id="sections_OfHPCCValues">
+        <title>Sections of the HPCC Systems Values.yaml</title>
+
+        <para>The first section of the <emphasis>values.yaml</emphasis> file
+        describes global values. Global applies generally to
+        everything.</para>
+
+        <para><programlisting># Default values for hpcc.
+global:
+  # Settings in the global section apply to all HPCC components in all subcharts
+</programlisting>In the delivered HPCC Systems
+        <emphasis>values.yaml</emphasis> file excerpt (above)
+        <emphasis>global:</emphasis> is the top level dictionary. As noted in
+        the comments, the settings in the global section apply to all HPCC
+        Systems components. Note from the indentation level that the other
+        values are nested in that global dictionary.</para>
+
+        <para>Items defined in the global section are shared between all
+        components.</para>
+
+        <para>Some examples of global values in the delivered values.yaml file
+        are the storage and security sections.</para>
+
+        <programlisting>storage:
+  planes:</programlisting>
+
+        <para>and also</para>
+
+        <para><programlisting>security:
+  eclSecurity:
+    # Possible values:
+    # allow - functionality is permitted
+    # deny - functionality is not permitted
+    # allowSigned - functionality permitted only if code signed
+    embedded: "allow"
+    pipe:  "allow"
+    extern: "allow"
+    datafile: "allow"</programlisting>In the above examples,
+        <emphasis>storage:</emphasis> and <emphasis>security:</emphasis> are
+        global chart values.</para>
+      </sect3>
+    </sect2>
+
+    <sect2 id="HPCCSystems_YAML_Usage">
+      <title>HPCC Systems values.yaml File Usage</title>
+
+      <para>The HPCC Systems <emphasis>values.yaml</emphasis> file is used by
+      the Helm chart to control how HPCC Systems is deployed. The stock
+      delivered HPCC Systems <emphasis>values.yaml</emphasis> is intended as a
+      quick start type installation guide which is not appropriate for
+      non-trivial practical usage. You should customize your deployment to one
+      more suited towards your specific needs.</para>
+
+      <para>Further information about customized deployments is covered in
+      previous sections, as well as the Kubernetes and Helm
+      documentation.</para>
+
+      <sect3 id="merging_AND_Overrides">
+        <title>Merging and Overriding</title>
+
+        <para>Having multiple YAML files, such as one for logging, another for
+        storage, yet another for secrets and so forth, allows granular
+        configuration. These configuration files can all be under version
+        control. There they can be versioned, checked in, etc. and have the
+        benefit of only defining/changing the specific area required, while
+        ensuring any non-changing areas are left untouched.</para>
+
+        <para>The rule here to keep in mind where multiple YAML files are
+        applied, the later ones will always overwrite the values in the
+        earlier ones. They are always merged in in sequence. The values are
+        always merged in the order they are given on the helm command
+        line.</para>
+
+        <para>Another point to consider, where there is a global dictionary
+        such as root: and its value is redefined in a 2nd file (as a
+        dictionary) it would not be overwritten. You simply cannot overwrite a
+        dictionary. You can redefine a dictionary and set it to null, which
+        will effectively wipe out the first.</para>
+
+        <para><emphasis role="bold">WARNING</emphasis>: If you had a global
+        definition (such as storage.planes) and merge it where that becomes
+        redefined it would wipe out every definition in that list.</para>
+
+        <para>Another means to wipe out every value in a list is to pass in an
+        empty set denoted by a [ ] such as this example:</para>
+
+        <para><programlisting>bundles: []</programlisting>This would wipe out
+        any properties defined for bundles.</para>
+
+        <sect4 id="GenerallyApplicable">
+          <title>Generally Applicable</title>
+
+          <para>These items are generally applicable for our HPCC Systems Helm
+          YAML files.</para>
+
+          <itemizedlist>
+            <listitem>
+              <para>All names should be unique.</para>
+            </listitem>
+
+            <listitem>
+              <para>All prefixes should be unique.</para>
+            </listitem>
+
+            <listitem>
+              <para>Services should be unique.</para>
+            </listitem>
+
+            <listitem>
+              <para>YAML files are merged in sequence.</para>
+            </listitem>
+          </itemizedlist>
+
+          <para>Regarding the HPCC Systems components, primarily the
+          components are lists. If you have an empty value list denoted by [
+          ], it would invalidate that list elsewhere.</para>
+        </sect4>
+      </sect3>
+
+      <sect3 id="Additional_YMLUSage">
+        <title>Additional Usage</title>
+
+        <para>HPCC Systems components are added or modified by passing in
+        override values. The Helm chart values are overridden, either by
+        passing in override values file(s) using -f, (for override file) or
+        via --set where you can override a single value. Those passed in
+        values are always merged in the same order they are given on the helm
+        command line.</para>
+
+        <para>For example:</para>
+
+        <para><programlisting>helm install myhpcc hpcc/hpcc -f myoverrides.yaml</programlisting>Overrides
+        any values in the delivered <emphasis>values.yaml</emphasis> by
+        passing in values defined in
+        <emphasis>myoverrides.yaml</emphasis></para>
+
+        <para>You can also use --set as in the following example:</para>
+
+        <programlisting>helm install myhpcc hpcc/hpcc --set storage.daliStorage.plane=dali-plane</programlisting>
+
+        <para>To override only that one specified value.</para>
+
+        <para>It is even possible to combine file and single value overrides,
+        for instance:</para>
+
+        <programlisting>helm install myhpcc hpcc/hpcc -f myoverrides.yaml --set storage.daliStorage.plane=dali-plane</programlisting>
+
+        <para>In the preceding example, the --set flag overrides the value for
+        the storage.daliStorage.plane (if) set in the
+        <emphasis>myoverrides.yaml</emphasis>, which would override any
+        <emphasis>values.yaml</emphasis> file settings and results in setting
+        its value to <emphasis>dali-plane</emphasis>.</para>
+
+        <para>If the <emphasis>--set</emphasis> flag is used on helm install
+        or helm upgrade, those values are simply converted to YAML on the
+        client side.</para>
+
+        <para>You can specify the override flags multiple times. The priority
+        will be given to the last (right-most) file specified.</para>
+      </sect3>
+
+      <sect3 id="YGlobalExpertsets">
+        <title>Global/Expert Settings</title>
+
+        <para>The 'expert' section under 'global' of the values.yaml should be
+        used to define low-level, testing, or developer settings. This section
+        of the helm chart is intended to be used for custom, low-level or
+        debugging options., therefore in most deployments, it should remain
+        empty.</para>
+
+        <para>This is an example of what the global/expert section could look
+        like:</para>
+
+        <programlisting>global:
+  expert:
+    numRenameRetries: 3 
+    maxConnections: 10 
+    keepalive: 
+      time: 200 
+      interval: 75 
+      probes: 9 
+</programlisting>
+
+        <para>NOTE: Some components (such as the DfuServer and Thor) also have
+        an 'expert' settings area (see the values schema) that can be used for
+        relevant settings on a per component instance basis, rather than
+        setting them globally.</para>
+
+        <para>The following options are currently available:</para>
+
+        <para><variablelist>
+            <varlistentry>
+              <term>numRenameRetries</term>
+
+              <listitem>
+                <para>(unsigned) If set to a positive number, the platform
+                will re-attempt to perform a rename of a physical file on
+                failure (after a short delay). This should not normally be
+                needed, but on some file systems it may help mitigate issues
+                where the file has just been closed and not exposed correctly
+                at the posix layer.</para>
+              </listitem>
+            </varlistentry>
+
+            <varlistentry>
+              <term>maxConnections</term>
+
+              <listitem>
+                <para>(unsigned) This is a DFU Server setting. If set, it will
+                limit the maximum number of parallel connections and partition
+                streams that will be active at any one time. By default a DFU
+                job will run as many active connection/streams as there are
+                partitions involved in the spray, limited to an absolute
+                maximum of 800. The maxConnections setting can be used to
+                reduce this concurrency. This might be helpful in some
+                scenarios where the concurrency is causing network congestion
+                and degraded performance.</para>
+              </listitem>
+            </varlistentry>
+
+            <varlistentry>
+              <term>keepalive</term>
+
+              <listitem>
+                <para>(time: unsigned, interval: unsigned, probes: unsigned)
+                See keepalive example above. If set, these settings will
+                override the system default socket keepalive settings each
+                time the platform creates a socket. This may be useful in some
+                scenarios if the connections would otherwise be closed
+                prematurely by external factors (e.g., firewalls). An example
+                of this is that Azure instances will close sockets that have
+                been idle for greater than 4 minutes that are connected
+                outside of its networks.</para>
+              </listitem>
+            </varlistentry>
+          </variablelist></para>
+      </sect3>
+    </sect2>
+  </sect1>
+</chapter>

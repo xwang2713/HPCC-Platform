@@ -15,9 +15,10 @@
     limitations under the License.
 ############################################################################## */
 
-//class=spray
+//nothor
+//nohthor
+
 //class=roxieserviceaccess
-//version targetIP='127.0.0.1',goodPort='9876',blacListedPort='9875'
 
 #option('generateGlobalId', true);
 
@@ -53,8 +54,7 @@ output(sort(HTTPCALL(d, targetURL,'soapbase', { unkname }, DATASET(ServiceOutRec
 
 // double query->dataset form
 ServiceOutRecord doError(d l) := TRANSFORM
-  //SELF.name := 'ERROR: \'' + l.unkname + '\'-\'' + failmessage[1..18] + '\''; //if (l.unkname='FRED' AND failmessage[1..18]='blacklisted socket','blacklisted socket', failmessage);
-  SELF.name := 'ERROR: ' + if (l.unkname='FRED' AND (failmessage[1..18]='blacklisted socket' OR failmessage[1..18]='connection failed '),'blacklisted socket', failmessage[1..18]);
+  SELF.name := 'ERROR: ' + failmessage[1..17];
   SELF.pic := x'01020304';
   SELF.id := if (l.unkname='FRED' AND failcode=-3,-1,failcode);
   SELF.novalue := 0;

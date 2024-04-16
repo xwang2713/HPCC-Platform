@@ -69,7 +69,7 @@
 
         <listitem>
           <para>Verify that they are stopped. You can use a single command,
-          such as : <programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh -a hpcc-init status</programlisting></para>
+          such as : <programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh status</programlisting></para>
         </listitem>
 
         <listitem>
@@ -286,6 +286,25 @@
       <para>For more information about using htpasswd see: <ulink
       url="http://httpd.apache.org/docs/2.2/programs/htpasswd.html">http://httpd.apache.org/docs/2.2/programs/htpasswd.html</ulink>.</para>
     </sect3>
+  </sect2>
+<sect2 id="SingleUserSecMgr">
+    <title>Single User Security Manager</title>
+
+    <para>The Single User security manager is a specialized security manager
+    that allows a username/password combination to be specified on the ESP
+    startup command line. At runtime, when you attempt to access any
+    authenticating ESP feature, such as ECL Watch, you must specify a
+    username/password combination.</para>
+
+    <para>A single user security manager could be useful for a custom
+    deployment where you do not want to configure an entire LDAP server or
+    create a Linux HTPASSWD file, such as a classroom environment or a custom
+    HPCC Systems Virtual Machine.</para>
+
+    <para>See the <ulink
+    url="https://hpccsystems.com/training/documentation/all/"><emphasis>Security
+    Manager Plugin Framework</emphasis></ulink> document for more information
+    on configuring and deploying Security Manager plugins.</para>
   </sect2>
 
   <sect2 id="Using_LDAP_Authentication" role="brk">
@@ -784,32 +803,6 @@ Ready to initialize HPCC Systems LDAP Environment, using the following settings
        HPCC Admin User : HPCCAdmin389
 Proceed?  y/n 
 </programlisting></para>
-    </sect3>
-
-    <sect3 id="UsingLDAP_Using_addScopesTool">
-      <title>Using the addScopes tool</title>
-
-      <para>When a new ESP user account is created, a private
-      "hpccinternal::&lt;user&gt;" file scope is also created granting new
-      users full access to that scope and restricting access to other users.
-      This file scope is used to store temporary HPCC Systems files such as
-      spill files and temp files.</para>
-
-      <para>If you are enabling LDAP file scope security and already have user
-      accounts, you should run the addScopes utility program to create the
-      hpccinternal::&lt;user&gt; scope for those existing users.</para>
-
-      <para>Users which already have this scope defined are ignored and so it
-      can be used on both new and legacy ESP user accounts safely.</para>
-
-      <para>The tool is located in the <emphasis
-      role="bold">/opt/HPCCSystems/bin/</emphasis> folder and to run it you
-      must pass the location of <emphasis role="bold">daliconf.xml</emphasis>,
-      for example:</para>
-
-      <para><programlisting>/opt/HPCCSystems/bin/addScopes /var/lib/HPCCSystems/mydali/daliconf.xml</programlisting></para>
-
-      <para>Run addScopes on the Dali node.</para>
     </sect3>
   </sect2>
 </sect1>

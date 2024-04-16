@@ -463,7 +463,7 @@ define([
                             node.innerHTML = Utility.getImageHTML("locked.png", context.i18n.Protected);
                         },
                         width: 25,
-                        sortable: false,
+                        sortable: true,
                         formatter: function (_protected) {
                             if (_protected === true) {
                                 return Utility.getImageHTML("locked.png");
@@ -491,6 +491,11 @@ define([
                     },
                 }
             }, this.id + "WorkunitsGrid");
+
+            ESPUtil.goToPageUserPreference(this.workunitsGrid, "WUQueryWidget_GridRowsPerPage").then(function () {
+                context.refreshGrid();
+            });
+
             this.workunitsGrid.on(".dgrid-row-url:click", function (evt) {
                 if (context._onRowDblClick) {
                     var item = context.workunitsGrid.row(evt).data;
@@ -526,10 +531,6 @@ define([
                 return deferred.then(function () {
                     args[0] > 1 ? context._idleWatcher.stop() : context._idleWatcher.start();
                 });
-            });
-
-            ESPUtil.goToPageUserPreference(this.workunitsGrid, "WUQueryWidget_GridRowsPerPage").then(function () {
-                context.workunitsGrid.startup();
             });
         },
 

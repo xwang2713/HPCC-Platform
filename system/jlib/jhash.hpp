@@ -427,6 +427,8 @@ extern jlib_decl IIdAtom * createIdAtom(const char *value, size32_t len);
 extern jlib_decl void releaseAtoms();
 extern jlib_decl unsigned hashc( const unsigned char *k, unsigned length, unsigned initval);
 extern jlib_decl unsigned hashnc( const unsigned char *k, unsigned length, unsigned initval);
+extern jlib_decl unsigned hashcz( const unsigned char *k, unsigned initval);
+extern jlib_decl unsigned hashncz( const unsigned char *k, unsigned initval);
 extern jlib_decl unsigned hashvalue( unsigned value, unsigned initval);
 extern jlib_decl unsigned hashvalue( unsigned __int64 value, unsigned initval);
 extern jlib_decl unsigned hashvalue( const void * value, unsigned initval);
@@ -466,13 +468,13 @@ protected:
     }       
 
 public:
-    CMinHashTable<C>(unsigned _initialSize = 7)
+    CMinHashTable(unsigned _initialSize = 7)
     {
         htn = _initialSize;
         n = 0;
         table = (C **)calloc(sizeof(C *),htn);
     }
-    ~CMinHashTable<C>()
+    ~CMinHashTable()
     {
         C **t = table+htn; 
         while (t--!=table) 
@@ -620,10 +622,10 @@ public:
  */
 
 template <class KEYTYPE, class VALUETYPE>
-class jlib_decl CTimeLimitedCache
+class CTimeLimitedCache
 {
 public:
-    CTimeLimitedCache<KEYTYPE, VALUETYPE>(unsigned timeoutMs=defaultCacheTimeoutMs)
+    CTimeLimitedCache(unsigned timeoutMs=defaultCacheTimeoutMs)
     {
         timeoutPeriodCycles = ((cycle_t)timeoutMs) * queryOneSecCycles() / 1000;
     }

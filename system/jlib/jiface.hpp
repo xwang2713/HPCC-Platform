@@ -88,9 +88,9 @@ public:
     }
 
 private:
-    CSimpleInterfaceOf(const CSimpleInterfaceOf &) : xxcount(1) {};
-    CSimpleInterfaceOf(CSimpleInterfaceOf &&) = delete;
-    CSimpleInterfaceOf & operator = (const CSimpleInterfaceOf &) = delete;
+    CSimpleInterfaceOf(const CSimpleInterfaceOf<INTERFACE>&) = delete;
+    CSimpleInterfaceOf(CSimpleInterfaceOf<INTERFACE> &&) = delete;
+    CSimpleInterfaceOf<INTERFACE> & operator = (const CSimpleInterfaceOf<INTERFACE> &) = delete;
     mutable std::atomic<unsigned> xxcount;
 };
 

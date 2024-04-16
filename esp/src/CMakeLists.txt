@@ -25,22 +25,24 @@ file(REMOVE_RECURSE
 file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/dgrid
     ${CMAKE_CURRENT_SOURCE_DIR}/eclwatch
+    ${CMAKE_CURRENT_SOURCE_DIR}/eslint
     ${CMAKE_CURRENT_SOURCE_DIR}/ganglia
-    ${CMAKE_CURRENT_SOURCE_DIR}/index.html
     ${CMAKE_CURRENT_SOURCE_DIR}/loader
-    ${CMAKE_CURRENT_SOURCE_DIR}/lws.config.js
-    ${CMAKE_CURRENT_SOURCE_DIR}/package.json
-    ${CMAKE_CURRENT_SOURCE_DIR}/package-lock.json
-    ${CMAKE_CURRENT_SOURCE_DIR}/put-selector
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src-react
-    ${CMAKE_CURRENT_SOURCE_DIR}/stub.htm
-    ${CMAKE_CURRENT_SOURCE_DIR}/Login.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/.eslintrc.js
     ${CMAKE_CURRENT_SOURCE_DIR}/GetUserName.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/index.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/Login.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/lws.config.js
+    ${CMAKE_CURRENT_SOURCE_DIR}/package-lock.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/package.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/stub.htm
     ${CMAKE_CURRENT_SOURCE_DIR}/tsconfig.json
     ${CMAKE_CURRENT_SOURCE_DIR}/webpack.config.js
-    ${CMAKE_CURRENT_SOURCE_DIR}/xstyle
     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/BuildInfo.ts ${CMAKE_CURRENT_BINARY_DIR}/src/BuildInfo.ts @ONLY)
 
 set ( SRCS
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/css/ecl.css
@@ -171,7 +173,6 @@ set ( SRCS
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/MachineInformationWidget.js
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/MemberOfWidget.js
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/MembersWidget.js
-    ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/MonitoringWidget.js
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/PackageMapDetailsWidget.js
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/PackageMapPartsWidget.js
     ${CMAKE_CURRENT_BINARY_DIR}/eclwatch/PackageMapQueryWidget.js
@@ -248,7 +249,6 @@ set ( SRCS
     ${CMAKE_CURRENT_BINARY_DIR}/src/ESPActivity.ts
     ${CMAKE_CURRENT_BINARY_DIR}/src/ESPBase.ts
     ${CMAKE_CURRENT_BINARY_DIR}/src/ESPDFUWorkunit.ts
-    ${CMAKE_CURRENT_BINARY_DIR}/src/ESPGraph.ts
     ${CMAKE_CURRENT_BINARY_DIR}/src/ESPLogicalFile.ts
     ${CMAKE_CURRENT_BINARY_DIR}/src/ESPPackageProcess.ts
     ${CMAKE_CURRENT_BINARY_DIR}/src/ESPPreflight.ts
@@ -290,9 +290,16 @@ set ( SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/src-react/util/history.ts
     ${CMAKE_CURRENT_SOURCE_DIR}/src-react/index.tsx
     ${CMAKE_CURRENT_SOURCE_DIR}/src-react/routes.tsx
-    ${CMAKE_CURRENT_SOURCE_DIR}/stub.htm
-    ${CMAKE_CURRENT_SOURCE_DIR}/Login.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/.eslintrc.js
     ${CMAKE_CURRENT_SOURCE_DIR}/GetUserName.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/index.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/Login.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/lws.config.js
+    ${CMAKE_CURRENT_SOURCE_DIR}/package-lock.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/package.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/stub.htm
+    ${CMAKE_CURRENT_SOURCE_DIR}/tsconfig.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/webpack.config.js
 )
 
 if ( "${CMAKE_BUILD_TYPE}" STREQUAL "Debug" )

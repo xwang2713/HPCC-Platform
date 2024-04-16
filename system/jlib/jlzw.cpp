@@ -286,6 +286,7 @@ void CLZWCompressor::open(void *buf,size32_t max)
     st_thistime = msTick();
     st_thiswrites=0;
 #endif
+    originalMax = max;
 
     if (buf)
     {
@@ -302,7 +303,7 @@ void CLZWCompressor::open(void *buf,size32_t max)
         outbuf = malloc(bufalloc);
     }
     outBufMb = NULL;
-    ASSERT(max>SAFETY_MARGIN+sizeof(size32_t)); // minimum required
+    assertex(max>SAFETY_MARGIN+sizeof(size32_t)); // minimum required
     maxlen=max-SAFETY_MARGIN;
     initCommon();
 }
@@ -394,6 +395,18 @@ size32_t CLZWCompressor::write(const void *buf,size32_t buflen)
     return buflen;
 }
 
+bool CLZWCompressor::adjustLimit(size32_t newLimit)
+{
+    assertex(bufalloc == 0 && !outBufMb);       // Only supported when a fixed size buffer is provided
+    assertex(inlenblk == COMMITTED);             // not inside a transaction
+    assertex(newLimit <= originalMax);
+
+    if (newLimit < SAFETY_MARGIN + outlen)
+        return false;
+    maxlen = newLimit - SAFETY_MARGIN;
+    return true;
+}
+
 void CLZWCompressor::startblock()
 {
     inlenblk = inlen;
@@ -433,6 +446,20 @@ void CLZWCompressor::close()
             outBufMb = NULL;
         }
     }
+}
+
+
+size32_t CExpanderBase::expandFirst(MemoryBuffer & target, const void * src)
+{
+    size32_t size = init(src);
+    void * buffer = target.reserve(size);
+    expand(buffer);
+    return size;
+}
+
+size32_t CExpanderBase::expandNext(MemoryBuffer & target)
+{
+    return 0;
 }
 
 CLZWExpander::CLZWExpander(bool _supportbigendian)
@@ -731,81 +758,89 @@ Escape:
     return (size32_t)(in-(const byte *)src);
 }
 
-void appendToBuffer(MemoryBuffer & out, size32_t len, const void * src)
+void compressToBuffer(MemoryBuffer & out, size32_t len, const void * src, CompressionMethod method, const char *options)
 {
-    out.append(false);
+    if (method != COMPRESS_METHOD_NONE && len >= 32)
+    {
+        ICompressHandler *handler = queryCompressHandler(method);
+        if (!handler)
+        {
+            VStringBuffer s("Unknown compression method %x requested in compressToBuffer", (byte) method);
+            throw makeStringException(0, s.str());
+        }
+        unsigned originalLength = out.length();
+        // For back-compatibility, we always store COMPRESS_METHOD_LZW_LITTLE_ENDIAN as 1 as earlier versions stored a boolean here
+        // rather than an enum
+        // This means that compressToBuffer/decompressToBuffer cannot bs used for rowdiff compression - this is not likely to be an issue
+        // Alternative would be a separate enum for compressToBuffer formats, but that seems more likely to cause confusion
+        out.append((byte) (method == COMPRESS_METHOD_LZW_LITTLE_ENDIAN ? COMPRESS_METHOD_LZWLEGACY : method));
+        out.append((size32_t)0);
+        size32_t newSize = len * 4 / 5; // Copy if compresses less than 80% ...
+        Owned<ICompressor> compressor = handler->getCompressor(options);
+        void *newData = out.reserve(newSize);
+        if (compressor->supportsBlockCompression())
+        {
+            size32_t compressedLen = compressor->compressBlock(newSize, newData, len, src);
+            if (compressedLen != 0)
+            {
+                out.setWritePos(originalLength + sizeof(byte));
+                out.append(compressedLen);
+                out.setWritePos(originalLength + sizeof(byte) + sizeof(size32_t) + compressedLen);
+                return;
+            }
+        }
+        else
+        {
+            try
+            {
+                compressor->open(newData, newSize);
+                if (compressor->write(src, len)==len)
+                {
+                    compressor->close();
+                    size32_t compressedLen = compressor->buflen();
+                    out.setWritePos(originalLength + sizeof(byte));
+                    out.append(compressedLen);
+                    out.setWritePos(originalLength + sizeof(byte) + sizeof(size32_t) + compressedLen);
+                    return;
+                }
+            }
+            catch (IException *E)
+            {
+                E->Release();
+            }
+        }
+        // failed to compress...
+        out.setWritePos(originalLength);
+    }
+    out.append((byte) COMPRESS_METHOD_NONE);
     out.append(len);
     out.append(len, src);
 }
 
-void compressToBuffer(MemoryBuffer & out, size32_t len, const void * src)
+void decompressToBuffer(MemoryBuffer & out, MemoryBuffer & in, const char *options)
 {
-    unsigned originalLength = out.length();
-    out.append(true);
-    out.append((size32_t)0);
-
-    if (len >= 32)
-    {
-        size32_t newSize = len * 4 / 5; // Copy if compresses less than 80% ...
-        Owned<ICompressor> compressor = createLZWCompressor();
-        void *newData = out.reserve(newSize);
-        compressor->open(newData, newSize);
-        if (compressor->write(src, len)==len)
-        {
-            compressor->close();
-            size32_t compressedLen = compressor->buflen();
-            out.setWritePos(originalLength + sizeof(bool));
-            out.append(compressedLen);
-            out.setWritePos(originalLength + sizeof(bool) + sizeof(size32_t) + compressedLen);
-            return;
-        }
-    }
-    
-    // all or don't compress
-    out.setWritePos(originalLength);
-    appendToBuffer(out, len, src);
-}
-
-void decompressToBuffer(MemoryBuffer & out, const void * src)
-{
-    Owned<IExpander> expander = createLZWExpander();
-    unsigned outSize = expander->init(src);
-    void * buff = out.reserve(outSize);
-    expander->expand(buff);
-}
-
-
-void decompressToBuffer(MemoryBuffer & out, MemoryBuffer & in)
-{
-    bool compressed;
     size32_t srcLen;
-    in.read(compressed).read(srcLen);
-    if (compressed)
-        decompressToBuffer(out, in.readDirect(srcLen));
-    else
+    unsigned char _method;
+    in.read(_method).read(srcLen);
+    CompressionMethod method = (CompressionMethod) _method;
+    if (method==COMPRESS_METHOD_NONE)
         out.append(srcLen, in.readDirect(srcLen));
-}
-
-void decompressToAttr(MemoryAttr & out, const void * src)
-{
-    Owned<IExpander> expander = createLZWExpander();
-    unsigned outSize = expander->init(src);
-    void * buff = out.allocate(outSize);
-    expander->expand(buff);
-}
-
-void decompressToBuffer(MemoryAttr & out, MemoryBuffer & in)
-{
-    bool compressed;
-    size32_t srcLen;
-    in.read(compressed).read(srcLen);
-    if (compressed)
-        decompressToAttr(out, in.readDirect(srcLen));
     else
-        out.set(srcLen, in.readDirect(srcLen));
+    {
+        if (method==COMPRESS_METHOD_LZWLEGACY)
+            method = COMPRESS_METHOD_LZW_LITTLE_ENDIAN;    // Back compatibilty
+        ICompressHandler *handler = queryCompressHandler(method);
+        if (!handler)
+        {
+            VStringBuffer s("Unknown decompression method %x required in decompressToBuffer", (byte) method);
+            throw makeStringException(0, s.str());
+        }
+        Owned<IExpander> expander = handler->getExpander(options);
+        unsigned outSize = expander->init(in.readDirect(srcLen));
+        void * buff = out.reserve(outSize);
+        expander->expand(buff);
+    }
 }
-
-
 
 /*
    Simple Diff compression format is
@@ -1272,6 +1307,7 @@ class jlib_decl CRDiffCompressor : public ICompressor, public CInterface
     size32_t outlen;
     size32_t bufalloc;
     size32_t remaining;
+    size32_t originalMax = 0;
     void *outbuf;
     unsigned char *out;
     MemoryBuffer *outBufMb;
@@ -1322,7 +1358,7 @@ public:
             free(outbuf);
     }
 
-    void open(MemoryBuffer &mb, size32_t initialSize)
+    virtual void open(MemoryBuffer &mb, size32_t initialSize) override
     {
         outBufMb = &mb;
         outBufStart = mb.length();
@@ -1332,8 +1368,9 @@ public:
         remaining = outBufMb->capacity()-outlen;
     }
 
-    void open(void *buf,size32_t max)
+    virtual void open(void *buf,size32_t max) override
     {
+        originalMax = max;
         if (buf)
         {
             if (bufalloc)
@@ -1349,12 +1386,12 @@ public:
             outbuf = malloc(bufalloc);
         }
         outBufMb = NULL;
-        ASSERT(max>2+sizeof(size32_t)*2); // minimum required (actually will need enough for recsize so only a guess)
+        assertex(max>2+sizeof(size32_t)*2); // minimum required (actually will need enough for recsize so only a guess)
         initCommon();
         remaining = max-outlen;
     }
 
-    void close()
+    virtual void close() override
     {
         transbuf.clear();
         memcpy(outbuf,&inlen,sizeof(inlen));        // expanded size
@@ -1366,9 +1403,26 @@ public:
         }
     }
 
+    virtual bool supportsBlockCompression() const override { return false; }
+    virtual bool supportsIncrementalCompression() const override { return true; }
+
+    virtual size32_t compressBlock(size32_t destSize, void * dest, size32_t srcSize, const void * src) override { return 0; }
+
+    virtual bool adjustLimit(size32_t newLimit) override
+    {
+        assertex(bufalloc == 0 && !outBufMb);       // Only supported when a fixed size buffer is provided
+        assertex(transbuf.length() == 0);           // not inside a transaction
+        assertex(newLimit <= originalMax);
+
+        if (newLimit < outlen + maxrecsize)
+            return false;
+        remaining = newLimit - outlen;
+        return true;
+    }
+
     inline size32_t maxcompsize(size32_t s) { return s+((s+254)/255)*2; }
 
-    size32_t write(const void *buf,size32_t buflen)
+    virtual size32_t write(const void *buf,size32_t buflen) override
     {
         // assumes a transaction is a row and at least one row fits in
         if (prev)
@@ -1397,12 +1451,12 @@ public:
 
 
 
-    void startblock()
+    virtual void startblock() override
     {
         transbuf.clear();
     }
 
-    void commitblock()
+    virtual void commitblock() override
     {
         if (prev)
         {
@@ -1428,13 +1482,14 @@ public:
     }
 
 
-    virtual void *bufptr() { return outbuf;}
-    virtual size32_t buflen() { return outlen;}
+    virtual void *bufptr() override { return outbuf;}
+    virtual size32_t buflen() override { return outlen;}
 
+    virtual CompressionMethod getCompressionMethod() const override { return COMPRESS_METHOD_ROWDIF; }
 };
 
 
-class jlib_decl CRDiffExpander : public IExpander, public CInterface
+class jlib_decl CRDiffExpander : public CExpanderBase
 {
     unsigned char *outbuf;
     size32_t outlen;
@@ -1442,8 +1497,6 @@ class jlib_decl CRDiffExpander : public IExpander, public CInterface
     unsigned char *in;
     size32_t recsize;
 public:
-    IMPLEMENT_IINTERFACE;
-
     CRDiffExpander()
     {
         outbuf = NULL;
@@ -1545,6 +1598,7 @@ class jlib_decl CRandRDiffCompressor : public ICompressor, public CInterface
     size32_t inlen;
     size32_t bufalloc;
     size32_t max;
+    size32_t originalMax = 0;
     void *outbuf;
     RRDheader *header;
     // assumes a transaction is a record
@@ -1588,7 +1642,7 @@ public:
             free(outbuf);
     }
 
-    void open(MemoryBuffer &mb, size32_t initialSize)
+    virtual void open(MemoryBuffer &mb, size32_t initialSize) override
     {
         outBufMb = &mb;
         outBufStart = mb.length();
@@ -1597,9 +1651,10 @@ public:
         initCommon();
     }
 
-    void open(void *buf,size32_t _max)
+    virtual void open(void *buf,size32_t _max) override
     {
         max = _max;
+        originalMax = max;
         if (buf) {
             if (bufalloc) {
                 free(outbuf);
@@ -1614,14 +1669,14 @@ public:
             outbuf = malloc(bufalloc);
         }
         outBufMb = NULL;
-        ASSERT(max>MIN_RRDHEADER_SIZE+sizeof(unsigned short)+3); // hopefully a lot bigger!
+        assertex(max>MIN_RRDHEADER_SIZE+sizeof(unsigned short)+3); // hopefully a lot bigger!
         initCommon();
     }
 
-    void close()
+    virtual void close() override
     {
         header->rowofs[0] = (unsigned short)diffbuf.length();
-        ASSERT((size32_t)(header->totsize+header->firstrlesize)<=max);
+        ASSERT((size32_t)(header->totsize+header->firstrlesize)<=max || max == 0);
         unsigned short hofs = header->hsize();
         ASSERT(header->totsize==hofs+diffbuf.length());
         if (outBufMb)
@@ -1631,9 +1686,12 @@ public:
             outBufMb = NULL;
         }
         byte *out = (byte *)outbuf+hofs;
-        memcpy(out,diffbuf.toByteArray(),diffbuf.length());
-        out += diffbuf.length();
-        diffbuf.clear();
+        if (diffbuf.length())
+        {
+            memcpy(out,diffbuf.toByteArray(),diffbuf.length());
+            out += diffbuf.length();
+            diffbuf.clear();
+        }
         memcpy(out,firstrle.bufferBase(),header->firstrlesize);
         header->totsize += header->firstrlesize;
         firstrle.clear();
@@ -1645,9 +1703,26 @@ public:
             header->rowofs[i] += hofs;
     }
 
+    virtual bool adjustLimit(size32_t newLimit) override
+    {
+        assertex(bufalloc == 0 && !outBufMb);       // Only supported when a fixed size buffer is provided
+        assertex(rowbuf.length() == 0);             // not inside a transaction
+        assertex(newLimit <= originalMax);
+
+        if (newLimit < header->totsize+sizeof(short)+header->firstrlesize)
+            return false;
+        max = newLimit;
+        return true;
+    }
+
+    virtual bool supportsBlockCompression() const override { return false; }
+    virtual bool supportsIncrementalCompression() const override { return true; }
+
+    virtual size32_t compressBlock(size32_t destSize, void * dest, size32_t srcSize, const void * src) override { return 0; }
+
     inline size32_t maxcompsize(size32_t s) { return s+((s+254)/255)*2; }
 
-    size32_t write(const void *buf,size32_t buflen)
+    virtual size32_t write(const void *buf,size32_t buflen) override
     {
         // assumes a transaction is a row and at least one row fits in
         unsigned nr = header->numrows;
@@ -1671,12 +1746,12 @@ public:
 
 
 
-    void startblock()
+    virtual void startblock() override
     {
         rowbuf.clear();
     }
 
-    void commitblock()
+    virtual void commitblock() override
     {
         unsigned nr = header->numrows;
         if (nr) {
@@ -1699,9 +1774,10 @@ public:
     }
 
 
-    void *bufptr() { return outbuf;}
-    size32_t buflen() { return header->totsize;}
+    virtual void *bufptr() override { return outbuf;}
+    virtual size32_t buflen() override { return header->totsize;}
 
+    virtual CompressionMethod getCompressionMethod() const override { return COMPRESS_METHOD_RANDROW; }
 };
 
 
@@ -1931,7 +2007,12 @@ class CCompressedFile : implements ICompressedFileIO, public CInterface
     bool writeException;
     Owned<ICompressor> compressor;
     Owned<IExpander> expander;
+    MemoryAttr compressedInputBlock;
     unsigned compMethod;
+    offset_t lastFlushPos = (offset_t)-1;
+    offset_t nextExpansionPos = (offset_t)-1;
+    offset_t startBlockPos = (offset_t)-1;
+    size32_t fullBlockSize = 0;
 
     unsigned indexNum() { return indexbuf.length()/sizeof(offset_t); }
 
@@ -1945,11 +2026,9 @@ class CCompressedFile : implements ICompressedFileIO, public CInterface
         while (b>a) {
             unsigned m = a+(b-a)/2;
             __int64 dif = (__int64)pos-index[m];
-            if (dif==0) {
-                b = m+1;
-                a = b;
-            }
-            else if (dif>0) 
+            //Do not optimize exact matches - because if there are zero length blocks this needs
+            //to return the block that follows
+            if (dif >= 0)
                 a = m+1;
             else
                 b = m;
@@ -1959,10 +2038,46 @@ class CCompressedFile : implements ICompressedFileIO, public CInterface
         return b;
     }
 
-
     void getblock(offset_t pos)
     {
         curblockbuf.clear();
+
+        //If the blocks are being expanded incrementally check if the position is within the current block
+        //This test will never be true for row compressed data, or non-incremental decompression
+        if ((pos >= startBlockPos) && (pos < startBlockPos + fullBlockSize))
+        {
+            if (pos < nextExpansionPos)
+            {
+                //Start decompressing again and avoid re-reading the data from disk
+                const void * rawData;
+                if (fileio)
+                    rawData = compressedInputBlock.get();
+                else
+                    rawData = mmfile->base()+startBlockPos;
+
+                assertex(rawData);
+                size32_t exp = expander->expandFirst(curblockbuf, rawData);
+                curblockpos = startBlockPos;
+                nextExpansionPos = startBlockPos + exp;
+                if (pos < nextExpansionPos)
+                    return;
+
+                curblockbuf.clear();
+            }
+
+            for (;;)
+            {
+                size32_t nextSize = expander->expandNext(curblockbuf);
+                if (nextSize == 0)
+                    throwUnexpected(); // Should have failed the outer block test if nextSize is 0
+
+                curblockpos = nextExpansionPos;
+                nextExpansionPos = nextExpansionPos+nextSize;
+                if (pos < nextExpansionPos)
+                    return;
+            }
+        }
+
         size32_t expsize;
         curblocknum = lookupIndex(pos,curblockpos,expsize);
         size32_t toread = trailer.blockSize;
@@ -1973,8 +2088,9 @@ class CCompressedFile : implements ICompressedFileIO, public CInterface
         if (!toread) 
             return;
         if (fileio) {
-            MemoryAttr comp;
-            void *b=comp.allocate(toread);
+            //Allocate on the first call, reuse on subsequent calls.
+            void * b = compressedInputBlock.allocate(trailer.blockSize);
+
             size32_t r = fileio->read(p,toread,b);
             assertex(r==toread);
             expand(b,curblockbuf,expsize);
@@ -1988,48 +2104,13 @@ class CCompressedFile : implements ICompressedFileIO, public CInterface
     {
         size32_t ret = fileio->write(pos,len,data);
         if (ret!=len)
-            throw MakeStringException(DISK_FULL_EXCEPTION_CODE,"CCompressedFile::checkedwrite");        
+            throw makeOsException(DISK_FULL_EXCEPTION_CODE,"CCompressedFile::checkedwrite");
         if (setcrc) 
             trailer.crc = crc32((const char *)data,len,trailer.crc);
 
     }
 
-    void flush()
-    {   
-        try
-        {
-            curblocknum++;
-            indexbuf.append((unsigned __int64) trailer.expandedSize-overflow.length());
-            offset_t p = ((offset_t)curblocknum)*((offset_t)trailer.blockSize);
-            if (trailer.recordSize==0) {
-                compressor->close();
-                compblklen = compressor->buflen();
-            }
-            if (compblklen) {
-                if (p>trailer.indexPos) { // fill gap
-                    MemoryAttr fill;
-                    size32_t fl = (size32_t)(p-trailer.indexPos);
-                    memset(fill.allocate(fl),0xff,fl);
-                    checkedwrite(trailer.indexPos,fl,fill.get());
-                }
-                checkedwrite(p,compblklen,compblkptr);
-                p += compblklen;
-                compblklen = 0;
-            }
-            trailer.indexPos = p;
-            if (trailer.recordSize==0) {
-                compressor->open(compblkptr, trailer.blockSize);
-            }
-        }
-        catch (IException *e)
-        {
-            writeException = true;
-            EXCLOG(e, "CCompressedFile::flush");
-            throw;
-        }
-    }
-
-    virtual void expand(const void *compbuf,MemoryBuffer &expbuf,size32_t expsize)
+    void expand(const void *compbuf,MemoryBuffer &expbuf,size32_t expsize)
     {
         size32_t rs = trailer.recordSize;
         if (rs) { // diff expand
@@ -2051,11 +2132,10 @@ class CCompressedFile : implements ICompressedFileIO, public CInterface
         }
         else { // lzw or fastlz or lz4
             assertex(expander.get());
-            size32_t exp = expander->init(compbuf);
-            if (exp!=expsize) {
-                throw MakeStringException(-1,"Compressed file format failure(%d,%d) - Encrypted?",exp,expsize);
-            }
-            expander->expand(expbuf.reserve(exp));
+            size32_t exp = expander->expandFirst(expbuf, compbuf);
+            startBlockPos = curblockpos;
+            nextExpansionPos = startBlockPos + exp;
+            fullBlockSize = expsize;
         }
     }
 
@@ -2154,10 +2234,10 @@ public:
                             compressor.setown(createFastLZCompressor());
                             break;
                         case COMPRESS_METHOD_LZ4:
-                            compressor.setown(createLZ4Compressor(false));
+                            compressor.setown(createLZ4Compressor(nullptr, false));
                             break;
                         case COMPRESS_METHOD_LZ4HC:
-                            compressor.setown(createLZ4Compressor(true));
+                            compressor.setown(createLZ4Compressor(nullptr, true));
                             break;
                         default:
                             compMethod = COMPRESS_METHOD_LZW;
@@ -2205,6 +2285,9 @@ public:
                         compMethod = COMPRESS_METHOD_LZW;
                         expander.setown(createLZWExpander(true));
                     }
+                    //Preallocate the expansion target to the block size - to ensure it is the right size and
+                    //avoid reallocation when expanding lz4
+                    curblockbuf.ensureCapacity(trailer.blockSize);
                 }
             }
         }
@@ -2221,14 +2304,7 @@ public:
             }
         }
     }
-
-    virtual offset_t size()                                             
-    { 
-        CriticalBlock block(crit);
-        return trailer.expandedSize;
-    }
-
-    virtual size32_t read(offset_t pos, size32_t len, void * data)          
+    virtual size32_t read(offset_t pos, size32_t len, void * data) override
     {
         CriticalBlock block(crit);
         assertex(mode==ICFread);
@@ -2252,7 +2328,12 @@ public:
         }
         return ret;
     }
-    size32_t write(offset_t pos, size32_t len, const void * data)   
+    virtual offset_t size() override
+    { 
+        CriticalBlock block(crit);
+        return trailer.expandedSize;
+    }
+    virtual size32_t write(offset_t pos, size32_t len, const void * data) override
     {
         CriticalBlock block(crit);
         assertex(mode!=ICFread);
@@ -2272,16 +2353,46 @@ public:
         }
         return ret;
     }
-
-    virtual unsigned __int64 getStatistic(StatisticKind kind)
-    {
-        return fileio->getStatistic(kind);
+    virtual offset_t appendFile(IFile *file,offset_t pos,offset_t len) override { UNIMPLEMENTED; }
+    virtual void setSize(offset_t size) override { UNIMPLEMENTED; }
+    virtual void flush() override
+    {   
+        try
+        {
+            if (lastFlushPos == trailer.expandedSize) // nothing written since last flush. NB: only sequential writes supported
+                return;
+            curblocknum++;
+            indexbuf.append((unsigned __int64) trailer.expandedSize-overflow.length());
+            offset_t p = ((offset_t)curblocknum)*((offset_t)trailer.blockSize);
+            if (trailer.recordSize==0) {
+                compressor->close();
+                compblklen = compressor->buflen();
+            }
+            if (compblklen) {
+                if (p>trailer.indexPos) { // fill gap
+                    MemoryAttr fill;
+                    size32_t fl = (size32_t)(p-trailer.indexPos);
+                    memset(fill.allocate(fl),0xff,fl);
+                    checkedwrite(trailer.indexPos,fl,fill.get());
+                }
+                checkedwrite(p,compblklen,compblkptr);
+                p += compblklen;
+                compblklen = 0;
+            }
+            trailer.indexPos = p;
+            if (trailer.recordSize==0) {
+                compressor->open(compblkptr, trailer.blockSize);
+            }
+            lastFlushPos = trailer.expandedSize;
+        }
+        catch (IException *e)
+        {
+            writeException = true;
+            EXCLOG(e, "CCompressedFile::flush");
+            throw;
+        }
     }
-
-    void setSize(offset_t size) { UNIMPLEMENTED; }
-    offset_t appendFile(IFile *file,offset_t pos,offset_t len) { UNIMPLEMENTED; }
-
-    void close()
+    virtual void close() override
     {
         CriticalBlock block(crit);
         if (mode!=ICFread) {
@@ -2310,33 +2421,37 @@ public:
         curblockpos = 0;
         curblocknum = (unsigned)-1; // relies on wrap
     }
+    virtual unsigned __int64 getStatistic(StatisticKind kind) override
+    {
+        return fileio->getStatistic(kind);
+    }
 
-    unsigned dataCRC()
+// CCompressedFile impl.
+    virtual unsigned dataCRC() override
     {
         if (mode==ICFread)
             return trailer.datacrc;
         return trailer.crc;
     }
-    size32_t recordSize()
+    virtual size32_t recordSize() override
     {
         return trailer.recordSize;
     }
-    size32_t blockSize()
+    virtual size32_t blockSize() override
     {
         return trailer.blockSize;
     }
-    void setBlockSize(size32_t size)
+    virtual void setBlockSize(size32_t size) override
     {
         trailer.blockSize = size;
         compressor->close();
         compressor->open(compblkptr, size);
     }
-    bool readMode()
+    virtual bool readMode() override
     {
         return (mode==ICFread);
     }
-
-    unsigned method()
+    virtual unsigned method() override
     {
         return trailer.method();
     }
@@ -2531,6 +2646,7 @@ class CAESCompressor : implements ICompressor, public CInterface
     void *outbuf;               // dest
     size32_t outlen;
     size32_t outmax;
+    size32_t originalMax = 0;
     MemoryAttr key;
     MemoryBuffer *outBufMb;
 
@@ -2545,7 +2661,7 @@ public:
         outBufMb = NULL;
     }
 
-    void open(MemoryBuffer &mb, size32_t initialSize)
+    virtual void open(MemoryBuffer &mb, size32_t initialSize) override
     {
         outlen = 0;
         outmax = initialSize;
@@ -2554,20 +2670,38 @@ public:
         comp->open(compattr, initialSize);
     }
 
-    void open(void *blk,size32_t blksize)
+    virtual void open(void *blk,size32_t blksize) override
     {
         outlen = 0;
         outmax = blksize;
+        originalMax = blksize;
         if (blk)
             outbuf = blk;
         else
             outbuf = outattr.allocate(blksize);
         outBufMb = NULL;
+        if (blksize <= AES_PADDING_SIZE+sizeof(size32_t))
+            throw makeStringException(0, "CAESCompressor: target buffer too small");
         size32_t subsz = blksize-AES_PADDING_SIZE-sizeof(size32_t);
         comp->open(compattr.reserveTruncate(subsz),subsz);
     }
 
-    void close()
+    virtual bool adjustLimit(size32_t newLimit) override
+    {
+        assertex(newLimit <= originalMax);
+
+        if (!comp->adjustLimit(newLimit-AES_PADDING_SIZE-sizeof(size32_t)))
+            return false;
+        outmax = newLimit;
+        return true;
+    }
+
+    virtual bool supportsBlockCompression() const override { return false; }
+    virtual bool supportsIncrementalCompression() const override { return true; }
+
+    virtual size32_t compressBlock(size32_t destSize, void * dest, size32_t srcSize, const void * src) override { return 0; }
+
+    virtual void close() override
     {
         comp->close();
         // now encrypt
@@ -2587,41 +2721,42 @@ public:
         outmax = 0;
     }
 
-    size32_t write(const void *buf,size32_t len)
+    virtual size32_t write(const void *buf,size32_t len) override
     {
         return comp->write(buf,len);
     }
 
-    void * bufptr()
+    virtual void * bufptr() override
     {
         assertex(0 == outmax); // i.e. closed
         return outbuf;
     }
 
-    size32_t buflen()
+    virtual size32_t buflen() override
     {
         assertex(0 == outmax); // i.e. closed
         return outlen;
     }
 
-    void startblock()
+    virtual void startblock() override
     {
         comp->startblock();
     }
 
-    void commitblock()
+    virtual void commitblock() override
     {
         comp->commitblock();
     }
+
+    virtual CompressionMethod getCompressionMethod() const override { return (CompressionMethod)(COMPRESS_METHOD_AES | comp->getCompressionMethod()); }
 };
 
-class CAESExpander : implements IExpander, public CInterface
+class CAESExpander : implements CExpanderBase
 {
     Owned<IExpander> exp;   // base expander
     MemoryBuffer compbuf;
     MemoryAttr key;
 public:
-    IMPLEMENT_IINTERFACE;
     CAESExpander(const void *_key, unsigned _keylen)
         : key(_keylen,_key)
     {
@@ -2632,7 +2767,7 @@ public:
         // first decrypt
         const byte *p = (const byte *)blk;
         size32_t l = *(const size32_t *)p;
-        aesDecrypt(key.get(),key.length(),p+sizeof(size32_t),l,compbuf);
+        aesDecrypt(key.get(),key.length(),p+sizeof(size32_t),l,compbuf.clear());
         return exp->init(compbuf.bufferBase());         
     }
 
@@ -2662,7 +2797,7 @@ IExpander *createAESExpander(const void *key, unsigned keylen)
     return new CAESExpander(key,keylen);
 }
 
-#define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (8 - (n))))
+#define ROTATE_BYTE_LEFT(x, n) (((x) << (n)) | ((x) >> (8 - (n))))
 
 
 inline void padKey32(byte *keyout,size32_t len, const byte *key)
@@ -2671,13 +2806,13 @@ inline void padKey32(byte *keyout,size32_t len, const byte *key)
         memset(keyout,0xcc,32);
     else if (len<=32) {
         for (unsigned i=0;i<32;i++)
-            keyout[i] = (i<len)?key[i%len]:ROTATE_LEFT(key[i%len],i/len);
+            keyout[i] = (i<len)?key[i%len]:ROTATE_BYTE_LEFT(key[i%len],i/len);
     }
     else {
         memcpy(keyout,key,32);
         // xor excess rotated
         for (unsigned i=32;i<len;i++) 
-            keyout[i%32] ^= ROTATE_LEFT(key[i],(i/8)%8);
+            keyout[i%32] ^= ROTATE_BYTE_LEFT(key[i],(i/8)%8);
     }
 }
 
@@ -2737,18 +2872,70 @@ IPropertyTree *getBlockedFileDetails(IFile *file)
     return NULL;
 }
 
-class CCompressHandlerArray : public IArrayOf<ICompressHandler>
+class CCompressHandlerArray
 {
+    IArrayOf<ICompressHandler> registered;    // Owns the relevant handler objects
+    ICompressHandler *byMethod[COMPRESS_METHOD_LAST] = { nullptr };
+    ICompressHandler *AESbyMethod[COMPRESS_METHOD_LAST] = { nullptr };
+
 public:
     ICompressHandler *lookup(const char *type) const
     {
-        ForEachItemIn(h, *this)
+        ForEachItemIn(h, registered)
         {
-            ICompressHandler &handler = item(h);
+            ICompressHandler &handler = registered.item(h);
             if (0 == stricmp(type, handler.queryType()))
                 return &handler;
         }
         return NULL;
+    }
+    ICompressHandler *lookup(CompressionMethod method) const
+    {
+        if ((method & ~COMPRESS_METHOD_AES) >= COMPRESS_METHOD_LAST)
+            return nullptr;
+        else if (method & COMPRESS_METHOD_AES)
+            return AESbyMethod[method & ~COMPRESS_METHOD_AES];
+        else
+            return byMethod[method];
+    }
+    ICompressHandlerIterator *getIterator()
+    {
+        return new ArrayIIteratorOf<IArrayOf<ICompressHandler>, ICompressHandler, ICompressHandlerIterator>(registered);
+    }
+    bool addCompressor(ICompressHandler *handler)
+    {
+        CompressionMethod method = handler->queryMethod();
+        if (lookup(method))
+        {
+            handler->Release();
+            return false; // already registered
+        }
+        registered.append(* handler);
+        if ((method & ~COMPRESS_METHOD_AES) < COMPRESS_METHOD_LAST)
+        {
+            if (method & COMPRESS_METHOD_AES)
+                AESbyMethod[method & ~COMPRESS_METHOD_AES] = handler;
+            else
+                byMethod[method] = handler;
+        }
+        return true;
+    }
+    bool removeCompressor(ICompressHandler *handler)
+    {
+        CompressionMethod method = handler->queryMethod();
+        if (registered.zap(* handler))
+        {
+            if ((method & ~COMPRESS_METHOD_AES) < COMPRESS_METHOD_LAST)
+            {
+                if (method & COMPRESS_METHOD_AES)
+                    AESbyMethod[method & ~COMPRESS_METHOD_AES] = nullptr;
+                else
+                    byMethod[method] = nullptr;
+            }
+            return true;
+        }
+        else
+            return false;
     }
 } compressors;
 
@@ -2756,25 +2943,17 @@ typedef IIteratorOf<ICompressHandler> ICompressHandlerIterator;
 
 ICompressHandlerIterator *getCompressHandlerIterator()
 {
-    return new ArrayIIteratorOf<IArrayOf<ICompressHandler>, ICompressHandler, ICompressHandlerIterator>(compressors);
+    return compressors.getIterator();
 }
-
-
 
 bool addCompressorHandler(ICompressHandler *handler)
 {
-    if (compressors.lookup(handler->queryType()))
-    {
-        handler->Release();
-        return false; // already registered
-    }
-    compressors.append(* handler);
-    return true;
+    return compressors.addCompressor(handler);
 }
 
 bool removeCompressorHandler(ICompressHandler *handler)
 {
-    return compressors.zap(* handler);
+    return compressors.removeCompressor(handler);
 }
 
 Linked<ICompressHandler> defaultCompressor;
@@ -2783,38 +2962,38 @@ MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
     class CCompressHandlerBase : implements ICompressHandler, public CInterface
     {
-        StringAttr type;
     public:
         IMPLEMENT_IINTERFACE;
-        CCompressHandlerBase(const char *_type) : type(_type) { }
-    // ICompressHandler
-        virtual const char *queryType() const { return type; }
     };
     class CFLZCompressHandler : public CCompressHandlerBase
     {
     public:
-        CFLZCompressHandler() : CCompressHandlerBase("FLZ") { }
+        virtual const char *queryType() const { return "FLZ"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_FASTLZ; }
         virtual ICompressor *getCompressor(const char *options) { return createFastLZCompressor(); }
         virtual IExpander *getExpander(const char *options) { return createFastLZExpander(); }
     };
     class CLZ4CompressHandler : public CCompressHandlerBase
     {
     public:
-        CLZ4CompressHandler() : CCompressHandlerBase("LZ4") { }
-        virtual ICompressor *getCompressor(const char *options) { return createLZ4Compressor(false); }
+        virtual const char *queryType() const { return "LZ4"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_LZ4; }
+        virtual ICompressor *getCompressor(const char *options) { return createLZ4Compressor(options, false); }
         virtual IExpander *getExpander(const char *options) { return createLZ4Expander(); }
     };
     class CLZ4HCCompressHandler : public CCompressHandlerBase
     {
     public:
-        CLZ4HCCompressHandler() : CCompressHandlerBase("LZ4HC") { }
-        virtual ICompressor *getCompressor(const char *options) { return createLZ4Compressor(true); }
+        virtual const char *queryType() const { return "LZ4HC"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_LZ4HC; }
+        virtual ICompressor *getCompressor(const char *options) { return createLZ4Compressor(options, true); }
         virtual IExpander *getExpander(const char *options) { return createLZ4Expander(); }
     };
     class CAESCompressHandler : public CCompressHandlerBase
     {
     public:
-        CAESCompressHandler() : CCompressHandlerBase("AES") { }
+        virtual const char *queryType() const { return "AES"; }
+        virtual CompressionMethod queryMethod() const { return (CompressionMethod) (COMPRESS_METHOD_AES|COMPRESS_METHOD_LZW); }
         virtual ICompressor *getCompressor(const char *options)
         {
             assertex(options);
@@ -2829,31 +3008,65 @@ MODULE_INIT(INIT_PRIORITY_STANDARD)
     class CDiffCompressHandler : public CCompressHandlerBase
     {
     public:
-        CDiffCompressHandler() : CCompressHandlerBase("DIFF") { }
+        virtual const char *queryType() const { return "DIFF"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_ROWDIF; }
         virtual ICompressor *getCompressor(const char *options) { return createRDiffCompressor(); }
         virtual IExpander *getExpander(const char *options) { return createRDiffExpander(); }
+    };
+    class CRDiffCompressHandler : public CCompressHandlerBase
+    {
+    public:
+        virtual const char *queryType() const { return "RDIFF"; }  // Synonym for DIFF
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_ROWDIF; }
+        virtual ICompressor *getCompressor(const char *options) { return createRDiffCompressor(); }
+        virtual IExpander *getExpander(const char *options) { return createRDiffExpander(); }
+    };
+    class CRandRDiffCompressHandler : public CCompressHandlerBase
+    {
+    public:
+        virtual const char *queryType() const { return "RANDROW"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_RANDROW; }
+        virtual ICompressor *getCompressor(const char *options) { return createRandRDiffCompressor(); }
+        virtual IExpander *getExpander(const char *options) { UNIMPLEMENTED; } // Expander has a different interface
     };
     class CLZWCompressHandler : public CCompressHandlerBase
     {
     public:
-        CLZWCompressHandler() : CCompressHandlerBase("LZW") { }
+        virtual const char *queryType() const { return "LZW"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_LZW; }
         virtual ICompressor *getCompressor(const char *options) { return createLZWCompressor(true); }
         virtual IExpander *getExpander(const char *options) { return createLZWExpander(true); }
     };
+    class CLZWLECompressHandler : public CCompressHandlerBase
+    {
+    public:
+        virtual const char *queryType() const { return "LZWLE"; }
+        virtual CompressionMethod queryMethod() const { return COMPRESS_METHOD_LZW_LITTLE_ENDIAN; }
+        virtual ICompressor *getCompressor(const char *options) { return createLZWCompressor(false); }
+        virtual IExpander *getExpander(const char *options) { return createLZWExpander(false); }
+    };
+    addCompressorHandler(new CLZWLECompressHandler());
+    addCompressorHandler(new CLZWCompressHandler());
     addCompressorHandler(new CAESCompressHandler());
     addCompressorHandler(new CDiffCompressHandler());
-    addCompressorHandler(new CLZWCompressHandler());
+    addCompressorHandler(new CRDiffCompressHandler());
+    addCompressorHandler(new CRandRDiffCompressHandler());
     addCompressorHandler(new CFLZCompressHandler());
     addCompressorHandler(new CLZ4HCCompressHandler());    
     ICompressHandler *lz4Compressor = new CLZ4CompressHandler();
-    addCompressorHandler(lz4Compressor);
     defaultCompressor.set(lz4Compressor);
+    addCompressorHandler(lz4Compressor);
     return true;
 }
 
 ICompressHandler *queryCompressHandler(const char *type)
 {
     return compressors.lookup(type);
+}
+
+ICompressHandler *queryCompressHandler(CompressionMethod method)
+{
+    return compressors.lookup(method);
 }
 
 void setDefaultCompressor(const char *type)
@@ -2885,6 +3098,54 @@ IExpander *getExpander(const char *type, const char *options)
     return NULL;
 }
 
+
+
+CompressionMethod translateToCompMethod(const char *compStr, CompressionMethod defaultMethod)
+{
+    CompressionMethod compMethod = defaultMethod;
+    if (!isEmptyString(compStr))
+    {
+        if (strieq("FLZ", compStr))
+            compMethod = COMPRESS_METHOD_FASTLZ;
+        else if (strieq("LZW", compStr))
+            compMethod = COMPRESS_METHOD_LZW;
+        else if (strieq("RDIFF", compStr))
+            compMethod = COMPRESS_METHOD_ROWDIF;
+        else if (strieq("RANDROW", compStr))
+            compMethod = COMPRESS_METHOD_RANDROW;
+        else if (strieq("LZMA", compStr))
+            compMethod = COMPRESS_METHOD_LZMA;
+        else if (strieq("LZ4HC", compStr))
+            compMethod = COMPRESS_METHOD_LZ4HC;
+        else if (strieq("LZ4", compStr))
+            compMethod = COMPRESS_METHOD_LZ4;
+        //else // default is LZ4
+    }
+    return compMethod;
+}
+
+const char *translateFromCompMethod(unsigned compMethod)
+{
+    switch (compMethod)
+    {
+        case COMPRESS_METHOD_ROWDIF:
+            return "RDIFF";
+        case COMPRESS_METHOD_RANDROW:
+            return "RANDROW";
+        case COMPRESS_METHOD_LZW:
+            return "LZW";
+        case COMPRESS_METHOD_FASTLZ:
+            return "FLZ";
+        case COMPRESS_METHOD_LZ4:
+            return "LZ4";
+        case COMPRESS_METHOD_LZ4HC:
+            return "LZ4HC";
+        case COMPRESS_METHOD_LZMA:
+            return "LZMA";
+        default:
+            return ""; // none
+    }
+}
 
 
 //===================================================================================

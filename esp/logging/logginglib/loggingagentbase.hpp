@@ -331,7 +331,7 @@ public:
     CESPLogContentGroupFilters(ESPLogContentGroup _group) : group(_group) {};
     ESPLogContentGroup getGroup() { return group; };
     StringArray& getFilters() { return filters; };
-    void clearFilters() { filters.clear(); };
+    void clearFilters() { filters.kill(); };
     unsigned getFilterCount() { return filters.length(); };
     void addFilter(const char* filter)
     {
@@ -453,7 +453,7 @@ protected:
     StringBuffer defaultDB, transactionTable, loggingTransactionSeed;
     StringAttr defaultLogGroup, defaultTransactionApp, loggingTransactionApp, logSourcePath;
 
-    unsigned logSourceCount, loggingTransactionCount, maxTriesGTS;
+    unsigned logSourceCount = 0, loggingTransactionCount = 0, maxTriesGTS = unsigned(-1);
     MapStringToMyClass<CLogGroup> logGroups;
     MapStringToMyClass<CLogSource> logSources;
 

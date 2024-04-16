@@ -21,12 +21,17 @@
 #include "xpathprocessor.hpp"
 #include "esdl_script.hpp"
 #include "wsexcept.hpp"
+#include "txsummary.hpp"
+#include "SecureUser.hpp"
+#include "datamaskingengine.hpp"
 
 #include <stdio.h>
 #include "dllserver.hpp"
 #include "thorplugin.hpp"
 #include "eclrtl.hpp"
 #include "rtlformat.hpp"
+
+#include "nlohmann/json.hpp"
 
 // =============================================================== URI parser
 
@@ -259,12 +264,22 @@ static constexpr const char* selectPathResult = R"!!(<soap:Envelope xmlns:soap="
   </soap:Body>
 </soap:Envelope>)!!";
 
-bool areEquivalentTestXMLStrings(const char *xml1, const char *xml2)
+bool areEquivalentTestXMLStrings(const char *xml1, const char *xml2, bool exact=false)
 {
     if (isEmptyString(xml1) || isEmptyString(xml2))
         return false;
     Owned<IPropertyTree> tree1 = createPTreeFromXMLString(xml1);
     Owned<IPropertyTree> tree2 = createPTreeFromXMLString(xml2);
+
+    //areMatchingPTrees may not compare actual tag content
+    if (exact)
+    {
+      StringBuffer s1;
+      StringBuffer s2;
+      toXML(tree1, s1);
+      toXML(tree2, s2);
+      return streq(s1, s2);
+    }
     return areMatchingPTrees(tree1, tree2);
 }
 
@@ -296,10 +311,15 @@ class ESDLTests : public CppUnit::TestFixture
         CPPUNIT_TEST(testEsdlTransformRequestNamespaces);
         CPPUNIT_TEST(testScriptContext);
         CPPUNIT_TEST(testTargetElement);
+        CPPUNIT_TEST(testStringFunctions);
+        CPPUNIT_TEST(testTxSummary);
+        CPPUNIT_TEST(testParamEx);
+        CPPUNIT_TEST(testMaskingIntegration);
       //The following require setup, uncomment for development testing for now:
       //CPPUNIT_TEST(testMysql);
-      //CPPUNIT_TEST(testScriptMap); //requires a particular roxie query
+      //CPPUNIT_TEST(testCallFunctions); //requires a particular roxie query
       //CPPUNIT_TEST(testHTTPPostXml); //requires a particular roxie query
+      //CPPUNIT_TEST(testSynchronizeHTTPPostXml); //requires a particular roxie query
     CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -313,9 +333,11 @@ public:
         return testname;
     }
 
-    IEsdlScriptContext *createTestScriptContext(IEspContext *ctx, const char *xml, const char *config)
+    IEsdlScriptContext *createTestScriptContext(IEspContext *ctx, const char *xml, const char *config, IEsdlFunctionRegister *functionRegister=nullptr)
     {
-        Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(ctx);
+        Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(ctx, functionRegister, nullptr);
+        scriptContext->setTestMode(true);
+
         scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "service", "EsdlExample");
         scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "method", "EchoPersonInfo");
         scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request_type", "EchoPersonInfoRequest");
@@ -329,9 +351,12 @@ public:
 
     void runTransform(IEsdlScriptContext *scriptContext, const char *scriptXml, const char *srcSection, const char *tgtSection, const char *testname, int code)
     {
+        unsigned startTime = msTick();
         Owned<IEsdlCustomTransform> tf = createEsdlCustomTransform(scriptXml, nullptr);
 
         tf->processTransform(scriptContext, srcSection, tgtSection);
+        fprintf(stdout, "\nTest (%s) time ms(%u)\n", testname, msTick() - startTime);
+
         if (code)
             throw MakeStringException(99, "Test failed(%s): expected an explicit exception %d", testname, code);
     }
@@ -341,12 +366,13 @@ public:
         {
             //printf("starting %s:\n", testname);  //uncomment to help debug
             Owned<IEspContext> ctx = createEspContext(nullptr);
+            ctx->setUser(new CSecureUser("not-real", ""));
             Owned<IEsdlScriptContext> scriptContext = createTestScriptContext(ctx, xml, config);
+            scriptContext->setTraceToStdout(true);
             runTransform(scriptContext, scriptXml, ESDLScriptCtxSection_ESDLRequest, ESDLScriptCtxSection_FinalRequest, testname, code);
 
             StringBuffer output;
             scriptContext->toXML(output.clear(), ESDLScriptCtxSection_FinalRequest);
-
 
             if (result && !areEquivalentTestXMLStrings(result, output.str()))
             {
@@ -970,6 +996,13 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
            <es:param name="ForIdPath"/>
            <es:param name="section"/>
            <es:param name="garbage"/>
+
+           <es:trace test="false()" label="will not show" select="'this will not show up'"/>
+           <es:trace test="true()" label="will show" select="'this will show up'"/>
+           <es:trace label="string" select="'this is some text'"/>
+           <es:trace label="boolean" select="true()"/>
+           <es:trace label="number" select="90"/>
+           <es:trace label="FOR nodeset" select="$ForBuildListPath"/>
            <es:for-each select="$ForBuildListPath">
                <es:variable name="q" select="str:decode-uri('%27')"/>
                <es:variable name="path" select="concat($section, '/Name[First=', $q, First, $q, ']/Aliases', $garbage)"/>
@@ -1479,7 +1512,7 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
             <es:if test="es:storedValueExists('myvalue')">
               <es:set-value xpath_target="concat('check-value1-pass-', $testpass)" select="concat('already set as of pass-', $testpass)"/>
               <es:set-value target="myvalue" select="es:getStoredStringValue('myvalue')"/>
-              <es:remove-node target="Name/ID[1]"/> //removing first one changes the index count so each is 1
+              <es:remove-node target="Name/ID[1]"/> <!-- removing first one changes the index count so each is 1 -->
               <es:remove-node target="Name/ID[1]"/>
             </es:if>
             <es:if test="es:storedValueExists('myvalue2')">
@@ -1711,6 +1744,590 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
         }
     }
 
+    void testStringFunctions()
+    {
+        static constexpr const char * input = R"!!(<?xml version="1.0" encoding="UTF-8"?>
+          <root>
+            <Request>
+            </Request>
+          </root>
+        )!!";
+
+        static constexpr const char * stringFunctionsScript = R"!!(<es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" source="Request" target="Request">
+          <es:set-value target="deprecated-encrypt-empty" select="deprecatedEncryptString('') = ''"/>
+          <es:set-value target="deprecated-decrypt-empty" select="deprecatedDecryptString('') = ''"/>
+          <es:set-value target="to-encrypt" select="'this is not secret'"/>
+          <es:set-value target="deprecated-encrypt-value" select="deprecatedEncryptString(to-encrypt) != to-encrypt"/>
+          <es:set-value target="deprecated-decrypt-value" select="deprecatedDecryptString(deprecatedEncryptString(to-encrypt)) = to-encrypt"/>
+          <es:set-value target="encode-base64-empty" select="encodeBase64String('') = ''"/>
+          <es:set-value target="decode-base64-empty" select="decodeBase64String('') = ''"/>
+          <es:set-value target="to-encode" select="'sample text to Base64 encode and decode'"/>
+          <es:set-value target="encode-base64-value" select="encodeBase64String(to-encode) != to-encode"/>
+          <es:set-value target="decode-base64-value" select="decodeBase64String(encodeBase64String(to-encode)) = to-encode"/>
+          <es:set-value target="compress-empty" select="compressString('') = 'AAEAAAAA'"/>
+          <es:variable name="blob" select="toXmlString(.)"/>
+          <es:set-value target="compress-value" select="compressString($blob) != $blob"/>
+          <es:set-value target="decompress-value" select="decompressString(compressString($blob)) = $blob"/>
+          <es:variable name="escaped" select="escapeXmlCharacters($blob)"/>
+          <es:set-value target="escape-xml-value" select="$escaped != $blob"/>
+          <es:set-value target="unescape-xml-value" select="unescapeXmlCharacters($escaped) = $blob"/>
+        </es:CustomRequestTransform>
+        )!!";
+
+        try {
+          Owned<IEspContext> ctx = createEspContext(nullptr);
+          Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(ctx, nullptr, nullptr);
+          scriptContext->setTestMode(true);
+          scriptContext->setTraceToStdout(true);
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "service", "EsdlExample");
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "method", "EchoPersonInfo");
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request_type", "EchoPersonInfoRequest");
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request", "EchoPersonInfoRequest");
+          scriptContext->setContent("StringFunctions", input);
+
+          unsigned failed = false;
+          runTransform(scriptContext, stringFunctionsScript, "StringFunctions", nullptr, "StringFunctions 1", 0);
+          if (!checkTestResult(scriptContext, "deprecated-encrypt-empty"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "deprecated-decrypt-empty"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "deprecated-encrypt-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "deprecated-decrypt-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "encode-base64-empty"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "decode-base64-empty"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "encode-base64-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "decode-base64-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "compress-empty"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "compress-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "decompress-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "escape-xml-value"))
+            failed = true;
+          if (!checkTestResult(scriptContext, "unescape-xml-value"))
+            failed = true;
+          CPPUNIT_ASSERT(!failed);
+        }
+        catch (IException *E)
+        {
+          StringBuffer m;
+          fprintf(stdout, "\nTest(%s) Exception %d - %s\n", "StringFunctions", E->errorCode(), E->errorMessage(m).str());
+          E->Release();
+          CPPUNIT_ASSERT(false);
+        }
+    }
+    bool checkTestResult(IEsdlScriptContext* scriptContext, const char* test)
+    {
+      bool result = scriptContext->getXPathBool(VStringBuffer("//%s", test));
+      if (!result)
+        fprintf(stdout, "\nTest(StringFunctions-%s) failed\n", test);
+      return result;
+    }
+
+    void testTxSummary()
+    {
+        static constexpr const char * input = R"!!(<?xml version="1.0" encoding="UTF-8"?>
+          <root>
+            <Request>
+            </Request>
+          </root>
+        )!!";
+
+        static constexpr const char * levelsScript = R"!!(<es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" target="Request">
+          <es:tx-summary-value name="level-default" select="''"/>
+          <es:tx-summary-value name="level-min" select="''" level="min"/>
+          <es:tx-summary-value name="level-normal" select="''" level="normal"/>
+          <es:tx-summary-value name="level-max" select="''" level="max"/>
+          <es:tx-summary-value name="level-1" select="''" level="1"/>
+          <es:tx-summary-value name="level-2" select="''" level="2"/>
+          <es:tx-summary-value name="level-3" select="''" level="3"/>
+          <es:tx-summary-value name="level-4" select="''" level="4"/>
+          <es:tx-summary-value name="level-5" select="''" level="5"/>
+          <es:tx-summary-value name="level-6" select="''" level="6"/>
+          <es:tx-summary-value name="level-7" select="''" level="7"/>
+          <es:tx-summary-value name="level-8" select="''" level="8"/>
+          <es:tx-summary-value name="level-9" select="''" level="9"/>
+          <es:tx-summary-value name="level-10" select="''" level="10"/>
+          <es:set-value target="level-default" select="getTxSummary('json')"/>
+          <es:set-value target="level-min" select="getTxSummary('json', 'min')"/>
+          <es:set-value target="level-normal" select="getTxSummary('json', 'normal')"/>
+          <es:set-value target="level-max" select="getTxSummary('json', 'max')"/>
+          <es:set-value target="level-1" select="getTxSummary('json', 1)"/>
+          <es:set-value target="level-2" select="getTxSummary('json', 2)"/>
+          <es:set-value target="level-3" select="getTxSummary('json', 3)"/>
+          <es:set-value target="level-4" select="getTxSummary('json', 4)"/>
+          <es:set-value target="level-5" select="getTxSummary('json', 5)"/>
+          <es:set-value target="level-6" select="getTxSummary('json', 6)"/>
+          <es:set-value target="level-7" select="getTxSummary('json', 7)"/>
+          <es:set-value target="level-8" select="getTxSummary('json', 8)"/>
+          <es:set-value target="level-9" select="getTxSummary('json', 9)"/>
+          <es:set-value target="level-10" select="getTxSummary('json', 10)"/>
+        </es:CustomRequestTransform>
+        )!!";
+        static const char* levelsResult1 = R"!!!({"level-default": "", "level-min": "", "level-1": ""})!!!";
+        static const char* levelsResult2 = R"!!!({"level-default": "", "level-min": "", "level-1": "", "level-2": ""})!!!";
+        static const char* levelsResult3 = R"!!!({"level-default": "", "level-min": "", "level-1": "", "level-2": "", "level-3": ""})!!!";
+        static const char* levelsResult4 = R"!!!({"level-default": "", "level-min": "", "level-1": "", "level-2": "", "level-3": "", "level-4": ""})!!!";
+        static const char* levelsResult5 = R"!!!({"level-default": "", "level-min": "", "level-normal": "", "level-1": "", "level-2": "", "level-3": "", "level-4": "", "level-5": ""})!!!";
+        static const char* levelsResult6 = R"!!!({"level-default": "", "level-min": "", "level-normal": "", "level-1": "", "level-2": "", "level-3": "", "level-4": "", "level-5": "", "level-6": ""})!!!";
+        static const char* levelsResult7 = R"!!!({"level-default": "", "level-min": "", "level-normal": "", "level-1": "", "level-2": "", "level-3": "", "level-4": "", "level-5": "", "level-6": "", "level-7": ""})!!!";
+        static const char* levelsResult8 = R"!!!({"level-default": "", "level-min": "", "level-normal": "", "level-1": "", "level-2": "", "level-3": "", "level-4": "", "level-5": "", "level-6": "", "level-7": "", "level-8": ""})!!!";
+        static const char* levelsResult9 = R"!!!({"level-default": "", "level-min": "", "level-normal": "", "level-1": "", "level-2": "", "level-3": "", "level-4": "", "level-5": "", "level-6": "", "level-7": "", "level-8": "", "level-9": ""})!!!";
+        static const char* levelsResult10 = R"!!!({"level-default": "", "level-min": "", "level-normal": "", "level-max": "", "level-1": "", "level-2": "", "level-3": "", "level-4": "", "level-5": "", "level-6": "", "level-7": "", "level-8": "", "level-9": "", "level-10": ""})!!!";
+        static constexpr const char * typesScript = R"!!(<es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" target="Request">
+          <es:tx-summary-value name="type-default" select="'0'"/>
+          <es:tx-summary-value name="type-text" select="'0'" type="text"/>
+          <es:tx-summary-value name="type-signed-min" select="'-9223372036854775808'" type="signed"/>
+          <es:tx-summary-value name="type-signed-max" select="'9223372036854775807'" type="signed"/>
+          <es:tx-summary-value name="type-unsigned-min" select="'0'" type="unsigned"/>
+          <es:tx-summary-value name="type-unsigned-max" select="'18446744073709551615'" type="unsigned"/>
+          <es:tx-summary-value name="type-decimal-min" select="'-1.79769e+308'" type="decimal"/>
+          <es:tx-summary-value name="type-decimal-max" select="'1.79769e+308'" type="decimal"/>
+          <es:set-value target="types-all" select="getTxSummary('json')"/>
+        </es:CustomRequestTransform>
+        )!!";
+        static const char* typesResultAll = R"!!!({"type-default": "0", "type-text": "0", "type-signed-min": -9223372036854775808, "type-signed-max": 9223372036854775807, "type-unsigned-min": 0, "type-unsigned-max": 18446744073709551615, "type-decimal-min": -1.79769e+308, "type-decimal-max": 1.79769e+308})!!!";
+        static constexpr const char * timersScript = R"!!(<es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" target="Request">
+          <es:tx-summary-timer name="scalar-default">
+            <es:delay millis="2"/>
+          </es:tx-summary-timer>
+          <es:tx-summary-timer name="scalar-append" mode="append">
+            <es:delay millis="2"/>
+          </es:tx-summary-timer>
+          <es:tx-summary-timer name="scalar-set" mode="set">
+            <es:delay/>
+          </es:tx-summary-timer>
+          <es:tx-summary-timer name="accumulating" mode="accumulate">
+            <es:delay millis="5"/>
+          </es:tx-summary-timer>
+          <es:tx-summary-timer name="accumulating" mode="accumulate">
+            <es:delay millis="10"/>
+          </es:tx-summary-timer>
+          <es:set-value target="timers-all" select="getTxSummary('json')"/>
+        </es:CustomRequestTransform>
+        )!!";
+        static const char* timersResultAll = R"!!!({"scalar-default": 2, "scalar-append": 2, "scalar-set": 1, "accumulating": 15})!!!";
+
+        try {
+          Owned<IEspContext> ctx = createEspContext(nullptr);
+          CTxSummary* txSummary = ctx->queryTxSummary();
+          Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(ctx, nullptr, nullptr);
+          scriptContext->setTestMode(true);
+          scriptContext->setTraceToStdout(true);
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "service", "EsdlExample");
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "method", "EchoPersonInfo");
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request_type", "EchoPersonInfoRequest");
+          scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request", "EchoPersonInfoRequest");
+          scriptContext->setContent(ESDLScriptCtxSection_ESDLRequest, input);
+
+          txSummary->clear();
+          runTransform(scriptContext, levelsScript, ESDLScriptCtxSection_ESDLRequest, "TxSummary", "TxSummary 1", 0);
+          compareTxSummary(scriptContext, "level", "default", levelsResult1, true);
+          compareTxSummary(scriptContext, "level", "min", levelsResult1, true);
+          compareTxSummary(scriptContext, "level", "normal", levelsResult5, true);
+          compareTxSummary(scriptContext, "level", "max", levelsResult10, true);
+          compareTxSummary(scriptContext, "level", "1", levelsResult1, true);
+          compareTxSummary(scriptContext, "level", "2", levelsResult2, true);
+          compareTxSummary(scriptContext, "level", "3", levelsResult3, true);
+          compareTxSummary(scriptContext, "level", "4", levelsResult4, true);
+          compareTxSummary(scriptContext, "level", "5", levelsResult5, true);
+          compareTxSummary(scriptContext, "level", "6", levelsResult6, true);
+          compareTxSummary(scriptContext, "level", "7", levelsResult7, true);
+          compareTxSummary(scriptContext, "level", "8", levelsResult8, true);
+          compareTxSummary(scriptContext, "level", "9", levelsResult9, true);
+          compareTxSummary(scriptContext, "level", "10", levelsResult10, true);
+
+          txSummary->clear();
+          runTransform(scriptContext, typesScript, ESDLScriptCtxSection_ESDLRequest, "TxSummary", "TxSummary 2", 0);
+          compareTxSummary(scriptContext, "types", "all", typesResultAll, true);
+
+          txSummary->clear();
+          runTransform(scriptContext, timersScript, ESDLScriptCtxSection_ESDLRequest, "TxSummary", "TxSummary 3", 0);
+          compareTxSummary(scriptContext, "timers", "all", timersResultAll, false);
+        }
+        catch (IException *E)
+        {
+          StringBuffer m;
+          fprintf(stdout, "\nTest(%s) Exception %d - %s\n", "TxSummary", E->errorCode(), E->errorMessage(m).str());
+          E->Release();
+          CPPUNIT_ASSERT(false);
+        }
+    }
+    void compareTxSummary(IEsdlScriptContext* scriptContext, const char* prefix, const char* test, const char* expectedText, bool exact)
+    {
+      using namespace nlohmann;
+      StringBuffer actualText;
+      scriptContext->getXPathString(VStringBuffer("TxSummary/root/Request/%s-%s", prefix, test), actualText);
+      json expected = json::parse(expectedText);
+      json actual = json::parse(actualText.str());
+      if (expected != actual)
+      {
+        // Timer values are not guaranteed. The delay operation ensures a minimum elapsed time
+        // but cannot guarantee a maximum. While object equality is preferred, ensuring that at
+        // least the expected times passed are is necessarily sufficient.
+        bool closeEnough = !exact && expected.size() == actual.size();
+        for (json::iterator it = expected.begin(); closeEnough && it != expected.end(); ++it)
+        {
+          if (!actual.contains(it.key()))
+            closeEnough = false;
+          else if (actual[it.key()] < it.value())
+            closeEnough = false;
+        }
+        if (!closeEnough)
+        {
+          fprintf(stdout, "\nTest(TxSummary-%s-%s)\n    expected: '%s'\n    actual: '%s'\n", prefix, test, expectedText, actualText.str());
+          CPPUNIT_ASSERT(false);
+        }
+        fprintf(stdout, "\nTxSummary-%s-%s) '%s' close enough to '%s'\n", prefix, test, actualText.str(), expectedText);
+      }
+    }
+
+    void testParamEx()
+    {
+      static constexpr const char* input = R"!!!(
+        <root>
+          <Request/>
+        </root>
+      )!!!";
+      static constexpr const char* script = R"!!!(
+        <es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" target="Request">
+          <es:param name="espUserStatusString" select="'defaulted'"/>
+          <es:assert test="$espUserStatusString != 'defaulted'" code="'1001'" message="'did not find defined input'"/>
+          <es:source xpath="Request">
+            <es:param name="bar" select="'defaulted'"/>
+            <es:assert test="$bar = 'defaulted'" code="'1002'" message="'did not assign explicit default value'"/>
+          </es:source>
+          <es:source xpath="Request">
+            <es:param name="baz"/>
+            <es:assert test="string-length($baz) = 0" code="'1003'" message="'did not assign implied default value'"/>
+          </es:source>
+          <es:source xpath="Request">
+            <es:param name="bar" failure_code="'1004'" failure_message="'did not find required input'"/>
+          </es:source>
+        </es:CustomRequestTransform>
+      )!!!";
+
+      runTest("param extension", script, input, nullptr, nullptr, 1004);
+    }
+
+    struct HistoricalEvent
+    {
+      LogMsgAudience msgAudience;
+      LogMsgClass    msgClass;
+      StringBuffer   msg;
+      HistoricalEvent(const LogMsgCategory& category, const char* format, va_list arguments)
+      {
+        msgAudience = category.queryAudience();
+        msgClass = category.queryClass();
+        msg.valist_appendf(format, arguments);
+      }
+      HistoricalEvent(const LogMsgCategory& category, const char* _msg)
+      {
+        msgAudience = category.queryAudience();
+        msgClass = category.queryClass();
+        msg.append(_msg);
+      }
+      bool operator == (const HistoricalEvent& right) const
+      {
+        if ((msgAudience == right.msgAudience) && (msgClass == right.msgClass))
+        {
+          if (streq(msg, right.msg))
+            return true;
+          try
+          {
+            return areEquivalentTestXMLStrings(msg, right.msg, true);
+          }
+          catch (IException* e)
+          {
+            e->Release();
+          }
+          catch (...)
+          {
+          }
+        }
+        return false;
+      }
+      bool operator != (const HistoricalEvent& right) const
+      {
+        return !(*this == right);
+      }
+    };
+    using History = std::list<HistoricalEvent>;
+    class CMockTraceMsgSink : public CInterfaceOf<IModularTraceMsgSink>
+    {
+    public:
+      virtual void valog(const LogMsgCategory& category, const char* format, va_list arguments) override __attribute__((format(printf, 3, 0)));
+      virtual bool rejects(const LogMsgCategory& category) const
+      {
+        return false;
+      }
+    public:
+      History history;
+    };
+    struct SubstituteException {};
+    void testMaskingIntegration()
+    {
+      static constexpr const char* maskingConfigurationText = R"!!!(
+        maskingPlugin:
+          library: datamasker
+          entryPoint: newPartialMaskSerialToken
+          profile:
+          - domain: 'urn:hpcc:unittest'
+            property:
+            - name: accepted
+            valueType:
+            - name: restricted
+              maskStyle:
+              - name: alternate
+                pattern: +
+              rule:
+              - startToken: <foo>
+                endToken: </foo>
+                contentType: xml
+              - startToken: <bar>
+                endToken: </bar>
+                contentType: json
+            - name: '*'
+              memberOf:
+              - name: unconditional
+              - name: 'sometimes-unconditional'
+              maskStyle:
+              - name: alternate
+                pattern: '='
+            - name: 'sometimes-restricted'
+              memberOf:
+              - name: sometimes
+              - name: 'sometimes-unconditional'
+              maskStyle:
+              - name: alternate
+                pattern: '?'
+      )!!!";
+      static constexpr const char * input = R"!!(<?xml version="1.0" encoding="UTF-8"?>
+        <root>
+          <Request>
+            <foo>foo</foo>
+            <bar>bar</bar>
+            <baz>baz</baz>
+          </Request>
+        </root>
+      )!!";
+      static constexpr const char * traceScript = R"!!(<es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" source="Request" target="Request">
+        <es:trace-content select="."/>
+        <es:trace-content select="." skip_mask="true()"/>
+        <es:trace-content select="." content_type="xml"/>
+        <es:trace-content select="." content_type="json"/>
+        <es:trace-content select="." content_type="unrecognized"/>
+        <es:trace-value select="foo" value_type="restricted"/>
+        <es:trace-value select="bar" xpath_value_type="'restricted'" mask_style="alternate"/>
+        <es:trace-value select="baz" value_type="unrecognized" class="information"/>
+        <es:trace-value select="baz" value_type="unrecognized" class="progress"/>
+        <es:trace-value select="baz" value_type="unrecognized" class="warning"/>
+        <es:trace-value select="baz" value_type="unrecognized" class="error"/>
+        <es:trace-value select="*" value_type="ambiguous"/>
+        <es:trace-value select="bar" xpath_value_type="''"/>
+        <es:trace-content select="maskValue(foo, 'restricted')" skip_mask="true()"/>
+        <es:trace-content select="maskValue(bar, 'restricted', 'alternate')" skip_mask="true()"/>
+        <es:trace-content select="maskValue(baz, 'restricted')" skip_mask="true()"/>
+        <es:trace-content select="maskContent(toXmlString(foo))" skip_mask="true()"/>
+        <es:trace-content select="maskContent(toXmlString(foo), 'xml')" skip_mask="true()"/>
+        <es:trace-content select="maskContent(toXmlString(foo), 'json')" skip_mask="true()"/>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('undefined')"/>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('sometimes-restricted')"/>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('sometimes-restricted', 'alternate')"/>
+        <es:update-masking-context>
+          <set name="valuetype-set" value="unconditional"/>
+        </es:update-masking-context>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('undefined')"/>
+        <es:update-masking-context>
+          <remove name="valuetype-set"/>
+        </es:update-masking-context>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('restricted')"/>
+        <es:update-masking-context>
+          <set name="valuetype-set" value="unconditional"/>
+        </es:update-masking-context>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('undefined', 'alternate')"/>
+        <es:update-masking-context>
+          <remove name="valuetype-set"/>
+        </es:update-masking-context>
+        <es:trace skip_mask="true()" select="getMaskValueBehavior('restricted', 'alternate')"/>
+        <es:trace skip_mask="true()" select="getMaskingPropertyAwareness('unknown')"/>
+        <es:trace skip_mask="true()" select="getMaskingPropertyAwareness('accepted')"/>
+        <es:trace skip_mask="true()" select="getMaskingPropertyAwareness('valuetype-set')"/>
+        <es:trace skip_mask="true()" select="canMaskContent()"/>
+        <es:trace skip_mask="true()" select="canMaskContent('xml')"/>
+        <es:trace skip_mask="true()" select="canMaskContent('json')"/>
+        <es:trace skip_mask="true()" select="canMaskContent('yaml')"/>
+        <!-- trace state scope -->
+        <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+        <es:trace-options-scope enabled="false()">
+          <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+          <es:set-trace-options enabled="true()"/>
+          <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+          <es:set-trace-options enabled="false()"/>
+          <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+        </es:trace-options-scope>
+        <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+        <es:trace-options-scope enabled="false()" locked="true()">
+          <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+          <es:set-trace-options enabled="true()"/>
+          <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+          <es:set-trace-options enabled="false()"/>
+          <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+        </es:trace-options-scope>
+        <es:trace skip_mask="true()" select="isTraceEnabled()"/>
+        <!-- masking context scope -->
+        <es:trace-value select="foo" value_type="sometimes-restricted"/>
+        <es:masking-context-scope>
+          <es:update-masking-context>
+            <set name="valuetype-set" value="sometimes"/>
+          </es:update-masking-context>
+          <es:trace-value select="foo" value_type="sometimes-restricted"/>
+        </es:masking-context-scope>
+        <es:trace-value select="foo" value_type="sometimes-restricted"/>
+      </es:CustomRequestTransform>
+      )!!";
+      History expected({
+        { MCuserInfo, "<Request><foo>***</foo><bar>***</bar><baz>baz</baz></Request>" },
+        { MCuserInfo, "<Request><foo>foo</foo><bar>bar</bar><baz>baz</baz></Request>" },
+        { MCuserInfo, "<Request><foo>***</foo><bar>bar</bar><baz>baz</baz></Request>" },
+        { MCuserInfo, "<Request><foo>foo</foo><bar>***</bar><baz>baz</baz></Request>" },
+        { MCuserInfo, "<Request><foo>foo</foo><bar>bar</bar><baz>baz</baz></Request>" },
+        { MCuserInfo, "***" },
+        { MCuserInfo, "+++" },
+        { MCuserInfo, "baz" },
+        { MCuserProgress, "baz" },
+        { MCuserWarning, "baz" },
+        { MCuserError, "baz" },
+        { MCuserInfo, "***" },
+        { MCuserInfo, "+++" },
+        { MCuserInfo, "***" },
+        { MCuserInfo, "<foo>***</foo>" },
+        { MCuserInfo, "<foo>***</foo>" },
+        { MCuserInfo, "<foo>foo</foo>" },
+        { MCuserInfo, "0" },
+        { MCuserInfo, "1" },
+        { MCuserInfo, "3" },
+        { MCuserInfo, "4" },
+        { MCuserInfo, "5" },
+        { MCuserInfo, "6" },
+        { MCuserInfo, "7" },
+        { MCuserInfo, "0" },
+        { MCuserInfo, "1" },
+        { MCuserInfo, "2" },
+        { MCuserInfo, "true" },
+        { MCuserInfo, "true" },
+        { MCuserInfo, "true" },
+        { MCuserInfo, "false" },
+        // trace state scope
+        { MCuserInfo, "true" },
+        { MCuserInfo, "true" },
+        { MCuserInfo, "true" },
+        { MCuserInfo, "true" },
+        // masking context scope
+        { MCuserInfo, "foo" },
+        { MCuserInfo, "***" },
+        { MCuserInfo, "foo" },
+      });
+
+      try {
+        Owned<IEspContext> ctx = createEspContext(nullptr);
+        Owned<CMockTraceMsgSink> sink(new CMockTraceMsgSink());
+        Owned<CModularTracer> tracer(createTracer(*sink));
+        Owned<IDataMaskingEngine> engine(createMaskingEngine(maskingConfigurationText, *tracer));
+        Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(ctx, nullptr, LINK(engine));
+        sink->history.clear();
+        scriptContext->setTestMode(true);
+        scriptContext->enableMasking(nullptr, 0);
+        dynamic_cast<CModularTracer&>(scriptContext->tracerRef()).setSink(sink.getLink());
+        scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "service", "EsdlExample");
+        scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "method", "EchoPersonInfo");
+        scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request_type", "EchoPersonInfoRequest");
+        scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "request", "EchoPersonInfoRequest");
+        scriptContext->setContent(ESDLScriptCtxSection_ESDLRequest, input);
+
+        runTransform(scriptContext, traceScript, ESDLScriptCtxSection_ESDLRequest, "Masking", "masking", 0);
+        bool failed = false;
+        if (sink->history.size() == expected.size())
+        {
+          for (History::iterator aIt = sink->history.begin(), eIt = expected.begin(); eIt != expected.end(); ++aIt, ++eIt)
+          {
+            if (*aIt != *eIt)
+            {
+              fprintf(stdout, "\nExpected: %d/%d/%s\nActual:  %d/%d/%s\n", eIt->msgAudience, eIt->msgClass, eIt->msg.str(), aIt->msgAudience, aIt->msgClass, aIt->msg.str());
+              failed = true;
+            }
+          }
+        }
+        else
+        {
+          unsigned idx = 0;
+          fprintf(stdout, "\nExpected:\n");
+          for (const HistoricalEvent& he : expected)
+            fprintf(stdout, "    %2u: %d/%d/%s\n", ++idx, he.msgAudience, he.msgClass, he.msg.str());
+          idx = 0;
+          fprintf(stdout, "Actual:\n");
+          for (const HistoricalEvent& he : sink->history)
+            fprintf(stdout, "    %2u: %d/%d/%s\n", ++idx, he.msgAudience, he.msgClass, he.msg.str());
+          failed = true;
+        }
+        CPPUNIT_ASSERT(!failed);
+      }
+      catch (IException *E)
+      {
+        StringBuffer m;
+        fprintf(stdout, "\nTest(%s) Exception %d - %s\n", "masking", E->errorCode(), E->errorMessage(m).str());
+        E->Release();
+        CPPUNIT_ASSERT(false);
+      }
+    }
+    IPTree* createMaskingConfiguration(const char* text)
+    {
+      Owned<IPTree> cfg;
+      try
+      {
+        cfg.setown(createPTreeFromYAMLString(text));
+      }
+      catch (IException* e)
+      {
+        StringBuffer msg;
+        e->errorMessage(msg);
+        fprintf(stdout, "\nexception parsing masking configuration: %s", msg.str());
+        e->Release();
+        throw SubstituteException();
+      }
+      return cfg.getClear();
+    }
+    IDataMaskingEngine* createMaskingEngine(const char* text, ITracer& tracer)
+    {
+      bool failed = false;
+      Owned<IDataMaskingEngine> engine(new DataMasking::CEngine(LINK(&tracer)));
+      Owned<IPTree> cfg(createMaskingConfiguration(text));
+      Owned<IPTreeIterator> it(cfg->getElements("//maskingPlugin"));
+      ForEach(*it)
+      {
+        if (!engine->loadProfiles(it->query()))
+        {
+          fprintf(stdout, "loadProfiles failed\n");
+          failed = true;
+        }
+      }
+      CPPUNIT_ASSERT(!failed);
+      return engine.getClear();
+    }
+    CModularTracer* createTracer(CMockTraceMsgSink& sink)
+    {
+      Owned<CModularTracer> tracer(new CModularTracer());
+      tracer->setSink(LINK(&sink));
+      return tracer.getClear();
+    }
+
     void testHTTPPostXml()
     {
         static constexpr const char * input = R"!!(<?xml version="1.0" encoding="UTF-8"?>
@@ -1741,8 +2358,7 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
                             <es:set-value target="Last" value="'bbb'"/>
                             <es:element name="Aliases">
                               <es:set-value target="Alias" value="'ccc'"/>
-                              <es:set-value target="Alias" value="'ddd'"/>
-                              <es:add-value target="Alias" value="'eee'"/>
+                              <es:add-value target="Alias" value="'ddd'"/>
                             </es:element>
                           </es:element>
                         </es:element>
@@ -1808,8 +2424,8 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
                             <First>aaa</First>
                             <Last>bbb</Last>
                             <Aliases>
+                              <Alias>ccc</Alias>
                               <Alias>ddd</Alias>
-                              <Alias>eee</Alias>
                             </Aliases>
                           </Name>
                           <Addresses/>
@@ -1846,6 +2462,235 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
         {
             StringBuffer m;
             fprintf(stdout, "\nTest(%s) Exception %d - %s\n", "http post xml", E->errorCode(), E->errorMessage(m).str());
+            E->Release();
+            CPPUNIT_ASSERT(false);
+        }
+    }
+    void testSynchronizeHTTPPostXml()
+    {
+        static constexpr const char * input = R"!!(<?xml version="1.0" encoding="UTF-8"?>
+         <root>
+            <Person>
+               <FullName>
+                  <First>Joe</First>
+                  <ID>GI101</ID>
+                  <ID>GI102</ID>
+               </FullName>
+            </Person>
+          </root>
+        )!!";
+
+        static constexpr const char * script = R"!!(<es:CustomRequestTransform xmlns:es="urn:hpcc:esdl:script" target="Person">
+            <es:variable name='value' select="'abc'"/>
+            <es:synchronize max-at-once="3">
+              <es:script>
+                <es:element name="SyncBackgroundStuff">
+                  <es:for-each select="es:tokenize('aaa,bbb,ccc,yyy', ',')">
+                      <es:add-value target="value" value="."/>
+                  </es:for-each>
+                </es:element>
+              </es:script>
+              <es:http-post-xml url="'http://127.0.0.1:9876'" section="logging" name="roxiestuff1" test-delay="1000">
+                <es:content>
+                  <es:element name="Envelope">
+                    <es:namespace prefix="soap" uri="http://schemas.xmlsoap.org/soap/envelope/" current="true" />
+                    <es:element name="Body">
+                      <es:element name="roxieechopersoninfoRequest">
+                        <es:namespace uri="urn:hpccsystems:ecl:roxieechopersoninfo" current="true" />
+                        <es:element name="roxieechopersoninforequest">
+                          <es:element name="Row">
+                            <es:element name="Name">
+                              <es:set-value target="First" value="'aaa'"/>
+                              <es:set-value target="Last" value="'bbb'"/>
+                              <es:element name="Aliases">
+                                <es:set-value target="Alias" value="'ccc'"/>
+                                <es:add-value target="Alias" value="'ddd'"/>
+                              </es:element>
+                            </es:element>
+                          </es:element>
+                        </es:element>
+                      </es:element>
+                    </es:element>
+                  </es:element>
+                </es:content>
+              </es:http-post-xml>
+              <es:http-post-xml url="'http://127.0.0.1:9876'" section="logging" name="roxiestuff2" test-delay="1100">
+                <es:content>
+                  <es:element name="Envelope">
+                    <es:namespace prefix="soap" uri="http://schemas.xmlsoap.org/soap/envelope/" current="true" />
+                    <es:element name="Body">
+                      <es:element name="roxieechopersoninfoRequest">
+                        <es:namespace uri="urn:hpccsystems:ecl:roxieechopersoninfo" current="true" />
+                        <es:element name="roxieechopersoninforequest">
+                          <es:element name="Row">
+                            <es:element name="Name">
+                              <es:set-value target="First" value="'lll'"/>
+                              <es:set-value target="Last" value="'mmm'"/>
+                              <es:element name="Aliases">
+                                <es:set-value target="Alias" value="'nnn'"/>
+                                <es:add-value target="Alias" value="'ooo'"/>
+                              </es:element>
+                            </es:element>
+                          </es:element>
+                        </es:element>
+                      </es:element>
+                    </es:element>
+                  </es:element>
+                </es:content>
+              </es:http-post-xml>
+            </es:synchronize>
+            <es:element name="HttpPostStuff">
+              <es:copy-of select="$roxiestuff1"/>
+              <es:copy-of select="$roxiestuff2"/>
+            </es:element>
+        </es:CustomRequestTransform>
+        )!!";
+
+        constexpr const char *config1 = R"!!(<config>
+          <Transform>
+            <Param name='testcase' value="new features"/>
+          </Transform>
+        </config>)!!";
+
+        constexpr const char * result = R"!!(<root>
+  <Person>
+    <FullName>
+      <First>Joe</First>
+      <ID>GI101</ID>
+      <ID>GI102</ID>
+    </FullName>
+    <SyncBackgroundStuff>
+      <value>aaa</value>
+      <value>bbb</value>
+      <value>ccc</value>
+      <value>yyy</value>
+    </SyncBackgroundStuff>
+    <HttpPostStuff>
+      <roxiestuff1>
+        <request url="http://127.0.0.1:9876">
+          <content>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+              <soap:Body>
+                <roxieechopersoninfoRequest xmlns="urn:hpccsystems:ecl:roxieechopersoninfo">
+                  <roxieechopersoninforequest>
+                    <Row>
+                      <Name>
+                        <First>aaa</First>
+                        <Last>bbb</Last>
+                        <Aliases>
+                          <Alias>ccc</Alias>
+                          <Alias>ddd</Alias>
+                        </Aliases>
+                      </Name>
+                    </Row>
+                  </roxieechopersoninforequest>
+                </roxieechopersoninfoRequest>
+              </soap:Body>
+            </soap:Envelope>
+          </content>
+        </request>
+        <response status="200 OK" error-code="0" content-type="text/xml">
+          <content>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+              <soap:Body>
+                <roxieechopersoninfoResponse xmlns="urn:hpccsystems:ecl:roxieechopersoninfo" sequence="0">
+                  <Results>
+                    <Result>
+                      <Dataset xmlns="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse" name="RoxieEchoPersonInfoResponse">
+                        <Row>
+                          <Name>
+                            <First>aaa</First>
+                            <Last>bbb</Last>
+                            <Aliases>
+                              <Alias>ccc</Alias>
+                              <Alias>ddd</Alias>
+                            </Aliases>
+                          </Name>
+                          <Addresses/>
+                        </Row>
+                      </Dataset>
+                    </Result>
+                  </Results>
+                </roxieechopersoninfoResponse>
+              </soap:Body>
+            </soap:Envelope>
+          </content>
+        </response>
+      </roxiestuff1>
+      <roxiestuff2>
+        <request url="http://127.0.0.1:9876">
+          <content>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+              <soap:Body>
+                <roxieechopersoninfoRequest xmlns="urn:hpccsystems:ecl:roxieechopersoninfo">
+                  <roxieechopersoninforequest>
+                    <Row>
+                      <Name>
+                        <First>lll</First>
+                        <Last>mmm</Last>
+                        <Aliases>
+                          <Alias>nnn</Alias>
+                          <Alias>ooo</Alias>
+                        </Aliases>
+                      </Name>
+                    </Row>
+                  </roxieechopersoninforequest>
+                </roxieechopersoninfoRequest>
+              </soap:Body>
+            </soap:Envelope>
+          </content>
+        </request>
+        <response status="200 OK" error-code="0" content-type="text/xml">
+          <content>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+              <soap:Body>
+                <roxieechopersoninfoResponse xmlns="urn:hpccsystems:ecl:roxieechopersoninfo" sequence="0">
+                  <Results>
+                    <Result>
+                      <Dataset xmlns="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse" name="RoxieEchoPersonInfoResponse">
+                        <Row>
+                          <Name>
+                            <First>lll</First>
+                            <Last>mmm</Last>
+                            <Aliases>
+                              <Alias>nnn</Alias>
+                              <Alias>ooo</Alias>
+                            </Aliases>
+                          </Name>
+                          <Addresses/>
+                        </Row>
+                      </Dataset>
+                    </Result>
+                  </Results>
+                </roxieechopersoninfoResponse>
+              </soap:Body>
+            </soap:Envelope>
+          </content>
+        </response>
+      </roxiestuff2>
+    </HttpPostStuff>
+  </Person>
+</root>)!!";
+
+        try {
+
+            Owned<IEspContext> ctx = createEspContext(nullptr);
+            Owned<IEsdlScriptContext> scriptContext = createTestScriptContext(ctx, input, config1);
+            runTransform(scriptContext, script, ESDLScriptCtxSection_ESDLRequest, "MyResult", "synchronize", 0);
+
+            StringBuffer output;
+            scriptContext->toXML(output, "MyResult");
+            if (result && !areEquivalentTestXMLStrings(result, output.str()))
+            {
+                fputs(output.str(), stdout);
+                fflush(stdout);
+                throw MakeStringException(100, "Test failed(%s)", "synchronize");
+            }
+        }
+        catch (IException *E)
+        {
+            StringBuffer m;
+            fprintf(stdout, "\nTest(%s) Exception %d - %s\n", "synchronize", E->errorCode(), E->errorMessage(m).str());
             E->Release();
             CPPUNIT_ASSERT(false);
         }
@@ -2258,7 +3103,277 @@ constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.x
           throw MakeStringException(100, "Test failed(%s)", "transform map");
       }
     }
+
+    void testCallFunctions()
+    {
+        constexpr const char * serviceScripts = R"!!(<Transforms xmlns:es='urn:hpcc:esdl:script'>
+      <es:Functions>
+        <es:function name="inServiceCommonFunction">
+          <es:param name="paramCommonInService1" select="'paramCommonInService1-fail-using-default'"/>
+          <es:param name="paramCommonInService2" select="'paramCommonInService2-success-using-default'"/>
+          <es:set-value target="ds1:Row/ds1:InServiceCommonParam1" value="$paramCommonInService1" />
+          <es:set-value target="ds1:Row/ds1:InServiceCommonParam2" value="$paramCommonInService2" />
+        </es:function>
+        <es:function name="inServiceCommonFunction2">
+          <es:set-value target="ds1:Row/ds1:ServiceCommonFunctionFromService" value="'service-common-instance-called-from-service'" />
+        </es:function>
+        <es:function name="inServiceLocalFunction">
+          <es:set-value target="ds1:Row/ds1:InServiceLocalInheritanceError" value="'service-common-instance-called'" />
+        </es:function>
+        <es:function name="inMethodCommonFunction">
+          <es:set-value target="ds1:Row/ds1:InMethodCommonInheritanceError" value="'service-common-instance-called'" />
+        </es:function>
+      </es:Functions>
+      <es:BackendResponse xmlns:resp="urn:hpccsystems:ecl:roxieechopersoninfo" xmlns:ds1="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse">
+        <es:variable name="paramLocalInService1" select="'paramLocalInService1-fail-from-top-o-the-script'"/>
+        <es:variable name="paramLocalInService2" select="'paramLocalInService2-fail-from-top-o-the-script'"/>
+        <es:function name="inServiceLocalFunction">
+          <es:param name="paramLocalInService1" select="'paramLocalInService1-fail-using-default'"/>
+          <es:param name="paramLocalInService2" select="'paramLocalInService2-success-using-default'"/>
+          <es:set-value target="ds1:Row/ds1:InServiceLocalParam1" value="$paramLocalInService1" />
+          <es:set-value target="ds1:Row/ds1:InServiceLocalParam2" value="$paramLocalInService2" />
+        </es:function>
+        <es:target xpath="soap:Body">
+          <es:target xpath="resp:roxieechopersoninfoResponse">
+            <es:target xpath="resp:Results/resp:Result">
+              <es:target xpath="ds1:Dataset[@name='RoxieEchoPersonInfoResponse']">
+              <es:call-function name="inServiceLocalFunction">
+                <es:with-param name="paramLocalInService1" select="'paramLocalInService1-success-with-param'"/>
+              </es:call-function>
+              <es:call-function name="inMethodCommonFunction2"/>
+              <es:call-function name="inServiceCommonFunction2"/>
+                <es:set-value target="ds1:Row/ds1:Name/ds1:Last" value="'modified-response-at-service'" />
+              </es:target>
+            </es:target>
+          </es:target>
+        </es:target>
+      </es:BackendResponse>
+      <es:BackendResponse>
+        <es:set-value target="BRESPSRV2" value="'s22'" />
+      </es:BackendResponse>
+      <es:BackendResponse>
+        <es:set-value target="BRESPSRV3" value="'s33'" />
+      </es:BackendResponse>
+  </Transforms>)!!";
+
+        constexpr const char * methodScripts = R"!!(<Transforms xmlns:es='urn:hpcc:esdl:script'>
+  <es:Functions>
+    <es:function name="inMethodCommonFunction">
+      <es:param name="paramCommonInMethod1" select="'paramCommonInMethod1-fail-using-default'"/>
+      <es:param name="paramCommonInMethod2" select="'paramCommonInMethod2-success-using-default'"/>
+      <es:set-value target="ds1:Row/ds1:InMethodCommonParam1" value="$paramCommonInMethod1" />
+      <es:set-value target="ds1:Row/ds1:InMethodCommonParam2" value="$paramCommonInMethod2" />
+    </es:function>
+    <es:function name="inMethodLocalFunction">
+      <es:set-value target="ds1:Row/ds1:InMethodLocalInheritanceError" value="'method-common-instance-called'" />
+    </es:function>
+    <es:function name="inMethodCommonFunction2">
+      <es:set-value target="ds1:Row/ds1:MethodCommonFunctionFromService" value="'method-common-instance-called-from-service'" />
+    </es:function>
+  </es:Functions>
+  <es:BackendResponse xmlns:resp="urn:hpccsystems:ecl:roxieechopersoninfo" xmlns:ds1="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse">
+    <es:variable name="paramLocalInMethod1" select="'paramLocalInMethod1-fail-from-top-o-the-script'"/>
+    <es:variable name="paramLocalInMethod2" select="'paramLocalInMethod2-fail-from-top-o-the-script'"/>
+    <es:function name="inMethodLocalFunction">
+      <es:param name="paramLocalInMethod1" select="'paramLocalInMethod1-fail-using-default'"/>
+      <es:param name="paramLocalInMethod2" select="'paramLocalInMethod2-success-using-default'"/>
+      <es:set-value target="ds1:Row/ds1:InMethodLocalParam1" value="$paramLocalInMethod1" />
+      <es:set-value target="ds1:Row/ds1:InMethodLocalParam2" value="$paramLocalInMethod2" />
+    </es:function>
+    <es:target xpath="soap:Body">
+      <es:target xpath="resp:roxieechopersoninfoResponse">
+        <es:target xpath="resp:Results/resp:Result">
+          <es:target xpath="ds1:Dataset[@name='RoxieEchoPersonInfoResponse']">
+            <es:variable name="paramLocalInMethod1" select="'paramLocalInMethod1-fail-from-just-above'"/>
+            <es:variable name="paramLocalInMethod2" select="'paramLocalInMethod2-fail-from-just-above'"/>
+            <es:append-to-value target="ds1:Row/ds1:Name/ds1:Last" value="'-and-method'" />
+            <es:call-function name="inMethodLocalFunction">
+              <es:with-param name="paramLocalInMethod1" select="'paramLocalInMethod1-success-with-param'"/>
+            </es:call-function>
+            <es:call-function name="inMethodCommonFunction">
+              <es:with-param name="paramCommonInMethod1" select="'paramCommonInMethod1-success-with-param'"/>
+            </es:call-function>
+            <es:call-function name="inServiceCommonFunction">
+              <es:with-param name="paramCommonInService1" select="'paramCommonlInService1-success-with-param'"/>
+            </es:call-function>
+          </es:target>
+        </es:target>
+      </es:target>
+    </es:target>
+  </es:BackendResponse>
+  <es:BackendResponse xmlns:resp="urn:hpccsystems:ecl:roxieechopersoninfo" xmlns:ds1="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse">
+    <es:http-post-xml url="'http://127.0.0.1:9876'" section="logdata/LogDataset" name="roxie_call_success">
+      <es:content>
+        <es:element name="Envelope">
+          <es:namespace prefix="soap" uri="http://schemas.xmlsoap.org/soap/envelope/" current="true" />
+          <es:element name="Body">
+            <es:element name="roxieechopersoninfoRequest">
+              <es:namespace uri="urn:hpccsystems:ecl:roxieechopersoninfo" current="true" />
+              <es:element name="roxieechopersoninforequest">
+                <es:element name="Row">
+                  <es:element name="Name">
+                    <es:set-value target="First" value="'echoFirst'"/>
+                    <es:set-value target="Last" value="'echoLast'"/>
+                    <es:element name="Aliases">
+                      <es:set-value target="Alias" value="'echoA1'"/>
+                      <es:add-value target="Alias" value="'echoA2'"/>
+                    </es:element>
+                  </es:element>
+                </es:element>
+              </es:element>
+            </es:element>
+          </es:element>
+        </es:element>
+      </es:content>
+    </es:http-post-xml>
+    <es:target xpath="soap:Body">
+    <es:target xpath="resp:roxieechopersoninfoResponse">
+    <es:target xpath="resp:Results/resp:Result">
+    <es:target xpath="ds1:Dataset[@name='RoxieEchoPersonInfoResponse']">
+        <es:source xpath="$roxie_call_success/response/content">
+          <es:source xpath="soap:Envelope/soap:Body">
+            <es:source xpath="resp:roxieechopersoninfoResponse/resp:Results/resp:Result">
+              <es:source xpath="ds1:Dataset/ds1:Row">
+                <es:append-to-value target="ds1:Row/ds1:Name/ds1:Last" value="concat('-plus-echoed-alias-', ds1:Name/ds1:Aliases/ds1:Alias[2])" />
+              </es:source>
+            </es:source>
+          </es:source>
+        </es:source>
+    </es:target>
+    </es:target>
+    </es:target>
+    </es:target>
+  </es:BackendResponse>
+  <es:BackendResponse>
+    <es:set-value target="BRESPMTH3" value="'m33'" />
+  </es:BackendResponse>
+  </Transforms>)!!";
+
+        constexpr const char * input = R"!!(<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+ <soap:Body>
+  <roxieechopersoninfoResponse xmlns="urn:hpccsystems:ecl:roxieechopersoninfo" sequence="0">
+   <Results>
+    <Result>
+     <Dataset xmlns="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse" name="RoxieEchoPersonInfoResponse">
+      <Row>
+       <Name>
+        <First>aaa</First>
+        <Last>bbbb</Last>
+        <Aliases>
+         <Alias>a</Alias>
+         <Alias>b</Alias>
+         <Alias>c</Alias>
+        </Aliases>
+       </Name>
+       <Addresses>
+        <Address>
+         <Line1>111</Line1>
+         <Line2>222</Line2>
+         <City>Boca Raton</City>
+         <State>FL</State>
+         <Zip>33487</Zip>
+         <type>ttt</type>
+        </Address>
+       </Addresses>
+      </Row>
+     </Dataset>
+    </Result>
+   </Results>
+  </roxieechopersoninfoResponse>
+ </soap:Body>
+</soap:Envelope>)!!";
+
+        constexpr const char *config1 = R"!!(<config>
+          <Transform>
+            <Param name='testcase' value="transform map"/>
+          </Transform>
+        </config>)!!";
+
+        constexpr const char * result = R"!!(<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <roxieechopersoninfoResponse xmlns="urn:hpccsystems:ecl:roxieechopersoninfo" sequence="0">
+      <Results>
+        <Result>
+          <Dataset xmlns="urn:hpccsystems:ecl:roxieechopersoninfo:result:roxieechopersoninforesponse" name="RoxieEchoPersonInfoResponse">
+            <Row>
+              <Name>
+                <First>aaa</First>
+                <Last>modified-response-at-service-and-method-plus-echoed-alias-echoA2</Last>
+                <Aliases>
+                  <Alias>a</Alias>
+                  <Alias>b</Alias>
+                  <Alias>c</Alias>
+                </Aliases>
+              </Name>
+              <Addresses>
+                <Address>
+                  <Line1>111</Line1>
+                  <Line2>222</Line2>
+                  <City>Boca Raton</City>
+                  <State>FL</State>
+                  <Zip>33487</Zip>
+                  <type>ttt</type>
+                </Address>
+              </Addresses>
+              <InServiceLocalParam1>paramLocalInService1-success-with-param</InServiceLocalParam1>
+              <InServiceLocalParam2>paramLocalInService2-success-using-default</InServiceLocalParam2>
+              <MethodCommonFunctionFromService>method-common-instance-called-from-service</MethodCommonFunctionFromService>
+              <ServiceCommonFunctionFromService>service-common-instance-called-from-service</ServiceCommonFunctionFromService>
+              <InMethodLocalParam1>paramLocalInMethod1-success-with-param</InMethodLocalParam1>
+              <InMethodLocalParam2>paramLocalInMethod2-success-using-default</InMethodLocalParam2>
+              <InMethodCommonParam1>paramCommonInMethod1-success-with-param</InMethodCommonParam1>
+              <InMethodCommonParam2>paramCommonInMethod2-success-using-default</InMethodCommonParam2>
+              <InServiceCommonParam1>paramCommonlInService1-success-with-param</InServiceCommonParam1>
+              <InServiceCommonParam2>paramCommonInService2-success-using-default</InServiceCommonParam2>
+            </Row>
+          </Dataset>
+        </Result>
+      </Results>
+    </roxieechopersoninfoResponse>
+  </soap:Body>
+  <BRESPSRV2>s22</BRESPSRV2>
+  <BRESPSRV3>s33</BRESPSRV3>
+  <BRESPMTH3>m33</BRESPMTH3>
+</soap:Envelope>)!!";
+      try
+      {
+        Owned<IEspContext> ctx = createEspContext(nullptr);
+
+        bool legacy = false;
+        Owned<IEsdlTransformMethodMap> map = createEsdlTransformMethodMap();
+        map->addMethodTransforms("", serviceScripts, legacy);
+        map->addMethodTransforms("mymethod", methodScripts, legacy);
+        map->bindFunctionCalls();
+
+        IEsdlTransformSet *serviceSet = map->queryMethodEntryPoint("", "BackendResponse");
+        IEsdlTransformSet *methodSet = map->queryMethodEntryPoint("mymethod", "BackendResponse");
+
+        Owned<IEsdlScriptContext> scriptContext = createTestScriptContext(ctx, input, config1, map->queryFunctionRegister("mymethod"));
+        scriptContext->setContent(ESDLScriptCtxSection_InitialResponse, input);
+
+        processServiceAndMethodTransforms(scriptContext, {serviceSet, methodSet}, ESDLScriptCtxSection_InitialResponse, "MyResult");
+        StringBuffer output;
+        scriptContext->toXML(output, "MyResult");
+        if (result && !areEquivalentTestXMLStrings(result, output.str(), true))
+        {
+            fputs(output.str(), stdout);
+            fflush(stdout);
+            throw MakeStringException(100, "Test failed(%s)", "call functions");
+        }
+      }
+      catch(IException *E)
+      {
+        StringBuffer msg;
+        printf("\nOOOPs Exception %d - %s\n", E->errorCode(), E->errorMessage(msg).str());
+        throw E;
+      }
+    }
 };
+
+inline void ESDLTests::CMockTraceMsgSink::valog(const LogMsgCategory& category, const char* format, va_list arguments)
+{
+  history.emplace_back(category, format, arguments);
+}
 
 CPPUNIT_TEST_SUITE_REGISTRATION( ESDLTests );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( ESDLTests, "ESDL" );

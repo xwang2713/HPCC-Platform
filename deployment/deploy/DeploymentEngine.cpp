@@ -1255,11 +1255,6 @@ void CDeploymentEngine::disconnectHost(const char* uncPath)
     }
 }
 
-struct string_compare : public std::binary_function<const char*, const char*, bool>
-{
-    bool operator()(const char* x, const char* y) const { return stricmp(x, y)==0;  }
-};
-
 //---------------------------------------------------------------------------
 //  copyAttributes
 //---------------------------------------------------------------------------
@@ -1268,7 +1263,9 @@ void CDeploymentEngine::copyAttributes(IPropertyTree *dst, IPropertyTree *src, c
     Owned<IAttributeIterator> attrs = src->getAttributes();
     for(attrs->first(); attrs->isValid(); attrs->next())
     {
-        if(std::find_if(begin, end, std::bind1st(string_compare(), attrs->queryName()+1)) != end)
+        const char * name = attrs->queryName() + 1;
+        auto compareFunc = [name](const char * x) { return strieq(name, x); };
+        if(std::find_if(begin, end, compareFunc) != end)
             dst->addProp(attrs->queryName(), attrs->queryValue());
     }
 }
@@ -1281,7 +1278,9 @@ void CDeploymentEngine::copyUnknownAttributes(IPropertyTree *dst, IPropertyTree 
     Owned<IAttributeIterator> attrs = src->getAttributes();
     for(attrs->first(); attrs->isValid(); attrs->next())
     {
-        if(std::find_if(begin, end, std::bind1st(string_compare(), attrs->queryName()+1)) == end)
+        const char * name = attrs->queryName() + 1;
+        auto compareFunc = [name](const char * x) { return strieq(name, x); };
+        if(std::find_if(begin, end, compareFunc) == end)
             dst->addProp(attrs->queryName(), attrs->queryValue());
     }
 }
@@ -1455,7 +1454,7 @@ void CDeploymentEngine::copyInstallFiles(const char* instanceName, int instanceI
     if (m_threadPool == NULL)
     {
         IThreadFactory* pThreadFactory = createDeployTaskThreadFactory();
-        m_threadPool.setown(createThreadPool("Deploy Task Thread Pool", pThreadFactory, this, DEPLOY_THREAD_POOL_SIZE));
+        m_threadPool.setown(createThreadPool("Deploy Task Thread Pool", pThreadFactory, false, this, DEPLOY_THREAD_POOL_SIZE));
         pThreadFactory->Release();
     }
     else
@@ -1846,7 +1845,8 @@ void CDeploymentEngine::createIniFile(const char* destPath, EnvMachineOS os)
         const char* val  = aiter->queryValue();
         if (val && *val)
         {
-            if (std::find_if(begin, end, std::bind1st(string_compare(), name)) == end)
+            auto compareFunc = [name](const char * x) { return strieq(name, x); };
+            if (std::find_if(begin, end, compareFunc) == end)
             {
                 str.appendf("%s=%s\n", name, val);
             }

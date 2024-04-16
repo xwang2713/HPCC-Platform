@@ -159,7 +159,7 @@ void coalesceDatastore(IPropertyTree *coalesceProps, bool force)
     }
     catch (IException *e)
     {
-        LOG(MCoperatorError, unknownJob, e, "COALESCER: Unexpected exception, coalesce component halted");
+        LOG(MCoperatorError, e, "COALESCER: Unexpected exception, coalesce component halted");
         throw;
     }
 }
@@ -172,7 +172,7 @@ class CSashaSDSCoalescingServer: public ISashaServer, public Thread
     CriticalSection suspendResumeCrit;
     Linked<IPropertyTree> coalesceProps;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaSDSCoalescingServer(IPropertyTree *_config)
         : coalesceProps(_config), Thread("CSashaSDSCoalescingServer")
@@ -188,7 +188,7 @@ public:
     {
         CriticalBlock b(suspendResumeCrit);
         stopped = false;
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
@@ -221,7 +221,7 @@ public:
         if (!stopped) return;
         PROGLOG("COALESCER: resume");
         stopped = false;
-        Thread::start();
+        Thread::start(false);
         ready();
     }
 

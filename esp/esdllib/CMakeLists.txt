@@ -22,10 +22,12 @@ include_directories (
     ${HPCC_SOURCE_DIR}/esp/bindings
     ${HPCC_SOURCE_DIR}/esp/bindings/http/client
     ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp
+    ${HPCC_SOURCE_DIR}/esp/clients/wsecl
     ${HPCC_SOURCE_DIR}/esp/platform
     ${HPCC_SOURCE_DIR}/system/include
     ${HPCC_SOURCE_DIR}/esp/esdllib
     ${HPCC_SOURCE_DIR}/esp/services/common
+    ${HPCC_SOURCE_DIR}/esp/esdlscriptlib
     ${HPCC_SOURCE_DIR}/system/jlib
     ${HPCC_SOURCE_DIR}/system/security/shared
     ${HPCC_SOURCE_DIR}/rtl/eclrtl
@@ -33,6 +35,7 @@ include_directories (
     ${HPCC_SOURCE_DIR}/common/thorhelper #JSONWRITER
     ${HPCC_SOURCE_DIR}/common/dllserver #loading plugins
     ${HPCC_SOURCE_DIR}/tools/hidl #TAccessMapGenerator
+    ${HPCC_SOURCE_DIR}/system/masking/include
 )
 
 ADD_DEFINITIONS ( -D_USRDLL -DESDLLIB_EXPORTS )
@@ -41,21 +44,10 @@ set ( SRCS
     esdl_def.cpp
     esdl_def_helper.cpp
     esdl_transformer2.cpp
-    esdl_script.cpp
     params2xml.cpp
     ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/xpp/xpputils.cpp
     ${HPCC_SOURCE_DIR}/esp/services/common/wsexcept.cpp
 )
-
-if (USE_LIBXSLT)
-    list (APPEND SRCS
-        esdl_xpath_extensions_libxml.cpp
-    )
-else()
-    list (APPEND SRCS
-        esdl_xpath_extensions_unsupported.cpp
-    )
-endif()
 
 HPCC_ADD_LIBRARY( esdllib SHARED ${SRCS}
     ${HEADERS}
@@ -68,8 +60,7 @@ add_dependencies ( esdllib jlib espscm)
 target_link_libraries ( esdllib
     jlib
     xmllib
-    thorhelper
-    esphttp
+    dllserver
 )
 
 IF (USE_LIBXSLT)

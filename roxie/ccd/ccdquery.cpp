@@ -70,6 +70,14 @@ unsigned ActivityArray::recursiveFindActivityIndex(unsigned id)
     return NotFound;
 }
 
+void ActivityArray::gatherStats(IStatisticGatherer &builder, int channel, bool reset)
+{
+    ForEachItemIn(idx, activities)
+    {
+        activities.item(idx).gatherStats(builder, channel, reset);
+    }
+}
+
 //----------------------------------------------------------------------------------------------
 // Class CQueryDll maps dlls into loadable workunits, complete with caching to ensure that a refresh of the QuerySet 
 // can avoid reloading dlls, and that the same CQueryDll (and the objects it owns) can be shared between server and 
@@ -99,13 +107,16 @@ private:
         {
             try
             {
+                CCycleTimer elapsed;
                 dll.setown(isExe ? createExeDllEntry(dllName) : queryRoxieDllServer().loadDll(dllName, DllLocationDirectory));
-                StringBuffer wuXML;
-                if (!selfTestMode && getEmbeddedWorkUnitXML(dll, wuXML))
+                if (!selfTestMode)
                 {
-                    Owned<ILocalWorkUnit> localWU = createLocalWorkUnit(wuXML);
-                    wu.setown(localWU->unlock());
+                    Owned<ILocalWorkUnit> localWU = createLocalWorkUnit(dll);
+                    if (localWU)
+                        wu.setown(localWU->unlock());
                 }
+                if (traceLevel)
+                    DBGLOG("Loading dll %s took %" I64F "uus", dllName.str(), elapsed.elapsedNs()/1000);
             }
             catch (IException *E)
             {
@@ -267,6 +278,7 @@ public:
             onceResultStore.setown(createDeserializedResultStore());
             Owned <IRoxieServerContext> ctx = createOnceServerContext(factory, logctx);
             onceManager.set(&ctx->queryRowManager());
+            onceAllocatorCache.set(&ctx->queryAllocatorCache());
             try
             {
                 ctx->process();
@@ -290,6 +302,7 @@ public:
 
 protected:
     mutable CriticalSection onceCrit;
+    mutable Owned<IRowAllocatorMetaActIdCache> onceAllocatorCache; // release AFTER row manager
     mutable Owned<roxiemem::IRowManager> onceManager; // release AFTER resultStore
     mutable Owned<IPropertyTree> onceContext;
     mutable Owned<IDeserializedResultStore> onceResultStore;
@@ -331,8 +344,12 @@ QueryOptions::QueryOptions()
     traceLimit = defaultTraceLimit;
     noSeekBuildIndex = defaultNoSeekBuildIndex;
     allSortsMaySpill = false; // No global default for this
+    statsToWorkunit = false; // No global default or workunit setting for this
     failOnLeaks = alwaysFailOnLeaks;
     collectFactoryStatistics = defaultCollectFactoryStatistics;
+    executeDependenciesSequentially = defaultExecuteDependenciesSequentially;
+    startInputsSequentially = defaultStartInputsSequentially;
+    traceActivityCharacteristics = ::traceActivityCharacteristics;
     parallelWorkflow = false;
     sinkMode = defaultSinkMode;
     numWorkflowThreads = 1;
@@ -368,6 +385,9 @@ QueryOptions::QueryOptions(const QueryOptions &other)
     allSortsMaySpill = other.allSortsMaySpill;
     failOnLeaks = other.failOnLeaks;
     collectFactoryStatistics = other.collectFactoryStatistics;
+    executeDependenciesSequentially = other.executeDependenciesSequentially;
+    startInputsSequentially = other.startInputsSequentially;
+    traceActivityCharacteristics = other.traceActivityCharacteristics;
 
     parallelWorkflow = other.parallelWorkflow;
     sinkMode = other.sinkMode;
@@ -414,10 +434,15 @@ void QueryOptions::setFromWorkUnit(IConstWorkUnit &wu, const IPropertyTree *stat
     updateFromWorkUnit(failOnLeaks, wu, "failOnLeaks");
     updateFromWorkUnit(noSeekBuildIndex, wu, "noSeekBuildIndex");
     updateFromWorkUnit(collectFactoryStatistics, wu, "collectFactoryStatistics");
+    updateFromWorkUnit(executeDependenciesSequentially, wu, "executeDependenciesSequentially");
+    updateFromWorkUnit(startInputsSequentially, wu, "startInputsSequentially");
+    updateFromWorkUnit(traceActivityCharacteristics, wu, "traceActivityCharacteristics");
 
     updateFromWorkUnit(parallelWorkflow, wu, "parallelWorkflow");
     updateFromWorkUnit(sinkMode, wu, "sinkMode");
     updateFromWorkUnit(numWorkflowThreads, wu, "numWorkflowthreads");
+
+    updateTraceFlags(loadTraceFlags(&wu, roxieTraceOptions, queryTraceFlags()));
 }
 
 void QueryOptions::updateFromWorkUnitM(memsize_t &value, IConstWorkUnit &wu, const char *name)
@@ -486,9 +511,15 @@ void QueryOptions::setFromContext(const IPropertyTree *ctx)
         // Note: allSortsMaySpill is not permitted at context level (too late anyway, unless I refactored)
         updateFromContext(failOnLeaks, ctx, "@failOnLeaks", "_FailOnLeaks");
         updateFromContext(collectFactoryStatistics, ctx, "@collectFactoryStatistics", "_CollectFactoryStatistics");
-
+        updateFromContext(executeDependenciesSequentially, ctx, "@executeDependenciesSequentially", "_ExecuteDependenciesSequentially");
+        updateFromContext(startInputsSequentially, ctx, "@startInputsSequentially", "_StartInputsSequentially");
+        updateFromContext(traceActivityCharacteristics, ctx, "@traceActivityCharacteristics", "_TraceActivityCharacteristics");
+        
         updateFromContext(parallelWorkflow, ctx, "@parallelWorkflow", "_parallelWorkflow");
         updateFromContext(numWorkflowThreads, ctx, "@numWorkflowThreads", "_numWorkflowThreads");
+        updateFromContext(statsToWorkunit, ctx, "@statsToWorkunit", "_statsToWorkunit");
+
+        updateTraceFlags(loadTraceFlags(ctx, roxieTraceOptions, queryTraceFlags()));
     }
 }
 
@@ -572,6 +603,7 @@ protected:
 
     mutable CIArrayOf<TerminationCallbackInfo> callbacks;
     mutable CriticalSection callbacksCrit;
+    mutable CRuntimeStatisticCollection stats;
 public:
     static CriticalSection queryCacheCrit;
 
@@ -1129,7 +1161,7 @@ public:
     unsigned channelNo;
 
     CQueryFactory(const char *_id, const IQueryDll *_dll, const IRoxiePackage &_package, hash64_t _hashValue, unsigned _channelNo, ISharedOnceContext *_sharedOnceContext, bool _dynamic)
-        : package(_package), dll(_dll), sharedOnceContext(_sharedOnceContext), id(_id), dynamic(_dynamic), hashValue(_hashValue), channelNo(_channelNo)
+        : package(_package), dll(_dll), sharedOnceContext(_sharedOnceContext), id(_id), dynamic(_dynamic), hashValue(_hashValue), stats(accumulatedStatistics), channelNo(_channelNo)
     {
         package.Link();
         targetClusterType = RoxieCluster;
@@ -1164,11 +1196,6 @@ public:
             try
             {
                 load(stateInfo);
-                if (sharedOnceContext && preloadOnceData)
-                {
-                    Owned<StringContextLogger> logctx = new StringContextLogger(id); // NB may get linked by the onceContext
-                    sharedOnceContext->checkOnceDone(this, *logctx);
-                }
                 addToMap();  // Publishes for agents to see
             }
             catch (IException *E)
@@ -1179,6 +1206,28 @@ public:
         });
         if (e)
             throw e.getLink();
+    }
+
+    virtual void preloadOnce() override
+    {
+        if (sharedOnceContext && preloadOnceData)
+        {
+            try
+            {
+                {
+                    Owned<StringContextLogger> logctx = new StringContextLogger(id); // NB may get linked by the onceContext
+                    sharedOnceContext->checkOnceDone(this, *logctx);
+                }
+            }
+            catch (IException *E)
+            {
+                StringBuffer m;
+                E->errorMessage(m);
+                setLoadFailed(m.str());
+                OERRLOG("Query %s suspended: %s", id.get(), m.str());
+                E->Release();
+            }
+        };
     }
 
     virtual IQueryFactory *lookupLibrary(const char *libraryName, unsigned expectedInterfaceHash, const IRoxieContextLogger &logctx) const override
@@ -1223,7 +1272,7 @@ public:
 
     void addToMap()
     {
-        if (traceRoxiePackets)
+        if (doTrace(traceRoxiePackets))
             DBGLOG("addToMap %s: hashvalue = %" I64F "x channel %d", id.str(), hashValue, channelNo);
         hash64_t hv = rtlHash64Data(sizeof(channelNo), &channelNo, hashValue);
         CriticalBlock b(activeQueriesCrit);
@@ -1253,12 +1302,12 @@ public:
 static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxiePackage &package, const IPropertyTree *stateInfo, IArrayOf<IResolvedFile> &files, bool isDynamic)
     {
         hash64_t hashValue = package.queryHash();
-        if (traceLevel > 8)
+        if (doTrace(traceQueryHashes))
             DBGLOG("getQueryHash: %s %" I64F "u from package", id, hashValue);
         if (dll)
         {
             hashValue = rtlHash64VStr(dll->queryDll()->queryName(), hashValue);
-            if (traceLevel > 8)
+            if (doTrace(traceQueryHashes))
                 DBGLOG("getQueryHash: %s %" I64F "u from dll", id, hashValue);
             if (!lockSuperFiles && !allFilesDynamic && !isDynamic && !package.isCompulsory())
             {
@@ -1272,7 +1321,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
                         Owned<IConstWUGraphIterator> graphs = &wu->getGraphs(GraphTypeActivities);
                         ForEach(*graphs)
                         {
-                            Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false);
+                            Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false, false);
                             Owned<IPropertyTreeIterator> nodes = graphXgmml->getElements(".//node");
                             ForEach(*nodes)
                             {
@@ -1291,7 +1340,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
                                         if (indexFile)
                                         {
                                             hashValue = indexFile->addHash64(hashValue);
-                                            if (traceLevel > 8)
+                                            if (doTrace(traceQueryHashes))
                                                 DBGLOG("getQueryHash: %s %" I64F "u from index %s", id, hashValue, indexName);
                                             files.append(*const_cast<IResolvedFile *>(indexFile));
                                         }
@@ -1306,7 +1355,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
                                             if (dataFile)
                                             {
                                                 hashValue = dataFile->addHash64(hashValue);
-                                                if (traceLevel > 8)
+                                                if (doTrace(traceQueryHashes))
                                                     DBGLOG("getQueryHash: %s %" I64F "u from index %s", id, hashValue, fileName);
                                                 files.append(*const_cast<IResolvedFile *>(dataFile));
                                             }
@@ -1322,23 +1371,30 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
         if (id)
             hashValue = rtlHash64VStr(id, hashValue);
         hashValue = rtlHash64VStr("Roxie", hashValue);  // Adds some noise into the hash - otherwise adjacent wuids tend to hash very close together
-        if (traceLevel > 8)
+        if (doTrace(traceQueryHashes))
             DBGLOG("getQueryHash: %s %" I64F "u from id", id, hashValue);
         if (stateInfo)
         {
             StringBuffer xml;
             toXML(stateInfo, xml);
             hashValue = rtlHash64Data(xml.length(), xml.str(), hashValue);
-            if (traceLevel > 8)
+            if (doTrace(traceQueryHashes))
                 DBGLOG("getQueryHash: %s %" I64F "u from stateInfo", id, hashValue);
         }
-        if (traceLevel > 8)
+        if (doTrace(traceQueryHashes))
             DBGLOG("getQueryHash: %s %" I64F "u", id, hashValue);
         return hashValue;
     }
     
     virtual void load(const IPropertyTree *stateInfo)
     {
+        // NOTE: stateinfo overrides package info
+        if (stateInfo)
+        {
+            isSuspended = stateInfo->getPropBool("@suspended", false);
+            if (stateInfo->hasProp("@loadFailedReason"))
+                setLoadFailed(stateInfo->queryProp("@loadFailedReason"));
+        }
         if (!dll)
             return;
         IConstWorkUnit *wu = dll->queryWorkUnit();
@@ -1350,13 +1406,6 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
             SCMStringBuffer bStr;
             targetClusterType = getClusterType(wu->getDebugValue("targetClusterType", bStr).str(), RoxieCluster);
 
-            // NOTE: stateinfo overrides package info
-
-            if (stateInfo)
-            {
-                // info in querySets can override the defaults from workunit for some limits
-                isSuspended = stateInfo->getPropBool("@suspended", false);
-            }
             if (targetClusterType == RoxieCluster)
             {
                 Owned<IConstWUGraphIterator> graphs = &wu->getGraphs(GraphTypeActivities);
@@ -1365,7 +1414,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
                 {
                     graphs->query().getName(graphNameStr);
                     const char *graphName = graphNameStr.s.str();
-                    Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false);
+                    Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false, false);
                     try
                     {
                         ActivityArray *activities = loadGraph(*graphXgmml, graphName);
@@ -1375,7 +1424,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
                     {
                         StringBuffer m;
                         E->errorMessage(m);
-                        suspend(m.str());
+                        setLoadFailed(m.str());
                         OERRLOG("Query %s suspended: %s", id.get(), m.str());
                         E->Release();
                     }
@@ -1430,33 +1479,6 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
         return ret.getClear();
     }
 
-    void getGraphStats(StringBuffer &reply, const IPropertyTree &thisGraph) const
-    {
-        Owned<IPropertyTree> graph = createPTreeFromIPT(&thisGraph, ipt_lowmem);
-        Owned<IPropertyTreeIterator> edges = graph->getElements(".//edge");
-        ForEach(*edges)
-        {
-            IPropertyTree &edge = edges->query();
-            IActivityFactory *a = findActivity(edge.getPropInt("@source", 0));
-            if (!a)
-                a = findActivity(edge.getPropInt("att[@name=\"_sourceActivity\"]/@value", 0));
-            if (a)
-            {
-                unsigned sourceOutput = edge.getPropInt("att[@name=\"_sourceIndex\"]/@value", 0);
-                a->getEdgeProgressInfo(sourceOutput, edge);
-            }
-        }
-        Owned<IPropertyTreeIterator> nodes = graph->getElements(".//node");
-        ForEach(*nodes)
-        {
-            IPropertyTree &node = nodes->query();
-            IActivityFactory *a = findActivity(node.getPropInt("@id", 0));
-            if (a)
-                a->getNodeProgressInfo(node);
-        }
-        toXML(graph, reply);
-    }
-
     virtual IPropertyTree* cloneQueryXGMML() const override
     {
         assertex(dll && dll->queryWorkUnit());
@@ -1467,7 +1489,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
         {
             graphs->query().getName(graphNameStr);
             const char *graphName = graphNameStr.s.str();
-            Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false);
+            Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false, false);
             IPropertyTree *newGraph = tree->addPropTree("Graph");
             newGraph->setProp("@id", graphName);
             newGraph->addPropTree("xgmml")->addPropTree("graph", graphXgmml.getLink());
@@ -1475,28 +1497,6 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
         return tree.getClear();
     }
 
-    virtual void getStats(StringBuffer &reply, const char *graphName) const override
-    {
-        if (dll)
-        {
-            assertex(dll->queryWorkUnit());
-            Owned<IConstWUGraphIterator> graphs = &dll->queryWorkUnit()->getGraphs(GraphTypeActivities);
-            SCMStringBuffer thisGraphNameStr;
-            ForEach(*graphs)
-            {
-                graphs->query().getName(thisGraphNameStr);
-                if (graphName)
-                {
-                    if (thisGraphNameStr.length() && (stricmp(graphName, thisGraphNameStr.s.str()) != 0))
-                        continue; // not interested in this one
-                }
-                reply.appendf("<Graph id='%s'><xgmml>", thisGraphNameStr.s.str());
-                Owned<IPropertyTree> graphXgmml = graphs->query().getXGMMLTree(false);
-                getGraphStats(reply, *graphXgmml);
-                reply.append("</xgmml></Graph>");
-            }
-        }
-    }
     virtual void getActivityMetrics(StringBuffer &reply) const override
     {
         HashIterator i(allActivities);
@@ -1507,11 +1507,62 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
             f->getActivityMetrics(myReply.clear());
             if (myReply.length())
             {
-                reply.appendf("  <activity query='%s' id='%d' channel='%d'\n", queryQueryName(), f->queryId(), queryChannel());
+                reply.appendf("  <activity query='%s' id='%d' channel='%d'>\n", queryQueryName(), f->queryId(), queryChannel());
                 reply.append(myReply);
-                reply.append("  </activity>\n");
+                reply.append("\n  </activity>\n");
             }
         }
+    }
+    void gatherOneGraphStats(IConstWorkUnit *statsWu, const char *graphName, int channel, bool reset) const
+    {
+        ActivityArrayPtr *activities = graphMap.getValue(graphName);
+        if (activities && *activities)
+        {
+            Owned<IConstWUGraph> graph = dll->queryWorkUnit()->getGraph(graphName);
+            if (graph)
+            {
+                Owned<IWUGraphStats> graphStats = statsWu->updateStats(graphName, SCTroxie, queryStatisticsComponentName(), graph->getWfid(), 0, true);
+                IStatisticGatherer &builder = graphStats->queryStatsBuilder();
+                (*activities)->gatherStats(builder, channel, reset);
+            }
+        }
+        else
+            DBGLOG("Unable to retrieve activity graph for %s", graphName);
+    }
+    virtual void gatherStats(IConstWorkUnit *statsWu, const char *graphName, int channel, bool reset) const override
+    {
+        if (dll)
+        {
+            assertex(dll->queryWorkUnit());
+            if (graphName)
+            {
+                gatherOneGraphStats(statsWu, graphName, channel, reset);
+            }
+            else
+            {
+                Owned<IConstWUGraphIterator> graphs = &dll->queryWorkUnit()->getGraphs(GraphTypeActivities);
+                SCMStringBuffer thisGraphNameStr;
+                ForEach(*graphs)
+                {
+                    IConstWUGraph &graph = graphs->query();
+                    graph.getName(thisGraphNameStr);
+                    gatherOneGraphStats(statsWu, thisGraphNameStr.str(), channel, reset);
+                }
+                WorkunitUpdate w(&statsWu->lock());
+                Owned<IStatisticGatherer> gbuilder = createGlobalStatisticGatherer(w);
+                if (channel != -1)
+                    gbuilder->beginChannelScope(channel);
+                stats.recordStatistics(*gbuilder, reset);
+            }
+        }
+    }
+    virtual void mergeStats(const CRuntimeStatisticCollection &from) const override
+    {
+        stats.merge(from);
+    }
+    virtual void mergeStats(const IRoxieContextLogger &from) const override
+    {
+        from.gatherStats(stats);
     }
     virtual void getQueryInfo(StringBuffer &reply, bool full, IArrayOf<IQueryFactory> *agentQueries, const IRoxieContextLogger &logctx) const override
     {
@@ -1570,7 +1621,7 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
     {
         return libraryInterfaceHash;
     }
-    virtual void suspend(const char* errMsg) override
+    virtual void setLoadFailed(const char* errMsg) override
     {
         isSuspended = true;
         isLoadFailed = true;
@@ -1622,7 +1673,13 @@ static hash64_t getQueryHash(const char *id, const IQueryDll *dll, const IRoxieP
         else
             result = package.queryEnv(name);
         if (!result && name)
-            result = getenv(name);
+        {
+            char *hpccEnvVal = getHPCCEnvVal(name, defaultValue);
+            if (hpccEnvVal)
+                return hpccEnvVal;
+            else
+                result = getenv(name);
+        }
         return strdup(result ? result : defaultValue);
     }
 
@@ -1793,11 +1850,6 @@ public:
         else
             return NULL;
     }
-
-    virtual IPropertyTree *getQueryStats(time_t from, time_t to)
-    {
-        return queryStats->getStats(from, to);
-    }
 };
 
 unsigned checkWorkunitVersionConsistency(const IConstWorkUnit *wu)
@@ -1884,7 +1936,9 @@ extern IQueryFactory *createServerQueryFactoryFromWu(IConstWorkUnit *wu, const I
         dll.setown(createWuQueryDll(wu));
     if (!dll)
         return NULL;
-    return createServerQueryFactory(wu->queryWuid(), dll.getClear(), queryRootRoxiePackage(), NULL, true, false); // MORE - if use a constant for id might cache better?
+    Owned<IQueryFactory> ret = createServerQueryFactory(wu->queryWuid(), dll.getClear(), queryRootRoxiePackage(), NULL, true, false); // MORE - if use a constant for id might cache better?
+    ret->preloadOnce();
+    return ret.getClear();
 }
 
 //==============================================================================================================================================
@@ -2150,5 +2204,8 @@ extern IQueryFactory *createAgentQueryFactoryFromWu(IConstWorkUnit *wu, unsigned
     Owned<const IQueryDll> dll = createWuQueryDll(wu);
     if (!dll)
         return NULL;
-    return createAgentQueryFactory(wu->queryWuid(), dll.getClear(), queryRootRoxiePackage(), channelNo, NULL, true, false);  // MORE - if use a constant for id might cache better?
+    Owned<IQueryFactory> ret = createAgentQueryFactory(wu->queryWuid(), dll.getClear(), queryRootRoxiePackage(), channelNo, NULL, true, false);  // MORE - if use a constant for id might cache better?
+    ret->preloadOnce();
+    return ret.getClear();
+
 }

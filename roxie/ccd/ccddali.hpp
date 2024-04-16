@@ -45,9 +45,9 @@ interface IRoxieDaliHelper : extends IInterface
     virtual void commitCache() = 0;
     virtual bool connected() const = 0;
     virtual IFileDescriptor *checkClonedFromRemote(const char *id, IFileDescriptor *fdesc, bool cacheIt, bool isPrivilegedUser) = 0;
-    virtual IDistributedFile *resolveLFN(const char *filename, bool cacheIt, bool writeAccess, bool isPrivilegedUser) = 0;
+    virtual IDistributedFile *resolveLFN(const char *filename, bool cacheIt, AccessMode accessMode, bool isPrivilegedUser) = 0;
     virtual IFileDescriptor *resolveCachedLFN(const char *filename) = 0;
-    virtual IConstWorkUnit *attachWorkunit(const char *wuid, ILoadedDllEntry *source) = 0;
+    virtual IConstWorkUnit *attachWorkunit(const char *wuid) = 0;
     virtual IPropertyTree *getQuerySet(const char *id) = 0;
     virtual IDaliPackageWatcher *getQuerySetSubscription(const char *id, ISafeSDSSubscription *notifier) = 0;
     virtual IPropertyTree *getPackageSets() = 0;
@@ -62,6 +62,7 @@ interface IRoxieDaliHelper : extends IInterface
     virtual void noteWorkunitRunning(const char *wu, bool running) = 0;
     virtual StringBuffer &getDaliIp(StringBuffer &ip) const = 0;
     virtual IUserDescriptor *queryUserDescriptor() = 0;
+    virtual IConstWorkUnit *createStatsWorkUnit(const char *wuid, const char *dllName) const = 0;
 };
 
 

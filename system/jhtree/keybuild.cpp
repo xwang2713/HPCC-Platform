@@ -19,6 +19,7 @@
 #include "eclhelper.hpp"
 #include "bloom.hpp"
 #include "jmisc.hpp"
+#include "jhinplace.hpp"
 
 struct CRC32HTE
 {
@@ -74,6 +75,43 @@ public:
     virtual bool matchesFindParam(const void *et, const void *fp, unsigned) const { return *(offset_t *)((const CRC32HTE *)et)->queryEndParam() == *(offset_t *)fp; }
 };
 
+class PocIndexCompressor : public CInterfaceOf<IIndexCompressor>
+{
+    virtual const char *queryName() const override { return "POC"; }
+    virtual CWriteNode *createNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeafNode) const override
+    {
+        if (isLeafNode)
+            return new CPOCWriteNode(_fpos, _keyHdr, isLeafNode);
+        else
+            return new CLegacyWriteNode(_fpos, _keyHdr, isLeafNode);
+    }
+    virtual offset_t queryBranchMemorySize() const override
+    {
+        return 0;
+    }
+    virtual offset_t queryLeafMemorySize() const override
+    {
+        return 0;
+    }
+};
+
+class LegacyIndexCompressor : public CInterfaceOf<IIndexCompressor>
+{
+    virtual const char *queryName() const override { return "Legacy"; }
+    virtual CWriteNode *createNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeafNode) const override
+    {
+        return new CLegacyWriteNode(_fpos, _keyHdr, isLeafNode);
+    }
+    virtual offset_t queryBranchMemorySize() const override
+    {
+        return 0; // same as default calculation
+    }
+    virtual offset_t queryLeafMemorySize() const override
+    {
+        return 0; // MORE: Update for in-place row compression
+    }
+};
+
 class CKeyBuilder : public CInterfaceOf<IKeyBuilder>
 {
 protected:
@@ -81,7 +119,8 @@ protected:
     count_t records;
     unsigned levels;
     offset_t nextPos;
-    Owned<CKeyHdr> keyHdr;
+    offset_t offsetBranches = 0;
+    Owned<CWriteKeyHdr> keyHdr;
     CWriteNode *prevLeafNode;
     NodeInfoArray leafInfo;
     Linked<IFileIOStream> out;
@@ -94,23 +133,27 @@ protected:
 
 private:
     unsigned __int64 duplicateCount;
+    unsigned __int64 numLeaves = 0;
+    unsigned __int64 numBranches = 0;
+    unsigned __int64 numBlobs = 0;
     __uint64 partitionFieldMask = 0;
     CWriteNode *activeNode = nullptr;
     CBlobWriteNode *activeBlobNode = nullptr;
     CIArrayOf<CWriteNodeBase> pendingNodes;
     IArrayOf<IBloomBuilder> bloomBuilders;
     IArrayOf<IRowHasher> rowHashers;
+    Owned<IIndexCompressor> indexCompressor;
     bool enforceOrder = true;
     bool isTLK = false;
 
 public:
-    CKeyBuilder(IFileIOStream *_out, unsigned flags, unsigned rawSize, unsigned nodeSize, unsigned _keyedSize, unsigned __int64 _startSequence,  IHThorIndexWriteArg *_helper, bool _enforceOrder, bool _isTLK)
+    CKeyBuilder(IFileIOStream *_out, unsigned flags, unsigned rawSize, unsigned nodeSize, unsigned _keyedSize, unsigned __int64 _startSequence,  IHThorIndexWriteArg *_helper, const char * defaultCompression, bool _enforceOrder, bool _isTLK)
         : out(_out),
           enforceOrder(_enforceOrder),
           isTLK(_isTLK)
     {
         sequence = _startSequence;
-        keyHdr.setown(new CKeyHdr());
+        keyHdr.setown(new CWriteKeyHdr());
         keyValueSize = rawSize;
         keyedSize = _keyedSize != (unsigned) -1 ? _keyedSize : rawSize;
 
@@ -121,6 +164,8 @@ public:
 
         assertex(nodeSize >= CKeyHdr::getSize());
         assertex(nodeSize <= 0xffff); // stored in a short in the header - we should fix that if/when we restructure header
+        if (!(flags & COL_PREFIX))
+            throw MakeStringException(0, "Invalid flags in CKeyBuilder::CKeyBuilder - COL_PREFIX is required");
         if (flags & TRAILING_HEADER_ONLY)
             flags |= USE_TRAILING_HEADER;
         if ((flags & (HTREE_QUICK_COMPRESSED_KEY|HTREE_VARSIZE)) == (HTREE_QUICK_COMPRESSED_KEY|HTREE_VARSIZE))
@@ -146,14 +191,16 @@ public:
         hdr->fposOffset = 0;
         hdr->fileSize = 0;
         hdr->nodeKeyLength = _keyedSize;
-        hdr->version = KEYBUILD_VERSION;
+        hdr->version = 1;
         hdr->blobHead = 0;
         hdr->metadataHead = 0;
+        hdr->firstLeaf = 0;
 
         keyHdr->write(out, &headCRC);  // Reserve space for the header - we may seek back and write it properly later
 
         doCrc = true;
         duplicateCount = 0;
+        const char * compression = defaultCompression;
         if (_helper)
         {
             partitionFieldMask = _helper->getPartitionFieldMask();
@@ -168,7 +215,22 @@ public:
                     bloomInfo++;
                 }
             }
+            if (_helper->getFlags() & TIWcompressdefined)
+                compression = _helper->queryCompression();
         }
+
+        if (!isEmptyString(compression))
+        {
+            hdr->version = 2;    // Old builds will give a reasonable error message
+            if (strieq(compression, "POC") || startsWithIgnoreCase(compression, "POC:"))
+                indexCompressor.setown(new PocIndexCompressor);
+            else if (strieq(compression, "inplace") || startsWithIgnoreCase(compression, "inplace:"))
+                indexCompressor.setown(new InplaceIndexCompressor(keyedSize, keyHdr, _helper, compression));
+            else
+                throw makeStringExceptionV(0, "Unrecognised index compression format %s", compression);
+        }
+        else
+            indexCompressor.setown(new LegacyIndexCompressor);
     }
 
     ~CKeyBuilder()
@@ -186,8 +248,9 @@ public:
     {
         unsigned int leaf = 0;
         CWriteNode *node = NULL;
-        node = new CWriteNode(nextPos, keyHdr, levels==0);
+        node = indexCompressor->createNode(nextPos, keyHdr, levels==0);
         nextPos += keyHdr->getNodeSize();
+        numBranches++;
         while (leaf<thisLevel.ordinality())
         {
             CNodeInfo &info = thisLevel.item(leaf);
@@ -195,8 +258,9 @@ public:
             {
                 flushNode(node, parents);
                 node->Release();
-                node = new CWriteNode(nextPos, keyHdr, levels==0);
+                node = indexCompressor->createNode(nextPos, keyHdr, levels==0);
                 nextPos += keyHdr->getNodeSize();
+                numBranches++;
                 verifyex(node->add(info.pos, info.value, info.size, info.sequence));
             }
             leaf++;
@@ -241,7 +305,7 @@ protected:
         }
     }
 
-    void writeNode(CWritableKeyNode *node, offset_t _nodePos)
+    void writeNode(IWritableNode *node, offset_t _nodePos)
     {
         unsigned nodeSize = keyHdr->getNodeSize();
         if (doCrc)
@@ -328,10 +392,8 @@ protected:
             {
                 prevLeafNode->setRightSib(node->getFpos());
                 node->setLeftSib(prevLeafNode->getFpos());
-                nodeInfo.append(* new CNodeInfo(prevLeafNode->getFpos(), prevLeafNode->getLastKeyValue(), keyedSize, lastSequence));
             }
-            else
-                nodeInfo.append(* new CNodeInfo(prevLeafNode->getFpos(), NULL, keyedSize, lastSequence));
+            nodeInfo.append(* new CNodeInfo(prevLeafNode->getFpos(), prevLeafNode->getLastKeyValue(), keyedSize, lastSequence));
             if ((keyHdr->getKeyType() & TRAILING_HEADER_ONLY) != 0 && activeBlobNode && activeBlobNode->getFpos() < prevLeafNode->getFpos())
                 pendingNodes.append(*prevLeafNode);
             else
@@ -350,10 +412,9 @@ protected:
 
     void buildTree(NodeInfoArray &children)
     {
-        if (children.ordinality() != 1 || levels==0) 
+        if (children.ordinality() != 1)
         {
-            // Note that we always create at least 2 levels as various places assume it
-            // Also when building keys for Moxie (bias != 0), need parent level due to assumptions in DKC...
+            // Note that we used to always create at least 2 levels as various places used to assume this.
             offset_t offset = nextLevel();
             if (offset)
             {
@@ -371,7 +432,7 @@ protected:
         {
             KeyHdr *hdr = keyHdr->getHdrStruct();
             hdr->nument = records;
-            hdr->root = nextPos - hdr->nodeSize;
+            hdr->root = children.item(0).pos;
             hdr->phyrec = hdr->numrec = nextPos-1;
             hdr->maxmrk = hdr->nodeSize/4; // always this in ctree.
             hdr->namlen = 255;
@@ -380,8 +441,10 @@ protected:
         }
     }
 
-    void finish(IPropertyTree * metadata, unsigned * fileCrc)
+    void finish(IPropertyTree * metadata, unsigned * fileCrc, size32_t maxRecordSizeSeen)
     {
+        if (maxRecordSizeSeen)
+            keyHdr->setMaxKeyLength(maxRecordSizeSeen);
         if (activeBlobNode && (keyHdr->getKeyType() & TRAILING_HEADER_ONLY))
         {
             pendingNodes.append(*activeBlobNode);
@@ -409,6 +472,7 @@ protected:
             }
             pendingNodes.kill();
         }
+        offsetBranches = nextPos;
         buildTree(leafInfo);
         if(metadata)
         {
@@ -417,15 +481,21 @@ protected:
             toXML(metadata, metaXML);
             writeMetadata(metaXML.str(), metaXML.length());
         }
-        ForEachItemIn(idx, bloomBuilders)
+
+        //Avoid creating any bloom filters if we only have single leaf node of search entries...
+        if (levels > 0)
         {
-            IBloomBuilder &bloomBuilder = bloomBuilders.item(idx);
-            if (bloomBuilder.valid())
+            ForEachItemIn(idx, bloomBuilders)
             {
-                Owned<const BloomFilter> filter = bloomBuilder.build();
-                writeBloomFilter(*filter, rowHashers.item(idx).queryFields());
+                IBloomBuilder &bloomBuilder = bloomBuilders.item(idx);
+                if (bloomBuilder.valid())
+                {
+                    Owned<const BloomFilter> filter = bloomBuilder.build();
+                    writeBloomFilter(*filter, rowHashers.item(idx).queryFields());
+                }
             }
         }
+
         keyHdr->getHdrStruct()->partitionFieldMask = partitionFieldMask;
         CRC32 headerCrc;
         writeFileHeader(false, &headerCrc);
@@ -457,8 +527,10 @@ protected:
         records++;
         if (NULL == activeNode)
         {
-            activeNode = new CWriteNode(nextPos, keyHdr, true);
+            keyHdr->getHdrStruct()->firstLeaf = nextPos;
+            activeNode = indexCompressor->createNode(nextPos, keyHdr, true);
             nextPos += keyHdr->getNodeSize();
+            numLeaves++;
         }
         else if (enforceOrder) // NB: order is indeterminate when build a TLK for a LOCAL index. duplicateCount is not calculated in this case.
         {
@@ -487,8 +559,9 @@ protected:
 
             flushNode(activeNode, leafInfo);
             activeNode->Release();
-            activeNode = new CWriteNode(nextPos, keyHdr, true);
+            activeNode = indexCompressor->createNode(nextPos, keyHdr, true);
             nextPos += keyHdr->getNodeSize();
+            numLeaves++;
             if (!activeNode->add(pos, keyData, recsize, sequence))
                 throw MakeStringException(0, "Key row too large to fit within a key node (uncompressed size=%d, variable=%s, pos=%" I64F "d)", recsize, keyHdr->isVariable()?"true":"false", pos);
         }
@@ -497,6 +570,7 @@ protected:
 
     void newBlobNode()
     {
+        numBlobs++;
         if (keyHdr->getHdrStruct()->blobHead == 0)
             keyHdr->getHdrStruct()->blobHead = nextPos;         
         CBlobWriteNode *prevBlobNode = activeBlobNode;
@@ -538,7 +612,13 @@ protected:
         return head;
     }
 
-    unsigned __int64 getDuplicateCount() { return duplicateCount; };
+    virtual unsigned __int64 getDuplicateCount() const override { return duplicateCount; };
+    virtual unsigned __int64 getNumLeafNodes() const override { return numLeaves; };
+    virtual unsigned __int64 getNumBranchNodes() const override { return numBranches; }
+    virtual unsigned __int64 getNumBlobNodes() const override { return numBlobs; }
+    virtual unsigned __int64 getOffsetBranches() const override { return offsetBranches; }
+    virtual unsigned __int64 getBranchMemorySize() const override { return indexCompressor->queryBranchMemorySize(); }
+    virtual unsigned __int64 getLeafMemorySize() const override { return indexCompressor->queryLeafMemorySize(); }
 
 protected:
     void writeMetadata(char const * data, size32_t size)
@@ -599,9 +679,9 @@ protected:
     }
 };
 
-extern jhtree_decl IKeyBuilder *createKeyBuilder(IFileIOStream *_out, unsigned flags, unsigned rawSize, unsigned nodeSize, unsigned keyFieldSize, unsigned __int64 startSequence, IHThorIndexWriteArg *helper, bool enforceOrder, bool isTLK)
+extern jhtree_decl IKeyBuilder *createKeyBuilder(IFileIOStream *_out, unsigned flags, unsigned rawSize, unsigned nodeSize, unsigned keyFieldSize, unsigned __int64 startSequence, IHThorIndexWriteArg *helper, const char * defaultCompression, bool enforceOrder, bool isTLK)
 {
-    return new CKeyBuilder(_out, flags, rawSize, nodeSize, keyFieldSize, startSequence, helper, enforceOrder, isTLK);
+    return new CKeyBuilder(_out, flags, rawSize, nodeSize, keyFieldSize, startSequence, helper, defaultCompression, enforceOrder, isTLK);
 }
 
 

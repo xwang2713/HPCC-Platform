@@ -15,7 +15,7 @@
 ################################################################################
 
 
-# Component: ws_resources 
+# Component: ws_resources
 
 #####################################################
 # Description:
@@ -24,17 +24,18 @@
 #####################################################
 
 
-project( ws_resources ) 
+project( ws_resources )
 
 include(${HPCC_SOURCE_DIR}/esp/scm/smcscm.cmake)
 
-set (    SRCS 
-         ${ESPSCM_GENERATED_DIR}/ws_resources_esp.cpp 
-         ws_resourcesPlugin.cpp 
-         ws_resourcesService.cpp 
+set (    SRCS
+         ${ESPSCM_GENERATED_DIR}/common_esp.cpp
+         ${ESPSCM_GENERATED_DIR}/ws_resources_esp.cpp
+         ws_resourcesPlugin.cpp
+         ws_resourcesService.cpp
     )
 
-include_directories ( 
+include_directories (
          ${HPCC_SOURCE_DIR}/esp/platform
          ${HPCC_SOURCE_DIR}/esp/bindings
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp
@@ -53,7 +54,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/dali/sasha
     )
 
-ADD_DEFINITIONS( -D_USRDLL -DWS_RESOURCES_EXPORTS )
+ADD_DEFINITIONS( -D_USRDLL -DWS_RESOURCES_EXPORTS -DWsResources_API_LOCAL )
 
 HPCC_ADD_LIBRARY( ws_resources SHARED ${SRCS} )
 add_dependencies ( ws_resources espscm )
@@ -63,6 +64,7 @@ target_link_libraries ( ws_resources
          xmllib
          esphttp
          SMCLib
+         ${COMMON_ESP_SERVICE_LIBS}
          )
 
 IF (USE_OPENSSL)
@@ -70,5 +72,3 @@ IF (USE_OPENSSL)
     	securesocket
     )
 ENDIF()
-
-

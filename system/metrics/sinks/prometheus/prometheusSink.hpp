@@ -22,6 +22,8 @@
 #include "jptree.hpp"
 #include "jstring.hpp"
 #include <thread>
+#include <map>
+#include <vector>
 
 //including cpp-httplib single header file REST client
 //  doesn't work with format-nonliteral as an error
@@ -59,7 +61,7 @@ public:
     void startServer();
 private:
     std::thread       m_collectThread;
-    MetricsReporter * m_metricsReporter;
+    MetricsManager *  m_metricsManager;
     StringBuffer      m_metricsSinkName;
 
     std::atomic<bool>               m_processing{false};
@@ -67,6 +69,7 @@ private:
     StringBuffer                    m_metricsServiceName;
     bool                            m_verbose;
 
+    static constexpr const char * BIND_ALL_LOCAL_NICS = "0.0.0.0";
     static constexpr const char * PROMETHEUS_REPORTER_TYPE = "prometheus";
     static constexpr const char * PROMETHEUS_METRICS_HTTP_PAGE_TITLE = "HPCC Systems - Prometheus Metrics Service";
     static constexpr const char * PROMETHEUS_METRICS_SERVICE_RESP_TYPE = "text/html; charset=UTF-8";
@@ -92,11 +95,17 @@ protected:
 
     Server m_server;
 
-    virtual void startCollection(MetricsReporter * pReporter) override;
+    virtual void startCollection(MetricsManager * pReporter) override;
     virtual void stopCollection() override;
 
     static const char * mapHPCCMetricTypeToPrometheusStr(MetricType type);
-    static void toPrometheusMetrics(std::vector<std::shared_ptr<IMetric>>, StringBuffer & out, bool verbose);
+    static void toPrometheusMetrics(const std::vector<std::shared_ptr<IMetric>> &, StringBuffer & out, bool verbose);
+
+    static std::string getPrometheusMetricName(const std::shared_ptr<IMetric> &pMetric);
+    static std::string getPrometheusMetricUnits(const std::shared_ptr<IMetric> &pMetric);
+
+    static void toPrometheusHistogram(const std::string &name, const std::shared_ptr<IMetric> &, StringBuffer & out);
+    static const std::vector<std::string> &getHistogramLabels(const std::string &name, const std::shared_ptr<IMetric> &pHistogram);
 };
 
 extern "C" MetricSink* getSinkInstance(const char *name, const IPropertyTree *pSettingsTree);

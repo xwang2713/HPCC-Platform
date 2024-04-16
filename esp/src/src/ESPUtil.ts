@@ -12,7 +12,7 @@ import * as json from "dojo/json";
 import * as on from "dojo/on";
 import * as query from "dojo/query";
 import * as Stateful from "dojo/Stateful";
-import { Memory } from "./Memory";
+import { Memory } from "./store/Memory";
 
 // @ts-ignore
 import * as ColumnResizer from "dgrid/extensions/ColumnResizer";
@@ -333,20 +333,22 @@ export const IdleWatcher = dojo.declare([Evented], {
 
     start() {
         this.stop();
-        const context = this;
-        this._keydownHandle = on(document, "keydown", function (item, index, array) {
-            context.emit("active", {});
-            context.stop();
-            context.start();
-        });
-        this._mousedownHandle = on(document, "mousedown", function (item, index, array) {
-            context.emit("active", {});
-            context.stop();
-            context.start();
-        });
-        this._intervalHandle = setInterval(function () {
-            context.emit("idle", {});
-        }, this._idleDuration);
+        if (document.cookie.indexOf("ESPSessionState=true") > -1) {
+            const context = this;
+            this._keydownHandle = on(document, "keydown", function (item, index, array) {
+                context.emit("active", {});
+                context.stop();
+                context.start();
+            });
+            this._mousedownHandle = on(document, "mousedown", function (item, index, array) {
+                context.emit("active", {});
+                context.stop();
+                context.start();
+            });
+            this._intervalHandle = setInterval(function () {
+                context.emit("idle", {});
+            }, this._idleDuration);
+        }
     },
 
     stop() {
@@ -434,7 +436,7 @@ export class UndefinedMemory extends Memory {
 export function Grid(pagination?, selection?, overrides?: object, compoundColumns?, gridName?) {
     let baseClass = [];
     const params = overrides || {};
-    const rows = Number(localStorage.getItem(gridName));
+    const rows = Number(localStorage.getItem(gridName + "_GridRowsPerPage"));
 
     if (pagination) {
         baseClass = [DGrid, Pagination, ColumnResizer, Keyboard, DijitRegistry, CompoundColumns];
@@ -511,7 +513,6 @@ export function MonitorVisibility(widget, callback) {
 
 const slice = Array.prototype.slice;
 export function override(method) {
-    /** @this target object */
     const proxy = function () {
         const context = this;
         const inherited = (this.getInherited && this.getInherited({

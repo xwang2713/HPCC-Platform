@@ -32,6 +32,7 @@
 #include "hqlcpp.ipp"
 #include "hqlwcpp.hpp"
 #include "hqlwcpp.ipp"
+#include "hqlcatom.hpp"
 
 #define INDENT_SOURCE
 #define FILE_CHUNK_SIZE         65000
@@ -50,6 +51,7 @@ inline const char * intTypeName(unsigned len, CompilerType compiler, bool isSign
     switch (compiler)
     {
     case GccCppCompiler:
+    case ClangCppCompiler:
         return isSigned ? gccIntTypes[len] : gccUIntTypes[len];
     case Vs6CppCompiler:
         return isSigned ? vcIntTypes[len] : vcUIntTypes[len];
@@ -1428,7 +1430,7 @@ StringBuffer & HqlCppWriter::generateExprCpp(IHqlExpression * expr)
             break;
         case no_callback:
             {
-                IHqlDelayedCodeGenerator * generator = (IHqlDelayedCodeGenerator *)expr->queryUnknownExtra();
+                IHqlDelayedCodeGenerator * generator = (IHqlDelayedCodeGenerator *)expr->queryUnknownExtra(0);
                 generator->generateCpp(out);
                 break;
             }
@@ -1471,9 +1473,13 @@ StringBuffer & HqlCppWriter::generateChildExpr(IHqlExpression * expr, unsigned c
             {
             case no_and:
             case no_or:
-            case no_add:
             case no_band:
             case no_bor:
+                //These operators are associative, so no need to add brackets to force and ordering.
+                needBra = false;
+                break;
+            case no_add:
+                //Add is theoretically associative, but the potential for overflow means we should preserve the order
                 needBra = (childIndex != 0); // Operators are left associative, so use () on rhs to preserve order
                 break;
             }
@@ -1996,7 +2002,6 @@ void HqlCppWriter::generateStmtCatch(IHqlStmt * stmt)
 void HqlCppWriter::generateStmtDeclare(IHqlStmt * declare)
 {
     IHqlExpression * name = declare->queryExpr(0);
-    IHqlExpression * value = declare->queryExpr(1);
     
     ITypeInfo * type = name->queryType();
 
@@ -2016,7 +2021,8 @@ void HqlCppWriter::generateStmtDeclare(IHqlStmt * declare)
     //    out.append("const ");
 
     size32_t typeSize = type->getSize();
-    bool useConstructor = false;
+    bool useCurlies = declare->hasOption(classAtom);
+    bool useConstructor = useCurlies;
     if (hasWrapperModifier(type))
     {
         ITypeInfo * builderModifier = queryModifier(type, typemod_builder);
@@ -2058,13 +2064,22 @@ void HqlCppWriter::generateStmtDeclare(IHqlStmt * declare)
             useConstructor = true;
     }
 
+    IHqlExpression * value = declare->queryExpr(1);
     if (value)
     {
         if (useConstructor)
         {
-            out.append("(");
-            generateExprCpp(value);
-            out.append(")");
+            out.append(useCurlies ? "{" : "(");
+            for (unsigned i=1; ; i++)
+            {
+                IHqlExpression * cur = declare->queryExpr(i);
+                if (!cur || cur->isAttribute())
+                    break;
+                if (i != 1)
+                    out.append(", ");
+                generateExprCpp(cur);
+            }
+            out.append(useCurlies ? "}" : ")");
         }
         else
         {

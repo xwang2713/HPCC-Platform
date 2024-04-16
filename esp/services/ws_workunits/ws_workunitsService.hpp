@@ -30,6 +30,7 @@
 #include "referencedfilelist.hpp"
 #include "ws_wuresult.hpp"
 #include "jsmartsock.ipp"
+#include <atomic>
 
 #define UFO_DIRTY                                0x01
 #define UFO_RELOAD_TARGETS_CHANGED_PMID          0x02
@@ -38,11 +39,12 @@
 
 static const __uint64 defaultWUResultMaxSize = 0x100000*10; //10M
 
-class QueryFilesInUse : public CInterface, implements ISDSSubscription
+class QueryFilesInUse : public CInterface, implements ISDSSubscription, implements IThreaded
 {
     mutable CriticalSection crit;
+    CThreaded threaded;
+    Semaphore sem;
     MapStringTo<IUserDescriptor *> roxieUserMap;
-    IArrayOf<IUserDescriptor> roxieUsers;
 
     Owned<IPropertyTree> tree;
     SubscriptionId qsChange;
@@ -50,7 +52,7 @@ class QueryFilesInUse : public CInterface, implements ISDSSubscription
     SubscriptionId psChange;
     mutable CriticalSection dirtyCrit; //if there were an atomic_or I would just use atomic
     unsigned dirty;
-    bool aborting;
+    std::atomic_bool aborting;
 private:
     void loadTarget(IPropertyTree *tree, const char *target, unsigned flags);
     void loadTargets(IPropertyTree *tree, unsigned flags);
@@ -61,32 +63,36 @@ private:
         tree.setown(t.getClear());
     }
 
-    void updateUsers()
-    {
-#ifdef _CONTAINERIZED
-        IERRLOG("CONTAINERIZED(QueryFilesInUse::updateUsers)");
-#else
-        Owned<IStringIterator> clusters = getTargetClusters("RoxieCluster", NULL);
-        ForEach(*clusters)
-        {
-            SCMStringBuffer target;
-            clusters->str(target);
-
-            Owned<IConstWUClusterInfo> info = getTargetClusterInfo(target.str());
-            Owned<IUserDescriptor> user = createUserDescriptor();
-            user->set(info->getLdapUser(), info->getLdapPassword());
-            roxieUserMap.setValue(target.str(), user);
-            roxieUsers.append(*user.getClear());
-        }
-#endif
-    }
+    void updateUsers();
 
 public:
     IMPLEMENT_IINTERFACE;
-    QueryFilesInUse() : aborting(false), qsChange(0), pmChange(0), psChange(0), dirty(UFO_DIRTY)
+    QueryFilesInUse() : threaded("QueryFilesInUse"), aborting(false), qsChange(0), pmChange(0), psChange(0), dirty(UFO_DIRTY)
     {
         tree.setown(createPTree("QueryFilesInUse"));
         updateUsers();
+        threaded.init(this, false);
+    }
+
+    ~QueryFilesInUse()
+    {
+        aborting = true;
+        sem.signal();
+        threaded.join();
+    }
+
+    virtual void threadmain()
+    {
+        subscribe();
+        while (!aborting)
+        {
+            //prepopulate the cache, lazy mode is very slow
+            //getTree() builds the cache, but only does work if the cache is dirty (changes in dali would have dirtied the cache)
+            Owned<IPropertyTree> thetree = getTree();
+            //wait 1 minute, then check if dirty again
+            if (sem.wait(60000))
+                break;
+        }
     }
 
     virtual void notify(SubscriptionId subid, const char *xpath, SDSNotifyFlags flags, unsigned valueLen, const void *valueData)
@@ -152,6 +158,8 @@ public:
     }
     IPropertyTree *getTree()
     {
+        //getTree() is thread safe because when load(flags) is called below it creates a new working tree,
+        //  the previous tree might still be in use outside this class, in which case it will not actually freed until there are no remaining references outstanding
         CriticalBlock b(crit);
         unsigned flags;
         {
@@ -234,6 +242,7 @@ public:
     void checkAndSetClusterQueryState(IEspContext &context, const char* cluster, StringArray& querySetIds, IArrayOf<IEspQuerySetQuery>& queries, bool checkAllNodes);
     IWorkUnitFactory *queryWUFactory() { return wuFactory; };
     const char *getTempDirectory() const { return tempDirectory.str(); };
+    const char *getQueryDirectory() const { return queryDirectory.str(); };
 
     bool onWUQuery(IEspContext &context, IEspWUQueryRequest &req, IEspWUQueryResponse &resp);
     bool onWULightWeightQuery(IEspContext &context, IEspWULightWeightQueryRequest &req, IEspWULightWeightQueryResponse &resp);
@@ -331,6 +340,7 @@ public:
     bool onWUGetArchiveFile(IEspContext &context, IEspWUGetArchiveFileRequest &req, IEspWUGetArchiveFileResponse &resp);
     bool onWUEclDefinitionAction(IEspContext &context, IEspWUEclDefinitionActionRequest &req, IEspWUEclDefinitionActionResponse &resp);
     bool onWUGetPlugins(IEspContext &context, IEspWUGetPluginsRequest &req, IEspWUGetPluginsResponse &resp);
+    virtual bool onWUAnalyseHotspot(IEspContext &context, IEspWUAnalyseHotspotRequest &req, IEspWUAnalyseHotspotResponse &resp) override;
 
     bool unsubscribeServiceFromDali() override
     {
@@ -423,6 +433,7 @@ private:
     Owned<IWorkUnitFactory> wuFactory;
     StringBuffer tempDirectory;
     __uint64 wuResultMaxSize = defaultWUResultMaxSize;
+    StringAttr espApplicationName;
 
 public:
     QueryFilesInUse filesInUse;
@@ -440,6 +451,7 @@ public:
     CWsWorkunitsSoapBindingEx(IPropertyTree *cfg, const char *name, const char *process, http_soap_log_level llevel) : CWsWorkunitsSoapBinding(cfg, name, process, llevel)
     {
         wswService = NULL;
+        espApplicationName.set(process);
         VStringBuffer xpath("Software/EspProcess[@name=\"%s\"]/EspBinding[@name=\"%s\"]/BatchWatch", process, name);
         batchWatchFeaturesOnly = cfg->getPropBool(xpath.str(), false);
         directories.set(cfg->queryPropTree("Software/Directories"));
@@ -474,10 +486,11 @@ public:
     }
 
 #ifndef _CONTAINERIZED
-    int onGetForm(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method);
+    virtual int onGetForm(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method) override;
 #endif
-    int onGet(CHttpRequest* request, CHttpResponse* response);
-    int onStartUpload(IEspContext& ctx, CHttpRequest* request, CHttpResponse* response, const char* service, const char* method);
+    virtual int onGet(CHttpRequest* request, CHttpResponse* response) override;
+    virtual int onGetInstantQuery(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method) override;
+    virtual int onStartUpload(IEspContext& ctx, CHttpRequest* request, CHttpResponse* response, const char* service, const char* method) override;
 
     virtual void addService(const char * name, const char * host, unsigned short port, IEspService & service)
     {
@@ -493,6 +506,7 @@ private:
     Owned<IPropertyTree> directories;
     unsigned thorSlaveLogThreadPoolSize = THOR_SLAVE_LOG_THREAD_POOL_SIZE;
     size32_t wuResultDownloadFlushThreshold = defaultWUResultDownloadFlushThreshold;
+    StringAttr espApplicationName;
 };
 
 void deploySharedObject(IEspContext &context, StringBuffer &wuid, const char *filename, const char *cluster, const char *name, const MemoryBuffer &obj, const char *dir, const char *xml=NULL, bool protect=false);

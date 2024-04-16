@@ -56,18 +56,20 @@ extern DAFSCLIENT_API void setCanAccessDirectly(RemoteFilename & file,bool set);
 extern DAFSCLIENT_API unsigned getRemoteVersion(ISocket * _socket, StringBuffer &ver);
 extern DAFSCLIENT_API unsigned getCachedRemoteVersion(IDaFsConnection &daFsConnection);
 extern DAFSCLIENT_API unsigned getCachedRemoteVersion(const SocketEndpoint &ep, bool secure);
+extern DAFSCLIENT_API unsigned getPreferredDafsClientPort(bool external);
 extern DAFSCLIENT_API int setDafsTrace(ISocket * socket,byte flags);
 extern DAFSCLIENT_API int setDafsThrottleLimit(ISocket * socket, ThrottleClass throttleClass, unsigned throttleLimit, unsigned throttleDelayMs, unsigned throttleCPULimit, unsigned queueLimit, StringBuffer *errMsg=NULL);
 extern DAFSCLIENT_API int getDafsInfo(ISocket * socket, unsigned level, StringBuffer &retstr);
 extern DAFSCLIENT_API void setDafsEndpointPort(SocketEndpoint &ep);
 extern DAFSCLIENT_API void setDafsLocalMountRedirect(const IpAddress &ip,const char *dir,const char *mountdir);
-extern DAFSCLIENT_API ISocket *connectDafs(SocketEndpoint &ep, unsigned timeoutms); // NOTE: might alter ep.port if configured for multiple ports ...
+extern DAFSCLIENT_API ISocket *connectDafs(SocketEndpoint &ep, unsigned timeoutms, const IPropertyTree *service); // NOTE: might alter ep.port if configured for multiple ports ...
 extern DAFSCLIENT_API ISocket *checkSocketSecure(ISocket *socket);
 extern DAFSCLIENT_API unsigned short getActiveDaliServixPort(const IpAddress &ip);
 extern DAFSCLIENT_API unsigned getDaliServixVersion(const IpAddress &ip,StringBuffer &ver);
 extern DAFSCLIENT_API unsigned getDaliServixVersion(const SocketEndpoint &ep,StringBuffer &ver);
 extern DAFSCLIENT_API DAFS_OS getDaliServixOs(const SocketEndpoint &ep);
 extern DAFSCLIENT_API bool testDaliServixPresent(const IpAddress &ip);
+extern DAFSCLIENT_API void sendDaFsFtSlaveCmd(ISocket *socket, MemoryBuffer &cmdBuffer);
 
 
 

@@ -1,4 +1,5 @@
-/* eslint-disable */
+/* eslint-disable no-undef */
+/* eslint-disable @typescript-eslint/no-var-requires */
 var DojoWebpackPlugin = require("dojo-webpack-plugin");
 
 var fs = require("fs");
@@ -12,7 +13,7 @@ if (fs.existsSync("./lws.target.txt")) {
 }
 console.log("debugServerIP:  ", debugServerIP);
 const proxy = {};
-const proxyItems = ["/WsWorkunits", "/WsStore", "/WsSMC", "/WsTopology", "/WsDfu", "/FileSpray", "/ws_machine", "/ws_account", "/ws_elk", "/esp/getauthtype", "/esp/reset_session_timeout", "/esp/titlebar"];
+const proxyItems = ["/WsWorkunits", "/WsStore", "/WsSMC", "/WsTopology", "/WsDfu", "/FileSpray", "/ws_machine", "/ws_account", "/Ws_Account", "WsResources", "/ws_logaccess", "/ws_elk", "/esp/getauthtype", "/esp/reset_session_timeout", "/esp/titlebar"];
 proxyItems.forEach(item => {
     proxy[item] = {
         target: "http://" + debugServerIP + ":8010",
@@ -23,6 +24,7 @@ proxyItems.forEach(item => {
 module.exports = function (env) {
     const isDev = (env && env.development) || env === "development";
     const isProduction = !isDev;
+    console.log(isProduction ? "Production bundle" : "Debug bundle");
 
     const entry = {
         stub: "eclwatch/stub",
@@ -54,47 +56,44 @@ module.exports = function (env) {
     ];
 
     return {
-        context: __dirname,
+        context: path.resolve(__dirname),
         entry: entry,
         output: {
             filename: "[name].eclwatch.js",
             chunkFilename: "[name].eclwatch.js",
-            path: path.join(__dirname, "build/dist"),
+            path: path.resolve(__dirname, "build/dist"),
             publicPath: "/esp/files/dist/",
             pathinfo: true
         },
         module: {
             rules: [
                 {
-                    test: /\.(png|jpg|gif)$/,
-                    use: [
-                        {
-                            loader: "url-loader",
-                            options: {
-                                limit: 100000
-                            }
-                        }
-                    ]
-                }, {
                     test: /\.css$/,
                     use: ["style-loader", "css-loader"]
-                }, {
-                    test: /.(ttf|otf|eot|svg|woff(2)?)(\?[a-z0-9]+)?$/,
-                    use: [{
-                        loader: "file-loader",
-                        options: {
-                            name: "[name].[ext]"
-                        }
-                    }]
                 }, {
                     test: /\.js$/,
                     use: ["source-map-loader"],
                     enforce: "pre"
+                }, {
+                    test: /\.js$/,
+                    loader: "string-replace-loader",
+                    options: {
+                        search: isProduction ? "RELEASE_ONLY" : "DEBUG_ONLY",
+                        replace(match, p1, offset, string) {
+                            return "DEBUG_ONLY */";
+                        },
+                        flags: "g"
+                    }
                 }]
         },
         resolve: {
             alias: {
-                "clipboard": path.resolve(__dirname, "node_modules/clipboard/dist/clipboard")
+            },
+            fallback: {
+                "@hpcc-js": [
+                    path.resolve(__dirname, "../../../hpcc-js/packages"),
+                    path.resolve(__dirname, "../../../Visualization/packages")
+                ]
             }
         },
         plugins: plugins,
@@ -110,9 +109,14 @@ module.exports = function (env) {
         },
 
         devServer: isProduction ? undefined : {
-            contentBase: path.join(__dirname, "build"),
-            contentBasePublicPath: "/esp/files",
-            proxy
+            hot: "only",
+            static: {
+                directory: path.resolve(__dirname, "build"),
+                publicPath: "/esp/files"
+            },
+            liveReload: false,
+            proxy,
+            port: 8080
         }
-    }
+    };
 };

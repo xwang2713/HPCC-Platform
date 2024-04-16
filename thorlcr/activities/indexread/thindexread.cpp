@@ -36,7 +36,7 @@ protected:
     bool localKey = false;
     bool partitionKey = false;
     StringBuffer fileName;
-    std::vector<OwnedPtr<CThorStatsCollection>> subIndexFileStats;
+    unsigned fileStatsTableStart = NotFound;
 
     rowcount_t aggregateToLimit()
     {
@@ -216,46 +216,41 @@ public:
     virtual void init() override
     {
         CMasterActivity::init();
-        OwnedRoxieString helperFileName = indexBaseHelper->getFileName();
-        StringBuffer expandedFileName;
-        queryThorFileManager().addScope(container.queryJob(), helperFileName, expandedFileName);
-        fileName.set(expandedFileName);
-        Owned<IDistributedFile> index = queryThorFileManager().lookup(container.queryJob(), helperFileName, false, 0 != (TIRoptional & indexBaseHelper->getFlags()), true, container.activityIsCodeSigned());
-        if (index)
+        if ((container.queryLocalOrGrouped() || indexBaseHelper->canMatchAny()))
         {
-            checkFileType(this, index, "key", true);
-
-            partitionKey = index->queryAttributes().hasProp("@partitionFieldMask");
-            localKey = index->queryAttributes().getPropBool("@local") && !partitionKey;
-
-            if (container.queryLocalData() && !localKey)
-                throw MakeActivityException(this, 0, "Index Read cannot be LOCAL unless supplied index is local");
-
-            nofilter = 0 != (TIRnofilter & indexBaseHelper->getFlags());
-            if (localKey)
-                nofilter = true;
-            else
+            OwnedRoxieString helperFileName = indexBaseHelper->getFileName();
+            StringBuffer expandedFileName;
+            queryThorFileManager().addScope(container.queryJob(), helperFileName, expandedFileName);
+            fileName.set(expandedFileName);
+            Owned<IDistributedFile> index = lookupReadFile(helperFileName, AccessMode::readRandom, false, false, 0 != (TIRoptional & indexBaseHelper->getFlags()), reInit, indexReadActivityStatistics, &fileStatsTableStart);
+            if (index && (0 == index->numParts())) // possible if superfile
+                index.clear();
+            if (index)
             {
+                checkFileType(this, index, "key", true);
+
+                partitionKey = index->queryAttributes().hasProp("@partitionFieldMask");
+                localKey = index->queryAttributes().getPropBool("@local") && !partitionKey;
+
+                if (container.queryLocalData() && !localKey)
+                    throw MakeActivityException(this, 0, "Index Read cannot be LOCAL unless supplied index is local");
+
                 IDistributedSuperFile *super = index->querySuperFile();
-                IDistributedFile *sub = super ? &super->querySubFile(0,true) : index.get();
-                if (sub && 1 == sub->numParts())
+                nofilter = 0 != (TIRnofilter & indexBaseHelper->getFlags());
+                if (localKey)
                     nofilter = true;
-                if (super)
+                else
                 {
-                    unsigned numSubFiles = super->numSubFiles();
-                    for (unsigned i=0; i<numSubFiles; i++)
-                        subIndexFileStats.push_back(new CThorStatsCollection(indexReadActivityStatistics));
+                    IDistributedFile *sub = super ? &super->querySubFile(0,true) : index.get();
+                    if (sub && 1 == sub->numParts())
+                        nofilter = true;
                 }
-            }
-            //MORE: Change index getFormatCrc once we support projected rows for indexes.
-            checkFormatCrc(this, index, indexBaseHelper->getDiskFormatCrc(), indexBaseHelper->queryDiskRecordSize(), indexBaseHelper->getProjectedFormatCrc(), indexBaseHelper->queryProjectedDiskRecordSize(), true);
-            if ((container.queryLocalOrGrouped() || indexBaseHelper->canMatchAny()) && index->numParts())
-            {
+                //MORE: Change index getFormatCrc once we support projected rows for indexes.
+                checkFormatCrc(this, index, indexBaseHelper->getDiskFormatCrc(), indexBaseHelper->queryDiskRecordSize(), indexBaseHelper->getProjectedFormatCrc(), indexBaseHelper->queryProjectedDiskRecordSize(), true);
                 fileDesc.setown(getConfiguredFileDescriptor(*index));
                 if (container.queryLocalOrGrouped())
                     nofilter = true;
                 prepareKey(index);
-                addReadFile(index);
                 mapping.setown(getFileSlaveMaps(index->queryLogicalName(), *fileDesc, container.queryJob().queryUserDescriptor(), container.queryJob().querySlaveGroup(), container.queryLocalOrGrouped(), true, NULL, index->querySuperFile()));
             }
         }
@@ -284,7 +279,10 @@ public:
         ForEachItemIn(p2, parts)
             partNumbers.append(parts.item(p2).queryPartIndex());
         if (partNumbers.ordinality())
+        {
             fileDesc->serializeParts(dst, partNumbers);
+            dst.append(fileStatsTableStart);
+        }
     }
     virtual void abort() override
     {
@@ -294,27 +292,22 @@ public:
     virtual void deserializeStats(unsigned node, MemoryBuffer &mb) override
     {
         CMasterActivity::deserializeStats(node, mb);
-        for (auto &indexFileStats: subIndexFileStats)
-            indexFileStats->deserialize(node, mb);
+        unsigned numFilesToRead;
+        mb.read(numFilesToRead);
+        assertex(numFilesToRead<=fileStats.size());
+        for (unsigned i=0; i<numFilesToRead; i++)
+            fileStats[i]->deserialize(node, mb);
+    }
+    virtual void getActivityStats(IStatisticGatherer & stats) override
+    {
+        CMasterActivity::getActivityStats(stats);
+        diskAccessCost = calcFileReadCostStats(false);
+        if (diskAccessCost)
+            stats.addStatistic(StCostFileAccess, diskAccessCost);
     }
     virtual void done() override
     {
-        if (!subIndexFileStats.empty())
-        {
-            unsigned numSubFiles = subIndexFileStats.size();
-            for (unsigned i=0; i<numSubFiles; i++)
-            {
-                IDistributedFile *file = queryReadFile(i);
-                if (file)
-                    file->addAttrValue("@numDiskReads", subIndexFileStats[i]->getStatisticSum(StNumDiskReads));
-            }
-        }
-        else
-        {
-            IDistributedFile *file = queryReadFile(0);
-            if (file)
-                file->addAttrValue("@numDiskReads", statsCollection.getStatisticSum(StNumDiskReads));
-        }
+        diskAccessCost = calcFileReadCostStats(true);
         CMasterActivity::done();
     }
 };

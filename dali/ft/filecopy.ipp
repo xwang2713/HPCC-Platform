@@ -61,6 +61,8 @@ public:
     void go(Semaphore & _sem);
     void logIfRunning(StringBuffer &list);
     void setErrorOwn(IException * e);
+    void prepareCmd(MemoryBuffer &mb, unsigned version);
+    bool launchFtSlaveCmd();
 
     virtual int run();
     virtual bool abortRequested() { return isAborting(); }
@@ -80,18 +82,18 @@ protected:
 protected:
     FileSprayer &               sprayer;
     SocketEndpoint              ep;
+    StringBuffer                url;
     PartitionPointArray         partition;
     OutputProgressArray         progress;
     Semaphore *                 sem;
     byte                        action;
     bool                        calcCRC;
-    LogMsgJobInfo               job;
     bool                        allDone;
     bool                        started;
     StringAttr                  wuid;
 };
 
-typedef CIArrayOf<FileTransferThread> TransferArray;
+typedef IArrayOf<FileTransferThread> TransferArray;
 
 //----------------------------------------------------------------------------
 
@@ -99,8 +101,8 @@ typedef CIArrayOf<FileTransferThread> TransferArray;
 struct FilePartInfo : public CInterface
 {
 public:
-    FilePartInfo(const RemoteFilename & _filename);
-    FilePartInfo();
+    FilePartInfo(const RemoteFilename & _filename, unsigned _partNum);
+    FilePartInfo(unsigned _partNum);
 
     bool canPush();
     void extractExtra(IPartDescriptor &part);
@@ -122,6 +124,7 @@ public:
     unsigned                crc;
     CDateTime               modifiedTime;
     bool                    hasCRC;
+    unsigned                partNum = 0;
 };
 
 typedef CIArrayOf<FilePartInfo> FilePartInfoArray;
@@ -133,7 +136,7 @@ class DALIFT_API TargetLocation : public CInterface
 {
 public:
     TargetLocation() { }
-    TargetLocation(RemoteFilename & _filename) : filename(_filename) { }
+    TargetLocation(RemoteFilename & _filename, unsigned _partNum) : filename(_filename), partNum(_partNum) { }
 
     bool                canPull();
     const IpAddress &   queryIP()           { return filename.queryIP(); }
@@ -141,6 +144,7 @@ public:
 public:
     RemoteFilename      filename;
     CDateTime           modifiedTime;
+    unsigned            partNum = 0;
 };
 typedef CIArrayOf<TargetLocation> TargetLocationArray;
 
@@ -172,11 +176,16 @@ protected:
 
 typedef Linked<IDistributedFile> DistributedFileAttr;
 
+constexpr unsigned maxSlaveUpdateFrequency = 1000;      // time between updates in ms - small number of nodes.
+constexpr unsigned minSlaveUpdateFrequency = 5000;      // time between updates in ms - large number of nodes.
+
+constexpr unsigned daFileSrvCommandVersion = 1;
 class FileSprayer : public IFileSprayer, public CInterface
 {
     friend class FileTransferThread;
     friend class AsyncAfterTransfer;
     friend class AsyncExtractBlobInfo;
+    friend class CRemotePartitioner;
 public:
     FileSprayer(IPropertyTree * _options, IPropertyTree * _progress, IRemoteConnection * _recoveryConnection, const char *_wuid);
     IMPLEMENT_IINTERFACE
@@ -197,13 +206,13 @@ public:
     virtual void spray();
 
     void updateProgress(const OutputProgress & newProgress);
-    unsigned numParallelSlaves();
-    void setError(const SocketEndpoint & ep, IException * e);
+    void setError(const char *host, IException * e);
     bool canLocateSlaveForNode(const IpAddress &ip) const;
     void checkSourceTarget(IFileDescriptor * file);
     void setOperation(dfu_operation op);
     dfu_operation getOperation() const;
     const char * getOperationTypeString() const;
+    IPropertyTree *getSprayService() const;
 
 protected:
     void addEmptyFilesToPartition(unsigned from, unsigned to);
@@ -220,6 +229,7 @@ protected:
     bool calcCRC();
     bool calcInputCRC();
     unsigned __int64 calcSizeReadAlready();
+    void calcNumConcurrentTransfers();
     void calculateOne2OnePartition();
     void calculateMany2OnePartition();
     void calculateNoSplitPartition();
@@ -248,11 +258,12 @@ protected:
     void locateJsonHeader(IFileIO * io, unsigned headerSize, offset_t & headerLength, offset_t & footerLength);
     void locateContentHeader(IFileIO * io, unsigned headerSize, offset_t & headerLength, offset_t & footerLength);
     bool needToCalcOutput();
-    unsigned numParallelConnections(unsigned limit);
+    unsigned numPartitionThreads(unsigned limit);
     void performTransfer();
     void pullParts();
     void pushWholeParts();
     void pushParts();
+    void transferUsingAPI(IAPICopyClient * copyClient);
     const char * queryFixedSlave() const;
     const char * querySlaveExecutable(const IpAddress &ip, StringBuffer &ret) const;
     const char * querySplitPrefix();
@@ -264,6 +275,7 @@ protected:
     bool usePullOperation() const;
     bool usePushOperation() const;
     bool usePushWholeOperation() const;
+    IAPICopyClient * getAPICopyClient();
     void updateSizeRead();
     void waitForTransferSem(Semaphore & sem);
     void addPrefix(size32_t len, const void * data, unsigned idx, PartitionPointArray & partitionWork);
@@ -290,8 +302,6 @@ private:
     // Get and store Remote File Name parts into the History record
     void splitAndCollectFileInfo(IPropertyTree * newRecord, RemoteFilename &remoteFileName,
                                  bool isDistributedSource = true);
-
-
 protected:
     CIArrayOf<FilePartInfo> sources;
     Linked<IDistributedFile> distributedTarget;
@@ -307,7 +317,6 @@ protected:
     OutputProgressArray     progress;
     IDaftProgress *         progressReport;
     IAbortRequestCallback * abortChecker;
-    LogMsgJobInfo           job;
     offset_t                totalSize;
     unsigned __int64        sizeToBeRead;
     bool                    replicate;
@@ -335,7 +344,10 @@ protected:
     bool                    compressedInput;
     bool                    compressOutput;
     bool                    copyCompressed;
+    bool                    useFtSlave;
     unsigned __int64        totalLengthRead;
+    unsigned __int64        totalNumReads;
+    unsigned __int64        totalNumWrites;
     unsigned                throttleNicSpeed;
     unsigned                lastProgressTick;
     StringAttr              wuid; // used for logging
@@ -350,6 +362,11 @@ protected:
     Owned<IPropertyTree>    srcHistory;
     dfu_operation           operation = dfu_unknown;
     CAbortRequestCallback   fileSprayerAbortChecker;
+    unsigned slaveUpdateFrequency = minSlaveUpdateFrequency;
+    unsigned                numConcurrentTransfers = 0;
+    StringAttr              sprayServiceName;
+    StringBuffer            sprayServiceHost;
+    Owned<IPropertyTree>    sprayServiceConfig;
 };
 
 

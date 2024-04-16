@@ -26,7 +26,9 @@
 #ifndef DADFS_HPP
 #define DADFS_HPP
 
-#ifndef da_decl
+#ifdef DALI_EXPORTS
+#define da_decl DECL_EXPORT
+#else
 #define da_decl DECL_IMPORT
 #endif
 
@@ -162,7 +164,8 @@ interface IDistributedFilePart: implements IInterface
                                                         // note does not affect cluster order
 
     virtual unsigned copyClusterNum(unsigned copy,unsigned *replicate=NULL)=0;      // map copy number to cluster (and optionally replicate number)
-
+    virtual StringBuffer &getStorageFilePath(StringBuffer & path, unsigned copy)=0;
+    virtual unsigned getStripeNum(unsigned copy)=0;
 };
 
 
@@ -187,7 +190,8 @@ enum DFUQFilterType
     DFUQFTintegerRange,
     DFUQFTinteger64Range,
     DFUQFTspecial,
-    DFUQFTincludeFileAttr
+    DFUQFTincludeFileAttr,
+    DFUQFTinverseWildcardMatch
 };
 
 enum DFUQSerializeFileAttrOption
@@ -246,7 +250,9 @@ enum DFUQFilterField
     DFUQFFsubfilenum = 31,
     DFUQFFkind = 32,
     DFUQFFaccessed = 33,
-    DFUQFFterm = 34,
+    DFUQFFattrmaxskew = 34,
+    DFUQFFattrminskew = 35,
+    DFUQFFterm = 36,
     DFUQFFreverse = 256,
     DFUQFFnocase = 512,
     DFUQFFnumeric = 1024,
@@ -279,14 +285,26 @@ enum DFUQResultField
     DFUQRFpersistent = 21,
     DFUQRFprotect = 22,
     DFUQRFiscompressed = 23,
-    DFUQRFterm = 24,
+    DFUQRFcost = 24,
+    DFUQRFnumDiskReads = 25,
+    DFUQRFnumDiskWrites = 26,
+    DFUQRFatRestCost = 27,
+    DFUQRFaccessCost = 28,
+    DFUQRFmaxSkew = 29,
+    DFUQRFminSkew = 30,
+    DFUQRFmaxSkewPart = 31,
+    DFUQRFminSkewPart = 32,
+    DFUQRFreadCost = 33,
+    DFUQRFwriteCost = 34,
+    DFUQRFterm = 35, // must be last in list
     DFUQRFreverse = 256,
     DFUQRFnocase = 512,
-    DFUQRFnumeric = 1024
+    DFUQRFnumeric = 1024,
+    DFUQRFfloat = 2048
 };
 
-extern da_decl const char* getDFUQFilterFieldName(DFUQFilterField feild);
-extern da_decl const char* getDFUQResultFieldName(DFUQResultField feild);
+extern da_decl const char* getDFUQFilterFieldName(DFUQFilterField field);
+extern da_decl const char* getDFUQResultFieldName(DFUQResultField field);
 
 /**
  * File operations can be included in a transaction to ensure that multiple
@@ -301,8 +319,8 @@ interface IDistributedFileTransaction: extends IInterface
     virtual void rollback()=0;
     virtual bool active()=0;
 // TBD: shouldn't really be necessary, lookups should auto-add to transaction
-    virtual IDistributedFile *lookupFile(const char *lfn,unsigned timeout=INFINITE)=0;
-    virtual IDistributedSuperFile *lookupSuperFile(const char *slfn,unsigned timeout=INFINITE)=0;
+    virtual IDistributedFile *lookupFile(const char *lfn, AccessMode accessMode, unsigned timeout=INFINITE)=0;
+    virtual IDistributedSuperFile *lookupSuperFile(const char *slfn, AccessMode accessMode, unsigned timeout=INFINITE)=0;
 };
 
 interface IDistributedSuperFileIterator: extends IIteratorOf<IDistributedSuperFile>
@@ -413,9 +431,9 @@ interface IDistributedFile: extends IInterface
     virtual void resetHistory() = 0;
     virtual bool isExternal() const = 0;
     virtual bool getSkewInfo(unsigned &maxSkew, unsigned &minSkew, unsigned &maxSkewPart, unsigned &minSkewPart, bool calculateIfMissing) = 0;
-    virtual int  getExpire() = 0;
+    virtual int  getExpire(StringBuffer *expirationDate) = 0;
     virtual void setExpire(int expireDays) = 0;
-    virtual double getCost(const char * cluster) = 0;
+    virtual void getCost(const char * cluster, cost_type & atRestCost, cost_type & accessCost) = 0;
 };
 
 
@@ -561,11 +579,22 @@ typedef IIteratorOf<IFileRelationship> IFileRelationshipIterator;
 /**
  * A distributed directory. Can created, access and delete files, super-files and logic-files.
  */
+
+enum class GetFileTreeOpts
+{
+    none                          = 0x0,
+    expandNodes                   = 0x1,
+    appendForeign                 = 0x2,
+    remapToService                = 0x4,
+    suppressForeignRemapToService = 0x8
+};
+BITMASK_ENUM(GetFileTreeOpts);
+
 interface IDistributedFileDirectory: extends IInterface
 {
     virtual IDistributedFile *lookup(   const char *logicalname,
                                         IUserDescriptor *user,
-                                        bool writeaccess,
+                                        AccessMode accessMode,
                                         bool hold,
                                         bool lockSuperOwner,
                                         IDistributedFileTransaction *transaction, // transaction only used for looking up superfile sub file
@@ -575,7 +604,7 @@ interface IDistributedFileDirectory: extends IInterface
 
     virtual IDistributedFile *lookup(   CDfsLogicalFileName &logicalname,
                                         IUserDescriptor *user,
-                                        bool writeaccess,
+                                        AccessMode accessMode,
                                         bool hold,
                                         bool lockSuperOwner,
                                         IDistributedFileTransaction *transaction, // transaction only used for looking up superfile sub files
@@ -583,7 +612,7 @@ interface IDistributedFileDirectory: extends IInterface
                                         unsigned timeout=INFINITE
                                     ) = 0;  // links, returns NULL if not found
 
-    virtual IDistributedFile *createNew(IFileDescriptor *desc) = 0;
+    virtual IDistributedFile *createNew(IFileDescriptor *desc, const char *optName=nullptr) = 0;
     virtual IDistributedFile *createExternal(IFileDescriptor *desc, const char *name) = 0;
 
     virtual IDistributedFileIterator *getIterator(const char *wildname, bool includesuper, IUserDescriptor *user,bool isPrivilegedUser) = 0;
@@ -604,21 +633,23 @@ interface IDistributedFileDirectory: extends IInterface
     virtual bool exists(const char *logicalname,IUserDescriptor *user,bool notsuper=false,bool superonly=false) = 0;                           // logical name exists
     virtual bool existsPhysical(const char *logicalname,IUserDescriptor *user) = 0;                                                    // physical parts exists
 
-    virtual IPropertyTree *getFileTree(const char *lname, IUserDescriptor *user, const INode *foreigndali=NULL, unsigned foreigndalitimeout=FOREIGN_DALI_TIMEOUT, bool expandnodes=true, bool appendForeign=true) =0;
-    virtual IFileDescriptor *getFileDescriptor(const char *lname,IUserDescriptor *user,const INode *foreigndali=NULL, unsigned foreigndalitimeout=FOREIGN_DALI_TIMEOUT) =0;
+    virtual IPropertyTree *getFileTree(const char *lname, IUserDescriptor *user, const INode *foreigndali=NULL, unsigned foreigndalitimeout=FOREIGN_DALI_TIMEOUT, GetFileTreeOpts opts = GetFileTreeOpts::expandNodes|GetFileTreeOpts::appendForeign) =0;
+    virtual IFileDescriptor *getFileDescriptor(const char *lname, AccessMode accessMode, IUserDescriptor *user, const INode *foreigndali=NULL, unsigned foreigndalitimeout=FOREIGN_DALI_TIMEOUT) =0;
 
     virtual IDistributedSuperFile *createSuperFile(const char *logicalname,IUserDescriptor *user,bool interleaved,bool ifdoesnotexist=false,IDistributedFileTransaction *transaction=NULL) = 0;
-    virtual IDistributedSuperFile *createNewSuperFile(IPropertyTree *tree, const char *optionamName=nullptr) = 0;
-    virtual IDistributedSuperFile *lookupSuperFile(const char *logicalname,IUserDescriptor *user,
+    virtual IDistributedSuperFile *createNewSuperFile(IPropertyTree *tree, const char *optionamName=nullptr, IArrayOf<IDistributedFile> *subFiles=nullptr) = 0;
+    virtual IDistributedSuperFile *lookupSuperFile(const char *logicalname, IUserDescriptor *user, AccessMode accessMode,
                                                     IDistributedFileTransaction *transaction=NULL, // transaction only used for looking up sub files
                                                     unsigned timeout=INFINITE) = 0;  // NB lookup will also return superfiles
     virtual void removeSuperFile(const char *_logicalname, bool delSubs=false, IUserDescriptor *user=NULL, IDistributedFileTransaction *transaction=NULL)=0;
 
     virtual SecAccessFlags getFilePermissions(const char *lname,IUserDescriptor *user,unsigned auditflags=0)=0; // see dasess for auditflags values
+    virtual SecAccessFlags getFScopePermissions(const char *scope,IUserDescriptor *user,unsigned auditflags=0)=0; // see dasess for auditflags values
     virtual void setDefaultUser(IUserDescriptor *user)=0;
     virtual IUserDescriptor* queryDefaultUser()=0;
-    virtual SecAccessFlags getNodePermissions(const IpAddress &ip,IUserDescriptor *user,unsigned auditflags=0)=0;
     virtual SecAccessFlags getFDescPermissions(IFileDescriptor *,IUserDescriptor *user,unsigned auditflags=0)=0;
+    virtual SecAccessFlags getDLFNPermissions(CDfsLogicalFileName &dlfn,IUserDescriptor *user,unsigned auditflags=0)=0;
+    virtual SecAccessFlags getDropZoneScopePermissions(const char *dropZoneName,const char *dropZonePath,IUserDescriptor *user,unsigned auditflags=0)=0;
 
     virtual DistributedFileCompareResult fileCompare(const char *lfn1,const char *lfn2,DistributedFileCompareMode mode,StringBuffer &errstr,IUserDescriptor *user)=0;
     virtual bool filePhysicalVerify(const char *lfn1,IUserDescriptor *user,bool includecrc,StringBuffer &errstr)=0;
@@ -699,6 +730,8 @@ interface IDistributedFileDirectory: extends IInterface
 
     // useful to clearup after temporary unpublished file.
     virtual bool removePhysicalPartFiles(const char *logicalName, IFileDescriptor *fileDesc, IMultiException *mexcept, unsigned numParallelDeletes=0) = 0;
+
+    virtual void setFileAccessed(IUserDescriptor* udesc, const char *logicalName, const CDateTime &dt, const INode *foreigndali=nullptr, unsigned foreigndalitimeout=FOREIGN_DALI_TIMEOUT) = 0;
 };
 
 
@@ -769,7 +802,11 @@ enum DistributedFileSystemError
     DFSERR_LookupConnectionTimout,       // only raised if timeout specified on lookup etc.
     DFSERR_FailedToDeleteFile,
     DFSERR_PassIterateFilesLimit,
-    DFSERR_RestrictedFileAccessDenied
+    DFSERR_RestrictedFileAccessDenied,
+    DFSERR_EmptyStoragePlane,
+    DFSERR_MissingStoragePlane,
+    DFSERR_PhysicalCompressedPartInvalid,
+    DFSERR_InvalidRemoteFileContext
 };
 
 
@@ -826,7 +863,7 @@ extern da_decl GroupType translateGroupType(const char *groupType);
 
 // Useful property query functions
 
-inline bool isFileKey(IPropertyTree &pt) { const char *kind = pt.queryProp("@kind"); return kind&&strieq(kind,"key"); }
+inline bool isFileKey(const IPropertyTree &pt) { const char *kind = pt.queryProp("@kind"); return kind&&strieq(kind,"key"); }
 inline bool isFileKey(IDistributedFile *f) { return isFileKey(f->queryAttributes()); }
 inline bool isFileKey(IFileDescriptor *f) { return isFileKey(f->queryProperties()); }
 
@@ -842,6 +879,8 @@ inline bool isPartTLK(IPropertyTree &pt) { const char *kind = pt.queryProp("@kin
 inline bool isPartTLK(IDistributedFilePart *p) { return isPartTLK(p->queryAttributes()); }
 inline bool isPartTLK(IPartDescriptor *p) { return isPartTLK(p->queryProperties()); }
 
+da_decl bool hasTLK(IDistributedFile *f);
+
 inline const char *queryFileKind(IPropertyTree &pt) { return pt.queryProp("@kind"); }
 inline const char *queryFileKind(IDistributedFile *f) { return queryFileKind(f->queryAttributes()); }
 inline const char *queryFileKind(IFileDescriptor *f) { return queryFileKind(f->queryProperties()); }
@@ -850,9 +889,43 @@ extern da_decl void ensureFileScope(const CDfsLogicalFileName &dlfn, unsigned ti
 
 extern da_decl bool checkLogicalName(const char *lfn,IUserDescriptor *user,bool readreq,bool createreq,bool allowquery,const char *specialnotallowedmsg);
 
+extern da_decl cost_type calcFileAtRestCost(const char * cluster, double sizeGB, double fileAgeDays);
+extern da_decl cost_type calcFileAccessCost(const char * cluster, __int64 numDiskWrites, __int64 numDiskReads);
+extern da_decl cost_type calcFileAccessCost(IDistributedFile *f, __int64 numDiskWrites, __int64 numDiskReads);
+extern da_decl cost_type calcDiskWriteCost(const StringArray & clusters, stat_type numDiskWrites);
 constexpr bool defaultPrivilegedUser = true;
 constexpr bool defaultNonPrivilegedUser = false;
 
+extern da_decl void configurePreferredPlanes();
+inline bool hasReadWriteCostFields(const IPropertyTree & fileAttr)
+{
+    return fileAttr.hasProp(getDFUQResultFieldName(DFUQRFreadCost)) || fileAttr.hasProp(getDFUQResultFieldName(DFUQRFwriteCost));
+}
+
+template<typename Source>
+inline cost_type getLegacyReadCost(const IPropertyTree & fileAttr, Source source)
+{
+    // Legacy files do not have @readCost attribute, so calculate from numDiskRead
+    // NB: Costs of index reading can not be reliably estimated based on 'numDiskReads'
+    if (!hasReadWriteCostFields(fileAttr) && fileAttr.hasProp(getDFUQResultFieldName(DFUQRFnumDiskReads))
+        && !isFileKey(fileAttr))
+    {
+        stat_type prevDiskReads = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
+        return calcFileAccessCost(source, 0, prevDiskReads);
+    }
+    else
+        return 0;
+}
+template<typename Source>
+inline cost_type getLegacyWriteCost(const IPropertyTree & fileAttr, Source source)
+{
+    // Legacy files do not have @writeCost attribute, so calculate from numDiskWrites
+    if (!hasReadWriteCostFields(fileAttr) && fileAttr.hasProp(getDFUQResultFieldName(DFUQRFnumDiskWrites)))
+    {
+        stat_type prevDiskWrites = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), 0);
+        return calcFileAccessCost(source, prevDiskWrites, 0);
+    }
+    else
+        return 0;
+}
 #endif
-
-

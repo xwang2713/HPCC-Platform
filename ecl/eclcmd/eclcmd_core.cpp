@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include "jlog.hpp"
 #include "jfile.hpp"
+#include "jsecrets.hpp"
 #include "jargv.hpp"
 #include "jflz.hpp"
 #include "httpclient.hpp"
@@ -66,12 +67,12 @@ void expandDefintionsAsDebugValues(const IArrayOf<IEspNamedValue> & definitions,
 
 }
 
-void checkFeatures(IClientWsWorkunits *client, bool &useCompression, int &major, int &minor, int &point, unsigned waitMs, unsigned waitConnectMs, unsigned waitReadSec)
+void checkFeatures(EclCmdCommon &cmd, IClientWsWorkunits *client, bool &useCompression, int &major, int &minor, int &point, unsigned waitMs, unsigned waitConnectMs, unsigned waitReadSec)
 {
     try
     {
         Owned<IClientWUCheckFeaturesRequest> req = client->createWUCheckFeaturesRequest();
-        setCmdRequestTimeouts(req->rpc(), waitMs, waitConnectMs, waitReadSec);
+        cmd.setRpcOptions(req->rpc(), waitMs);
         Owned<IClientWUCheckFeaturesResponse> resp = client->WUCheckFeatures(req);
         useCompression = resp->getDeployment().getUseCompression();
         major = resp->getBuildVersionMajor();
@@ -93,7 +94,7 @@ bool doDeploy(EclCmdWithEclTarget &cmd, IClientWsWorkunits *client, unsigned wai
     int minor = 0;
     int point = 0;
     bool useCompression = false;
-    checkFeatures(client, useCompression, major, minor, point, 0, cmd.optWaitConnectMs, cmd.optWaitReadSec);
+    checkFeatures(cmd, client, useCompression, major, minor, point, 0, cmd.optWaitConnectMs, cmd.optWaitReadSec);
 
     bool compressed = false;
     if (useCompression)
@@ -110,7 +111,7 @@ bool doDeploy(EclCmdWithEclTarget &cmd, IClientWsWorkunits *client, unsigned wai
 
     StringBuffer objType(compressed ? "compressed_" : ""); //change compressed type string so old ESPs will fail gracefully
     Owned<IClientWUDeployWorkunitRequest> req = client->createWUDeployWorkunitRequest();
-    setCmdRequestTimeouts(req->rpc(), waitMs, cmd.optWaitConnectMs, cmd.optWaitReadSec);
+    cmd.setRpcOptions(req->rpc(), waitMs);
 
     switch (cmd.optObj.type)
     {
@@ -144,8 +145,15 @@ bool doDeploy(EclCmdWithEclTarget &cmd, IClientWsWorkunits *client, unsigned wai
     req->setFileName(cmd.optObj.value.str());
     if ((int)cmd.optResultLimit > 0)
         req->setResultLimit(cmd.optResultLimit);
-    if (cmd.optAttributePath.length())
-        req->setQueryMainDefinition(cmd.optAttributePath);
+    if (cmd.getFullAttributePath(s.clear()))
+        req->setQueryMainDefinition(s);
+    if (!cmd.optDefaultRepo.isEmpty())
+        addNamedValue("eclcc--defaultrepo", cmd.optDefaultRepo, cmd.debugValues);
+    if (!cmd.optDefaultRepoVersion.isEmpty())
+        addNamedValue("eclcc--defaultrepoversion", cmd.optDefaultRepoVersion, cmd.debugValues);
+
+    if (cmd.optLegacy)
+        addNamedValue("eclcc-legacy", "true", cmd.debugValues);
     if (cmd.optSnapshot.length())
         req->setSnapshot(cmd.optSnapshot);
     expandDefintionsAsDebugValues(cmd.definitions, cmd.debugValues);
@@ -377,6 +385,8 @@ public:
                 continue;
             if (iter.matchFlag(optDontAppendCluster, ECLOPT_DONT_APPEND_CLUSTER))
                 continue;
+            if (dfuOptions.match(iter))
+                continue;
             eclCmdOptionMatchIndicator ind = EclCmdWithEclTarget::matchCommandLineOption(iter, true);
             if (ind != EclCmdOptionMatch)
                 return ind;
@@ -386,6 +396,8 @@ public:
     virtual bool finalizeOptions(IProperties *globals)
     {
         if (!EclCmdWithEclTarget::finalizeOptions(globals))
+            return false;
+        if (!dfuOptions.finalizeOptions(*this, globals))
             return false;
         if (!activateSet)
         {
@@ -444,7 +456,7 @@ public:
 
         unsigned clientRemaining = remaining + 100; //give the ESP method time to return from timeout before hard client stop
         Owned<IClientWUPublishWorkunitRequest> req = client->createWUPublishWorkunitRequest();
-        setCmdRequestTimeouts(req->rpc(), clientRemaining, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc(), clientRemaining);
         req->setWuid(wuid.str());
         if (optDeletePrevious)
             req->setActivate(CWUQueryActivationMode_ActivateDeletePrevious);
@@ -487,20 +499,23 @@ public:
         if (optComment.get()) //allow empty
             req->setComment(optComment);
 
+        dfuOptions.updateRequest(req.get());
+
         Owned<IClientWUPublishWorkunitResponse> resp = client->WUPublishWorkunit(req);
         const char *id = resp->getQueryId();
         if (id && *id)
         {
             const char *qs = resp->getQuerySet();
             fprintf(stdout, "\n%s/%s\n", qs ? qs : "", resp->getQueryId());
+            if (resp->getReloadFailed())
+                fputs("\nAdded to Queryset, but request to reload queries on cluster failed\n", stderr);
         }
-        if (resp->getReloadFailed())
-            fputs("\nAdded to Queryset, but request to reload queries on cluster failed\n", stderr);
 
         int ret = outputMultiExceptionsEx(resp->getExceptions());
         if (outputQueryFileCopyErrors(resp->getFileErrors()))
             ret = 1;
 
+        dfuOptions.report(resp.get());
         return ret;
     }
     virtual void usage()
@@ -549,6 +564,7 @@ public:
             "   --comment=<string>     Set the comment associated with this query\n"
             "   --wait=<ms>            Max time to wait in milliseconds\n",
             stdout);
+        dfuOptions.usage();
         EclCmdWithEclTarget::usage();
     }
 private:
@@ -559,6 +575,9 @@ private:
     StringAttr optMemoryLimit;
     StringAttr optPriority;
     StringAttr optComment;
+
+    EclCmdOptionsDFU dfuOptions;
+
     unsigned optMsToWait;
     unsigned optTimeLimit;
     unsigned optWarnTimeLimit;
@@ -783,7 +802,7 @@ public:
             fputs("Getting Workunit Information\n", stdout);
 
         Owned<IClientWUInfoRequest> req = client->createWUInfoRequest();
-        setCmdRequestTimeouts(req->rpc(), optWaitTime, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc(), optWaitTime);
 
         req->setWuid(wuid);
         req->setIncludeExceptions(true);
@@ -839,7 +858,7 @@ public:
         if (optVerbose)
             fputs("Retrieving Results\n", stdout);
         Owned<IClientWUFullResultRequest> req = client->createWUFullResultRequest();
-        setCmdRequestTimeouts(req->rpc(), optWaitTime, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc(), optWaitTime);
 
         req->setWuid(wuid);
         req->setNoRootTag(optNoRoot);
@@ -864,8 +883,8 @@ public:
         int minor = 0;
         int point = 0;
         bool useCompression = false;
-        checkFeatures(client, useCompression, major, minor, point, optWaitTime, optWaitConnectMs, optWaitReadSec);
-        bool optimized = !optPre64 && (major>=6 && minor>=3);
+        checkFeatures(*this, client, useCompression, major, minor, point, optWaitTime, optWaitConnectMs, optWaitReadSec);
+        bool optimized = !optPre64 && ((major>=7) || (major==6 && minor>=3));
 
         try
         {
@@ -925,7 +944,7 @@ public:
     {
         Owned<IClientWsWorkunits> client = createCmdClientExt(WsWorkunits, *this, "?upload_"); //upload_ disables maxRequestEntityLength
         Owned<IClientWURunRequest> req = client->createWURunRequest();
-        setCmdRequestTimeouts(req->rpc(), optWaitTime, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc(), optWaitTime);
         req->setCloneWorkunit(true);
         req->setNoRootTag(optNoRoot);
 
@@ -1155,7 +1174,7 @@ public:
     int gatherLegacyServerResults(IClientWsWorkunits* client, const char *wuid)
     {
         Owned<IClientWUInfoRequest> req = client->createWUInfoRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         req->setWuid(wuid);
         req->setIncludeExceptions(true);
@@ -1205,7 +1224,7 @@ public:
     int getAndOutputResults(IClientWsWorkunits* client, const char *wuid)
     {
         Owned<IClientWUFullResultRequest> req = client->createWUFullResultRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         req->setWuid(wuid);
         req->setNoRootTag(optNoRoot);
@@ -1226,7 +1245,7 @@ public:
         int minor = 0;
         int point = 0;
         bool useCompression = false;
-        checkFeatures(client, useCompression, major, minor, point, 0, optWaitConnectMs, optWaitReadSec);
+        checkFeatures(*this, client, useCompression, major, minor, point, 0, optWaitConnectMs, optWaitReadSec);
 
         if (!optPre64 && (major>=6 && minor>=3))
             return getAndOutputResults(client, optWuid);
@@ -1284,7 +1303,7 @@ public:
     {
         Owned<IClientWsWorkunits> client = createCmdClient(WsWorkunits, *this);
         Owned<IClientWUQuerySetQueryActionRequest> req = client->createWUQuerysetQueryActionRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         IArrayOf<IEspQuerySetQueryActionItem> queries;
         Owned<IEspQuerySetQueryActionItem> item = createQuerySetQueryActionItem();
@@ -1325,6 +1344,30 @@ public:
 
 class EclCmdUnPublish : public EclCmdWithQueryTarget
 {
+    void outputResults(const IArrayOf<IConstQuerySetQueryActionResult> &results, const char *qs)
+    {
+        ForEachItemIn(i, results)
+        {
+            IConstQuerySetQueryActionResult &item = results.item(i);
+            const char *id = item.getQueryId();
+            const char *wuid = item.getWUID();
+            if (item.getSuccess())
+            {
+                if (isEmptyString(wuid))
+                    fprintf(stdout, "\nUnpublished %s/%s\n", qs, id ? id : "");
+                else
+                    fprintf(stdout, "\nDeleted %s\n", wuid);
+            }
+            else if (item.getCode()|| item.getMessage())
+            {
+                const char *msg = item.getMessage();
+                if (isEmptyString(wuid))
+                    fprintf(stderr, "Query %s Error (%d) %s\n", id ? id : "", item.getCode(), msg ? msg : "");
+                else
+                    fprintf(stderr, "Workunit %s Error (%d) %s\n", wuid, item.getCode(), msg ? msg : "");
+            }
+        }
+    }
 public:
     EclCmdUnPublish()
     {
@@ -1334,14 +1377,20 @@ public:
     {
         Owned<IClientWsWorkunits> client = createCmdClient(WsWorkunits, *this);
         Owned<IClientWUQuerySetQueryActionRequest> req = client->createWUQuerysetQueryActionRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         req->setQuerySetName(optQuerySet.get());
-        req->setAction("Delete");
+        if (optDeleteWorkunit)
+            req->setAction("DeleteQueriesAndWUs");
+        else
+            req->setAction("Delete");
 
         IArrayOf<IEspQuerySetQueryActionItem> queries;
         Owned<IEspQuerySetQueryActionItem> item = createQuerySetQueryActionItem();
         item->setQueryId(optQuery.get());
+        if (!optActivated.isEmpty())
+            item->setActivated(strToBool(optActivated));
+        item->setSuspendedByUser(optSuspendedByUser);
         queries.append(*item.getClear());
         req->setQueries(queries);
 
@@ -1354,7 +1403,7 @@ public:
         if (results.empty())
             fprintf(stderr, "\nError Empty Result!\n");
         else
-            outputQueryActionResults(results, "Unpublished", optQuerySet.str());
+            outputResults(results, optQuerySet.str());
         return 0;
     }
     virtual void usage()
@@ -1366,7 +1415,11 @@ public:
             "ecl unpublish <target> <query_id>\n"
             " Options:\n"
             "   <target>               name of target queryset containing the query to remove\n"
-            "   <query_id>             query to remove from the queryset\n",
+            "   <query_id>             query to remove from the queryset\n"
+            "   --activated=yes|no     specify yes (unpublish activated queries) or no (unpublish deactivated\n"
+            "                          queries) when <query_id> is '*'. Default to all queries.\n"
+            "   --suspended-by-user    unpublish the queries suspended by user when <query_id> is '*'.\n"
+            "   --delete-workunit      delete the workunit for the <query_id>. Default to No.\n",
             stdout);
         EclCmdWithQueryTarget::usage();
     }
@@ -1384,7 +1437,7 @@ public:
         StringBuffer s;
         Owned<IClientWsWorkunits> client = createCmdClient(WsWorkunits, *this);
         Owned<IClientWUQuerySetAliasActionRequest> req = client->createWUQuerysetAliasActionRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         IArrayOf<IEspQuerySetAliasActionItem> aliases;
         Owned<IEspQuerySetAliasActionItem> item = createQuerySetAliasActionItem();
@@ -1502,7 +1555,7 @@ public:
 
         // Abort
         Owned<IClientWUAbortRequest> req = client->createWUAbortRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
 
         req->setWuids(wuids);
@@ -1603,7 +1656,7 @@ public:
     {
         Owned<IClientWsWorkunits> client = createCmdClient(WsWorkunits, *this);
         Owned<IClientWUQueryRequest> req = client->createWUQueryRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
 
         if (optName.isEmpty())
@@ -1688,7 +1741,7 @@ public:
     {
         Owned<IClientWsWorkunits> client = createCmdClient(WsWorkunits, *this);
         Owned<IClientWUQueryRequest> req = client->createWUQueryRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         if (optName.isEmpty())
             return 0;
@@ -1780,7 +1833,7 @@ public:
     {
         Owned<IClientWsWorkunits> client = createCmdClient(WsWorkunits, *this);
         Owned<IClientWUQueryRequest> req = client->createWUQueryRequest();
-        setCmdRequestTimeouts(req->rpc(), 0, optWaitConnectMs, optWaitReadSec);
+        setRpcOptions(req->rpc());
 
         if (optName.isEmpty())
         {
@@ -2063,6 +2116,90 @@ private:
 };
 
 
+
+class EclCmdUrlMapSecretName : public CInterfaceOf<IEclCommand>
+{
+public:
+    EclCmdUrlMapSecretName()
+    {
+
+    }
+
+    virtual eclCmdOptionMatchIndicator parseCommandLineOptions(ArgvIterator &iter) override
+    {
+        eclCmdOptionMatchIndicator retVal = EclCmdOptionNoMatch;
+        if (iter.done())
+            return EclCmdOptionNoMatch;
+
+        for (; !iter.done(); iter.next())
+        {
+            const char *arg = iter.query();
+            if (*arg != '-') //parameters don't start with '-'
+            {
+                if (optUrl.length())
+                {
+                    fprintf(stderr, "\nunrecognized argument %s\n", arg);
+                    return EclCmdOptionCompletion;
+                }
+                optUrl.set(arg);
+                retVal = EclCmdOptionMatch;
+                continue;
+            }
+            if (iter.matchOption(optUsername, ECLOPT_USERNAME))
+            {
+                retVal = EclCmdOptionMatch;
+                continue;
+            }
+        }
+        return retVal;
+    }
+    virtual bool finalizeOptions(IProperties *globals) override
+    {
+        if (optUrl.isEmpty())
+        {
+            fprintf(stdout, "\n URL parameter required.\n");
+            return false;
+        }
+        return true;
+    }
+    virtual int processCMD() override
+    {
+        StringBuffer secretName;
+        generateDynamicUrlSecretName(secretName, optUrl, optUsername);
+        if (secretName.isEmpty())
+        {
+            fputs("Error genenerating secret name.", stderr);
+            return 1;
+        }
+        fputs(secretName.str(), stdout);
+        fputs("\n", stdout);
+        return 0;
+    }
+    virtual void usage() override
+    {
+        fputs("\nUsage:\n"
+            "\n"
+            "The 'url-secret-name' command generates a secret name from a url that can be used to support\n"
+            "  ECL SOAPCALL/HTTPCALL automated url to secret mapping.\n"
+            "  Username can either be embedded in the url, such as https://username@example.com, or\n"
+            "  Passed in as a parameter --username=username\n"
+            "  Passwords embedded in the URL are not needed and will be ignored.\n"
+            "\n"
+            "When ECL SOAPCALL URL secret mapping is enabled SOAPCALL will convert the URL provided into a name of this format.\n"
+            "  ECL will then attempt to lookup the secret, and if found will use the contents of the secret, rather then the original url.\n"
+            "\n"
+            "ecl url-secret-name <URL> [--username=<username>]\n"
+            "\n"
+            "   URL            the URL to convert into a secret name\n"
+            " Options:\n"
+            "   --username     Username to associate with the URL.  Will override any username embedded in the URL.\n",
+            stdout);
+    }
+private:
+    StringAttr         optUrl;
+    StringAttr         optUsername;
+};
+
 //=========================================================================================
 
 IEclCommand *createCoreEclCommand(const char *cmdname)
@@ -2093,6 +2230,8 @@ IEclCommand *createCoreEclCommand(const char *cmdname)
         return new EclCmdStatus();
     if (strieq(cmdname, "zapgen"))
         return new EclCmdZapGen();
+    if (strieq(cmdname, "url-secret-name"))
+        return new EclCmdUrlMapSecretName();
     if (strieq(cmdname, "sign"))
         return createSignEclCommand();
     if (strieq(cmdname, "listkeyuid"))

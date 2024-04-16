@@ -1,5 +1,6 @@
 esp:
 - name: eclwatch
+  auth: none
   application: eclwatch
   service:
     servicePort: 8880
@@ -44,6 +45,7 @@ dfuserver:
     
 eclagent:
 - name: eclagent
+  maxActive: 1
   annotations:
     eaa1: eaav1
   labels:
@@ -67,6 +69,7 @@ thor:
 
 eclccserver: 
 - name: eclccserver
+  maxActive: 1
   annotations:
     esa1: esav1
   labels:
@@ -83,10 +86,10 @@ sasha:
 
 dali:
 - name: mydali
+  auth: none
   annotations:
     da1: dav1
   labels:
     dl1: dlv1
   services: # internal house keeping services
-    coalescer:
-      
+    coalescer: {}

@@ -6,7 +6,7 @@ define([
     "dojo/dom",
     "dojo/dom-construct",
     "dojo/dom-class",
-    "src/Memory",
+    "src/store/Memory",
     "dojo/store/Observable",
     "dojo/topic",
     "dojo/has",
@@ -222,7 +222,7 @@ define([
                 this.widget.ErrWarnDialogTextArea.domNode.select();
             },
             _onDownload: function (evt) {
-                Utility.downloadText(Utility.toCSV(this.infoData, ","), "ErrWarn.csv");
+                Utility.downloadCSV(Utility.toCSV(this.infoData, ","), "ErrWarn.csv");
             },
 
             _onErrors: function (args) {
@@ -247,11 +247,11 @@ define([
                 if (item) {
                     var severity = this.store.getValue(item, "Severity", null);
                     if (severity === "Error") {
-                        row.customStyles += "background-color: red;";
+                        row.customStyles += "background-color: #fe8147;";
                     } else if (severity === "Alert") {
-                        row.customStyles += "background-color: #febe47;";
+                        row.customStyles += "background-color: #ff1e00;";
                     } else if (severity === "Warning") {
-                        row.customStyles += "background-color: yellow;";
+                        row.customStyles += "background-color: #ffee00;";
                     }
                 }
                 this.infoGrid.focus.styleRow(row);
@@ -337,6 +337,7 @@ define([
                             break;
                         case "Alert":
                             this._counts.alert++;
+                            this._counts.errorWarning++;
                             if (errorChecked) {
                                 data.push(item);
                             }

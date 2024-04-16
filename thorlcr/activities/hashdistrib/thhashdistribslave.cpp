@@ -496,7 +496,7 @@ protected:
             stoppedTargets = 0;
             dedupSamples = dedupSuccesses = 0;
             doDedup = owner.doDedup;
-            writerPool.setown(createThreadPool("HashDist writer pool", this, this, owner.writerPoolSize, 5*60*1000));
+            writerPool.setown(createThreadPool("HashDist writer pool", this, true, this, owner.writerPoolSize, 5*60*1000));
             self = owner.activity->queryJobChannel().queryMyRank()-1;
 
             sendersFinished = new std::atomic<bool>[owner.numnodes];
@@ -746,7 +746,7 @@ protected:
                         if (maxSz)
                         {
                             // pick candidates that are at >= 50% size of largest
-                            candidates.clear();
+                            candidates.kill();
                             bool doSelf = false;
                             unsigned inactiveWriters = queryInactiveWriters();
                             ForEachItemIn(t, targets)
@@ -943,7 +943,7 @@ protected:
         {
             parent = _parent;
         }
-        void start() { threaded.start(); }
+        void start() { threaded.start(true); }
         void join(unsigned timeout=INFINITE) { threaded.join(timeout); }
         void stop()
         {
@@ -967,7 +967,7 @@ protected:
         {
             parent = _parent;
         }
-        void start() { threaded.start(); }
+        void start() { threaded.start(true); }
         void join(unsigned timeout=INFINITE) { threaded.join(timeout); }
     // IThreaded impl.
         virtual void threadmain() override
@@ -1150,7 +1150,7 @@ public:
         if (allowSpill)
         {
             StringBuffer temp;
-            GetTempName(temp,"hddrecvbuff", true);
+            GetTempFilePath(temp,"hddrecvbuff");
             piperd.setown(createSmartBuffer(activity, temp.str(), pullBufferSize, rowIf));
         }
         else
@@ -1247,7 +1247,7 @@ public:
                     catch (IException *e)
                     {
                         StringBuffer senderStr;
-                        activity->queryContainer().queryJob().queryJobGroup().queryNode(n+1).endpoint().getUrlStr(senderStr);
+                        activity->queryContainer().queryJob().queryJobGroup().queryNode(n+1).endpoint().getEndpointHostText(senderStr);
                         IException *e2 = MakeActivityException(activity, e, "Received from node: %s", senderStr.str());
                         e->Release();
                         throw e2;
@@ -1814,7 +1814,7 @@ public:
                 if (!cachefileio.get())
                 {
                     StringBuffer tempname;
-                    GetTempName(tempname,"hashdistspill",true);
+                    GetTempFilePath(tempname,"hashdistspill");
                     cachefile.setown(createIFile(tempname.str()));
                     cachefileio.setown(cachefile->open(IFOcreaterw));
                     if (!cachefileio)
@@ -1973,7 +1973,7 @@ public:
         stopped = false;
         stopping = false;
         txthread = new cTxThread(*this);
-        txthread->start();
+        txthread->start(true);
     }
 
     virtual void join() // probably does nothing
@@ -2057,8 +2057,8 @@ protected:
     bool setupDist = true;
     bool isAll = false;
 public:
-    HashDistributeSlaveBase(CGraphElementBase *_container)
-        : CSlaveActivity(_container)
+    HashDistributeSlaveBase(CGraphElementBase *_container, const StatisticsMapping &statsMapping = basicActivityStatistics)
+        : CSlaveActivity(_container, statsMapping)
     {
         appendOutputLinked(this);
     }
@@ -2257,7 +2257,7 @@ public:
             unsigned rwFlags = DEFAULT_RWFLAGS;
             sz = 0;
             StringBuffer tempname;
-            GetTempName(tempname,"hdprop",true); // use alt temp dir
+            GetTempFilePath(tempname,"hdprop");
             tempfile.setown(createIFile(tempname.str()));
             {
                 ActPrintLogEx(&activity->queryContainer(), thorlog_null, MCwarning, "REDISTRIBUTE size unknown, spilling to disk");
@@ -2454,6 +2454,8 @@ public:
 class IndexDistributeSlaveActivity : public HashDistributeSlaveBase
 {
     typedef HashDistributeSlaveBase PARENT;
+    CStatsContextLogger contextLogger;
+    CStatsCtxLoggerDeltaUpdater statsUpdater;
 
     class CKeyLookup : implements IHash
     {
@@ -2466,11 +2468,12 @@ class IndexDistributeSlaveActivity : public HashDistributeSlaveBase
         CKeyLookup(IndexDistributeSlaveActivity &_owner, IHThorKeyedDistributeArg *_helper, IKeyIndex *_tlk)
             : owner(_owner), helper(_helper), tlk(_tlk)
         {
-            tlkManager.setown(createLocalKeyManager(helper->queryIndexRecordSize()->queryRecordAccessor(true), tlk, nullptr, helper->hasNewSegmentMonitors(), false));
+            tlkManager.setown(createLocalKeyManager(helper->queryIndexRecordSize()->queryRecordAccessor(true), tlk, &owner.contextLogger, helper->hasNewSegmentMonitors(), false));
             numslaves = owner.queryContainer().queryJob().querySlaves();
         }
         unsigned hash(const void *data)
         {
+            CStatsScopedThresholdDeltaUpdater scoped(owner.statsUpdater);
             helper->createSegmentMonitors(tlkManager, data);
             tlkManager->finishSegmentMonitors();
             tlkManager->reset();
@@ -2484,7 +2487,7 @@ class IndexDistributeSlaveActivity : public HashDistributeSlaveBase
     } *lookup;
 
 public:
-    IndexDistributeSlaveActivity(CGraphElementBase *container) : PARENT(container), lookup(NULL)
+    IndexDistributeSlaveActivity(CGraphElementBase *container) : PARENT(container, indexDistribActivityStatistics), lookup(NULL), contextLogger(jhtreeCacheStatistics), statsUpdater(jhtreeCacheStatistics, *this, contextLogger)
     {
     }
     ~IndexDistributeSlaveActivity()
@@ -2507,6 +2510,11 @@ public:
         name.append(queryId()).append("_tlk");
         lookup = new CKeyLookup(*this, helper, createKeyIndex(name.str(), 0, *iFileIO, (unsigned) -1, true)); // MORE - crc is not 0...
         ihash = lookup;
+    }
+    virtual void stop() override
+    {
+        CStatsScopedDeltaUpdater scoped(statsUpdater);
+        PARENT::stop();
     }
 };
 
@@ -2641,6 +2649,7 @@ class CSpill : implements IRowWriter, public CSimpleInterface
     IThorRowInterfaces *rowIf;
     rowcount_t count;
     Owned<CFileOwner> spillFile;
+    Owned<IFileIO> spillFileIO;
     IRowWriter *writer;
     StringAttr desc;
     unsigned bucketN, rwFlags;
@@ -2665,7 +2674,7 @@ public:
         count = 0;
         StringBuffer tempname, prefix("hashdedup_bucket");
         prefix.append(bucketN).append('_').append(desc);
-        GetTempName(tempname, prefix.str(), true);
+        GetTempFilePath(tempname, prefix.str());
         OwnedIFile iFile = createIFile(tempname.str());
         spillFile.setown(new CFileOwner(iFile.getLink()));
         if (owner.getOptBool(THOROPT_COMPRESS_SPILLS, true))
@@ -2675,9 +2684,10 @@ public:
             owner.getOpt(THOROPT_COMPRESS_SPILL_TYPE, compType);
             setCompFlag(compType, rwFlags);
         }
-        writer = createRowWriter(iFile, rowIf, rwFlags);
+        spillFileIO.setown(iFile->open(IFOcreate));
+        writer = createRowWriter(spillFileIO, rowIf, rwFlags);
     }
-    IRowStream *getReader(rowcount_t *_count=NULL) // NB: also detatches ownership of 'fileOwner'
+    IRowStream *getReader(rowcount_t *_count=NULL) // NB: also detaches ownership of 'fileOwner'
     {
         assertex(NULL == writer); // should have been closed
         Owned<CFileOwner> fileOwner = spillFile.getClear();
@@ -2694,21 +2704,39 @@ public:
         return fileStream.getClear();
     }
     rowcount_t getCount() const { return count; }
-    void close()
+    void close(CRuntimeStatisticCollection &stats)
     {
         if (NULL == writer)
             return;
-        flush();
         ::Release(writer);
         writer = NULL;
+        spillFileIO->flush();
+        mergeStats(stats, this);
+        spillFileIO.clear();
+    }
+    inline __int64 getStatistic(StatisticKind kind) const
+    {
+        switch (kind)
+        {
+        case StSizeSpillFile:
+            return spillFileIO->getStatistic(StSizeDiskWrite);
+        case StTimeSortElapsed:
+            return spillFileIO->getStatistic(StTimeDiskWriteIO);
+        case StSizeDiskWrite:
+            return 0; // Return file size as StSizeSpillFile kind. To avoid confusion, StSizeDiskWrite will not be returned
+        case StNumSpills:
+            return 1;
+        default:
+            return spillFileIO->getStatistic(kind);
+        }
     }
 // IRowWriter
-    virtual void putRow(const void *row)
+    virtual void putRow(const void *row) override
     {
         writer->putRow(row);
         ++count; // NULL's too (but there won't be any in usage of this impl.)
     }
-    virtual void flush()
+    virtual void flush() override
     {
         writer->flush();
     }
@@ -2747,10 +2775,10 @@ public:
     bool spillHashTable(bool critical); // returns true if freed mem
     bool flush(bool critical);
     bool rehash();
-    void closeSpillStreams()
+    void closeSpillStreams(CRuntimeStatisticCollection &stats)
     {
-        rowSpill.close();
-        keySpill.close();
+        rowSpill.close(stats);
+        keySpill.close(stats);
     }
     inline IRowStream *getSpillRowStream(rowcount_t *count) { return rowSpill.getReader(count); }
     inline IRowStream *getSpillKeyStream(rowcount_t *count) { return keySpill.getReader(count); }
@@ -2785,7 +2813,9 @@ public:
 
 class CBucketHandler : public CSimpleInterface, implements IInterface, implements roxiemem::IBufferedRowCallback
 {
+protected:
     HashDedupSlaveActivityBase &owner;
+private:
     IThorRowInterfaces *rowIf, *keyIf;
     IHash *iRowHash, *iKeyHash;
     ICompare *iCompare;
@@ -2799,6 +2829,7 @@ class CBucketHandler : public CSimpleInterface, implements IInterface, implement
     bool callbacksInstalled = false;
     unsigned nextBestBucket = 0;
     CriticalSection spillCrit;
+    CRuntimeStatisticCollection stats;
 
     rowidx_t getTotalBucketCount() const
     {
@@ -2849,6 +2880,7 @@ class CBucketHandler : public CSimpleInterface, implements IInterface, implement
             return false;
         }
     } postSpillFlush;
+
 public:
     IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
 
@@ -2895,7 +2927,7 @@ public:
                 {
                     // If marked as done, then can close now (NB: must be closed before can be read by getNextBestRowStream())
                     if (bucket->isCompleted())
-                        bucket->closeSpillStreams(); // close stream now, to flush rows out in write streams, so ready to be read
+                        bucket->closeSpillStreams(stats); // close stream now, to flush rows out in write streams, so ready to be read
                     return true;
                 }
             }
@@ -2934,7 +2966,7 @@ public:
         {
             CBucket &bucket = *buckets[cur];
             if (bucket.isSpilt())
-                bucket.closeSpillStreams(); // close stream now, to flush rows out in write streams, so ready to be read
+                bucket.closeSpillStreams(stats); // close stream now, to flush rows out in write streams, so ready to be read
             else
                 bucket.setCompleted();
         }
@@ -3013,22 +3045,27 @@ protected:
         rowidx_t initSize = HASHDEDUP_HT_INIT_MAX_SIZE / _numHashTables;
         if (initSize > HASHDEDUP_HT_INC_SIZE)
             initSize = HASHDEDUP_HT_INC_SIZE;
-        if (_numHashTables <= numHashTables)
+
+        unsigned min = _numHashTables <= numHashTables ? _numHashTables : numHashTables;
+        unsigned i=0;
+
+        // initialize existing hash tables below new limit
+        for (; i<min; i++)
+            hashTables[i]->init(initSize);
+
+        if (_numHashTables < numHashTables) // free existing hash tables above new limit
         {
-            unsigned i=0;
-            for (; i<_numHashTables; i++)
-                hashTables[i]->init(initSize);
             for (; i<numHashTables; i++)
             {
                 ::Release(hashTables[i]);
                 hashTables[i] = NULL;
             }
         }
-        else if (_numHashTables > numHashTables)
+        else if (_numHashTables > numHashTables) // create new hash tables above old limit
         {
             _hashTables.ensureCapacity(_numHashTables);
             hashTables = (CHashTableRowTable **)_hashTables.getArray();
-            for (unsigned i=numHashTables; i<_numHashTables; i++)
+            for (; i<_numHashTables; i++)
             {
                 hashTables[i] = new CHashTableRowTable(*this, keyRowInterfaces, iKeyHash, rowKeyCompare);
                 hashTables[i]->init(initSize);
@@ -3041,7 +3078,7 @@ public:
     IMPLEMENT_IINTERFACE_USING(CSlaveActivity);
 
     HashDedupSlaveActivityBase(CGraphElementBase *_container, bool _local)
-        : CSlaveActivity(_container), local(_local)
+        : CSlaveActivity(_container, hashDedupActivityStatistics), local(_local)
     {
         helper = (IHThorHashDedupArg *)queryHelper();
         initialNumBuckets = 0;
@@ -3409,7 +3446,7 @@ bool CBucket::flush(bool critical)
         {
             if (clearHashTable(critical))
             {
-                LOG(MCthorDetailedDebugInfo, thorJob, "Flushed%s bucket %d - %d elements", critical?"(critical)":"", queryBucketNumber(), count);
+                LOG(MCthorDetailedDebugInfo, "Flushed%s bucket %d - %d elements", critical?"(critical)":"", queryBucketNumber(), count);
                 return true;
             }
         }
@@ -3538,7 +3575,7 @@ bool CBucket::addRow(const void *row, unsigned hashValue)
 //
 
 CBucketHandler::CBucketHandler(HashDedupSlaveActivityBase &_owner, IThorRowInterfaces *_rowIf, IThorRowInterfaces *_keyIf, IHash *_iRowHash, IHash *_iKeyHash, ICompare *_iCompare, bool _extractKey, unsigned _depth, unsigned _div)
-    : owner(_owner), rowIf(_rowIf), keyIf(_keyIf), iRowHash(_iRowHash), iKeyHash(_iKeyHash), iCompare(_iCompare), extractKey(_extractKey), depth(_depth), div(_div), postSpillFlush(*this)
+    : owner(_owner), rowIf(_rowIf), keyIf(_keyIf), iRowHash(_iRowHash), iKeyHash(_iKeyHash), iCompare(_iCompare), extractKey(_extractKey), depth(_depth), div(_div), postSpillFlush(*this), stats(_owner.queryStatsMapping())
 {
     currentBucket = 0;
     nextToSpill = NotFound;
@@ -3583,6 +3620,7 @@ void CBucketHandler::initCallbacks()
 void CBucketHandler::flushBuckets()
 {
     clearCallbacks();
+    owner.inactiveStats.merge(stats);
     for (unsigned i=0; i<numBuckets; i++)
         buckets[i]->clear();
 }
@@ -3838,7 +3876,7 @@ class HashJoinSlaveActivity : public CSlaveActivity, implements IStopInput
     bool eof;
     Owned<IRowStream> strmL;
     Owned<IRowStream> strmR;
-    CriticalSection joinHelperCrit;
+    mutable CriticalSection joinHelperCrit;
     CriticalSection stopsect;
     rowcount_t lhsProgressCount;
     rowcount_t rhsProgressCount;
@@ -3989,22 +4027,20 @@ public:
         info.canStall = true;
         info.unknownRowsOutput = true;
     }
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
+        PARENT::gatherActiveStats(activeStats);
+        CriticalBlock b(joinHelperCrit);
+        if (!joinhelper) // bit odd, but will leave as was for now.
         {
-            CriticalBlock b(joinHelperCrit);
-            if (!joinhelper) // bit odd, but will leave as was for now.
-            {
-                stats.setStatistic(StNumLeftRows, lhsProgressCount);
-                stats.setStatistic(StNumRightRows, rhsProgressCount);
-            }
-            else
-            {
-                stats.setStatistic(StNumLeftRows, joinhelper->getLhsProgress());
-                stats.setStatistic(StNumRightRows, joinhelper->getRhsProgress());
-            }
-        }    
-        PARENT::serializeStats(mb);
+            activeStats.setStatistic(StNumLeftRows, lhsProgressCount);
+            activeStats.setStatistic(StNumRightRows, rhsProgressCount);
+        }
+        else
+        {
+            activeStats.setStatistic(StNumLeftRows, joinhelper->getLhsProgress());
+            activeStats.setStatistic(StNumRightRows, joinhelper->getRhsProgress());
+        }
     }
 };
 #ifdef _MSC_VER

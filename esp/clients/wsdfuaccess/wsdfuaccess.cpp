@@ -19,6 +19,7 @@
 
 #include "jliball.hpp"
 #include "jflz.hpp"
+#include "jsecrets.hpp"
 #include "daclient.hpp"
 #include "dautils.hpp"
 #include "seclib.hpp"
@@ -493,16 +494,21 @@ IPropertyTree *createDFUFileMetaInfo(const char *fileName, IFileDescriptor *file
         metaInfo->setPropBin("binLayout", binLayout.length(), binLayout.toByteArray());
 
     // file meta info
-    INode *node1 = fileDesc->queryNode(0);
-    SocketEndpoint ep = node1->endpoint();
-    unsigned dafilesrvVersion = getCachedRemoteVersion(node1->endpoint(), secure);
-
-    if (dafilesrvVersion < DAFILESRV_STREAMGENERAL_MINVERSION)
+    bool legacyDafileSrv = false;
+    if (!isContainerized())
     {
-        metaInfo->setPropInt("version", 1); // legacy format
-        extractFilePartInfo(*metaInfo, *fileDesc);
+        INode *node1 = fileDesc->queryNode(0);
+        SocketEndpoint ep = node1->endpoint();
+        unsigned dafilesrvVersion = getCachedRemoteVersion(node1->endpoint(), secure);
+
+        if (dafilesrvVersion < DAFILESRV_STREAMGENERAL_MINVERSION)
+        {
+            metaInfo->setPropInt("version", 1); // legacy format
+            extractFilePartInfo(*metaInfo, *fileDesc);
+            legacyDafileSrv = true;
+        }
     }
-    else
+    if (!legacyDafileSrv)
     {
         metaInfo->setPropInt("version", DAFILESRV_METAINFOVERSION);
         IPropertyTree *fileInfoTree = metaInfo->setPropTree("FileInfo");
@@ -522,20 +528,41 @@ StringBuffer &encodeDFUFileMeta(StringBuffer &metaInfoBlob, IPropertyTree *metaI
      * Should be part of the same configuration setup.
      */
 #ifdef _USE_OPENSSL
-    if (metaInfo->hasProp("keyPairName") && environment) // without it, meta data is not encrypted
+    if (metaInfo->hasProp("keyPairName") && (isContainerized() || environment)) // without it, meta data is not encrypted
     {
         MemoryBuffer metaInfoBlob;
         metaInfo->serialize(metaInfoBlob);
+        const char *keyPairName = metaInfo->queryProp("keyPairName"); // NB: in container mode, this is the name of the secret containing the cert.
 
-        const char *keyPairName = metaInfo->queryProp("keyPairName");
+        Owned<IPropertyTree> metaInfoEnvelope = createPTree();
+#ifdef _CONTAINERIZED
+        /* Encode the public certificate in the request. NB: this is an approach used for JWT token delegation.
+         * The delegated service (dafilesrv) will only trust this cert. if from our CA.
+         * It will then use it to verify the signature.
+         * If the size of this initial request was ever a concern, we could consider other ways to ensure a one-off
+         * delivery of this esp public signing cert. to dafilesrv, e.g. by dafilesrv reaching out to esp to request it.
+         */
+        Owned<const ISyncedPropertyTree> config = getIssuerTlsSyncedConfig(keyPairName);
+        if (!config || !config->isValid())
+            throw makeStringExceptionV(-1, "encodeDFUFileMeta: No '%s' MTLS certificate detected.", keyPairName);
+
+        Owned<const IPropertyTree> info = config->getTree();
+        const char *privateKeyText = info->queryProp("privatekey");
+        if (isEmptyString(privateKeyText))
+            throw makeStringException(-1, "encodeDFUFileMeta: MTLS - private key missing");
+        const char *certificate = info->queryProp("certificate");
+        verifyex(certificate);
+        metaInfoEnvelope->setProp("certificate", certificate);
+        Owned<CLoadedKey> privateKey = loadPrivateKeyFromMemory(privateKeyText, nullptr);
+#else
         const char *privateKeyFName = environment->getPrivateKeyPath(keyPairName);
         if (isEmptyString(privateKeyFName))
             throw makeStringExceptionV(-1, "Key name '%s' is not found in environment settings: /EnvSettings/Keys/KeyPair.", keyPairName);
         Owned<CLoadedKey> privateKey = loadPrivateKeyFromFile(privateKeyFName, nullptr);
+#endif
         StringBuffer metaInfoSignature;
         digiSign(metaInfoSignature, metaInfoBlob.length(), metaInfoBlob.bytes(), *privateKey);
 
-        Owned<IPropertyTree> metaInfoEnvelope = createPTree();
         metaInfoEnvelope->setProp("signature", metaInfoSignature);
         metaInfoEnvelope->setPropBin("metaInfoBlob", metaInfoBlob.length(), metaInfoBlob.bytes());
         metaInfoEnvelope->serialize(metaInfoMb.clear());
@@ -611,7 +638,7 @@ protected:
 
         basePath.append("//");
         SocketEndpoint ep(serverPort);
-        ep.getUrlStr(basePath);
+        ep.getEndpointHostText(basePath);
 
         char cpath[_MAX_DIR];
         if (!GetCurrentDirectory(_MAX_DIR, cpath))
@@ -628,7 +655,7 @@ protected:
         public:
             CServerThread(IRemoteFileServer *_server, ISocket *_socket) : server(_server), socket(_socket), threaded("CServerThread")
             {
-                threaded.init(this);
+                threaded.init(this, false);
             }
             ~CServerThread()
             {
@@ -638,7 +665,7 @@ protected:
             virtual void threadmain() override
             {
                 DAFSConnectCfg sslCfg = SSLNone;
-                server->run(sslCfg, socket, nullptr, nullptr);
+                server->run(nullptr, sslCfg, socket, nullptr, nullptr);
             }
         };
         Owned<IRemoteFileServer> server = createRemoteFileServer();

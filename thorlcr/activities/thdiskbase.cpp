@@ -47,59 +47,62 @@ void CDiskReadMasterBase::init()
     fileName.set(expandedFileName);
     reInit = 0 != (helper->getFlags() & (TDXvarfilename|TDXdynamicfilename));
 
-    Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), helperFileName, 0 != ((TDXtemporary|TDXjobtemp) & helper->getFlags()), 0 != (TDRoptional & helper->getFlags()), true, container.activityIsCodeSigned());
-    if (file)
+    if (container.queryLocal() || helper->canMatchAny()) // if local, assume may match
     {
-        if (file->isExternal() && (helper->getFlags() & TDXcompress))
-            file->queryAttributes().setPropBool("@blockCompressed", true);
-        if (file->numParts() > 1)
-            fileDesc.setown(getConfiguredFileDescriptor(*file));
-        else
-            fileDesc.setown(file->getFileDescriptor());
-        validateFile(file);
-        if (container.queryLocal() || helper->canMatchAny()) // if local, assume may match
+        bool temp = 0 != (TDXtemporary & helper->getFlags());
+        bool jobTemp = 0 != (TDXjobtemp & helper->getFlags());
+        bool opt = 0 != (TDRoptional & helper->getFlags());
+        file.setown(lookupReadFile(helperFileName, AccessMode::readSequential, jobTemp, temp, opt, reInit, diskReadRemoteStatistics, &fileStatsTableStart));
+        if (file)
         {
-            bool temp = 0 != (TDXtemporary & helper->getFlags());
+            if (file->isExternal() && (helper->getFlags() & TDXcompress))
+                file->queryAttributes().setPropBool("@blockCompressed", true);
+            if (file->numParts() > 1)
+                fileDesc.setown(getConfiguredFileDescriptor(*file));
+            else
+                fileDesc.setown(file->getFileDescriptor());
+            validateFile(file);
             bool local;
             if (temp)
                 local = false;
             else
                 local = container.queryLocal();
             mapping.setown(getFileSlaveMaps(file->queryLogicalName(), *fileDesc, container.queryJob().queryUserDescriptor(), container.queryJob().querySlaveGroup(), local, false, hash, file->querySuperFile()));
-            addReadFile(file, temp);
-        }
-        IDistributedSuperFile *super = file->querySuperFile();
-        unsigned numsubs = super?super->numSubFiles(true):0;
-        if (0 != (helper->getFlags() & TDRfilenamecallback)) // only get/serialize if using virtual file name fields
-        {
-            for (unsigned s=0; s<numsubs; s++)
+            IDistributedSuperFile *super = file->querySuperFile();
+            unsigned numsubs = super?super->numSubFiles(true):0;
+            if (0 != (helper->getFlags() & TDRfilenamecallback)) // only get/serialize if using virtual file name fields
             {
-                IDistributedFile &subfile = super->querySubFile(s, true);
-                subfileLogicalFilenames.append(subfile.queryLogicalName());
+                subfileLogicalFilenames.kill();
+                for (unsigned s=0; s<numsubs; s++)
+                {
+                    IDistributedFile &subfile = super->querySubFile(s, true);
+                    subfileLogicalFilenames.append(subfile.queryLogicalName());
+                }
             }
-        }
-        if (0==(helper->getFlags() & TDXtemporary))
-        {
-            for (unsigned i=0; i<numsubs; i++)
-                subFileStats.push_back(new CThorStatsCollection(diskReadRemoteStatistics));
-        }
-        void *ekey;
-        size32_t ekeylen;
-        helper->getEncryptKey(ekeylen,ekey);
-        bool encrypted = fileDesc->queryProperties().getPropBool("@encrypted");
-        if (0 != ekeylen)
-        {
-            memset(ekey,0,ekeylen);
-            free(ekey);
-            if (!encrypted)
+            void *ekey;
+            size32_t ekeylen;
+            helper->getEncryptKey(ekeylen,ekey);
+            bool encrypted = fileDesc->queryProperties().getPropBool("@encrypted");
+            if (0 != ekeylen)
             {
-                Owned<IException> e = MakeActivityWarning(&container, TE_EncryptionMismatch, "Ignoring encryption key provided as file '%s' was not published as encrypted", fileName.get());
-                queryJobChannel().fireException(e);
+                memset(ekey,0,ekeylen);
+                free(ekey);
+                if (!encrypted)
+                {
+                    Owned<IException> e = MakeActivityWarning(&container, TE_EncryptionMismatch, "Ignoring encryption key provided as file '%s' was not published as encrypted", fileName.get());
+                    queryJobChannel().fireException(e);
+                }
             }
+            else if (encrypted)
+                throw MakeActivityException(this, 0, "File '%s' was published as encrypted but no encryption key provided", fileName.get());
         }
-        else if (encrypted)
-            throw MakeActivityException(this, 0, "File '%s' was published as encrypted but no encryption key provided", fileName.get());
     }
+}
+
+void CDiskReadMasterBase::kill()
+{
+    CMasterActivity::kill();
+    file.clear();
 }
 
 void CDiskReadMasterBase::serializeSlaveData(MemoryBuffer &dst, unsigned slave)
@@ -111,39 +114,38 @@ void CDiskReadMasterBase::serializeSlaveData(MemoryBuffer &dst, unsigned slave)
         ForEachItemIn(s, subfileLogicalFilenames)
             dst.append(subfileLogicalFilenames.item(s));
     }
+    dst.append(fileStatsTableStart);
     if (mapping)
         mapping->serializeMap(slave, dst);
     else
         CSlavePartMapping::serializeNullMap(dst);
 }
 
+void CDiskReadMasterBase::getActivityStats(IStatisticGatherer & stats)
+{
+    CMasterActivity::getActivityStats(stats);
+    diskAccessCost = calcFileReadCostStats(false);
+    if (diskAccessCost)
+        stats.addStatistic(StCostFileAccess, diskAccessCost);
+}
+
 void CDiskReadMasterBase::done()
 {
-    if (!subFileStats.empty())
-    {
-        unsigned numSubFiles = subFileStats.size();
-        for (unsigned i=0; i<numSubFiles; i++)
-        {
-            IDistributedFile *file = queryReadFile(i);
-            if (file)
-                file->addAttrValue("@numDiskReads", subFileStats[i]->getStatisticSum(StNumDiskReads));
-        }
-    }
-    else
-    {
-        IDistributedFile *file = queryReadFile(0);
-        if (file)
-            file->addAttrValue("@numDiskReads", statsCollection.getStatisticSum(StNumDiskReads));
-    }
+    diskAccessCost = calcFileReadCostStats(true);
     CMasterActivity::done();
 }
 
 void CDiskReadMasterBase::deserializeStats(unsigned node, MemoryBuffer &mb)
 {
     CMasterActivity::deserializeStats(node, mb);
-
-    for (auto &stats: subFileStats)
-        stats->deserialize(node, mb);
+    if (mapping && (mapping->queryMapWidth(node)>0)) // there won't be any subfile stats. if worker was sent 0 parts
+    {
+        unsigned numFilesToRead;
+        mb.read(numFilesToRead);
+        assertex(numFilesToRead<=fileStats.size());
+        for (unsigned i=0; i<numFilesToRead; i++)
+            fileStats[i]->deserialize(node, mb);
+    }
 }
 /////////////////
 
@@ -160,7 +162,7 @@ void CWriteMasterBase::init()
     if (diskHelperBase->getFlags() & TDWextend)
     {
         assertex(0 == (diskHelperBase->getFlags() & (TDXtemporary|TDXjobtemp)));
-        Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), helperFileName, false, true, false, container.activityIsCodeSigned());
+        Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), helperFileName, AccessMode::writeSequential, false, true, false, container.activityIsCodeSigned());
         if (file.get())
         {
             fileDesc.setown(file->getFileDescriptor());
@@ -169,6 +171,8 @@ void CWriteMasterBase::init()
     }
     if (dlfn.isExternal())
         mpTag = container.queryJob().allocateMPTag(); // used
+    bool outputCompressionDefault = getOptBool(THOROPT_COMPRESS_ALLFILES, isContainerized());
+    bool outputPlaneCompressed = outputCompressionDefault;
     if (NULL == fileDesc.get())
     {
         bool overwriteok = 0!=(TDWoverwrite & diskHelperBase->getFlags());
@@ -181,17 +185,45 @@ void CWriteMasterBase::init()
                 break;
             clusters.append(cluster);
             idx++;
-        }
 
-        if (idx == 0)
-        {
-            StringBuffer defaultCluster;
-            if (getDefaultStoragePlane(defaultCluster))
-                clusters.append(defaultCluster);
+            if (1 == idx)
+            {
+                // establish default compression from 1st plane, but ECL compression attributes take precedence
+                Owned<IPropertyTree> plane = getStoragePlane(cluster);
+                if (plane)
+                    outputPlaneCompressed = plane->getPropBool("@compressLogicalFiles", outputCompressionDefault);
+            }
         }
 
         IArrayOf<IGroup> groups;
-        fillClusterArray(container.queryJob(), fileName, clusters, groups);
+        if (idx == 0)
+        {
+            if (TDXtemporary & diskHelperBase->getFlags())
+            {
+                // NB: these temp IFileDescriptors are not published
+                // but we want to ensure they don't have the default data plane
+                // which would cause the paths to be manipulated if numDevices>1
+                StringBuffer planeName;
+                if (getDefaultSpillPlane(planeName))
+                {
+                    clusters.append(planeName);
+                    groups.append(*LINK(&queryLocalGroup()));
+                }
+            }
+            else
+            {
+                StringBuffer defaultCluster;
+                if (getDefaultStoragePlane(defaultCluster))
+                {
+                    clusters.append(defaultCluster);
+                    Owned<IPropertyTree> plane = getStoragePlane(defaultCluster);
+                    if (plane)
+                        outputPlaneCompressed = plane->getPropBool("@compressLogicalFiles", outputCompressionDefault);
+                }
+            }
+        }
+        if (0 == groups.ordinality()) // may be filled if temp (see above)
+            fillClusterArray(container.queryJob(), fileName, clusters, groups);
         fileDesc.setown(queryThorFileManager().create(container.queryJob(), fileName, clusters, groups, overwriteok, diskHelperBase->getFlags()));
         if (1 == groups.ordinality())
             targetOffset = getGroupOffset(groups.item(0), container.queryJob().querySlaveGroup());
@@ -216,8 +248,15 @@ void CWriteMasterBase::init()
             props.setPropBool("@encrypted", true);
             blockCompressed = true;
         }
-        else if (0 != (diskHelperBase->getFlags() & TDWnewcompress) || 0 != (diskHelperBase->getFlags() & TDXcompress))
-            blockCompressed = true;
+        else
+        {
+            if (0 == (diskHelperBase->getFlags() & TDWnocompress))
+            {
+                blockCompressed = (0 != (diskHelperBase->getFlags() & TDWnewcompress) || 0 != (diskHelperBase->getFlags() & TDXcompress));
+                if (!blockCompressed) // if ECL doesn't specify, default to plane definition
+                    blockCompressed = outputPlaneCompressed;
+            }
+        }
         if (blockCompressed)
             props.setPropBool("@blockCompressed", true);
         props.setProp("@kind", "flat");
@@ -253,7 +292,8 @@ void CWriteMasterBase::publish()
     }
     if (TDWrestricted & diskHelperBase->getFlags())
         props.setPropBool("restricted", true );
-    props.setPropInt64("@numDiskWrites", statsCollection.getStatisticSum(StNumDiskWrites));
+    props.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), statsCollection.getStatisticSum(StNumDiskWrites));
+    props.setPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), diskAccessCost);
     container.queryTempHandler()->registerFile(fileName, container.queryOwner().queryGraphId(), diskHelperBase->getTempUsageCount(), TDXtemporary & diskHelperBase->getFlags(), getDiskOutputKind(diskHelperBase->getFlags()), &clusters);
     if (!dlfn.isExternal())
     {
@@ -288,7 +328,7 @@ void CWriteMasterBase::publish()
             {
                 StringBuffer clusterName;
                 fileDesc->getClusterGroupName(clusterIdx, clusterName, &queryNamedGroupStore());
-                LOG(MCthorDetailedDebugInfo, thorJob, "Creating blank parts for file '%s', cluster '%s'", fileName.get(), clusterName.str());
+                LOG(MCthorDetailedDebugInfo, "Creating blank parts for file '%s', cluster '%s'", fileName.get(), clusterName.str());
                 unsigned p=0;
                 while (p<fileDesc->numParts())
                 {
@@ -360,7 +400,7 @@ void CWriteMasterBase::preStart(size32_t parentExtractSz, const byte *parentExtr
         if (0 == ((TDXvarfilename|TDXtemporary|TDXjobtemp) & diskHelperBase->getFlags()))
         {
             OwnedRoxieString fname(diskHelperBase->getFileName());
-            Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), fname, false, true, false, container.activityIsCodeSigned());
+            Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), fname, AccessMode::readMeta, false, true, false, container.activityIsCodeSigned());
             if (file)
             {
                 if (0 == ((TDWextend+TDWoverwrite) & diskHelperBase->getFlags()))
@@ -401,6 +441,14 @@ void CWriteMasterBase::done()
     }
 }
 
+void CWriteMasterBase::getActivityStats(IStatisticGatherer & stats)
+{
+    CMasterActivity::getActivityStats(stats);
+    diskAccessCost = calcDiskWriteCost(clusters, statsCollection.getStatisticSum(StNumDiskWrites));
+    if (diskAccessCost)
+        stats.addStatistic(StCostFileAccess, diskAccessCost);
+}
+
 void CWriteMasterBase::slaveDone(size32_t slaveIdx, MemoryBuffer &mb)
 {
     if (mb.length()) // if 0 implies aborted out from this slave.
@@ -431,8 +479,6 @@ void CWriteMasterBase::slaveDone(size32_t slaveIdx, MemoryBuffer &mb)
         props.setPropInt64("@recordCount", slaveProcessed);
     }
 }
-
-
 
 /////////////////
 rowcount_t getCount(CActivityBase &activity, unsigned partialResults, rowcount_t limit, mptag_t mpTag)

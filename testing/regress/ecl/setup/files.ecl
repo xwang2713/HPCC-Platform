@@ -56,7 +56,9 @@ SHARED STRING _indexPrefix := '~regress::' +
 EXPORT filePrefix := #IFDEFINED(root.filePrefix, _filePrefix);
 EXPORT indexPrefix := #IFDEFINED(root.filePrefix, _indexPrefix);
 
-EXPORT QueryFilePrefixId := __TARGET_PLATFORM__ + '::' + Str.ToLowerCase(WORKUNIT) + '::';
+wuid := Str.ToLowerCase(WORKUNIT);
+wuidScope := IF(wuid <> '', wuid, 'WORKUNIT');
+EXPORT QueryFilePrefixId := __TARGET_PLATFORM__ + '::' + wuidScope + '::';
 EXPORT QueryFilePrefix := filePrefix + QueryFilePrefixId;
 
 EXPORT DG_FileOut              := filePrefix + 'DG_';
@@ -206,6 +208,8 @@ EXPORT NameSearchIndex := indexPrefix + 'searchIndex';
 EXPORT NameSearchSource := indexPrefix + 'searchSource';
 EXPORT getWordIndex() := INDEX(TS.textSearchIndex, NameWordIndex());
 EXPORT getSearchIndex() := INDEX(TS.textSearchIndex, NameSearchIndex);
+EXPORT getSearchIndexVariant(string variant) := INDEX(TS.textSearchIndex, NameSearchIndex + IF(variant != '', '_' + variant, ''));
+
 EXPORT getSearchSuperIndex() := INDEX(TS.textSearchIndex, '{' + NameSearchIndex + ',' + NameWordIndex() + '}');
 EXPORT getSearchSource() := DATASET(NameSearchSource, TS.textSourceRecord, THOR);
 

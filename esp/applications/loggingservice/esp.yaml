@@ -1,8 +1,16 @@
 esp:
    instance: logging
    description: logging service
-   daliServers: mydali
    auth: ldap
+   authDomain:
+     domainName: "default"
+     authType : "AuthTypeMixed"
+     clientSessionTimeoutMinutes : 120
+     serverSessionTimeoutMinutes : 240
+     unrestrictedResources : "/favicon.ico,/esp/files/*,/esp/xslt/*"
+     invalidURLsAfterAuth : "/esp/login"
+     loginLogoURL : "/esp/files/eclwatch/img/Loginlogo.png"
+     logonURL : "/esp/files/Login.html"
    tls: true
    service:
      port: 8880
@@ -11,6 +19,7 @@ esp:
    enableSEHMapping: true
    httpConfigAccess: true
    logLevel: 1
+   maxRequestEntityLength: 8M
    maxBacklogQueueSize: 200
    logDir: "-"
 

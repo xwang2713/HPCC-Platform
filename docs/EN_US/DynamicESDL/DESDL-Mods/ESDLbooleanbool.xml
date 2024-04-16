@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
 "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
-<sect1 id="ESDL_boolean">
+<sect1 id="ESDL_boolean" role="nobrk">
   <title>boolean<indexterm>
       <primary>boolean</primary>
-    </indexterm>bool </title>
-
-  <para><indexterm>
+    </indexterm> / <indexterm>
       <primary>bool</primary>
-    </indexterm>A boolean or logical data type having one of two possible
-  values: true (1) or false (0).</para>
+    </indexterm>bool</title>
+
+  <para>A boolean or logical data type having one of two possible values: true
+  (1) or false (0).</para>
 
   <para><emphasis role="bold">Example:</emphasis></para>
 

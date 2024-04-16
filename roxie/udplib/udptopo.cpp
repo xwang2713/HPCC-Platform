@@ -16,10 +16,12 @@
 ############################################################################## */
 
 #include "jmisc.hpp"
+#include "jfile.hpp"
 #include "udplib.hpp"
 #include "udptopo.hpp"
 #include "udpipmap.hpp"
 #include "roxie.hpp"
+#include "jtrace.hpp"
 #include "portlist.h"
 #include <thread>
 #include <string>
@@ -51,6 +53,8 @@ void ChannelInfo::noteChannelsSick(unsigned primarySubChannel) const
         unsigned newDelay = currentDelay[subChannel] / 2;
         if (newDelay < minIbytiDelay)
             newDelay = minIbytiDelay;
+        if (doTrace(traceIBYTI))
+            DBGLOG("IBYTI delay for subchannel %d is now %d", subChannel, newDelay);
         currentDelay[subChannel] = newDelay;
         subChannel++;
         if (subChannel == numSubChannels)
@@ -60,6 +64,8 @@ void ChannelInfo::noteChannelsSick(unsigned primarySubChannel) const
 
 void ChannelInfo::noteChannelHealthy(unsigned subChannel) const
 {
+    if (doTrace(traceIBYTI) && currentDelay[subChannel] != initIbytiDelay)
+        DBGLOG("Resetting IBYTI delay for subchannel %d to %d", subChannel, initIbytiDelay);
     currentDelay[subChannel] = initIbytiDelay;
 }
 
@@ -124,8 +130,9 @@ public:
     virtual const ChannelInfo &queryChannelInfo(unsigned channel) const override;
     virtual const std::vector<unsigned> &queryChannels() const override;
     virtual bool implementsChannel(unsigned channel) const override;
-    virtual void report(StringBuffer &ret) const override;
+    virtual StringBuffer &report(StringBuffer &ret) const override;
     virtual time_t queryServerInstance(const SocketEndpoint &ep) const override;
+    virtual void updateStatus() const override;
 private:
     std::map<unsigned, SocketEndpointArray> agents;  // indexed by channel
     std::map<unsigned, SocketEndpointArray> servers; // indexed by port
@@ -141,6 +148,12 @@ private:
 };
 
 SocketEndpoint myAgentEP;
+unsigned numChannels;
+
+static bool isActive(time_t instance)
+{
+    return instance != 0 && instance != time_t(-1);
+}
 
 CTopologyServer::CTopologyServer()
 {
@@ -153,6 +166,7 @@ CTopologyServer::CTopologyServer(const char *topologyInfo, const ITopologyServer
 {
     std::istringstream ss(topologyInfo);
     std::string line;
+    std::map<unsigned, SocketEndpointArray> degradedAgents;  // indexed by channel - agents that have not sent heartbeats recently. Use only if nothing else available on channel
     while (std::getline(ss, line, '\n'))
     {
         StringArray fields;
@@ -193,7 +207,7 @@ CTopologyServer::CTopologyServer(const char *topologyInfo, const ITopologyServer
             }
             if (streq(role, "agent"))
             {
-                if (instance)
+                if (isActive(instance) || ep.equals(myAgentEP))
                 {
                     agents[channel].append(ep);
                     if (ep.equals(myAgentEP))
@@ -204,17 +218,21 @@ CTopologyServer::CTopologyServer(const char *topologyInfo, const ITopologyServer
                     }
                     agents[0].append(ep);
                 }
+                else if (!instance)
+                {
+                    degradedAgents[channel].append(ep);
+                }
             }
             else if (streq(role, "server"))
             {
                 time_t oldInstance = old ? old->queryServerInstance(ep) : 0;
-                if (!instance || (oldInstance && oldInstance != instance))
+                if (!isActive(instance) || (isActive(oldInstance) && oldInstance != instance))
                 {
                     StringBuffer s;
-                    DBGLOG("Deleting pending data for server %s which has terminated or restarted", ep.getUrlStr(s).str());
+                    DBGLOG("Deleting pending data for server %s which has terminated or restarted", ep.getEndpointHostText(s).str());
                     ROQ->abortPendingData(ep);
                 }
-                if (instance)
+                if (isActive(instance))
                 {
                     servers[ep.port].append(ep);
                     serverInstances[ep] = instance;
@@ -223,6 +241,22 @@ CTopologyServer::CTopologyServer(const char *topologyInfo, const ITopologyServer
         }
         else
             DBGLOG("Unable to process information in topology entry %s (expected 5 fields)", line.c_str());
+    }
+    // Degraded agents are used only if nothing else is available on the channel
+    for (auto it = degradedAgents.begin(); it != degradedAgents.end(); it++)
+    {
+        unsigned channel = it->first;
+        if (!agents[channel].length())
+        {
+            DBGLOG("Adding degraded agent(s) to channel %d", channel);
+            ForEachItemIn(idx, it->second)
+            {
+                agents[channel].append(it->second.item(idx));
+                agents[0].append(it->second.item(idx));
+            }
+        }
+        else
+            DBGLOG("Ignoring degraded agent(s) on channel %d", channel);
     }
     for (unsigned i = 0; i < channels.size(); i++)
     {
@@ -281,13 +315,76 @@ bool CTopologyServer::implementsChannel(unsigned channel) const
         return true;   // Kinda-sorta - perhaps not true if separated servers from agents, but even then child queries may access channel 0
 }
 
-void CTopologyServer::report(StringBuffer &ret) const
+StringBuffer &CTopologyServer::report(StringBuffer &ret) const
 {
 #ifdef _DEBUG
-    ret.append(rawData);
-#else
-    UNIMPLEMENTED;
+//    ret.append(rawData).newline();
 #endif
+    for (auto it = agents.begin(); it != agents.end(); it++)
+    {
+        if (it->second.length())
+        {
+            ret.appendf("Channel %d agents: ", it->first);
+            it->second.getText(ret).newline();
+        }
+    }
+    for (auto it = servers.begin(); it != servers.end(); it++)
+    {
+        if (it->second.length())
+        {
+            ret.appendf("Port %d servers: ", it->first);
+            it->second.getText(ret).newline();
+        }
+    }
+    return ret;
+}
+
+void CTopologyServer::updateStatus() const
+{
+    // Set the k8s ready probe status according to whether we have at least one agent available per channel
+    unsigned unready = 0;
+    StringBuffer report;
+    unsigned rangeStart = 0;
+    for (unsigned channel=1; channel <= numChannels; channel++)
+    {
+        if (!queryAgents(channel).length())
+        {
+            if (!rangeStart)
+                rangeStart = channel;
+            unready++;
+        }
+        else
+        {
+            if (rangeStart)
+            {
+                if (report.length())
+                    report.append(',');
+                report.appendf("%u", rangeStart);
+                if (rangeStart != channel-1)
+                    report.appendf("-%u", channel-1);
+            }
+            rangeStart = 0;
+        }
+    }
+    if (rangeStart)
+    {
+        if (report.length())
+            report.append(',');
+        report.appendf("%u", rangeStart);
+        if (rangeStart != numChannels)
+            report.appendf("-%u", numChannels);
+    }
+    Owned<IFile> sentinelFile = createSentinelTarget(".ready");
+    if (unready==0)
+    {
+        writeSentinelFile(sentinelFile);
+        DBGLOG("TOPO: all channels ready");
+    }
+    else
+    {
+        removeSentinelFile(sentinelFile);
+        DBGLOG("TOPO: %u channel%s not ready: %s", unready, unready==1 ? "" : "s", report.str());
+    }
 }
 
 const SocketEndpointArray CTopologyServer::nullArray;
@@ -305,6 +402,7 @@ public:
     const ITopologyServer &getCurrent();
 
     bool update();
+    void setTraceLevel(unsigned _traceLevel) { traceLevel = _traceLevel; }
     unsigned numServers() const { return topoServers.length(); }
     void freeze(bool frozen);
 
@@ -318,6 +416,7 @@ private:
     const unsigned maxReasonableResponse = 32*32*1024;  // At ~ 32 bytes per entry, 1024 channels and 32-way redundancy that's a BIG cluster!
     StringBuffer md5;
     StringBuffer topoBuf;
+    unsigned traceLevel = 0;
     bool frozen = false;    // used for testing
 };
 
@@ -375,9 +474,23 @@ bool TopologyManager::update()
                                         md5.clear().append(eol-mem, mem);  // Note: includes '\n'
                                         Owned<const ITopologyServer> oldServer = &getCurrent();
                                         Owned<const ITopologyServer> newServer = new CTopologyServer(eol, oldServer);
-                                        SpinBlock b(lock);
-                                        currentTopology.swap(newServer);
+                                        {
+                                            SpinBlock b(lock);
+                                            currentTopology.swap(newServer);
+                                        }
                                         updated = true;
+                                        if (traceLevel)
+                                        {
+                                            DBGLOG("Topology information updated:");
+                                            StringBuffer s;
+                                            MLOG("%s", currentTopology->report(s).str());
+                                        }
+                                        currentTopology->updateStatus();
+                                    }
+                                    else
+                                    {
+                                        StringBuffer s;
+                                        DBGLOG("Unexpected response from topology server %s: %.*s", topoServers.item(idx), responseLen, mem);
                                     }
                                 }
                             }
@@ -432,7 +545,7 @@ void TopologyManager::_setRoles(const std::vector<RoxieEndpointInfo> &myRoles, b
         default: throwUnexpected();
         }
         topoBuf.append(role.channel).append('|');
-        role.ep.getUrlStr(topoBuf);
+        getRemoteAccessibleHostText(topoBuf, role.ep);
         topoBuf.append('|').append(role.replicationLevel);
         topoBuf.append('\t').append((__uint64) myInstance);
         topoBuf.append('\n');
@@ -483,36 +596,28 @@ extern UDPLIB_API void createStaticTopology(const std::vector<RoxieEndpointInfo>
 
 static std::thread topoThread;
 static Semaphore abortTopo;
-const unsigned topoUpdateInterval = 5000;
+unsigned heartbeatInterval = 10000;   // How often roxie servers update topo server
 
 extern UDPLIB_API void initializeTopology(const StringArray &topoValues, const std::vector<RoxieEndpointInfo> &myRoles)
 {
     topologyManager.setServers(topoValues);
     topologyManager.setRoles(myRoles);
+    heartbeatInterval = getComponentConfigSP()->getPropInt("@heartbeatInterval", heartbeatInterval);
 }
 
 extern UDPLIB_API void publishTopology(unsigned traceLevel, const std::vector<RoxieEndpointInfo> &myRoles)
 {
     if (topologyManager.numServers())
     {
-        topoThread = std::thread([traceLevel, &myRoles]()
+        topologyManager.setTraceLevel(traceLevel);
+        topoThread = std::thread([&myRoles]()
         {
             topologyManager.update();
             unsigned waitTime = 1000;  // First time around we don't wait as long, so that system comes up faster
             while (!abortTopo.wait(waitTime))
             {
-                if (topologyManager.update() && traceLevel)
-                {
-                    DBGLOG("Topology information updated:");
-                    Owned<const ITopologyServer> c = getTopology();
-                    const SocketEndpointArray &eps = c->queryAgents(0);
-                    ForEachItemIn(idx, eps)
-                    {
-                        StringBuffer s;
-                        DBGLOG("Agent %d: %s", idx, eps.item(idx).getIpText(s).str());
-                    }
-                }
-                waitTime = topoUpdateInterval;
+                topologyManager.update();
+                waitTime = heartbeatInterval;
             }
             topologyManager.closedown(myRoles);
         });

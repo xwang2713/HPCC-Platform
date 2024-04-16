@@ -14,8 +14,6 @@
 #include <queue>
 #include <string>
 
-using namespace std;
-
 #define MPPORT 8888
 
 //#define GPF
@@ -311,7 +309,7 @@ void Test6(IGroup *group,ICommunicator *comm)
         StringAttr str;
         mb.read(str);
         StringBuffer url;
-        PROGLOG("(6) Received '%s' from %s",str.get(),mb.getSender().getUrlStr(url).str());
+        PROGLOG("(6) Received '%s' from %s",str.get(),mb.getSender().getEndpointHostText(url).str());
     }
     else if (group->rank()==0)
     {
@@ -454,7 +452,7 @@ void MultiTest(ICommunicator *_comm)
                         break;
                     PROGLOG("MPTEST: MultiTest server Received from %u, len = %u",rr, mb.length());
                     StringBuffer str;
-                    comm->queryGroup().queryNode(rr).endpoint().getUrlStr(str);
+                    comm->queryGroup().queryNode(rr).endpoint().getEndpointHostText(str);
                     // PROGLOG("MPTEST: MultiTest server Received from %s",str.str());
 
                     buff->deserialize(mb);
@@ -490,7 +488,7 @@ void MultiTest(ICommunicator *_comm)
     Owned<ICommunicator> comm;
     comm.set(_comm); 
 
-    server.start();
+    server.start(false);
 
     CMessageBuffer mb;
     CRandomBuffer *buff = new CRandomBuffer();
@@ -526,7 +524,7 @@ void MultiTest(ICommunicator *_comm)
 
 #if 0
             StringBuffer str;
-            comm->queryGroup().queryNode(targets[n]).endpoint().getUrlStr(str);
+            comm->queryGroup().queryNode(targets[n]).endpoint().getEndpointHostText(str);
             PROGLOG("MPTEST: Multitest client Sending to %s, length=%u",str.str(), mb.length());
 #endif
 
@@ -677,7 +675,7 @@ void MPAlltoAll(IGroup *group, ICommunicator *mpicomm, size32_t buffsize=0, unsi
 
     unsigned startTime = msTick();
 
-    sender.start();
+    sender.start(false);
 
     // ---------
 
@@ -984,7 +982,7 @@ void MPMultiMTSendRecv(ICommunicator* comm, int counter)
         }
         for(int i=0;i<workers.size(); i++)
         {
-            workers[i]->start();
+            workers[i]->start(false);
         }
         for(int i=0;i<workers.size(); i++)
         {
@@ -1063,7 +1061,7 @@ void MPNxN(ICommunicator *comm, unsigned numStreams, size32_t perStreamMBSize, s
                 CriticalBlock b(cs);
                 expectedHashes[tgt].push(hash);
             }
-            void start() { threaded.start(); }
+            void start() { threaded.start(false); }
             void join()
             {
                 threaded.join();
@@ -1179,7 +1177,7 @@ void MPNxN(ICommunicator *comm, unsigned numStreams, size32_t perStreamMBSize, s
             replyTag = createReplyTag();
             if (async)
                 ackThread.start();
-            threaded.start();
+            threaded.start(false);
         }
         ~CSendStream()
         {
@@ -1299,7 +1297,7 @@ void MPNxN(ICommunicator *comm, unsigned numStreams, size32_t perStreamMBSize, s
         CRecvServer(ICommunicator *_comm, rank_t _myRank, unsigned _grpSize, mptag_t _mpTag, unsigned _numStreams)
             : threaded("CSendStream", this), comm(_comm), myRank(_myRank), grpSize(_grpSize), mpTag(_mpTag), numStreams(_numStreams)
         {
-            threaded.start();
+            threaded.start(false);
         }
         ~CRecvServer()
         {
@@ -1453,9 +1451,36 @@ void runTest(const char *caption, const char *testname, IGroup* group, ICommunic
     comm->barrier();
 }
 
+static bool getSocketEndpoint(const char *inputStr, SocketEndpoint &ep, int lPort)
+{
+    if (inputStr)
+    {
+        char rank_ip[256];
+        if (strstr(inputStr, ":") != NULL)
+        {
+            int rank_port;
+            int srtn = sscanf(inputStr, "%255[^:]:%d", rank_ip, &rank_port);
+            if (srtn == 2)
+            {
+                if (ep.set(rank_ip, rank_port))
+                    return true;
+            }
+        }
+        else
+        {
+            int srtn = sscanf(inputStr, "%255s", rank_ip);
+            if (srtn == 1)
+            {
+                if (ep.set(rank_ip, lPort))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool createNodeList(IArrayOf<INode> &nodes, const char* hostfile, int my_port, rank_t max_ranks) {
     unsigned i = 1;
-    char hoststr[256] = { "" };
     FILE* fp = fopen(hostfile, "r");
     if (fp == NULL)
     {
@@ -1468,11 +1493,15 @@ bool createNodeList(IArrayOf<INode> &nodes, const char* hostfile, int my_port, r
         if ((max_ranks > 0) && ((i - 1) >= max_ranks))
             break;
 
-        int srtn = sscanf(line, "%s", hoststr);
-        if (srtn == 1 && line[0] != '#') {
-            INode* newNode = createINode(hoststr, my_port);
-            nodes.append(*newNode);
-            i++;
+        if (line[0] != '#')
+        {
+            SocketEndpoint hep;
+            if (getSocketEndpoint(line, hep, my_port))
+            {
+                INode *newNode = createINode(hep);
+                nodes.append(*newNode);
+                i++;
+            }
         }
     }
     fclose(fp);
@@ -1495,7 +1524,7 @@ void printHelp(char* executableName)
 int main(int argc, char* argv[])
 {
     int mpi_debug = 0;
-    const char * testname = "";
+    const char * testname = "Ring";
     rank_t max_ranks = 0;
     unsigned startupDelay = 0;
 
@@ -1648,9 +1677,13 @@ int main(int argc, char* argv[])
             unsigned i = 1;
             while (i+1 < argSize)
             {
-                PROGLOG("MPTEST: adding node %u, port = <%s>", i-1, argL[i+1]);
-                INode *newNode = createINode(argL[i+1], my_port);
-                nodes.append(*newNode);
+                PROGLOG("MPTEST: adding node %u, %s", i-1, argL[i+1]);
+                SocketEndpoint hep;
+                if (getSocketEndpoint(argL[i+1], hep, my_port))
+                {
+                    INode *newNode = createINode(hep);
+                    nodes.append(*newNode);
+                }
                 i++;
             }
         }
@@ -1681,14 +1714,14 @@ int main(int argc, char* argv[])
         if (die)
             return 0;
         PROGLOG("MPTEST: Starting, port = %d tot ranks = %u", my_port, tot_ranks);
-        startMPServer(my_port);
+        startMPServer(my_port, false, true);
 
         if (mpi_debug)
         {
             for (rank_t k=0;k<tot_ranks;k++)
             {
                 StringBuffer urlStr;
-                nodes.item(k).endpoint().getUrlStr(urlStr);
+                nodes.item(k).endpoint().getEndpointHostText(urlStr);
                 PROGLOG("MPTEST: adding node %u, %s", k, urlStr.str());
             }
         }

@@ -15,11 +15,11 @@
     limitations under the License.
 ############################################################################## */
 
-
-//nohthor
 //class=spray
+//nohthor
+//nothor
 
-#onwarning(10138, ignore);
+#onwarning(7102, ignore);
 
 //version isSmallFile=true,isUnBallanced=false
 //version isSmallFile=true,isUnBallanced=true
@@ -35,7 +35,8 @@ isSmallFile := #IFDEFINED(root.isSmallFile, true);
 
 isUnBallanced := #IFDEFINED(root.isUnBallanced, false);
 
-dropzonePath := FileServices.GetDefaultDropZone() +'/' : STORED('dropzonePath');
+dropzonePathTemp := '/var/lib/HPCCSystems/mydropzone/' : STORED('dropzonePath');
+dropzonePath := dropzonePathTemp + IF(dropzonePathTemp[LENGTH(dropzonePathTemp)]='/', '', '/');
 engine := thorlib.platform() : stored('thor');
 prefix := setup.Files(false, false).FilePrefix + '-' + WORKUNIT;
 nodes := thorlib.nodes();

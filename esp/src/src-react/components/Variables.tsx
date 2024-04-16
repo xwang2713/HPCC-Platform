@@ -1,69 +1,72 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
-import * as Observable from "dojo/store/Observable";
-import { AlphaNumSortMemory } from "src/Memory";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, ScrollablePane, Sticky } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
-import { useWorkunitVariables } from "../hooks/Workunit";
-import { HolyGrail } from "../layouts/HolyGrail";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid } from "./DojoGrid";
+import { QuerySortItem } from "src/store/Store";
+import { useWorkunitVariables } from "../hooks/workunit";
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
+import { ShortVerticalDivider } from "./Common";
 
 interface VariablesProps {
     wuid: string;
+    sort?: QuerySortItem;
 }
 
+const defaultSort = { attribute: "Wuid", descending: true };
+
 export const Variables: React.FunctionComponent<VariablesProps> = ({
-    wuid
+    wuid,
+    sort = defaultSort
 }) => {
 
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [selection, setSelection] = React.useState([]);
-    const [variables] = useWorkunitVariables(wuid);
+    const [variables, , , refreshData] = useWorkunitVariables(wuid);
+    const [data, setData] = React.useState<any[]>([]);
+    const {
+        selection, setSelection,
+        setTotal,
+        refreshTable } = useFluentStoreState({});
 
     //  Grid ---
-    const gridStore = useConst(new Observable(new AlphaNumSortMemory("__hpcc_id", { Name: true, Value: true })));
-    const gridSort = useConst([{ attribute: "Wuid", "descending": true }]);
-    const gridColumns = useConst({
-        Type: { label: nlsHPCC.Type, width: 180 },
-        Name: { label: nlsHPCC.Name, width: 360 },
-        Value: { label: nlsHPCC.Value }
-    });
-
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", {});
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [grid]);
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            Type: { label: nlsHPCC.Type, width: 180 },
+            Name: { label: nlsHPCC.Name, width: 360 },
+            Value: { label: nlsHPCC.Value }
+        };
+    }, []);
 
     React.useEffect(() => {
-        gridStore.setData(variables.map((row, idx) => {
+        setData(variables.map((row, idx) => {
             return {
                 __hpcc_id: idx,
                 ...row
             };
         }));
-        refreshTable();
-    }, [gridStore, refreshTable, variables]);
+    }, [variables]);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-    ], [refreshTable]);
+    ], [refreshData]);
 
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "variables.csv")
-    ], [grid, selection]);
+    const copyButtons = useCopyButtons(columns, selection, "variables");
 
-    return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
-        main={
-            <DojoGrid store={gridStore} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
-        }
-    />;
+    return <ScrollablePane>
+        <Sticky>
+            <CommandBar items={buttons} farItems={copyButtons} />
+        </Sticky>
+        <FluentGrid
+            data={data}
+            primaryID={"__hpcc_id"}
+            alphaNumColumns={{ Name: true, Value: true }}
+            sort={sort}
+            columns={columns}
+            setSelection={setSelection}
+            setTotal={setTotal}
+            refresh={refreshTable}
+        ></FluentGrid>
+    </ScrollablePane>;
 };

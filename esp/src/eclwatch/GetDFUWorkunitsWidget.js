@@ -368,10 +368,13 @@ define([
 
         initWorkunitsGrid: function () {
             var context = this;
+            var filter = this.filter.toObject();
+            filter.includeTimings = true;
+            filter.includeTransferRate = true;
             var store = this.params.searchResults ? this.params.searchResults : new ESPDFUWorkunit.CreateWUQueryStore();
             this.workunitsGrid = new declare([ESPUtil.Grid(true, true, false, false, "GetDFUWorkunitsWidget")])({
                 store: store,
-                query: this.filter.toObject(),
+                query: filter,
                 columns: {
                     col1: selector({
                         width: 27,
@@ -412,15 +415,34 @@ define([
                     JobName: { label: this.i18n.JobName, width: 500 },
                     ClusterName: { label: this.i18n.Cluster, width: 126 },
                     StateMessage: { label: this.i18n.State, width: 72 },
-                    PercentDone: {
-                        label: this.i18n.PctComplete, width: 90, sortable: false,
+                    PCTDone: {
+                        label: this.i18n.PctComplete, width: 90, sortable: true,
                         renderCell: function (object, value, node, options) {
                             domClass.add(node, "justify-right");
-                            node.innerText = Utility.valueCleanUp(value);
+                            node.innerText = Utility.valueCleanUp(object.PercentDone);
+                        }
+                    },
+                    TimeStarted: { label: this.i18n.TimeStarted, width: 150, sortable: true },
+                    TimeStopped: { label: nlsHPCC.TimeStopped, width: 150, sortable: true },
+                    KbPerSec: {
+                        label: nlsHPCC.TransferRate, width: 120,
+                        renderCell: function (object, value, node, options) {
+                            node.innerText = Utility.convertedSize(object.KbPerSec * 1024) + " / sec";
+                        }
+                    },
+                    KbPerSecAve: { // KbPerSecAve seems to never be different than KbPerSec, see HPCC-29894
+                        label: nlsHPCC.TransferRateAvg, width: 90,
+                        renderCell: function (object, value, node, options) {
+                            node.innerText = Utility.convertedSize(object.KbPerSecAve * 1024) + " / sec";
                         }
                     }
                 }
             }, this.id + "WorkunitsGrid");
+
+            ESPUtil.goToPageUserPreference(this.workunitsGrid, "GetDFUWorkunitsWidget_GridRowsPerPage").then(function () {
+                context.refreshGrid();
+            });
+
             this.workunitsGrid.on(".dgrid-row-url:click", function (evt) {
                 if (context._onRowDblClick) {
                     var item = context.workunitsGrid.row(evt).data;
@@ -451,13 +473,13 @@ define([
                     context.downloadToList.set("disabled", true);
                 }
             });
-            ESPUtil.goToPageUserPreference(this.workunitsGrid, "GetDFUWorkunitsWidget_GridRowsPerPage").then(function () {
-                context.workunitsGrid.startup();
-            });
         },
 
         refreshGrid: function (clearSelection) {
-            this.workunitsGrid.set("query", this.filter.toObject());
+            var filter = this.filter.toObject();
+            filter.includeTimings = true;
+            filter.includeTransferRate = true;
+            this.workunitsGrid.set("query", filter);
             if (clearSelection) {
                 this.workunitsGrid.clearSelection();
             }

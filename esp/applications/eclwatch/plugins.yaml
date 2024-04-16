@@ -21,6 +21,9 @@ service_plugins:
   ws_codesign: ws_codesign
   ws_resources: ws_resources
   WSDali: ws_dali
+  WSSasha: ws_sasha
+  WsCloud: ws_cloud
+  ws_logaccess: ws_logaccess
 
 binding_plugins:
   FileSpray: ws_fs
@@ -41,4 +44,6 @@ binding_plugins:
   ws_codesign: ws_codesign
   ws_resources: ws_resources
   WSDali: ws_dali
-
+  WSSasha: ws_sasha
+  WsCloud: ws_cloud
+  ws_logaccess: ws_logaccess

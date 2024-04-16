@@ -45,7 +45,6 @@
 #include "hqlgram.hpp"
 #include "hqlctrans.hpp"
 
-#define TraceExprPrintLog(x, expr) TOSTRLOG(MCdebugInfo(300), unknownJob, x, (expr)->toString);
 //Following are for code that currently cause problems, but are probably a good idea
 //#define MAP_PROJECT_TO_USERTABLE
 //#define REMOVE_NAMED_SCALARS
@@ -6198,7 +6197,7 @@ IHqlExpression * WorkflowTransformer::extractWorkflow(IHqlExpression * untransfo
                 if(prevValue->queryType() != value->queryBody()->queryType())
                 {
 #ifdef _DEBUG
-                    debugFindFirstDifference(alreadyProcessedExpr.item(match).queryBody(), expr->queryBody());
+                    traceFindFirstDifference(alreadyProcessedExpr.item(match).queryBody(), expr->queryBody());
 #endif
                     if (curOp == no_stored)
                         throwError1(HQLERR_DuplicateStoredDiffType, s.str());
@@ -6357,15 +6356,16 @@ IHqlExpression * WorkflowTransformer::extractWorkflow(IHqlExpression * untransfo
             }
         }
 
+        if (combineTrivialStored && isTrivialStored(setValue))
+            combine = true;
+
         if (info.persistOp == no_once)
         {
             //MORE: Error if refers to stored or persist - this test could be relaxed
             if (queryDirectDependencies(setValue).ordinality())
                 translator.ERRORAT(queryLocation(untransformed), HQLERR_OnceCannotAccessStored);
+            combine = false;
         }
-
-        if (combineTrivialStored && isTrivialStored(setValue))
-            combine = true;
 
         if (combine)
         {
@@ -7367,6 +7367,34 @@ void extractWorkflow(HqlCppTranslator & translator, HqlExprArray & exprs, Workfl
     if (translator.queryOptions().performWorkflowCse || translator.queryOptions().notifyWorkflowCse)
         transformer.analyseAll(exprs);
     transformer.transformRoot(exprs, out);
+
+    SCMStringBuffer traceWorkflows;
+    if (translator.wu()->getDebugValue("traceWorkflows", traceWorkflows).length())
+    {
+        StringArray workflows;
+        workflows.appendList(traceWorkflows.str(), ",", true);
+
+        UnsignedArray workflowIds;
+        ForEachItemIn(i1, workflows)
+            workflowIds.append(atoi(workflows.item(i1)));
+
+        HqlExprArray matches;
+        ForEachItemIn(i2, out)
+        {
+            WorkflowItem & cur = out.item(i2);
+            if (workflowIds.contains(cur.queryWfid()))
+            {
+                matches.append(*createCompound(cur.queryExprs()));
+                unsigned num = matches.ordinality();
+                DBGLOG("Match %u", cur.queryWfid());
+                if (num > 1)
+                {
+                    EclIR::dbglogIR(matches);
+                    traceFindFirstDifference(&matches.item(num-2), &matches.item(num-1));
+                }
+            }
+        }
+    }
 }
 
 
@@ -8034,7 +8062,7 @@ IHqlExpression * ScalarGlobalTransformer::createTransformed(IHqlExpression * exp
         if (!extra->alreadyGlobal && isComplex(expr, false))
         {
 #ifdef _DEBUG
-        translator.traceExpression("Mark as global", expr);
+            translator.traceExpression("markAsGlobal", expr);
 #endif
             //mark as global, so isComplex() can take it into account.
             extra->alreadyGlobal = true;
@@ -8481,7 +8509,7 @@ void migrateExprToNaturalLevel(WorkflowItem & cur, IWorkUnit * wu, HqlCppTransla
         translator.checkNormalized(exprs);
     }
 
-    translator.traceExpressions("m0", exprs);
+    translator.traceExpressions("beforeMigrateGlobals", exprs);
 
     checkGlobalActionsIndependentOfScope(translator, exprs);
 
@@ -8512,7 +8540,7 @@ void migrateExprToNaturalLevel(WorkflowItem & cur, IWorkUnit * wu, HqlCppTransla
 
     translator.checkNormalized(exprs);
 
-    translator.traceExpressions("m1", exprs);
+    translator.traceExpressions("beforeMigrateScope", exprs);
 
     if (options.allowScopeMigrate) // && !options.minimizeWorkunitTemporaries)
     {
@@ -8525,7 +8553,7 @@ void migrateExprToNaturalLevel(WorkflowItem & cur, IWorkUnit * wu, HqlCppTransla
         translator.checkNormalized(exprs);
     }
 
-    translator.traceExpressions("m2", exprs);
+    translator.traceExpressions("afterMigrateScope", exprs);
 }
 
 void expandGlobalDatasets(WorkflowArray & array, IWorkUnit * wu, HqlCppTranslator & translator)
@@ -10306,7 +10334,7 @@ IHqlExpression * HqlScopeTagger::transformNewDataset(IHqlExpression * expr, bool
             if (!isAlwaysActiveRow(ds))
             {
                 StringBuffer exprText;
-                VStringBuffer msg("%s - Need to use active(dataset) to refer to the current row of an active dataset", getECL(expr, exprText));
+                VStringBuffer msg("%s - Need to use ROW(dataset) to refer to the current row of an active dataset", getECL(expr, exprText));
                 reportError(CategoryError, msg);
             }
         }
@@ -10318,7 +10346,7 @@ IHqlExpression * HqlScopeTagger::transformNewDataset(IHqlExpression * expr, bool
         if (!isActiveOk)
         {
             StringBuffer exprText;
-            VStringBuffer msg("%s - Need to use active(dataset) to refer to the current row of an active dataset", getECL(expr, exprText));
+            VStringBuffer msg("%s - Need to use ROW(dataset) to refer to the current row of an active dataset", getECL(expr, exprText));
             reportError(CategoryError, msg);
         }
 
@@ -11361,7 +11389,7 @@ void normalizeAnnotations(HqlCppTranslator & translator, HqlExprArray & exprs)
     ForEachItemIn(iInit, exprs)
         queryLocationIndependent(&exprs.item(iInit));
 
-    translator.traceExpressions("before annotation normalize", exprs);
+    translator.traceExpressions("beforeAnnotationNormalize", exprs);
 
     AnnotationNormalizerTransformer normalizer;
     HqlExprArray transformed;
@@ -11607,7 +11635,7 @@ public:
                 {
                     ForEachItemIn(i, info->matches)
                     {
-                        debugFindFirstDifference(body, &info->matches.item(i));
+                        traceFindFirstDifference(body, &info->matches.item(i));
                     }
                     info->matches.append(*LINK(body));
                 }
@@ -13854,7 +13882,7 @@ void normalizeHqlTree(HqlCppTranslator & translator, HqlExprArray & exprs)
         replaceArray(exprs, transformed);
     }
 
-    translator.traceExpressions("before scope tag", exprs);
+    translator.traceExpressions("beforeScopeTag", exprs);
 
     {
         HqlScopeTagger normalizer(translator.queryErrorProcessor(), translator.queryLocalOnWarningMapper());
@@ -13866,7 +13894,7 @@ void normalizeHqlTree(HqlCppTranslator & translator, HqlExprArray & exprs)
     if (translator.queryOptions().normalizeLocations)
         normalizeAnnotations(translator, exprs);
 
-    translator.traceExpressions("after scope tag", exprs);
+    translator.traceExpressions("afterScopeTag", exprs);
     {
         DFSLayoutTransformer transformer(translator.queryErrorProcessor(), translator.queryCallback(), translator.queryOptions());
         HqlExprArray transformed;
@@ -14097,7 +14125,7 @@ IHqlExpression * HqlCppTranslator::separateLibraries(IHqlExpression * query, Hql
     HqlExprArray exprs;
     query->unwindList(exprs, no_comma);
 
-    traceExpressions("before transform graph for generation", exprs);
+    traceExpressions("beforeEmbeddedLibraries", exprs);
     //Remove any meta entries from the tree.
     ForEachItemInRev(i, exprs)
         if (exprs.item(i).getOperator() == no_setmeta)
@@ -14117,7 +14145,7 @@ void HqlCppTranslator::normalizeGraphForGeneration(HqlExprArray & exprs, HqlQuer
     //Ensure the incoming query will be freed up when no longer used
     query.expr.clear();
 
-    traceExpressions("before transform graph for generation", exprs);
+    traceExpressions("beforeTransformForGeneration", exprs);
     //Don't change the engine if libraries are involved, otherwise things will get very confused.
 
     {
@@ -14129,12 +14157,9 @@ void HqlCppTranslator::normalizeGraphForGeneration(HqlExprArray & exprs, HqlQuer
         checkWorkflowDuplication(exprs);
 
     {
-        traceExpressions("before normalize", exprs);
+        traceExpressions("beforeNormalize", exprs);
         normalizeHqlTree(*this, exprs);
     }
-
-    if (wu()->getDebugValueBool("dumpIR", false))
-        EclIR::dbglogIR(exprs);
 
     checkNormalized(exprs);
 #ifdef PICK_ENGINE_EARLY
@@ -14143,18 +14168,18 @@ void HqlCppTranslator::normalizeGraphForGeneration(HqlExprArray & exprs, HqlQuer
         cycle_t startCycles = get_cycles_now();
         pickBestEngine(exprs);
         if (options.timeTransforms)
-            noteFinishedTiming("compile:transform:pick engine", startCycles);
+            noteFinishedTiming(">compile:>transform:>pick engine", startCycles);
     }
 #endif
 
     allocateSequenceNumbers(exprs);                                             // Added to all expressions/output statements etc.
 
-    traceExpressions("allocate Sequence", exprs);
+    traceExpressions("afterAllocateSequence", exprs);
 
     if (options.transformNestedSequential)
     {
         transformNestedSequential(exprs);
-        traceExpressions("transformNestedSequential", exprs);
+        traceExpressions("afterNestedSequential", exprs);
     }
 
     checkNormalized(exprs);
@@ -14163,12 +14188,10 @@ void HqlCppTranslator::normalizeGraphForGeneration(HqlExprArray & exprs, HqlQuer
 
 void HqlCppTranslator::applyGlobalOptimizations(HqlExprArray & exprs)
 {
-    traceExpressions("begin transformGraphForGeneration", exprs);
+    traceExpressions("beforeGlobalOptimizations", exprs);
     checkNormalized(exprs);
 
-    {
-        substituteClusterSize(exprs);
-    }
+    substituteClusterSize(exprs);
 
     {
         HqlExprArray folded;
@@ -14185,7 +14208,7 @@ void HqlCppTranslator::applyGlobalOptimizations(HqlExprArray & exprs)
         replaceArray(exprs, folded);
     }
 
-    traceExpressions("after global fold", exprs);
+    traceExpressions("afterGlobalFold", exprs);
     checkNormalized(exprs);
 
     if (options.globalOptimize)
@@ -14208,7 +14231,7 @@ void HqlCppTranslator::transformWorkflowItem(WorkflowItem & curWorkflow)
     {
         LeftRightTransformer normalizer;
         normalizer.process(curWorkflow.queryExprs());
-        //traceExpressions("after implicit alias", workflow);
+        //traceExpressions("afterImplicitAlias", workflow);
     }
 #endif
 
@@ -14216,7 +14239,7 @@ void HqlCppTranslator::transformWorkflowItem(WorkflowItem & curWorkflow)
     {
         ImplicitAliasTransformer normalizer;
         normalizer.process(curWorkflow.queryExprs());
-        //traceExpressions("after implicit alias", workflow);
+        //traceExpressions("afterImplicitAlias", workflow);
     }
 
     {
@@ -14246,6 +14269,7 @@ void HqlCppTranslator::transformWorkflowItem(WorkflowItem & curWorkflow)
         checkNormalized(curWorkflow);
     }
 
+    if (!curWorkflow.isFunction())
     {
         markThorBoundaries(curWorkflow);                                               // work out which engine is going to perform which operation.
         traceExpressions("boundary", curWorkflow);
@@ -14308,6 +14332,12 @@ bool HqlCppTranslator::transformGraphForGeneration(HqlQueryContext & query, Work
         curActivityId = creator.queryMaxActivityId();
     }
 
+    if (options.generateIR)
+    {
+        EclIR::dump_ir_external(exprs, options.irOptions);
+        return false;
+    }
+
     applyGlobalOptimizations(exprs);
     if (exprs.ordinality() == 0)
         return false;   // No action needed
@@ -14345,15 +14375,18 @@ bool HqlCppTranslator::transformGraphForGeneration(HqlQueryContext & query, Work
         cycle_t startCycles = get_cycles_now();
         pickBestEngine(workflow);
         if (options.timeTransforms)
-            noteFinishedTiming("compile:transform:pick engine", startCycles);
+            noteFinishedTiming(">compile:>transform:>pick engine", startCycles);
     }
 #endif
     updateClusterType();
 
+    if (isLightweightQuery(workflow))
+        wu()->setDebugValueInt("isLightweightQuery", 1, true);
+
     ForEachItemIn(i2, workflow)
     {
         WorkflowItem & curWorkflow = workflow.item(i2);
-        traceExpressions("before convert to logical", curWorkflow);
+        traceExpressions("beforeConvertLogicalToActivities", curWorkflow);
 
         convertLogicalToActivities(curWorkflow);                                           // e.g., merge disk reads, transform group, all to sort etc.
 
@@ -14364,10 +14397,10 @@ bool HqlCppTranslator::transformGraphForGeneration(HqlQueryContext & query, Work
             cycle_t startCycles = get_cycles_now();
             checkDependencyConsistency(curWorkflow.queryExprs());
             if (options.timeTransforms)
-                noteFinishedTiming("compile:transform:check dependency", startCycles);
+                noteFinishedTiming(">compile:>transform:>check dependency", startCycles);
         }
 
-        traceExpressions("end transformGraphForGeneration", curWorkflow);
+        traceExpressions("afterTransformGraphForGeneration", curWorkflow);
         checkNormalized(curWorkflow);
     }
     return true;

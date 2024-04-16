@@ -114,7 +114,13 @@ void loadDlls(IArray &objects, const char * libDirectory)
     }
 }
 
-int main(int argc, char* argv[])
+static constexpr const char * defaultYaml = R"!!(
+version: "1.0"
+unittests:
+  name: unittests
+)!!";
+
+int main(int argc, const char *argv[])
 {
     InitModuleObjects();
 
@@ -127,6 +133,10 @@ int main(int argc, char* argv[])
     bool verbose = false;
     bool list = false;
     bool useDefaultLocations = true;
+
+    //NB: not actually used for now, but required initialization for anything that may call getGlobalConfig*() or getComponentConfig*()
+    Owned<IPropertyTree> globals = loadConfiguration(defaultYaml, argv, "unittests", nullptr, nullptr, nullptr, nullptr, false);
+
     for (int argNo = 1; argNo < argc; argNo++)
     {
         const char *arg = argv[argNo];
@@ -167,7 +177,7 @@ int main(int argc, char* argv[])
         }
     }
     if (verbose)
-        queryStderrLogMsgHandler()->setMessageFields(MSGFIELD_time);
+        queryStderrLogMsgHandler()->setMessageFields(MSGFIELD_time|MSGFIELD_microTime|MSGFIELD_milliTime|MSGFIELD_thread);
     else
         removeLog();
 
@@ -183,12 +193,9 @@ int main(int argc, char* argv[])
 
     if (useDefaultLocations)
     {
-        StringBuffer binDir;
-        makeAbsolutePath(argv[0], binDir, true);
-
         // Default library location depends on the executable location...
         StringBuffer dir;
-        splitFilename(binDir.str(), &dir, &dir, NULL, NULL);
+        splitFilename(queryCurrentProcessPath(), &dir, &dir, NULL, NULL);
 
         dir.replaceString(PATHSEPSTR "bin" PATHSEPSTR, PATHSEPSTR "lib" PATHSEPSTR);
         if (verbose)
@@ -706,10 +713,13 @@ class ThreadedPersistStressTest : public CppUnit::TestFixture
         testThreadsX(2);
         testThreadsX(3);
         testThreadsX(4);
+        testThreadsX(5);
+        testThreadsX(6);
     }
     void testThreadsX(unsigned mode)
     {
         unsigned iters = 10000;
+        testThreadsXX(mode, 0, iters);
         testThreadsXX(mode, 10, iters);
         testThreadsXX(mode, 1000, iters);
         testThreadsXX(mode, 2000, iters);
@@ -721,11 +731,11 @@ class ThreadedPersistStressTest : public CppUnit::TestFixture
     }
     void testThreadsXX(unsigned mode, unsigned count, unsigned iters)
     {
-        unsigned start = msTick();
-        class Thread : public IThreaded
+        unsigned start = usTick();
+        class Threaded : public IThreaded
         {
         public:
-            Thread(unsigned _count) : count(_count) {}
+            Threaded(unsigned _count) : count(_count) {}
             virtual void threadmain() override
             {
                 ret = call_from_thread(count);
@@ -733,29 +743,40 @@ class ThreadedPersistStressTest : public CppUnit::TestFixture
             unsigned count;
             unsigned ret = 0;
         } t1(count), t2(count), t3(count);
+        class MyThread : public Thread
+        {
+        public:
+            MyThread(unsigned _count) : count(_count) {}
+            virtual int run() override
+            {
+                ret = call_from_thread(count);
+                return 0;
+            }
+            unsigned count;
+            unsigned ret = 0;
+        };
+
+        unsigned ret = 0;
         switch (mode)
         {
         case 0:
         {
-            unsigned ret = 0;
             CThreadedPersistent thread1("1", &t1), thread2("2", &t2), thread3("3", &t3);
             for (unsigned i = 0; i < iters; i++)
             {
-                thread1.start();
-                thread2.start();
-                thread3.start();
+                thread1.start(false);
+                thread2.start(false);
+                thread3.start(false);
                 ret = call_from_thread(count);
                 thread1.join(INFINITE);
                 thread2.join(INFINITE);
                 thread3.join(INFINITE);
             }
             ret += t1.ret + t2.ret + t3.ret;
-            DBGLOG("ThreadedPersistant %d , %d, %d", count, msTick() - start, ret);
             break;
         }
         case 1:
         {
-            unsigned ret = 0;
             for (unsigned i = 0; i < iters; i++)
             {
                 t1.threadmain();
@@ -764,30 +785,26 @@ class ThreadedPersistStressTest : public CppUnit::TestFixture
                 ret = call_from_thread(count);
             }
             ret += t1.ret + t2.ret + t3.ret;
-            DBGLOG("Sequential %d , %d, %d", count, msTick() - start, ret);
             break;
         }
         case 2:
         {
-            unsigned ret = 0;
             CThreaded tthread1("1", &t1), tthread2("2", &t2), tthread3("3", &t3);
             for (unsigned i = 0; i < iters; i++)
             {
-                tthread1.start();
-                tthread2.start();
-                tthread3.start();
+                tthread1.start(false);
+                tthread2.start(false);
+                tthread3.start(false);
                 ret = call_from_thread(count);
                 tthread1.join();
                 tthread2.join();
                 tthread3.join();
             }
             ret += t1.ret + t2.ret + t3.ret;
-            DBGLOG("CThreaded %d , %d, %d", count, msTick() - start, ret);
             break;
         }
         case 3:
         {
-            unsigned ret = 0;
             for (unsigned i = 0; i < iters; i++)
             {
                 class casyncfor: public CAsyncFor
@@ -804,28 +821,75 @@ class ThreadedPersistStressTest : public CppUnit::TestFixture
                 afor.For(4, 4);
                 ret = afor.ret;
             }
-            DBGLOG("AsyncFor %d , %d, %d", count, msTick() - start, ret);
             break;
         }
         case 4:
         {
             CPersistentTask task1("1", &t1), task2("2", &t2), task3("3", &t3);
-            unsigned ret = 0;
             for (unsigned i = 0; i < iters; i++)
             {
-                task1.start();
-                task2.start();
-                task3.start();
+                task1.start(false);
+                task2.start(false);
+                task3.start(false);
                 ret = call_from_thread(count);
                 task1.join(INFINITE);
                 task2.join(INFINITE);
                 task3.join(INFINITE);
             }
             ret += t1.ret + t2.ret + t3.ret;
-            DBGLOG("PersistantTask %d , %d, %d", count, msTick() - start, ret);
+            break;
+        }
+        case 5:
+        {
+            MyThread thread1(count), thread2(count), thread3(count);
+            for (unsigned i = 0; i < iters; i++)
+            {
+                thread1.start(false);
+                thread2.start(false);
+                thread3.start(false);
+                ret = call_from_thread(count);
+                thread1.join(INFINITE);
+                thread2.join(INFINITE);
+                thread3.join(INFINITE);
+            }
+            ret += thread1.ret + thread2.ret + thread3.ret;
+            break;
+        }
+        case 6:
+        {
+            IArrayOf<IThread> threads;
+            for (unsigned i = 0; i < iters; i++)
+            {
+                MyThread * thread1 = new MyThread(count);
+                MyThread * thread2 = new MyThread(count);
+                MyThread * thread3 = new MyThread(count);
+                threads.append(*thread1);
+                threads.append(*thread2);
+                threads.append(*thread3);
+
+                thread1->start(false);
+                thread2->start(false);
+                thread3->start(false);
+                ret = call_from_thread(count);
+                thread1->join(INFINITE);
+                thread2->join(INFINITE);
+                thread3->join(INFINITE);
+                ret += thread1->ret + thread2->ret + thread3->ret;
+
+#if 0
+                if (i >= 600)
+                {
+                    threads.remove(0);
+                    threads.remove(0);
+                    threads.remove(0);
+                }
+#endif
+            }
             break;
         }
         }
+        constexpr const char * modes[] = { "ThreadedPersistant", "Sequential", "CThreaded", "AsyncFor", "PersistantTask", "Thread", "ManyThread" };
+        DBGLOG("%s %d, %d [%u], %u", modes[mode], count, usTick() - start, (usTick() - start) / iters / 4, ret);
     }
 };
 
@@ -863,5 +927,213 @@ class PipeRunTest : public CppUnit::TestFixture
 CPPUNIT_TEST_SUITE_REGISTRATION( PipeRunTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( PipeRunTest, "PipeRunTest" );
 #endif
+
+class RelaxedAtomicTimingTest : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE( RelaxedAtomicTimingTest  );
+        CPPUNIT_TEST(testRun);
+    CPPUNIT_TEST_SUITE_END();
+
+    void testRun()
+    {
+        testRunner(0);
+        testRunner(1);
+        testRunner(2);
+        testRunner(3);
+        testRunner(4);
+    }
+
+    void testRunner(unsigned mode)
+    {
+        CCycleTimer timer;
+        unsigned count = 100000000;
+        RelaxedAtomic<int> ra[201];
+        CriticalSection lock[201];
+
+        for (int a = 0; a < 201; a++)
+            ra[a] = 0;
+        
+        class T : public CThreaded
+        {
+        public:
+            T(unsigned _count, RelaxedAtomic<int> &_ra, CriticalSection &_lock, unsigned _mode) : CThreaded(""), count(_count), ra(_ra), lock(_lock), mode(_mode) 
+            {}
+            virtual int run() override
+            {
+                switch(mode)
+                {
+                    case 0: test0(); break;
+                    case 1: test1(); break;
+                    // Disabled next two for now as slow and not especially interesting
+                    // case 2: test2(); break;
+                    // case 3: test3(); break;
+                    case 4: test4(); break;
+                }
+                return 0;
+            }
+            void test0()
+            {
+                RelaxedAtomic<int> &a = ra;
+                while (count--)
+                    a++;
+            }
+            void test1()
+            {
+                RelaxedAtomic<int> &a = ra;
+                while (count--)
+                    a.fastAdd(1);
+            }
+            void test2()
+            {
+                int &a = (int &) ra;
+                while (count--)
+                {
+                    CriticalBlock b(lock);
+                    a++;
+                }
+            }
+            void test3()
+            {
+                RelaxedAtomic<int> &a = ra;
+                while (count--)
+                {
+                    CriticalBlock b(lock);
+                    a.fastAdd(1);
+                }
+            }
+            void test4()
+            {
+                int &a = (int &) ra;
+                while (count--)
+                {
+                    if (a != count)
+                        a++;
+                }
+                ra = a;
+            }
+
+            unsigned mode;
+            unsigned count;
+            RelaxedAtomic<int> &ra;
+            CriticalSection &lock;
+        } t1a(count, ra[0], lock[0], mode), t2a(count, ra[0], lock[0], mode), t3a(count, ra[0], lock[0], mode),
+          t1b(count, ra[0], lock[0], mode), t2b(count, ra[1], lock[1], mode), t3b(count, ra[2], lock[2], mode),
+          t1c(count, ra[0], lock[0], mode), t2c(count, ra[100], lock[100], mode), t3c(count, ra[200], lock[200], mode);;  
+        DBGLOG("Testing RelaxedAtomics (test mode %u)", mode);
+        t1a.start(false);
+        t2a.start(false);
+        t3a.start(false);
+        t1a.join();
+        t2a.join();
+        t3a.join();
+        DBGLOG("Same RAs took %ums, value %d", timer.elapsedMs(), ra[0]+0);
+        for (int a = 0; a < 201; a++)
+            ra[a] = 0;
+        timer.reset();
+        t1b.start(false);
+        t2b.start(false);
+        t3b.start(false);
+        t1b.join();
+        t2b.join();
+        t3b.join();
+        DBGLOG("Adjacent RAs took %ums, values %d %d %d", timer.elapsedMs(), ra[0]+0, ra[1]+0, ra[2]+0);
+        for (int a = 0; a < 201; a++)
+            ra[a] = 0;
+        timer.reset();
+        t1c.start(false);
+        t2c.start(false);
+        t3c.start(false);
+        t1c.join();
+        t2c.join();
+        t3c.join();
+        DBGLOG("Spaced RAs took %ums, values %d %d %d", timer.elapsedMs(), ra[0]+0, ra[100]+0, ra[200]+0);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( RelaxedAtomicTimingTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( RelaxedAtomicTimingTest, "RelaxedAtomicTimingTest" );
+#include "jlzw.hpp"
+class compressToBufferTest : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE( compressToBufferTest  );
+        CPPUNIT_TEST(testCompressors);
+    CPPUNIT_TEST_SUITE_END();
+
+    bool testOne(unsigned len, CompressionMethod method, bool prevResult, const char *options=nullptr)
+    {
+        constexpr const char *in = 
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+          "HelloHelloHelloHelloHelloHelloHelloHelloHelloHello";
+        assertex(len <= strlen(in));
+        MemoryBuffer compressed;
+        CCycleTimer start;
+        compressToBuffer(compressed, len, in, method, options);
+        bool ret;
+        if (compressed.length() == len+5)
+        {
+            if (prevResult)
+               DBGLOG("compressToBuffer %x size %u did not compress", (byte) method, len);
+            ret = false;
+        }
+        else 
+        {
+            if (!prevResult)
+                DBGLOG("compressToBuffer %x size %u compressed to %u in %lluns", (byte) method, len, compressed.length(), start.elapsedNs());
+            ret = true;
+        }
+        CPPUNIT_ASSERT(compressed.length() <= len+5);
+        MemoryBuffer out;
+        decompressToBuffer(out, compressed, options);
+        CPPUNIT_ASSERT(out.length() == len);
+        if (len)
+            CPPUNIT_ASSERT(memcmp(out.bytes(), in, len) == 0);
+        return ret;
+    }
+
+    void testCompressor(CompressionMethod method, const char *options=nullptr)
+    {
+        bool result = true;
+        for (unsigned i = 0; i < 256; i++)
+            result = testOne(i, method, result,  options);
+        testOne(1000, method, false, options);
+
+    }
+    void testCompressors()
+    {
+        testCompressor(COMPRESS_METHOD_NONE);
+        testCompressor(COMPRESS_METHOD_LZW);
+        testCompressor(COMPRESS_METHOD_LZ4);
+        testCompressor((CompressionMethod) (COMPRESS_METHOD_LZW|COMPRESS_METHOD_AES), "0123456789abcdef");
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( compressToBufferTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( compressToBufferTest, "CompressToBufferTest" );
+
 
 #endif // _USE_CPPUNIT

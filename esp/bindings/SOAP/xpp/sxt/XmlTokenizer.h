@@ -35,7 +35,7 @@ typedef wchar_t SXT_CHAR;
 #define _MYT(str) (L##str)
 #else
 typedef char SXT_CHAR;
-#define SXT_STRING string
+#define SXT_STRING std::string
 #ifdef _MYT
 #undef _MYT
 #endif
@@ -143,6 +143,11 @@ namespace sxt {
 
     //void setInput(string s);
     void setInput(const SXT_CHAR* buf_, int size) {
+      setInput(nullptr, 0, buf_, size, nullptr, 0);
+    }
+
+    void setInput(const SXT_CHAR* prefix, int prefixSize, const SXT_CHAR* body, int bodySize, const SXT_CHAR* suffix, int suffixSize) {
+      int size = prefixSize + bodySize + suffixSize;
       reset();
       this->bufEnd = size;
       if(size > this->bufSize - 1) {
@@ -151,7 +156,22 @@ namespace sxt {
         this->bufSize = bufEnd + 1;  //NOTE: +1 to give place for '\0' 
         this->buf = new SXT_CHAR[this->bufSize]; 
       }
-      memcpy(this->buf, buf_, bufEnd * sizeof(this->buf[0]));
+      int offset = 0;
+      if (prefixSize) {
+        int sectionSize = prefixSize * sizeof(SXT_CHAR);
+        memcpy(this->buf, prefix, sectionSize);
+        offset += sectionSize;
+      }
+      if (bodySize) {
+        int sectionSize = bodySize * sizeof(SXT_CHAR);
+        memcpy(this->buf + offset, body, sectionSize);
+        offset += sectionSize;
+      }
+      if (suffixSize) {
+        int sectionSize = suffixSize * sizeof(SXT_CHAR);
+        memcpy(this->buf + offset, suffix, sectionSize);
+        offset += sectionSize;
+      }
       this->buf[bufEnd] = _MYT('\0');
       if(paramPC && bufSize > pcSize) {
         if(pc != NULL)
@@ -750,7 +770,7 @@ namespace sxt {
       //sprintf(msg, " at line %d and column %d ", posRow, (posCol-1));
       //return string(msg); //FIXME
       //ostringstream os;
-      ostringstream os;
+      std::ostringstream os;
       os << " at line " << posRow << " and column " << (posCol-1) << " ";
       return os.str();
     }
@@ -824,7 +844,7 @@ namespace sxt {
       //char msg[100];
       //sprintf(msg, "%d", i); //FIXME UNICODE
       //return SXT_STRING(msg);
-      ostringstream os;
+      std::ostringstream os;
       os << i;
       return os.str();
     }
@@ -1053,7 +1073,7 @@ inline ostream& operator<<(ostream& output,
 {
     SXT_STRING ss = tokenizer.to_string(tokenizer.state);
     SXT_STRING s = "XmlTokenizer: current state: "+ss;
-    output << s << endl;
+    output << s << std::endl;
     return output;
 }
 

@@ -333,8 +333,9 @@ public:
     virtual void appendLocal(size32_t size, const void *data, bool binary) override;
     virtual void addingNewElement(IPropertyTree &child, int pos) override;
     virtual void removingElement(IPropertyTree *tree, unsigned pos) override;
-    virtual void setAttribute(const char *attr, const char *val) override;
+    virtual void setAttribute(const char *attr, const char *val, bool encoded) override;
     virtual bool removeAttribute(const char *attr) override;
+    virtual void serializeSelf(MemoryBuffer &tgt) override;
 
 // IPropertyTree
     virtual bool renameTree(IPropertyTree *tree, const char *newName) override;
@@ -342,6 +343,8 @@ public:
     virtual void setProp(const char *xpath, const char *val) override;
     virtual void addPropInt64(const char *xpath, __int64 val) override;
     virtual void setPropInt64(const char *xpath, __int64 val) override;
+    virtual void addPropReal(const char *xpath, double val) override;
+    virtual void setPropReal(const char *xpath, double val) override;
     virtual void setPropBin(const char *xpath, size32_t size, const void *data) override;
     virtual IPropertyTree *setPropTree(const char *xpath, IPropertyTree *val) override;
     virtual IPropertyTree *addPropTree(const char *xpath, IPropertyTree *val) override;

@@ -5,6 +5,7 @@ define([
     "dojo/dom",
     "dojo/dom-attr",
     "dojo/dom-class",
+    "dojo/topic",
 
     "dijit/registry",
 
@@ -16,6 +17,7 @@ define([
     "src/ESPActivity",
     "src/ESPRequest",
     "src/WsWorkunits",
+    "src/Session",
 
     "dojo/text!../templates/WUDetailsWidget.html",
 
@@ -41,11 +43,11 @@ define([
     "dijit/form/SimpleTextarea",
 
     "hpcc/TableContainer"
-], function (declare, lang, nlsHPCCMod, dom, domAttr, domClass,
+], function (declare, lang, nlsHPCCMod, dom, domAttr, domClass, topic,
     registry,
     Clippy,
     srcReact,
-    _TabContainerWidget, ESPWorkunit, ESPActivity, ESPRequest, WsWorkunits,
+    _TabContainerWidget, ESPWorkunit, ESPActivity, ESPRequest, WsWorkunits, Session,
     template) {
 
     var nlsHPCC = nlsHPCCMod.default;
@@ -81,6 +83,8 @@ define([
         logDate: null,
         clusterGroup: null,
         maxSlaves: null,
+
+        logAccessorMessage: "",
 
         prevState: "",
 
@@ -143,6 +147,7 @@ define([
         },
 
         _onSubmitDialog: function () {
+            var context = this;
             var includeSlaveLogsCheckbox = this.includeSlaveLogsCheckbox.get("checked");
             if (this.zapForm.validate()) {
                 //WUCreateAndDownloadZAPInfo is not a webservice so relying on form to submit.
@@ -151,6 +156,15 @@ define([
                 this.zapForm.set("action", "/WsWorkunits/WUCreateAndDownloadZAPInfo");
                 this.zapDialog.hide();
                 this.checkThorLogStatus();
+                if (this.logAccessorMessage !== "") {
+                    topic.publish("hpcc/brToaster", {
+                        Severity: "Warning",
+                        Source: "WsWorkunits/WUCreateAndDownloadZAPInfo",
+                        Exceptions: [{
+                            Message: context.logAccessorMessage,
+                        }]
+                    });
+                }
             }
         },
 
@@ -223,6 +237,7 @@ define([
                 this.wu.publish(
                     dom.byId(this.id + "Jobname2").value,
                     dom.byId(this.id + "RemoteDali").value,
+                    dom.byId(this.id + "RemoteStorage").value,
                     dom.byId(this.id + "SourceProcess").value,
                     registry.byId(this.id + "Priority").value,
                     dom.byId(this.id + "Comment").value,
@@ -283,6 +298,8 @@ define([
                     context.thorIPAddress = response.WUGetZAPInfoResponse.ThorIPAddress;
                     context.emailTo = response.WUGetZAPInfoResponse.EmailTo;
                     context.emailFrom = response.WUGetZAPInfoResponse.EmailFrom;
+
+                    context.logAccessorMessage = response.WUGetZAPInfoResponse?.Message ?? "";
                 }
             });
         },
@@ -319,7 +336,7 @@ define([
             this.statusNode = dom.byId(this.id + "WUStatus");
             srcReact.render(srcReact.WUStatus, { wuid: params.Wuid }, this.statusNode);
 
-            this.protected.on("change", function (evt) {
+            this.protected.on("click", function (evt) {
                 context._onSave();
             });
 
@@ -607,6 +624,12 @@ define([
             } else if (name === "ServiceNames" && newValue && newValue.Item) {
                 var domElem = registry.byId(this.id + "ServiceNamesCustom");
                 domElem.set("value", newValue.Item.join("\n"));
+            } else if (name === "CompileCost") {
+                this.updateInput("FormattedCompileCost", oldValue, Session.formatCost(newValue));
+            } else if (name === "ExecuteCost") {
+                this.updateInput("FormattedExecuteCost", oldValue, Session.formatCost(newValue));
+            } else if (name === "FileAccessCost") {
+                this.updateInput("FormattedFileAccessCost", oldValue, Session.formatCost(newValue));
             }
             if (name === "__hpcc_changedCount" && newValue > 0) {
                 var getInt = function (item) {

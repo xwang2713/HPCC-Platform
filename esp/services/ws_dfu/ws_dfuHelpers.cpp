@@ -183,6 +183,28 @@ bool WsDFUHelpers::addToLogicalFileList(IPropertyTree& file, const char* nodeGro
             if (!accessed.isEmpty())
                 lFile->setAccessed(accessed.replace('T', ' '));
         }
+        if (version >= 1.61)
+        {
+            if (version < 1.62)
+            {
+                cost_type cost = file.getPropInt64(getDFUQResultFieldName(DFUQRFcost));
+                lFile->setCost(cost_type2money(cost));
+            }
+            else
+            {
+                cost_type atRestCost = file.getPropInt64(getDFUQResultFieldName(DFUQRFatRestCost));
+                lFile->setAtRestCost(cost_type2money(atRestCost));
+                cost_type accessCost = file .getPropInt64(getDFUQResultFieldName(DFUQRFaccessCost));
+                lFile->setAccessCost(cost_type2money(accessCost));
+            }
+        }
+        if ((version >= 1.63) && (file.hasProp(getDFUQResultFieldName(DFUQRFmaxSkew))))
+        {
+            lFile->setMaxSkew(file.getPropInt64(getDFUQResultFieldName(DFUQRFmaxSkew)));
+            lFile->setMinSkew(file.getPropInt64(getDFUQResultFieldName(DFUQRFminSkew)));
+            lFile->setMaxSkewPart(file.getPropInt64(getDFUQResultFieldName(DFUQRFmaxSkewPart)));
+            lFile->setMinSkewPart(file.getPropInt64(getDFUQResultFieldName(DFUQRFminSkewPart)));
+        }
 
         logicalFiles.append(*lFile.getClear());
     }

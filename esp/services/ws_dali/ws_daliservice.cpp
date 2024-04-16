@@ -23,13 +23,11 @@
 #include "jlib.hpp"
 #include "dautils.hpp"
 #include "daadmin.hpp"
+#include "dadiags.hpp"
 
 using namespace daadmin;
 
 #define REQPATH_EXPORTSDSDATA "/WSDali/Export"
-
-const char* daliFolder = "tempdalifiles" PATHSEPSTR;
-const unsigned daliFolderLength = strlen(daliFolder);
 
 void CWSDaliEx::init(IPropertyTree* cfg, const char* process, const char* service)
 {
@@ -74,29 +72,18 @@ void CWSDaliSoapBindingEx::exportSDSData(CHttpRequest* request, CHttpResponse* r
         throw makeStringException(ECLWATCH_CANNOT_CONNECT_DALI, "Failed to connect Dali.");
 
     Owned<IPropertyTree> root = conn->getRoot();
+    response->setContent(root);
 
-    Owned<IFile> workingDir = createIFile(daliFolder);
-    if (!workingDir->exists())
-        workingDir->createDirectory();
-
-    StringBuffer peer, outFileNameWithPath;
-    VStringBuffer prefix("sds_for_%s", request->getPeer(peer).str());
-    Owned<IFileIO> io = createUniqueFile(daliFolder, prefix, nullptr, outFileNameWithPath, IFOcreaterw);
-    { //Force the fios to finish
-        Owned<IFileIOStream> fios = createBufferedIOStream(io);
-        toXML(root, *fios);
-    }
-
-    VStringBuffer headerStr("attachment;filename=%s", outFileNameWithPath.str() + daliFolderLength);
+    //Set "Content-disposition" header
+    CDateTime dt;
+    dt.setNow();
+    StringBuffer headerStr;
+    headerStr.appendf("attachment;filename=sds_%u.%llu.tmp", (unsigned)GetCurrentProcessId(), (unsigned __int64)dt.getSimple());
     IEspContext* context = request->queryContext();
     context->addCustomerHeader("Content-disposition", headerStr.str());
 
-    response->setContent(createIOStream(io));
     response->setContentType(HTTP_TYPE_OCTET_STREAM);
     response->send();
-
-    io.clear();
-    removeFileTraceIfFail(outFileNameWithPath);
 }
 
 void CWSDaliEx::checkAccess(IEspContext& context)
@@ -532,6 +519,224 @@ bool CWSDaliEx::onGetProtectedList(IEspContext& context, IEspGetProtectedListReq
         StringBuffer result;
         listprotect(fileName, callerId, result);
         resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onGetConnections(IEspContext& context, IEspGetConnectionsRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        StringBuffer result;
+        querySDS().getConnections(result);
+        resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onGetClients(IEspContext& context, IEspGetClientsRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        StringBuffer result;
+        getDaliDiagnosticValue("clients", result);
+        resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onGetSDSStats(IEspContext& context, IEspGetSDSStatsRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        StringBuffer result;
+        querySDS().getUsageStats(result);
+        resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onGetSDSSubscribers(IEspContext& context, IEspGetSDSSubscribersRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        StringBuffer result;
+        querySDS().getSubscribers(result);
+        resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onDisconnectClientConnection(IEspContext& context, IEspDisconnectClientConnectionRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        const char* ep = req.getEndpoint();
+        if (isEmptyString(ep))
+            throw makeStringException(ECLWATCH_INVALID_INPUT, "Endpoint not specified.");
+
+        MemoryBuffer mb;
+        mb.append("disconnect").append(ep);
+        getDaliDiagnosticValue(mb);
+
+        VStringBuffer result("DisconnectClientConnection called for %s.", ep);
+        resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onListSDSLocks(IEspContext& context, IEspListSDSLocksRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        Owned<ILockInfoCollection> lockInfoCollection = querySDS().getLocks();
+        StringBuffer result;
+        lockInfoCollection->toString(result);
+        resp.setResult(result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onUnlockSDSLock(IEspContext& context, IEspUnlockSDSLockRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        const char* connectionIdHex = req.getConnectionID();
+        if (isEmptyString(connectionIdHex))
+            throw makeStringException(ECLWATCH_INVALID_INPUT, "ConnectionID not specified.");
+
+        MemoryBuffer mb;
+        mb.append("unlock").append(strtoll(connectionIdHex, nullptr, 16)).append(req.getClose());
+        getDaliDiagnosticValue(mb);
+
+        bool success = false;
+        mb.read(success);
+        if (!success)
+            resp.setResult("Lock not found");
+        else
+        {
+            StringBuffer result(("Lock successfully removed: "));
+            mb.read(result);
+            resp.setResult(result);
+        }
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onSaveSDSStore(IEspContext& context, IEspSaveSDSStoreRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        MemoryBuffer mb;
+        mb.append("save");
+        getDaliDiagnosticValue(mb);
+        resp.setResult("SaveSDSStore called.");
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onSetTraceTransactions(IEspContext& context, IEspSetTraceTransactionsRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        StringBuffer result;
+        const char* cmd = "settracetransactions";
+        getDaliDiagnosticValue(cmd, result);
+        resp.setResult(result.isEmpty() ? "SetTraceTransactions called." : result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onSetTraceSlowTransactions(IEspContext& context, IEspSetTraceSlowTransactionsRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        MemoryBuffer mb;
+        mb.append("settraceslowtransactions");
+        mb.append(req.getSlowThresholdMS());
+        getDaliDiagnosticValue(mb);
+
+        StringAttr result;
+        mb.read(result);
+        resp.setResult(result.isEmpty() ? "SetTraceSlowTransactions called." : result);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWSDaliEx::onClearTraceTransactions(IEspContext& context, IEspClearTraceTransactionsRequest& req, IEspResultResponse& resp)
+{
+    try
+    {
+        checkAccess(context);
+
+        StringBuffer result;
+        const char* cmd = "cleartracetransactions";
+        getDaliDiagnosticValue(cmd, result);
+        resp.setResult(result.isEmpty() ? "ClearTraceTransactions called." : result);
     }
     catch(IException* e)
     {

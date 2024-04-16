@@ -966,8 +966,10 @@ public:
 
         // Options we know we always want set
         optionStrings.append("-Xrs");
+
 #ifdef RLIMIT_STACK
         // JVM has a habit of reducing the stack limit on main thread to 1M - probably dates back to when it was actually an increase...
+        // is this different than -XX:ThreadStackSize ?
         StringBuffer stackOption("-Xss");
         struct rlimit limit;
         rlim_t slim = 0;
@@ -977,6 +979,9 @@ public:
             slim = 8*1024*1024;
         if (slim >= 1*1024*1024)
         {
+            // 500m max resonable ?
+            if (slim >= 0x1f400000)
+                slim = 0x1f400000;
             stackOption.append((__uint64) slim);
             optionStrings.append(stackOption);
         }
@@ -3257,12 +3262,31 @@ public:
             }
         }
         StringBuffer lclassPath;
+        bool needSep = false;
         if (engine)
         {
-            const StringArray &manifestJars = engine->queryManifestFiles("jar");
+            StringArray manifestJars;
+            engine->getManifestFiles("jar", manifestJars);
             ForEachItemIn(idx, manifestJars)
             {
-                lclassPath.append(';').append(manifestJars.item(idx));
+                if (doTrace(traceJava))
+                    DBGLOG("Adding manifest file %s to classpath", manifestJars.item(idx));
+                const char *thisJar = manifestJars.item(idx);
+                if (thisJar)
+                {
+                    if (needSep)
+                        lclassPath.append(';');
+                    lclassPath.append(manifestJars.item(idx));
+                    needSep = true;
+                }
+                else
+                {
+                    if (needSep)
+                    {
+                        lclassPath.append('|');
+                        needSep = false;
+                    }
+                }
             }
         }
         ForEachItemIn(idx, opts)
@@ -3274,7 +3298,12 @@ public:
                 StringBuffer optName(val-opt, opt);
                 val++;
                 if (stricmp(optName, "classpath")==0)
-                    lclassPath.append(';').append(val);
+                {
+                    if (needSep)
+                        lclassPath.append('|');   // The | means we use a common classloader for the bit named by classpath
+                    lclassPath.append(val);
+                    needSep = true;
+                }
                 else if (strieq(optName, "globalscope"))
                     globalScopeKey.set(val);
                 else if (strieq(optName, "persist"))
@@ -3296,8 +3325,8 @@ public:
                     throw MakeStringException(0, "javaembed: Unknown option %s", optName.str());
             }
         }
-        if (lclassPath.length()>1)
-            classpath.set(lclassPath.str()+1);
+        if (lclassPath.length())
+            classpath.set(lclassPath);
         if (flags & EFthreadlocal)
             sharedCtx->registerContext(this);  // Do at end - otherwise an exception thrown during construction will leave this reference dangling
     }
@@ -4397,7 +4426,10 @@ protected:
         JNIenv->ExceptionClear();
         jmethodID loadClassMethod = JNIenv->GetMethodID(JNIenv->GetObjectClass(classLoader), "loadClass","(Ljava/lang/String;)Ljava/lang/Class;");
         jstring classNameString = JNIenv->NewStringUTF(className);
+        CCycleTimer timer;
         jclass Class = (jclass) JNIenv->CallObjectMethod(classLoader, loadClassMethod, classNameString);
+        if (doTrace(traceJava, TraceFlags::Max))
+            DBGLOG("javaembed: loadClass(%s) took %u ms", className, timer.elapsedMs());
         return Class;
     }
 
@@ -4498,7 +4530,10 @@ protected:
                     jmethodID loadClassMethod = JNIenv->GetMethodID(JNIenv->GetObjectClass(classLoader), "loadClass","(Ljava/lang/String;)Ljava/lang/Class;");
                     try
                     {
+                        CCycleTimer timer;
                         javaClass = (jclass) JNIenv->CallObjectMethod(classLoader, loadClassMethod, JNIenv->NewStringUTF(classname));
+                        if (doTrace(traceJava))
+                            DBGLOG("javaembed: loading class %s took %u ms", classname.str(), timer.elapsedMs());
                     }
                     catch (IException *E)
                     {
@@ -4733,8 +4768,16 @@ public:
         jmethodID loadClassMethod = sharedCtx->JNIenv->GetMethodID(sharedCtx->JNIenv->GetObjectClass(classLoader), "loadClass","(Ljava/lang/String;)Ljava/lang/Class;");
         jstring methodString = sharedCtx->JNIenv->NewStringUTF(className);
 
+        CCycleTimer timer;
         Class = (jclass) sharedCtx->JNIenv->NewGlobalRef(sharedCtx->JNIenv->CallObjectMethod(classLoader, loadClassMethod, methodString), "Class");
+        if (doTrace(traceJava))
+        {
+            DBGLOG("javaembed: loading class %s took %u ms", className.str(), timer.elapsedMs());
+            timer.reset();
+        }
         jmethodID constructor = sharedCtx->JNIenv->GetMethodID(Class, "<init>", "()V");
+        if (doTrace(traceJava))
+            DBGLOG("javaembed: constructor for %s took %u ms", className.str(), timer.elapsedMs());
         object = sharedCtx->JNIenv->NewGlobalRef(sharedCtx->JNIenv->NewObject(Class, constructor), "constructed");
     }
     virtual IEmbedFunctionContext *createFunctionContext(const char *function)

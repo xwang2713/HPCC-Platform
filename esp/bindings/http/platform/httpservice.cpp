@@ -153,6 +153,33 @@ static bool authenticateOptionalFailed(IEspContext& ctx, IEspHttpBinding* bindin
     return false;
 }
 
+static bool checkHttpPathStaysWithinBounds(const char *path)
+{
+    if (isEmptyString(path))
+        return true;
+    //The path that follows /esp/files should be relative, not absolute - reject immediately if it is.
+    if (isAbsolutePath(path))
+        return false;
+    int depth = 0;
+    StringArray nodes;
+    nodes.appendList(path, "/");
+    ForEachItemIn(i, nodes)
+    {
+        const char *node = nodes.item(i);
+        if (!*node || streq(node, ".")) //empty or "." doesn't advance
+            continue;
+        if (!streq(node, ".."))
+            depth++;
+        else
+        {
+            depth--;
+            if (depth<0)  //only really care that the relative http path doesn't position itself above its own root node
+                return false;
+        }
+    }
+    return true;
+}
+
 EspHttpBinding* CEspHttpServer::getBinding()
 {
     EspHttpBinding* thebinding=NULL;
@@ -167,18 +194,18 @@ EspHttpBinding* CEspHttpServer::getBinding()
     return thebinding;
 }
 
-//CORS allow headers for interoperability, we do not rely on this for security since
-//that only means treating the browser as a trusted entity.  We need to be diligent and secure
-//for every request whether it comes from a cross domain browser or any other source
-
-void checkSetCORSAllowOrigin(CHttpRequest *req, CHttpResponse *resp)
+void checkSetCORSAllowOrigin(EspHttpBinding *binding, CHttpRequest *req, CHttpResponse *resp)
 {
     StringBuffer origin;
     req->getHeader("Origin", origin);
     if (origin.length())
     {
-        resp->setHeader("Access-Control-Allow-Origin", origin);
-        resp->setHeader("Access-Control-Allow-Credentials", "true");
+        const IEspCorsAllowedOrigin *corsAllowed = binding->findCorsAllowedOrigin(origin, req->queryMethod());
+        if (corsAllowed)
+        {
+            resp->setHeader("Access-Control-Allow-Origin", origin);
+            resp->setHeader("Access-Control-Allow-Credentials", "true");
+        }
     }
 }
 
@@ -204,6 +231,7 @@ int CEspHttpServer::processRequest()
     catch (IException *e)
     {
         DBGLOG(e);
+        sendInternalError(true);
         ctx->addTraceSummaryValue(LogMin, "msg", e->errorMessage(errMessage).str(), TXSUMMARY_GRP_ENTERPRISE);
         e->Release();
         return 0;
@@ -211,6 +239,7 @@ int CEspHttpServer::processRequest()
     catch (...)
     {
         IERRLOG("Unknown Exception - reading request [CEspHttpServer::processRequest()]");
+        sendInternalError(false);
         ctx->addTraceSummaryValue(LogMin, "msg", "Unknown Exception - reading request [CEspHttpServer::processRequest()]", TXSUMMARY_GRP_ENTERPRISE);
         return 0;
     }
@@ -255,7 +284,7 @@ int CEspHttpServer::processRequest()
         }
         ctx->addTraceSummaryValue(LogMin, "custom_fields.URL", url.str(), TXSUMMARY_GRP_ENTERPRISE);
 
-        m_response->setHeader(HTTP_HEADER_HPCC_GLOBAL_ID, ctx->getGlobalId());
+        m_response->setHeader(kGlobalIdHttpHeaderName, ctx->getGlobalId());
 
         if(strieq(method.str(), OPTIONS_METHOD))
             return onOptions();
@@ -373,7 +402,20 @@ int CEspHttpServer::processRequest()
             if (thebinding)
                 theBindingHolder.set(dynamic_cast<IInterface*>(thebinding));
 
-            checkSetCORSAllowOrigin(m_request, m_response);
+            checkSetCORSAllowOrigin(thebinding, m_request, m_response);
+
+            if (thebinding && thebinding->isUnrestrictedSSType(stype))
+            {
+                //Avoid creating a span for unrestrictedSSType requests
+                thebinding->onGetUnrestricted(m_request.get(), m_response.get(), serviceName.str(), methodName.str(), stype);
+                ctx->addTraceSummaryTimeStamp(LogMin, "handleHttp");
+                return 0;
+            }
+
+            //The context will be destroyed when this request is destroyed. So initialise a SpanScope in the context to
+            //ensure the span is also terminated at the same time.
+            Owned<ISpan> serverSpan = m_request->createServerSpan(serviceName, methodName);
+            ctx->setRequestSpan(serverSpan);
 
             if (thebinding!=NULL)
             {
@@ -399,7 +441,16 @@ int CEspHttpServer::processRequest()
                         m_response->redirect(*m_request.get(),url);
                     }
                     else
+                    {
+                        if (strieq(methodName.str(), "files_") && !checkHttpPathStaysWithinBounds(pathEx))
+                        {
+                            AERRLOG("Get File %s: attempted access outside of %sfiles/", pathEx.str(), getCFD());
+                            m_response->setStatus(HTTP_STATUS_NOT_FOUND);
+                            m_response->send();
+                            return 0;
+                        }
                         thebinding->onGet(m_request.get(), m_response.get());
+                    }
                 }
                 else
                     unsupported();
@@ -428,6 +479,7 @@ int CEspHttpServer::processRequest()
     catch (IException *e)
     {
         DBGLOG(e);
+        sendInternalError(true);
         ctx->addTraceSummaryValue(LogMin, "msg", e->errorMessage(errMessage).str(), TXSUMMARY_GRP_ENTERPRISE);
         VStringBuffer fault("F%d", e->errorCode());
         ctx->addTraceSummaryValue(LogMin, "custom_fields.soapFaultCode", fault.str(), TXSUMMARY_GRP_ENTERPRISE);
@@ -442,6 +494,7 @@ int CEspHttpServer::processRequest()
         UWARNLOG("METHOD: %s, PATH: %s, TYPE: %s, CONTENT-LENGTH: %" I64F "d", m_request->queryMethod(), m_request->queryPath(), m_request->getContentType(content_type).str(), len);
         if (len > 0)
             m_request->logMessage(LOGCONTENT, "HTTP request content received:\n");
+        sendInternalError(false);
         ctx->addTraceSummaryValue(LogMin, "msg", "Unknown exception caught in CEspHttpServer::processRequest", TXSUMMARY_GRP_ENTERPRISE);
         return 0;
     }
@@ -567,7 +620,8 @@ int CEspHttpServer::onUpdatePasswordInput(CHttpRequest* request, CHttpResponse* 
 int CEspHttpServer::onUpdatePassword(CHttpRequest* request, CHttpResponse* response)
 {
     StringBuffer html;
-    unsigned returnCode = m_apport->onUpdatePassword(*request->queryContext(), request, html);
+    IEspContext* context = request->queryContext();
+    unsigned returnCode = m_apport->onUpdatePassword(*context, request, html);
     if (returnCode == 0)
     {
         EspHttpBinding* binding = getBinding();
@@ -581,7 +635,7 @@ int CEspHttpServer::onUpdatePassword(CHttpRequest* request, CHttpResponse* respo
             {//A session can only be set for those 2 auth types.
                 StringBuffer urlCookie;
                 readCookie(SESSION_START_URL_COOKIE, urlCookie);
-                unsigned sessionID = createHTTPSession(binding, request->getParameters()->queryProp("username"), urlCookie.isEmpty() ? "/" : urlCookie.str());
+                unsigned sessionID = createHTTPSession(context, binding, request->getParameters()->queryProp("username"), urlCookie.isEmpty() ? "/" : urlCookie.str());
                 m_request->queryContext()->setSessionToken(sessionID);
                 VStringBuffer cookieStr("%u", sessionID);
                 addCookie(binding->querySessionIDCookieName(), cookieStr.str(), 0, true);
@@ -712,30 +766,6 @@ static void httpGetDirectory(CHttpRequest* request, CHttpResponse* response, con
     response->send();
 }
 
-static bool checkHttpPathStaysWithinBounds(const char *path)
-{
-    if (!path || !*path)
-        return true;
-    int depth = 0;
-    StringArray nodes;
-    nodes.appendList(path, "/");
-    ForEachItemIn(i, nodes)
-    {
-        const char *node = nodes.item(i);
-        if (!*node || streq(node, ".")) //empty or "." doesn't advance
-            continue;
-        if (!streq(node, ".."))
-            depth++;
-        else
-        {
-            depth--;
-            if (depth<0)  //only really care that the relative http path doesn't position itself above its own root node
-                return false;
-        }
-    }
-    return true;
-}
-
 int CEspHttpServer::onGetFile(CHttpRequest* request, CHttpResponse* response, const char *urlpath)
 {
         if (!request || !response || !urlpath)
@@ -746,7 +776,7 @@ int CEspHttpServer::onGetFile(CHttpRequest* request, CHttpResponse* response, co
 
         if (!checkHttpPathStaysWithinBounds(urlpath))
         {
-            DBGLOG("Get File %s: attempted access outside of %s", urlpath, basedir.str());
+            AERRLOG("Get File %s: attempted access outside of %s", urlpath, basedir.str());
             response->setStatus(HTTP_STATUS_NOT_FOUND);
             response->send();
             return 0;
@@ -786,6 +816,14 @@ int CEspHttpServer::onGetXslt(CHttpRequest* request, CHttpResponse* response, co
         if (!request || !response || !path)
             return -1;
         
+        if (!checkHttpPathStaysWithinBounds(path))
+        {
+            AERRLOG("Get File %s: attempted access outside of %sxslt/", path, getCFD());
+            response->setStatus(HTTP_STATUS_NOT_FOUND);
+            response->send();
+            return 0;
+        }
+
         StringBuffer mimetype, etag, lastModified;
         MemoryBuffer content;
         bool modified = true;
@@ -841,21 +879,38 @@ int CEspHttpServer::onOptions()
     m_response->setVersion(HTTP_VERSION);
     m_response->setStatus(HTTP_STATUS_OK);
 
-    //CORS allow headers for interoperability, we do not rely on this for security since
-    //that only means treating the browser as a trusted entity.  We need to be diligent and secure
-    //for every request whether it comes from a cross domain browser or any other source
-    StringBuffer allowHeaders;
-    m_request->getHeader("Access-Control-Request-Headers", allowHeaders);
-    if (allowHeaders.length())
-        m_response->setHeader("Access-Control-Allow-Headers", allowHeaders);
-
     StringBuffer origin;
     m_request->getHeader("Origin", origin);
 
-    m_response->setHeader("Access-Control-Allow-Origin", origin.length() ? origin.str() : "*");
-    m_response->setHeader("Access-Control-Allow-Credentials", "true");
-    m_response->setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-    m_response->setHeader("Access-Control-Max-Age", "86400"); //arbitrary 24 hours
+    if (origin.length())
+    {
+        EspHttpBinding *binding = getBinding();
+        if (binding)
+        {
+            StringBuffer allowMethod;
+            m_request->getHeader("Access-Control-Request-Method", allowMethod);
+
+            const IEspCorsAllowedOrigin *corsAllowed = binding->findCorsAllowedOrigin(origin, allowMethod);
+            if (corsAllowed)
+            {
+                m_response->setHeader("Access-Control-Allow-Origin", origin);
+                m_response->setHeader("Access-Control-Allow-Credentials", "true");
+                m_response->setHeader("Access-Control-Allow-Methods", corsAllowed->queryAllowedMethodsCSV());
+                m_response->setHeader("Access-Control-Max-Age", corsAllowed->queryMaxAge());
+
+                StringBuffer requestedAllowHeaders;
+                m_request->getHeader("Access-Control-Request-Headers", requestedAllowHeaders);
+                if (requestedAllowHeaders.length())
+                {
+                    StringBuffer allowedHeaders;
+                    corsAllowed->getAllowedHeadersCSV(requestedAllowHeaders, allowedHeaders);
+                    if (allowedHeaders.length())
+                        m_response->setHeader("Access-Control-Allow-Headers", allowedHeaders);
+                }
+            }
+        }
+    }
+
     m_response->setContentType("text/plain");
     m_response->setContent("");
 
@@ -1076,6 +1131,58 @@ EspHttpBinding* CEspHttpServer::getEspHttpBinding(EspAuthRequest& authReq)
     return espHttpBinding;
 }
 
+void CEspHttpServer::readDomainAuthDataFromSecureContext(IEspContext* ctx, IPropertyTree* tree)
+{
+    StringBuffer authData;
+    ctx->querySecureContext()->getDomainAuthData(authData);
+    if (!authData.isEmpty())
+        tree->setProp(PropSessionDomainAuthData, authData);
+}
+
+void CEspHttpServer::setDomainAuthDataInSecureContext(IEspContext* ctx, IPropertyTree* tree)
+{
+    StringAttr authData = tree->queryProp(PropSessionDomainAuthData);
+    if (!authData.isEmpty())
+        ctx->querySecureContext()->setDomainAuthData(authData.get());
+}
+
+//Store the userid and DomainAuthData to temporary cookies before a session is created.
+void CEspHttpServer::addTempCookie(IEspContext* ctx)
+{
+    addCookie(SESSION_ID_TEMP_COOKIE, ctx->queryUserId(), 0, true);
+
+    StringBuffer authData;
+    ctx->querySecureContext()->getDomainAuthData(authData);
+    if (!authData.isEmpty())
+    {
+        StringBuffer encodedAuthData;
+        JBASE64_Encode(authData.str(), authData.length(), encodedAuthData, false);
+        addCookie(SESSION_DOMAIN_AUTH_DATA_TEMP_COOKIE, encodedAuthData, 0, true);
+    }
+}
+
+void CEspHttpServer::readTempCookieToContext(IEspContext* ctx, bool setUserIDAsName)
+{
+    StringBuffer userID, authData;
+    readCookie(SESSION_ID_TEMP_COOKIE, userID);
+    readCookie(SESSION_DOMAIN_AUTH_DATA_TEMP_COOKIE, authData);
+    if (!userID.isEmpty())
+    {
+        ctx->setUserID(userID.str());
+        if (setUserIDAsName)
+        {
+            ISecUser* user = ctx->queryUser();
+            if (user)
+                user->setName(userID.str());
+        }
+    }
+    if (!authData.isEmpty())
+    {
+        StringBuffer decodedData;
+        ctx->querySecureContext()->setDomainAuthData(JBASE64_Decode(authData, decodedData));
+    }
+}
+
 EspAuthState CEspHttpServer::preCheckAuth(EspAuthRequest& authReq)
 {
     if (!isAuthRequiredForBinding(authReq))
@@ -1097,6 +1204,7 @@ EspAuthState CEspHttpServer::preCheckAuth(EspAuthRequest& authReq)
             {
                 clearCookie(authReq.authBinding->querySessionIDCookieName());
                 clearCookie(SESSION_ID_TEMP_COOKIE);
+                clearCookie(SESSION_DOMAIN_AUTH_DATA_TEMP_COOKIE);
                 clearCookie(SESSION_TIMEOUT_COOKIE);
                 clearCookie(USER_ACCT_ERROR_COOKIE);
             }
@@ -1159,24 +1267,13 @@ EspAuthState CEspHttpServer::preCheckAuth(EspAuthRequest& authReq)
             EspHttpBinding* thebinding = getBinding();
             if (thebinding)
                 thebinding->populateRequest(m_request.get());
-            StringBuffer userID;
-            readCookie(SESSION_ID_TEMP_COOKIE, userID);
-            if (!userID.isEmpty()) //For session auth, the cookie has the userID.
-            {
-                authReq.ctx->setUserID(userID.str());
-                ISecUser* user = authReq.ctx->queryUser();
-                if (user)
-                    user->setName(userID.str());
-            }
+            readTempCookieToContext(authReq.ctx, true);
             onUpdatePassword(m_request.get(), m_response.get());
             return authTaskDone;
         }
         if (strieq(authReq.httpMethod.str(), GET_METHOD) && strieq(authReq.methodName.str(), "updatepasswordinput"))//process before authentication check
         {
-            StringBuffer userID;
-            readCookie(SESSION_ID_TEMP_COOKIE, userID);
-            if (!userID.isEmpty()) //For session auth, the cookie has the userID.
-                authReq.ctx->setUserID(userID.str());
+            readTempCookieToContext(authReq.ctx, false);
             onUpdatePasswordInput(m_request.get(), m_response.get());
             return authTaskDone;
         }
@@ -1250,12 +1347,13 @@ void CEspHttpServer::verifyCookie(EspAuthRequest& authReq, CESPCookieVerificatio
         //a login process is started. At that time, any SESSION_START_URL_COOKIE should be invalid.
         cookie.verificationDetails.set("ESP cannot verify this cookie. This cookie is only valid within a login process.");
     }
-    else if (strieq(name, SESSION_ID_TEMP_COOKIE))
+    else if (strieq(name, SESSION_ID_TEMP_COOKIE) || strieq(name, SESSION_DOMAIN_AUTH_DATA_TEMP_COOKIE))
     {   
         //SESSION_ID_TEMP_COOKIE: used for remembering UserID when a user is in AS_PASSWORD_VALID_BUT_EXPIRED state and updating password.
         //It is created before the updatepasswordinput is started. After the update process, ESP should remove this cookie if possible.
         //This verify function is designed to verify cookies before a login process is started. At that time, any SESSION_ID_TEMP_COOKIE
         //should be invalid.
+        //SESSION_DOMAIN_AUTH_DATA_TEMP_COOKIE: similar to SESSION_ID_TEMP_COOKIE.
         cookie.verificationDetails.set("ESP cannot verify this cookie. This cookie is only valid when updating an expired password.");
     }
     else
@@ -1302,9 +1400,12 @@ bool CEspHttpServer::verifyESPSessionIDCookie(EspAuthRequest& authReq)
     IPropertyTree* sessionTree = espSessions->queryBranch(xpath.str());
     if (!sessionTree)
         return false;
-
+#ifdef _CONTAINERIZED
+    return true;
+#else
     StringBuffer peer;
     return streq(m_request->getPeer(peer).str(), sessionTree->queryProp(PropSessionNetworkAddress));
+#endif
 }
 
 void CEspHttpServer::verifyESPAuthenticatedCookie(EspAuthRequest& authReq, CESPCookieVerification& cookie)
@@ -1384,6 +1485,17 @@ void CEspHttpServer::sendVerifyCookieResponse(EspAuthRequest& authReq, CIArrayOf
     sendMessage(resp.str(), (format == ESPSerializationJSON) ? "application/json" : "text/xml");
 }
 
+bool CEspHttpServer::isMalformedUserName(const char *userName)
+{
+    StringBuffer s(userName);
+    s.trim();
+    if (s.isEmpty())
+        return true;
+
+    //Only check newline for now. May add more if needed.
+    return strchr(s.str(), '\n');
+}
+
 EspAuthState CEspHttpServer::handleUserNameOnlyMode(EspAuthRequest& authReq)
 {
     if (authReq.authBinding->isDomainAuthResources(authReq.httpPath.str()))
@@ -1402,9 +1514,29 @@ EspAuthState CEspHttpServer::handleUserNameOnlyMode(EspAuthRequest& authReq)
     if (!userName.isEmpty())
         return authSucceeded;
 
+    bool malformedUserName = false;
     const char* userNameIn = (authReq.requestParams) ? authReq.requestParams->queryProp("username") : NULL;
-    if (isEmptyString(userNameIn))
+    if (!isEmptyString(userNameIn))
+        malformedUserName = isMalformedUserName(userNameIn);
+    if (isEmptyString(userNameIn) || malformedUserName)
     {
+        StringBuffer logMsg("Authentication failed");
+        if (malformedUserName)
+        {
+            logMsg.append(" (malformed username)");
+            //If the username comes from the GetUserName page (sent with POST), the page should have set the urlCookie and askUserLogin() should be called to get the username.
+            StringBuffer urlCookie;
+            readCookie(SESSION_START_URL_COOKIE, urlCookie);
+            if (!urlCookie.isEmpty())
+            {
+                logMsg.append(": call askUserLogin.");
+                ESPLOG(LogMin, "%s", logMsg.str());
+                //Display a GetUserName (similar to login) page to get a user name.
+                askUserLogin(authReq, "Malformed username.");
+                return authFailed;
+            }
+        }
+
         //We should send BasicAuthenticationChallenge for CORS Request, HTPP Post Request, etc.
         StringBuffer authorizationHeader, originHeader;
         m_request->getHeader("Authorization", authorizationHeader);
@@ -1413,14 +1545,16 @@ EspAuthState CEspHttpServer::handleUserNameOnlyMode(EspAuthRequest& authReq)
             strieq(authReq.httpMethod.str(), POST_METHOD);
         if (basicAuthentication)
         {
-            ESPLOG(LogMin, "Authentication failed: send BasicAuthentication.");
+            logMsg.append(": send BasicAuthentication.");
+            ESPLOG(LogMin, "%s", logMsg.str());
             m_response->sendBasicChallenge(authReq.authBinding->getChallengeRealm(), true);
         }
         else
         {
-            ESPLOG(LogMin, "Authentication failed: call askUserLogin.");
+            logMsg.append(": call askUserLogin.");
+            ESPLOG(LogMin, "%s", logMsg.str());
             //Display a GetUserName (similar to login) page to get a user name.
-            askUserLogin(authReq, "Empty username.");
+            askUserLogin(authReq, malformedUserName ? "Malformed username." : "Empty username.");
         }
         return authFailed;
     }
@@ -1494,7 +1628,14 @@ EspAuthState CEspHttpServer::checkUserAuthPerSession(EspAuthRequest& authReq, St
     const char* userName = (authReq.requestParams) ? authReq.requestParams->queryProp("username") : NULL;
     const char* password = (authReq.requestParams) ? authReq.requestParams->queryProp("password") : NULL;
     if (!isEmptyString(userName) && !isEmptyString(password))
-        return authNewSession(authReq, userName, password, urlCookie.isEmpty() ? "/" : urlCookie.str(), unlock);
+    {
+        const char *url = "/";
+        //if the cookie came from us it would be encoded, but check for newline just in case the cookie was injected somehow
+        //  unescaped newlines can be made to look like nefarious http headers
+        if (!urlCookie.isEmpty() && !strchr(urlCookie, '\n'))
+            url = urlCookie.str();
+        return authNewSession(authReq, userName, password, url, unlock);
+    }
 
     authReq.ctx->setAuthStatus(AUTH_STATUS_FAIL);
     if (unlock)
@@ -1515,6 +1656,7 @@ EspAuthState CEspHttpServer::checkUserAuthPerRequest(EspAuthRequest& authReq)
     ESPLOG(LogMax, "checkUserAuthPerRequest");
 
     authReq.authBinding->populateRequest(m_request.get());
+    authReq.ctx->querySecureContextEx()->setDomainAuthType(AuthPerRequestOnly);
     if (authReq.authBinding->doAuth(authReq.ctx))
     {//We do pass the authentication per the request
         // authenticate optional groups. Do we still need?
@@ -1553,17 +1695,17 @@ EspAuthState CEspHttpServer::authNewSession(EspAuthRequest& authReq, const char*
     authReq.ctx->setUserID(_userName);
     authReq.ctx->setPassword(_password);
     authReq.authBinding->populateRequest(m_request.get());
-    if (!authReq.authBinding->doAuth(authReq.ctx) && (authReq.ctx->getAuthError() != EspAuthErrorNotAuthorized))
+    authReq.ctx->querySecureContextEx()->setDomainAuthType(AuthPerSessionOnly);
+    if (!authReq.authBinding->doAuth(authReq.ctx))
     {
         authReq.ctx->setAuthStatus(AUTH_STATUS_FAIL);
         ESPLOG(LogMin, "Authentication failed for %s@%s", _userName, peer.str());
         return handleAuthFailed(true, authReq, unlock, "User authentication failed.");
     }
-
     // authenticate optional groups
     authOptionalGroups(authReq);
 
-    unsigned sessionID = createHTTPSession(authReq.authBinding, _userName, sessionStartURL);
+    unsigned sessionID = createHTTPSession(authReq.ctx, authReq.authBinding, _userName, sessionStartURL);
     authReq.ctx->setSessionToken(sessionID);
 
     ESPLOG(LogMax, "Authenticated for %s@%s", _userName, peer.str());
@@ -1575,12 +1717,6 @@ EspAuthState CEspHttpServer::authNewSession(EspAuthRequest& authReq, const char*
     addCookie(SESSION_TIMEOUT_COOKIE, cookieStr.str(), 0, false);
     clearCookie(SESSION_AUTH_MSG_COOKIE);
     clearCookie(SESSION_START_URL_COOKIE);
-    if (authReq.ctx->getAuthError() == EspAuthErrorNotAuthorized)
-    {
-        authReq.ctx->setAuthStatus(AUTH_STATUS_NOACCESS);
-        sendAuthorizationMsg(authReq);
-        return authSucceeded;
-    }
 
     authReq.ctx->setAuthStatus(AUTH_STATUS_OK); //May be changed to AUTH_STATUS_NOACCESS if failed in feature level authorization.
     if (unlock)
@@ -1625,6 +1761,41 @@ void CEspHttpServer::sendException(EspAuthRequest& authReq, unsigned code, const
         resp.append("</Exception></Exceptions>");
     }
     sendMessage(resp.str(), (format == ESPSerializationJSON) ? "application/json" : "text/xml");
+}
+
+/**
+ * @brief Return a generic internal server error to the client.
+ *
+ * Exceptions caught by processRequest fall into three categories.
+ *
+ * 1. HTTP exceptions. These are assumed to contain messages suitable for client consumption and
+ *    are returned to the caller.
+ * 2. Other known exceptions, derived from IException. These are assumed to contain messages that
+ *    include implementation details not appropriate for client consumption.
+ * 3. Unexpected exceptions that cannot be described.
+ *
+ * This method handles categories 2 and 3. A generic message indicating that an exception occurred
+ * is returned to the client with status code 500. The parameter indicates whether trace output is
+ * likely to include exception details, and the returned message will refer the client to examine
+ * the logs for more information when appropriate.
+ *
+ * @param loggedDetails 
+ */
+void CEspHttpServer::sendInternalError(bool loggedDetails)
+{
+    IEspContext* ctx = m_request->queryContext();
+    const char*  globalId = (ctx ? ctx->getGlobalId() : nullptr);
+    StringBuffer content;
+    if (!isEmptyString(globalId))
+        content.appendf("Request failed for global transaction '%s'.", globalId);
+    else
+        content.append("Request failed.");
+    if (loggedDetails)
+        content.append(" Check log files for more information.");
+    m_response->setStatus(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+    m_response->setContentType(HTTP_TYPE_TEXT_PLAIN);
+    m_response->setContent(content);
+    m_response->send();
 }
 
 void CEspHttpServer::sendAuthorizationMsg(EspAuthRequest& authReq)
@@ -1822,7 +1993,8 @@ void CEspHttpServer::sendSessionReloadHTMLPage(IEspContext* ctx, EspAuthRequest&
     else
         espURL.set("http://");
     m_request->getHost(espURL);
-    espURL.append(":").append(m_request->getPort());
+    if (m_request->getHasPortInHost())
+        espURL.append(":").append(m_request->getPort());
 
     StringBuffer content(
         "<!DOCTYPE html>"
@@ -1960,28 +2132,33 @@ EspAuthState CEspHttpServer::authExistingSession(EspAuthRequest& authReq, unsign
     const char* sessionStartIP = sessionTree->queryProp(PropSessionNetworkAddress);
     if (!streq(m_request->getPeer(peer).str(), sessionStartIP))
     {
+#ifdef _CONTAINERIZED
+        ESPLOG(LogMax, "####Peer changed");
+#else
         authReq.ctx->setAuthStatus(AUTH_STATUS_FAIL);
         clearSessionCookies(authReq);
         sendSessionReloadHTMLPage(m_request->queryContext(), authReq, "Authentication failed: Network address for ESP session has been changed.");
         ESPLOG(LogMin, "Authentication failed: session ID %u from IP %s. ", sessionID, peer.str());
         return authFailed;
+#endif
     }
 
     authOptionalGroups(authReq);
 
     //The UserID has to be set before the populateRequest() because the UserID is used to create the user object.
     //After the user object is created, we may call addSessionToken().
-    StringAttr userName = sessionTree->queryProp(PropSessionUserID);
-    authReq.ctx->setUserID(userName.str());
+    StringAttr userID = sessionTree->queryProp(PropSessionUserID);
+    authReq.ctx->setUserID(userID.str());
     authReq.authBinding->populateRequest(m_request.get());
     authReq.ctx->setSessionToken(sessionID);
     authReq.ctx->queryUser()->setAuthenticateStatus(AS_AUTHENTICATED);
     authReq.ctx->setAuthStatus(AUTH_STATUS_OK); //May be changed to AUTH_STATUS_NOACCESS if failed in feature level authorization.
+    setDomainAuthDataInSecureContext(authReq.ctx, sessionTree);
 
-    ESPLOG(LogMax, "Authenticated for %s<%u> %s@%s", PropSessionID, sessionID, userName.str(), sessionTree->queryProp(PropSessionNetworkAddress));
+    ESPLOG(LogMax, "Authenticated for %s<%u> %s@%s", PropSessionID, sessionID, userID.str(), sessionTree->queryProp(PropSessionNetworkAddress));
     if (!authReq.serviceName.isEmpty() && !authReq.methodName.isEmpty() && strieq(authReq.serviceName.str(), "esp") && strieq(authReq.methodName.str(), "login"))
     {
-        VStringBuffer msg("User %s has logged into this session. If you want to login as a different user, please logout and login again.", userName.str());
+        VStringBuffer msg("User %s has logged into this session. If you want to login as a different user, please logout and login again.", userID.str());
         sendMessage(msg.str(), "text/html; charset=UTF-8");
         return authTaskDone;
     }
@@ -2088,7 +2265,7 @@ EspAuthState CEspHttpServer::handleAuthFailed(bool sessionAuth, EspAuthRequest& 
         case AS_PASSWORD_VALID_BUT_EXPIRED :
             ESPLOG(LogMin, "ESP password expired for %s. Asking update ...", authReq.ctx->queryUserId());
             if (sessionAuth) //For session auth, store the userid to cookie for the updatepasswordinput form.
-                addCookie(SESSION_ID_TEMP_COOKIE, authReq.ctx->queryUserId(), 0, true);
+                addTempCookie(authReq.ctx);
             m_response->redirect(*m_request.get(), "/esp/updatepasswordinput");
             return authSucceeded;
         case AS_PASSWORD_EXPIRED :
@@ -2105,6 +2282,9 @@ EspAuthState CEspHttpServer::handleAuthFailed(bool sessionAuth, EspAuthRequest& 
         case AS_ACCOUNT_LOCKED :
             ESPLOG(LogMin, "Account locked for %s", authReq.ctx->queryUserId());
             addCookie(USER_ACCT_ERROR_COOKIE, "Account Locked", 0, false);
+            break;
+        case AS_ACCOUNT_ROOT_ACCESS_DENIED :
+            addCookie(USER_ACCT_ERROR_COOKIE, authReq.ctx->getRespMsg(), 0, false);
             break;
         }
     }
@@ -2131,6 +2311,7 @@ EspAuthState CEspHttpServer::handleAuthFailed(bool sessionAuth, EspAuthRequest& 
 
 void CEspHttpServer::askUserLogin(EspAuthRequest& authReq, const char* msg)
 {
+    StringBuffer encoded;
     StringBuffer urlCookie;
     readCookie(SESSION_START_URL_COOKIE, urlCookie);
     if (urlCookie.isEmpty())
@@ -2141,18 +2322,18 @@ void CEspHttpServer::askUserLogin(EspAuthRequest& authReq, const char* msg)
         if (sessionStartURL.isEmpty() || streq(sessionStartURL.str(), "/WsSMC/") || strieq(sessionStartURL, authReq.authBinding->queryLoginURL()))
             sessionStartURL.set("/");
 
-        addCookie(SESSION_START_URL_COOKIE, sessionStartURL.str(), 0, true); //time out when browser is closed
+        addCookie(SESSION_START_URL_COOKIE, encodeURL(encoded.clear(), sessionStartURL.str()), 0, true); //time out when browser is closed
     }
     else if (changeRedirectURL(authReq))
     {
         StringBuffer sessionStartURL(authReq.httpPath);
         if (authReq.requestParams && authReq.requestParams->hasProp("__querystring"))
             sessionStartURL.append("?").append(authReq.requestParams->queryProp("__querystring"));
-        addCookie(SESSION_START_URL_COOKIE, sessionStartURL.str(), 0, true); //time out when browser is closed
+        addCookie(SESSION_START_URL_COOKIE, encodeURL(encoded.clear(), sessionStartURL.str()), 0, true); //time out when browser is closed
     }
     if (!isEmptyString(msg))
         addCookie(SESSION_AUTH_MSG_COOKIE, msg, 0, false); //time out when browser is closed
-    m_response->redirect(*m_request, authReq.authBinding->queryLoginURL());
+    m_response->redirect(*m_request, encodeURL(encoded.clear(), authReq.authBinding->queryLoginURL()));
 }
 
 bool CEspHttpServer::changeRedirectURL(EspAuthRequest& authReq)
@@ -2164,7 +2345,7 @@ bool CEspHttpServer::changeRedirectURL(EspAuthRequest& authReq)
     return false;
 }
 
-unsigned CEspHttpServer::createHTTPSession(EspHttpBinding* authBinding, const char* userID, const char* sessionStartURL)
+unsigned CEspHttpServer::createHTTPSession(IEspContext* ctx, EspHttpBinding* authBinding, const char* userID, const char* sessionStartURL)
 {
     CDateTime now;
     now.setNow();
@@ -2197,6 +2378,7 @@ unsigned CEspHttpServer::createHTTPSession(EspHttpBinding* authBinding, const ch
     ptree->setPropInt64(PropSessionLastAccessed, createTime);
     ptree->setPropInt64(PropSessionTimeoutAt, createTime + authBinding->getServerSessionTimeoutSeconds());
     ptree->setProp(PropSessionLoginURL, sessionStartURL);
+    readDomainAuthDataFromSecureContext(ctx, ptree);
     return sessionID;
 }
 
@@ -2271,6 +2453,7 @@ void CEspHttpServer::clearSessionCookies(EspAuthRequest& authReq)
 {
     clearCookie(authReq.authBinding->querySessionIDCookieName());
     clearCookie(SESSION_ID_TEMP_COOKIE);
+    clearCookie(SESSION_DOMAIN_AUTH_DATA_TEMP_COOKIE);
     clearCookie(SESSION_START_URL_COOKIE);
     clearCookie(SESSION_AUTH_OK_COOKIE);
     clearCookie(SESSION_AUTH_MSG_COOKIE);

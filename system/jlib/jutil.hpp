@@ -27,6 +27,8 @@
 #include <algorithm> 
 #include <iterator>
 #include <functional>
+#include <vector>
+#include <string>
 
 #if defined (__APPLE__)
 #include <mach/mach_time.h>
@@ -34,6 +36,8 @@ extern mach_timebase_info_data_t timebase_info;   // Calibration for nanosecond 
 #endif
 
 //#define NAMEDCOUNTS
+
+bool jlib_decl getEnvVar(const char * varName, StringBuffer & varValue);
 
 interface IPropertyTree;
 interface IProperties;
@@ -68,6 +72,11 @@ int jlib_decl numtostr(char *dst, unsigned __int64 _value);
 
 // Translate "human readable" size strings like 4G to numbers
 extern jlib_decl offset_t friendlyStringToSize(const char *in);
+
+// Translate "human readable" cpu amounts that can either be a decimal (e.g. 2.5), or a number of milli-cores (e.g. 1500m)
+extern jlib_decl double friendlyCPUToDecimal(const char *in);
+
+extern jlib_decl double getResourcedCpus(const char *resourceName);
 
 // Write a string as file contents, atomically
 extern void jlib_decl atomicWriteFile(const char *fileName, const char *output);
@@ -207,7 +216,7 @@ extern jlib_decl void JBASE32_Decode(const char *in,StringBuffer &out);
 /* URL: http://user:passwd@host:port/path */
 extern jlib_decl StringBuffer& encodeUrlUseridPassword(StringBuffer& out, const char* in);
 extern jlib_decl StringBuffer& decodeUrlUseridPassword(StringBuffer& out, const char* in);
-
+extern jlib_decl StringBuffer& encodeURL(StringBuffer& out, const char* in);
 //--------------------------------------------------------------------------------------------------------------------
 
 class StringPointerArrayMapper : public SimpleArrayMapper<const char *>
@@ -240,14 +249,16 @@ class jlib_decl StringArray : public ArrayOf<const char *, const char *, StringP
     };
     typedef ArrayOf<const char *, const char *, StringPointerArrayMapper> PARENT;
 public:
+    void appendArray(const StringArray & other);
     // Appends a list in a string delimited by 'delim'
     void appendList(const char *list, const char *delim, bool trimSpaces = true);
     // Appends a list in a string delimited by 'delim' without duplicates
     void appendListUniq(const char *list, const char *delim, bool trimSpaces = true);
-    StringBuffer &getString(StringBuffer &ret, const char *delim); // get CSV string of array contents
+    StringBuffer &getString(StringBuffer &ret, const char *delim) const; // get CSV string of array contents
     void sortAscii(bool nocase=false);
     void sortAsciiReverse(bool nocase=false);
     void sortCompare(int (*compare)(const char * const * l, const char * const * r));
+    void clear(bool) = delete;
 private:
     using PARENT::sort; // prevent access to this function - to avoid ambiguity
 };
@@ -293,6 +304,7 @@ public:
 
 extern jlib_decl unsigned msTick();
 extern jlib_decl unsigned usTick();
+extern jlib_decl unsigned __int64 nsTick();
 extern jlib_decl int write_pidfile(const char * instance);
 extern jlib_decl void doStackProbe();
 
@@ -303,12 +315,20 @@ inline constexpr bool isContainerized() { return true; }
 inline constexpr bool isContainerized() { return false; }
 #endif
 
+//Same for isDebugBuild() rather than requiring #ifdef _DEBUG
+#ifdef _DEBUG
+inline constexpr bool isDebugBuild() { return true; }
+#else
+inline constexpr bool isDebugBuild() { return false; }
+#endif
+
 #ifndef arraysize
 #define arraysize(T) (sizeof(T)/sizeof(*T))
 #endif
 
+using EnvironmentVector = std::vector<std::pair<std::string, std::string>>;
 extern jlib_decl unsigned runExternalCommand(StringBuffer &output, StringBuffer &error, const char *cmd, const char *input);
-extern jlib_decl unsigned runExternalCommand(const char *title, StringBuffer &output, StringBuffer &error, const char *cmd, const char *input);
+extern jlib_decl unsigned runExternalCommand(const char *title, StringBuffer &output, StringBuffer &error, const char *cmd, const char *input, const char * cwd, const EnvironmentVector * optEnvironment);
 
 extern jlib_decl unsigned __int64 greatestCommonDivisor(unsigned __int64 left, unsigned __int64 right);
 
@@ -453,6 +473,7 @@ extern jlib_decl bool queryMtlsBareMetalConfig();
 
 extern jlib_decl const char * matchConfigurationDirectoryEntry(const char *path,const char *mask,StringBuffer &name, StringBuffer &component, StringBuffer &instance);
 extern jlib_decl bool replaceConfigurationDirectoryEntry(const char *path,const char *frommask,const char *tomask,StringBuffer &out);
+extern jlib_decl bool validateConfigurationDirectory(const IPropertyTree* useTree, const char* category, const char* component, const char* instance, const char* dirToValidate);
 
 extern jlib_decl const char *queryCurrentProcessPath();
 
@@ -471,6 +492,9 @@ extern jlib_decl int parseCommandLine(const char * cmdline, MemoryBuffer &mb, co
 extern jlib_decl bool safe_ecvt(size_t len, char * buffer, double value, int numDigits, int * decimal, int * sign);
 extern jlib_decl bool safe_fcvt(size_t len, char * buffer, double value, int numPlaces, int * decimal, int * sign);
 extern jlib_decl StringBuffer &getTempFilePath(StringBuffer & target, const char * component, IPropertyTree * pTree);
+extern jlib_decl StringBuffer &getSpillFilePath(StringBuffer & target, const char * component, IPropertyTree * pTree);
+extern jlib_decl StringBuffer &createUniqueTempDirectoryName(StringBuffer & ret);
+extern jlib_decl IFile *createUniqueTempDirectory();
 
 interface jlib_thrown_decl ICorruptDllException: extends IException
 {
@@ -623,11 +647,21 @@ struct HPCCBuildInfo
     unsigned buildVersionMinor;
     unsigned buildVersionPoint;
     const char *buildVersion;
+    const char *buildMaturity;
+    const char *buildTagTimestamp;
 };
 
 extern jlib_decl HPCCBuildInfo hpccBuildInfo;
 extern jlib_decl bool checkCreateDaemon(unsigned argc, const char * * argv);
 
+//Createpassword of specified length, containing UpperCaseAlphas, LowercaseAlphas, numerics and symbols
+extern jlib_decl const char * generatePassword(StringBuffer &pwd, int pwdLen);
+
+#ifdef _CONTAINERIZED
+extern jlib_decl bool getDefaultPlane(StringBuffer &ret, const char * componentOption, const char * category);
+#endif
+
+extern jlib_decl void getResourceFromJfrog(StringBuffer &localPath, IPropertyTree &item);
 
 #endif
 

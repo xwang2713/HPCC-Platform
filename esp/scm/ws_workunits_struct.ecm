@@ -16,6 +16,8 @@
 ############################################################################## */
 
 #include "xslprocessor.hpp"
+EspInclude(ws_logaccess);
+
 //  ===========================================================================
 
 EspInclude(common);
@@ -64,6 +66,8 @@ ESPenum WUFileType : string
     ThorSlaveLog("ThorSlaveLog"),
     EclAgentLog("EclAgentLog"),
     ArchiveQuery("ArchiveQuery"),
+    ComponentLog("ComponentLog"),
+    PostMortem("PostMortem"),
 };
 
 ESPenum WUFileDownloadOption : int
@@ -122,30 +126,24 @@ ESPenum QuerySetQueryActionTypes : string
     ToggleSuspend("ToggleSuspend"),
     Activate("Activate"),
     Delete("Delete"),
+    DeleteQueriesAndWUs("DeleteQueriesAndWUs"),
     RemoveAllAliases("RemoveAllAliases"),
     ResetQueryStats("ResetQueryStats")
 };
 
-SCMenum WUINFOType
-{
-    WUGRAPHS,
-    WUTIMINGS,
-    WUACTIONS,
-    WURESULTS
-};
-
 ESPStruct [nil_remove] ECLException
 {
-    string Source;
     string Severity;
+    string Source;
     int Code;
     string Message;
-    string FileName;
-    int LineNo;
     int Column;
+    int LineNo;
+    string FileName;
     [min_ver("1.63")] int Activity;
     [min_ver("1.69")] string Scope;
     [min_ver("1.69")] int Priority;
+    [min_ver("1.70")] double Cost;
 };
 //  ===========================================================================
 ESPStruct [nil_remove] ECLSchemaItem
@@ -239,6 +237,7 @@ ESPStruct [nil_remove] ECLHelpFile
     [min_ver("1.44")] unsigned PID(0);
     [min_ver("1.58")] unsigned minActivityId(0);
     [min_ver("1.58")] unsigned maxActivityId(0);
+    [min_ver("1.94")] bool IsAvailable(true);
 };
 
 //  ===========================================================================
@@ -341,6 +340,18 @@ ESPStruct [nil_remove] ThorLogInfo
     int    NumberSlaves;
 };
 
+ESPStruct [nil_remove] ECLWUProcess
+{
+    string Name;
+    string Type;
+    string PodName;           //containerized only
+    int    InstanceNumber(1); //containerized only
+    string Log;               //bare metal only
+    string PID;               //bare metal only
+    string Pattern;           //bare metal only
+    int    Max(1);            //bare metal only
+};
+
 ESPStruct [nil_remove] ECLWorkunitLW
 {
     string Wuid;
@@ -360,6 +371,7 @@ ESPStruct [nil_remove] ECLWorkunitLW
 
     unsigned TotalClusterTime;
     ESParray<ESPstruct ApplicationValue> ApplicationValues;
+    [min_ver("1.91")] bool NoAccess(false);
 };
 
 ESPStruct [nil_remove] ECLWorkunit
@@ -439,6 +451,11 @@ ESPStruct [nil_remove] ECLWorkunit
     [min_ver("1.50")] int WorkflowCount;
     [min_ver("1.67")] int HelpersCount;
     [min_ver("1.78")] ESParray<string> ServiceNames;
+    [min_ver("1.84")] double ExecuteCost;
+    [min_ver("1.85")] double FileAccessCost;
+    [min_ver("1.87")] double CompileCost;
+    [min_ver("1.91")] bool NoAccess(false);
+    [min_ver("1.98")] ESParray<ESPstruct ECLWUProcess> ECLWUProcessList;
 };
 
 ESPStruct [nil_remove] WUECLAttribute
@@ -509,7 +526,7 @@ ESPStruct [nil_remove] ResubmittedWU
 
 ESPStruct WUFileOption
 {
-    ESPenum WUFileType FileType;
+    ESPenum WUFileType FileType("XML");
     string Name; //CPP, ThorLog, and EclAgentLog: required; XML: optional
     string IPAddress; //CPP/XML: required; ThorSlaveLog: required for legacy WU
     string Description; //CPP/XML: required
@@ -519,6 +536,11 @@ ESPStruct WUFileOption
     string PlainText; //XML: optional
     int SlaveNumber(1); //ThorSlaveLog: optional
     int64 SizeLimit(0);
+    [min_ver("1.90"), nil_remove] unsigned MaxLogRecords;
+    [min_ver("1.90"), nil_remove] ESPenum LogSelectColumnMode LogSelectColumnMode(1);
+    [min_ver("1.90"), nil_remove] ESPenum LogAccessLogFormat LogFormat(0);
+    [min_ver("1.90"), nil_remove] unsigned LogSearchTimeBuffSecs;
+    [min_ver("1.90"), nil_remove] ESParray<string> LogColumns;
 };
 
 ESPStruct [nil_remove] ScheduledWU
@@ -641,12 +663,15 @@ ESPStruct QuerySetQueryClientState
 ESPStruct QuerySetQueryActionItem
 {
     string QueryId;
+    [min_ver("1.93"), nil_remove] bool Activated;
+    [min_ver("1.93")] bool SuspendedByUser(false);
     ESPstruct QuerySetQueryClientState ClientState;
 };
 
 ESPStruct QuerySetQueryActionResult
 {
     string QueryId;
+    [min_ver("1.93")] string WUID;
     bool Suspended;
     bool Success;
     int Code;
@@ -720,9 +745,9 @@ ESPstruct WUPropertyFilter
 {
     string Name;                                // Attribute Name to match
                                                 // Match attribute's RawValue
-    [optional] string ExactValue;
-    [optional] string MinValue;
-    [optional] string MaxValue;
+    string ExactValue;
+    string MinValue;
+    string MaxValue;
 };
 
 // Filters that indicates which nodes are explicitly matched
@@ -731,29 +756,29 @@ ESPstruct WUPropertyFilter
 // PropertyFilters (attributes or statistics) is applied to all matches
 ESPStruct WUScopeFilter
 {
-    [optional] integer MaxDepth(9999);          // Maximum depth to return matches from (omitted means no limit)
-    [optional] ESParray<string, Scope> Scopes;  // Fully qualified scope (See definition of "Scope" in workunit.hpp)
-    [optional] ESParray<string, id> Ids;        // Return scope with given node id
-    [optional] ESParray<string, ScopeType> ScopeTypes;   // Return scope of a given type
-    [optional] ESParray<ESPstruct WUPropertyFilter, PropertyFilter> PropertyFilters;
+    integer MaxDepth(9999);          // Maximum depth to return matches from (omitted means no limit)
+    ESParray<string, Scope> Scopes;  // Fully qualified scope (See definition of "Scope" in workunit.hpp)
+    ESParray<string, id> Ids;        // Return scope with given node id
+    ESParray<string, ScopeType> ScopeTypes;   // Return scope of a given type
+    ESParray<ESPstruct WUPropertyFilter, PropertyFilter> PropertyFilters;
 };
 
 // This provides the filter which indicates which nodes are implicitly matched
 // Once a match is found, all nested scopes to a depth of depth are implicitly matched, provided they match the nested filter
 ESPStruct WUNestedFilter
 {
-    [optional] unsigned Depth(9999);            // How many nodes deep relative to matched scope id(s)
-                                                // 0 - implies return only the given scope id
-                                                // 1 - return only the immediate child of the given scope
-                                                // n - return children to 'n' level deep
-    [optional] ESParray<string, ScopeType> ScopeTypes;   // Return scope of a given type
+    unsigned Depth(9999);            // How many nodes deep relative to matched scope id(s)
+                                     // 0 - implies return only the given scope id
+                                     // 1 - return only the immediate child of the given scope
+                                     // n - return children to 'n' level deep
+    ESParray<string, ScopeType> ScopeTypes;   // Return scope of a given type
 };
 
 // Additional properties that are returned for a scopeType
 ESPStruct WUExtraProperties
 {
     string scopeType;                   // A type of scope e.g., activity/edge
-    [optional] ESParray<string, Property> Properties; // a list of properties to return, omitted means none
+    ESParray<string, Property> Properties; // a list of properties to return, omitted means none
 };
 
 // If measure and attributes are omitted then all matches are returned
@@ -767,10 +792,10 @@ ESPStruct WUPropertiesToReturn
     bool AllScopes(false);
     bool AllProperties(false);
     [min_ver("1.76")] bool AllNotes(false);
-    [optional] uint64 MinVersion;       // Only return properties where the version is later than this version.
-    [optional] string Measure;          // E.g. Time, Num, Size
-    [optional] ESParray<string, Property> Properties; // a list of properties to return
-    [optional] ESParray<ESPstruct WUExtraProperties, Extra> ExtraProperties;
+    uint64 MinVersion;       // Only return properties where the version is later than this version.
+    string Measure;          // E.g. Time, Num, Size
+    ESParray<string, Property> Properties; // a list of properties to return
+    ESParray<ESPstruct WUExtraProperties, Extra> ExtraProperties;
 };
 
 ESPStruct WUScopeOptions
@@ -796,30 +821,31 @@ ESPStruct WUPropertyOptions
 // Response related structures
 ESPstruct [nil_remove] WUResponseProperty
 {
-    [optional] string Name;         // Name of attribute
-    [optional] string RawValue;     // Value of attribute
-    [optional] string Formatted;    // Formatted value of attribute
-    [optional] string Measure;      // What type is this attribute
-    [optional] string Creator;      // Which engine created it
-    [optional] string CreatorType;  // What type of engine created it.
+    string Name;         // Name of attribute
+    string RawValue;     // Value of attribute
+    string Formatted;    // Formatted value of attribute
+    string Measure;      // What type is this attribute
+    string Creator;      // Which engine created it
+    string CreatorType;  // What type of engine created it.
 };
 
 ESPstruct [nil_remove] WUResponseNote
 {
-    [optional] string Source;       // Thor, Eclcc, Analyser etc
-    [optional] string Message;
-    [optional] nonNegativeInteger ErrorCode;
-    [optional] string Severity;
-    [optional] nonNegativeInteger Cost;
+    string Source;       // Thor, Eclcc, Analyser etc
+    string Message;
+    nonNegativeInteger ErrorCode;
+    string Severity;
+    nonNegativeInteger Cost;
 };
 
 ESPstruct [nil_remove] WUResponseScope
 {
-    [optional] string ScopeName;        // Fully qualified scope (See definition of "Scope" in workunit.hpp)
-    [optional] string Id;               // Node/Graph id
-    [optional] string ScopeType;        // e.g. Activity, Edge
-    [optional] ESParray<ESPstruct WUResponseProperty, Property> Properties;
-    [optional, min_ver("1.76")] ESParray<ESPstruct WUResponseNote, Note> Notes;
+    string ScopeName;        // Fully qualified scope (See definition of "Scope" in workunit.hpp)
+    string Id;               // Node/Graph id
+    string ScopeType;        // e.g. Activity, Edge
+    ESParray<ESPstruct WUResponseProperty, Property> Properties;
+    [min_ver("1.76")] ESParray<ESPstruct WUResponseNote, Note> Notes;
+    [min_ver("1.92")] string SinkActivity; // Only used by hotspot code
 };
 
 ESPStruct WUQueryConfigResult
@@ -839,6 +865,7 @@ ESPStruct WUDetailsMetaProperty
 {
     string Name;
     ESPenum WUDetailsAttrValueType ValueType;
+    [min_ver("1.99")] string Description;
 };
 
 ESPStruct WUDetailsActivityInfo
@@ -862,4 +889,26 @@ ESPStruct WUEclPluginsInFolder
 {
     string Path;
     ESParray<string, Plugin> Plugins;
+};
+
+ESPenum WUProtectFilter : string
+{
+    All("All"),
+    Protected("Protected"),
+    NotProtected("NotProtected")
+};
+
+ESPStruct LogAccessFilter
+{
+    string WildcardFilter;
+    ESPStruct TimeRange AbsoluteTimeRange;
+    unsigned RelativeTimeRangeBuffer;
+    unsigned LineLimit(10000);
+    int64 LineStartFrom(0);
+    ESPenum LogSelectColumnMode SelectColumnMode(1);
+    ESParray<string> CustomColumns;
+    ESParray<string> ComponentsFilter;
+    LogAccessLogFormat Format("CSV");
+    ESPenum SortDirection sortByTimeDirection(1);
+    ESPenum LogEventClass LogEventType;
 };

@@ -503,7 +503,7 @@ void DllServer::doRegisterDll(const char * name, const char * kind, const char *
     RemoteFilename dllRemote;
     StringBuffer ipText, dllText;
     dllRemote.setRemotePath(dllPath);
-    dllRemote.queryIP().getIpText(ipText);
+    dllRemote.queryIP().getHostText(ipText);
     dllRemote.getLocalPath(dllText);
 
     Owned<IRemoteConnection> conn = getEntryConnection(name, RTM_LOCK_WRITE);
@@ -632,7 +632,7 @@ ILoadedDllEntry * DllServerBase::doLoadDll(const char * name, DllLocationType ty
     location->getDllFilename(rfile);
     StringBuffer x;
     rfile.getPath(x);
-    LOG(MCdebugInfo, unknownJob, "Loading dll (%s) from location %s", name, x.str());
+    LOG(MCdebugInfo, "Loading dll (%s) from location %s", name, x.str());
     return createDllEntry(x.str(), false, NULL, resourcesOnly);
 }
 
@@ -748,14 +748,16 @@ IDllServer & queryDllServer()
     if (!dllServer)
     {
 #ifdef _CONTAINERIZED
-        const char* dllserver_root = getenv("HPCC_DLLSERVER_PATH");
-        assertex(dllserver_root != nullptr);
-        dllServer = new SharedVolumeDllServer(dllserver_root);
+        StringBuffer dllDirectory;
+        if (!getConfigurationDirectory(nullptr, "query", nullptr, nullptr, dllDirectory))
+            throwUnexpected();
+        dllServer = new SharedVolumeDllServer(dllDirectory);
 #else
         const char* dllserver_root = getenv("DLLSERVER_ROOT");
         StringBuffer dir;
         if(dllserver_root == NULL)
         {
+            // NB: category logically should be "query", but kept as "temp" for backward compatibility/legacy reasons
             if (getConfigurationDirectory(nullptr, "temp","dllserver","dllserver",dir)) // not sure if different instance might be better but never separated in past
                 dllserver_root = dir.str();
             else
@@ -783,7 +785,10 @@ void initDllServer(const char * localRoot)
 {
     CriticalBlock b(dllServerCrit);
     ::Release(dllServer);
-    dllServer = new DllServer(localRoot);
+    if (isContainerized())
+        dllServer = new SharedVolumeDllServer(localRoot);
+    else
+        dllServer = new DllServer(localRoot);
 }
 
 

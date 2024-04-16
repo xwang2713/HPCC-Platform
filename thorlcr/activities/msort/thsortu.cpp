@@ -1637,7 +1637,7 @@ class CMultiCoreJoinHelper: public CMultiCoreJoinHelperBase
         }
         int run()
         {
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMultiCoreJoinHelper::cReader started");
+            LOG(MCthorDetailedDebugInfo, "CMultiCoreJoinHelper::cReader started");
             try {
                 const void * row = parent->jhelper->nextRow();
                 assertex(!row);
@@ -1647,7 +1647,7 @@ class CMultiCoreJoinHelper: public CMultiCoreJoinHelperBase
             }
             for (unsigned i=0;i<parent->numworkers;i++) 
                 parent->addWork(NULL,NULL);
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMultiCoreJoinHelper::cReader exit");
+            LOG(MCthorDetailedDebugInfo, "CMultiCoreJoinHelper::cReader exit");
             return 0;
         }
     } reader;
@@ -1671,7 +1671,7 @@ class CMultiCoreJoinHelper: public CMultiCoreJoinHelperBase
         }
         int run()
         {
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMultiCoreJoinHelper::cWorker started");
+            LOG(MCthorDetailedDebugInfo, "CMultiCoreJoinHelper::cWorker started");
 
             Owned<IThorRowInterfaces> rowIf = parent->activity.getRowInterfaces();
             Owned<IEngineRowAllocator> allocator = parent->activity.getRowAllocator(rowIf->queryRowMetaData(), (roxiemem::RHFpacked|roxiemem::RHFunique));
@@ -1704,7 +1704,7 @@ class CMultiCoreJoinHelper: public CMultiCoreJoinHelperBase
             rowWriter->putRow(NULL); // end-of-stream
             rowWriter->flush();
             stopped = true; // NB: will not get past flush(), until all read
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMultiCoreJoinHelper::cWorker exit");
+            LOG(MCthorDetailedDebugInfo, "CMultiCoreJoinHelper::cWorker exit");
             return 0;
         }
         bool isStopped() const { return stopped; }
@@ -1752,8 +1752,8 @@ public:
             return false;
         stopped = false;
         for (unsigned i=0;i<numworkers;i++)
-            workers[i]->start();
-        reader.start();
+            workers[i]->start(true);
+        reader.start(true);
         return true;
     }
     virtual const void *nextRow()
@@ -1834,7 +1834,7 @@ class CMultiCoreUnorderedJoinHelper: public CMultiCoreJoinHelperBase
         multiWriter->abort();
     }
 
-    SimpleInterThreadQueueOf<cWorkItem,false> workqueue;
+    ReallySimpleInterThreadQueueOf<cWorkItem,false> workqueue;
     Owned<IRowMultiWriterReader> multiWriter;
     Owned<IRowWriter> rowWriter;
 
@@ -1848,7 +1848,7 @@ class CMultiCoreUnorderedJoinHelper: public CMultiCoreJoinHelperBase
         }
         int run()
         {
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMulticoreUnorderedJoinHelper::cReader started");
+            LOG(MCthorDetailedDebugInfo, "CMulticoreUnorderedJoinHelper::cReader started");
             try {
                 const void * row = parent->jhelper->nextRow();
                 assertex(!row);
@@ -1857,7 +1857,7 @@ class CMultiCoreUnorderedJoinHelper: public CMultiCoreJoinHelperBase
                 parent->setException(e,"CMulticoreUnorderedJoinHelper::cReader");
             }
             parent->stopWorkers();
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMulticoreUnorderedJoinHelper::cReader exit");
+            LOG(MCthorDetailedDebugInfo, "CMulticoreUnorderedJoinHelper::cReader exit");
             return 0;
         }
     } reader;
@@ -1876,7 +1876,7 @@ class CMultiCoreUnorderedJoinHelper: public CMultiCoreJoinHelperBase
             Owned<IEngineRowAllocator> allocator = parent->activity.getRowAllocator(rowIf->queryRowMetaData(), (roxiemem::RHFpacked|roxiemem::RHFunique));
 
             Owned<IRowWriter> rowWriter = parent->multiWriter->getWriter();
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMulticoreUnorderedJoinHelper::cWorker started");
+            LOG(MCthorDetailedDebugInfo, "CMulticoreUnorderedJoinHelper::cWorker started");
             for (;;)
             {
                 cWorkItem *work = parent->workqueue.dequeue();
@@ -1897,7 +1897,7 @@ class CMultiCoreUnorderedJoinHelper: public CMultiCoreJoinHelperBase
                     break;
                 }
             }
-            LOG(MCthorDetailedDebugInfo, thorJob, "CMulticoreUnorderedJoinHelper::cWorker exit");
+            LOG(MCthorDetailedDebugInfo, "CMulticoreUnorderedJoinHelper::cWorker exit");
             return 0;
         }
     } **workers;
@@ -1948,8 +1948,8 @@ public:
         workqueue.setLimit(numworkers+1);
         rowWriter.setown(multiWriter->getWriter());
         for (unsigned i=0;i<numworkers;i++)
-            workers[i]->start();
-        reader.start();
+            workers[i]->start(true);
+        reader.start(true);
         return true;
     }
     virtual const void *nextRow()
@@ -1971,7 +1971,7 @@ public:
     virtual void stop()
     {
         CMultiCoreJoinHelperBase::stop();
-        workqueue.stop();
+        workqueue.stop(numworkers, 1);
         multiWriter->abort();
         if (!reader.join(1000*60))
             IERRLOG("~CMulticoreUnorderedJoinHelper reader join timed out");

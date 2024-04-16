@@ -37,12 +37,14 @@ include_directories (
          ./../../system/include 
          ./../../system/jlib 
          ./../../common/workunit 
-    )
+         ./../../esp/clients/ws_dfsclient
+         ${HPCC_SOURCE_DIR}/system/security/shared       #seclib.hpp
+         )
 
 HPCC_ADD_LIBRARY( dfuwu SHARED ${SRCS} )
 set_target_properties ( dfuwu PROPERTIES 
-        COMPILE_FLAGS "-DLOGMSGCOMPONENT=3 -D_USRDLL"
-        DEFINE_SYMBOL DALI_EXPORTS 
+        COMPILE_FLAGS "-D_USRDLL"
+        DEFINE_SYMBOL DFUWU_EXPORTS
         )
 install ( TARGETS dfuwu RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
 target_link_libraries ( dfuwu 
@@ -52,5 +54,6 @@ target_link_libraries ( dfuwu
          hrpc 
          remote 
          dalibase 
+         ws_dfsclient
     )
 

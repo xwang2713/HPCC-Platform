@@ -27,7 +27,9 @@
 #include "mpbase.hpp"
 #include "dasess.hpp"
 
-#ifndef da_decl
+#ifdef DALI_EXPORTS
+#define da_decl DECL_EXPORT
+#else
 #define da_decl DECL_IMPORT
 #endif
 
@@ -60,6 +62,7 @@ class da_decl CDfsLogicalFileName
     bool external;
     bool allowospath;
     bool allowWild;
+    bool allowTrailingEmptyScope;
     SocketEndpoint foreignep;
     bool selfScopeTranslation = true; // default behaviour is to translate self scopes, e.g. .::.::scope::.::name -> scope::name
 
@@ -92,9 +95,12 @@ public:
     void setExternal(const char *location,const char *path);
     void setExternal(const SocketEndpoint &dafsip,const char *path);
     void setExternal(const RemoteFilename &rfn);
+    void setPlaneExternal(const char *planeName,const char *path);
     bool isExternal() const { return external; }
     bool isExternalPlane() const;
+    bool isRemote() const;
     bool getExternalPlane(StringBuffer & plane) const;
+    bool getRemoteSpec(StringBuffer &remoteSvc, StringBuffer &logicalName) const;
     bool isExternalFile() const;
     bool getExternalHost(StringBuffer & host) const;
     /*
@@ -144,11 +150,12 @@ public:
     IPropertyTree *createSuperTree() const;
     void allowOsPath(bool allow=true) { allowospath = allow; } // allow local OS path to be specified
     void setAllowWild(bool b=true) { allowWild = b; } // allow wildcards
+    void setAllowTrailingEmptyScope(bool b=true) { allowTrailingEmptyScope = b; }
     bool isExpanded() const;
     void expand(IUserDescriptor *user);
 
 protected:
-    void normalizeName(const char * name, StringAttr &res, bool strict);
+    void normalizeName(const char * name, StringAttr &res, bool strict, bool nameIsRoot);
     bool normalizeExternal(const char * name, StringAttr &res, bool strict);
 };
 
@@ -203,7 +210,7 @@ struct da_decl TransactionLog
             owner.startTransaction(cmd);
             owner.getCmdText(cmd, msg);
             msg.append(", endpoint=");
-            ep.getUrlStr(msg);
+            ep.getEndpointHostText(msg);
             startCycles = get_cycles_now();
         }
         else
@@ -437,14 +444,14 @@ interface ILocalOrDistributedFile: extends IInterface
     virtual unsigned numParts() = 0;
     virtual unsigned numPartCopies(unsigned partnum) = 0;
     virtual IFile *getPartFile(unsigned partnum,unsigned copy=0) = 0;
+    virtual void getDirAndFilename(StringBuffer &dir, StringBuffer &filename) = 0;
     virtual RemoteFilename &getPartFilename(RemoteFilename &rfn, unsigned partnum,unsigned copy=0) = 0;
     virtual offset_t getPartFileSize(unsigned partnum)=0;   // NB expanded size             
     virtual bool getPartCrc(unsigned partnum, unsigned &crc) = 0;
     virtual bool exists() const = 0;   // if created for writing, this may be false
     virtual bool isExternal() const = 0;
+    virtual bool isExternalFile() const = 0;
 };
-
-extern da_decl ILocalOrDistributedFile* createLocalOrDistributedFile(const char *fname,IUserDescriptor *user,bool onlylocal,bool onlydfs,bool iswrite, bool isPrivilegedUser, const StringArray *clusters);
 
 typedef __int64 ConnectionId;
 
@@ -538,9 +545,49 @@ extern da_decl ILockInfoCollection *deserializeLockInfoCollection(MemoryBuffer &
 
 extern da_decl IPropertyTreeIterator * getDropZonePlanesIterator(const char * name=nullptr);
 extern da_decl IPropertyTree * getDropZonePlane(const char * name);
+extern da_decl IPropertyTree * findPlane(const char *category, const char * path, const char * host, bool ipMatch, bool mustMatch);
+extern da_decl IPropertyTree * findDropZonePlane(const char * path, const char * host, bool ipMatch, bool mustMatch);
+extern da_decl bool validateDropZone(IPropertyTree *plane, const char *path, const char *host, bool ipMatch);
+extern da_decl bool isHostInPlane(IPropertyTree *plane, const char *host, bool ipMatch);
+extern da_decl bool getPlaneHost(StringBuffer &host, IPropertyTree *plane, unsigned which);
+extern da_decl void getPlaneHosts(StringArray &hosts, IPropertyTree *plane);
+extern da_decl bool isPathInPlane(IPropertyTree *plane, const char *path);
+extern da_decl bool allowForeign();
 extern da_decl void setPageCacheTimeoutMilliSeconds(unsigned timeoutSeconds);
 extern da_decl void setMaxPageCacheItems(unsigned _maxPageCacheItems);
 extern da_decl IRemoteConnection* connectXPathOrFile(const char* path, bool safe, StringBuffer& xpath);
 extern da_decl bool expandExternalPath(StringBuffer &dir, StringBuffer &tail, const char * filename, const char * s, bool iswin, IException **e);
+extern da_decl bool validFNameChar(char c); 
+extern da_decl void addStripeDirectory(StringBuffer &out, const char *directory, const char *planePrefix, unsigned partNum, unsigned lfnHash, unsigned numStripes);
+
+inline unsigned getFilenameHash(size32_t len, const char *filename)
+{
+    return hashc((const unsigned char *)filename, len, 0);
+}
+inline unsigned getFilenameHash(const char *filename)
+{
+    return getFilenameHash(strlen(filename), filename);
+}
+inline unsigned calcStripeNumber(unsigned partNum, unsigned lfnHash, unsigned numStripes)
+{
+    if (numStripes <= 1)
+        return 0;
+    return ((partNum+lfnHash)%numStripes)+1;
+}
+inline unsigned calcStripeNumber(unsigned partNum, const char *lfnName, unsigned numStripes)
+{
+    if (numStripes <= 1)
+        return 0;
+    unsigned lfnHash = getFilenameHash(lfnName);
+    return ((partNum+lfnHash)%numStripes)+1;
+}
+interface INamedGroupStore;
+extern da_decl void remapGroupsToDafilesrv(IPropertyTree *file, bool foreign, bool secure);
+
+#ifdef NULL_DALIUSER_STACKTRACE
+extern da_decl void logNullUser(IUserDescriptor *userDesc);
+#else
+inline void logNullUser(IUserDescriptor *userDesc) { }
+#endif
 
 #endif

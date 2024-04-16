@@ -1,0 +1,204 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+    "name": "hpcc-platform",
+    "version": "8.12.0",
+    "dependencies": [
+        {
+            "name": "apr",
+            "platform": "@VCPKG_APR@"
+        },
+        {
+            "name": "apr-util",
+            "platform": "@VCPKG_APR@"
+        },
+        {
+            "name": "arrow",
+            "default-features": false,
+            "features": [
+                "acero",
+                "dataset",
+                "filesystem",
+                "parquet"
+            ],
+            "platform": "@VCPKG_PARQUETEMBED@"
+        },
+        {
+            "name": "aws-sdk-cpp",
+            "default-features": false,
+            "features": [
+                "s3",
+                "sqs"
+            ],
+            "platform": "@VCPKG_SQS@"
+        },
+        {
+            "name": "azure-storage-blobs-cpp",
+            "platform": "@VCPKG_AZURE@"
+        },
+        {
+            "name": "azure-storage-files-shares-cpp",
+            "platform": "@VCPKG_AZURE@"
+        },
+        "boost-property-tree",
+        {
+            "name": "cpp-driver",
+            "platform": "@VCPKG_CASSANDRAEMBED@"
+        },
+        {
+            "name": "cppunit",
+            "platform": "@VCPKG_CPPUNIT@"
+        },
+        {
+            "name": "cpr",
+            "platform": "@VCPKG_ELASTICSTACK_CLIENT@"
+        },
+        "curl",
+        {
+            "name": "elasticlient",
+            "platform": "@VCPKG_ELASTICSTACK_CLIENT@ & !windows"
+        },
+        {
+            "name": "h3",
+            "platform": "@VCPKG_H3@"
+        },
+        {
+            "name": "hiredis",
+            "platform": "@VCPKG_REDIS@"
+        },
+        {
+            "name": "icu",
+            "platform": "@VCPKG_ICU@",
+            "features": [
+                "tools"
+            ]
+        },
+        {
+            "name": "jsoncpp",
+            "platform": "@VCPKG_ELASTICSTACK_CLIENT@"
+        },
+        "jwt-cpp",
+        {
+            "name": "libarchive",
+            "default-features": false,
+            "features": [
+                "bzip2"
+            ]
+        },
+        {
+            "name": "libcouchbase-cxx",
+            "platform": "@VCPKG_COUCHBASEEMBED@"
+        },
+        {
+            "name": "libgit2",
+            "platform": "@VCPKG_GIT@"
+        },
+        {
+            "name": "libiconv",
+            "platform": "osx"
+        },
+        {
+            "name": "libmemcached",
+            "platform": "@VCPKG_MEMCACHED@ & !windows & !osx"
+        },
+        {
+            "name": "libmysql",
+            "platform": "@VCPKG_MYSQLEMBED@ & !(windows & x86)",
+            "default-features": false,
+            "features": []
+        },
+        {
+            "name": "librdkafka",
+            "platform": "@VCPKG_KAFKA@"
+        },
+        {
+            "name": "libuv",
+            "platform": "@VCPKG_CASSANDRAEMBED@"
+        },
+        {
+            "name": "libxml2",
+            "platform": "@VCPKG_LIBXALAN@"
+        },
+        {
+            "name": "libxslt",
+            "default-features": false,
+            "features": [],
+            "platform": "@VCPKG_LIBXSLT@"
+        },
+        "libyaml",
+        "lz4",
+        {
+            "name": "minizip",
+            "platform": "@VCPKG_ZLIB@"
+        },
+        {
+            "name": "mongo-cxx-driver",
+            "platform": "@VCPKG_MONGODBEMBED@"
+        },
+        "nlohmann-json",
+        {
+            "name": "nlp-engine",
+            "platform": "@VCPKG_NLP@"
+        },
+        {
+            "name": "numactl",
+            "platform": "!windows & !osx"
+        },
+        {
+            "name": "openblas",
+            "features": [
+                "dynamic-arch",
+                "threads"
+            ],
+            "platform": "@VCPKG_ECLBLAS@ & !windows"
+        },
+        {
+            "name": "openblas",
+            "features": [
+                "threads"
+            ],
+            "platform": "@VCPKG_ECLBLAS@ & windows"
+        },
+        {
+            "name": "openldap",
+            "platform": "@VCPKG_OPENLDAP@ & !windows"
+        },
+        {
+            "name": "openssl",
+            "platform": "@VCPKG_OPENSSL@"
+        },
+        "pcre2",
+        {
+            "name": "opentelemetry-cpp",
+            "default-features": false,
+            "features": [
+                "otlp-http",
+                "otlp-grpc"
+            ]
+        },
+        {
+            "name": "python3",
+            "platform": "@VCPKG_PYTHON3@ & windows"
+        },
+        "rapidjson",
+        {
+            "name": "sqlite3",
+            "platform": "@VCPKG_SQLITE3EMBED@"
+        },
+        {
+            "name": "tbb",
+            "platform": "@VCPKG_TBB@"
+        },
+        {
+            "name": "wasmtime-cpp-api",
+            "platform": "@VCPKG_WASMEMBED@"
+        },
+        {
+            "name": "winflexbison",
+            "platform": "windows"
+        },
+        {
+            "name": "zlib",
+            "platform": "@VCPKG_ZLIB@"
+        }
+    ]
+}

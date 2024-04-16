@@ -454,31 +454,24 @@ bool readECLWUCurrentJob(const char* curjob, const char* clusterName, const char
         return false;
 
     // action name
-    char action[256];
     bptr = eptr + 1;
     eptr = strchr(bptr, ',');
     if(!eptr)
         return false;
 
-    int len = eptr - bptr;
-    strncpy(action, bptr, len);
-    action[len] = 0;
+    StringBuffer action;
+    action.append(eptr - bptr, bptr);
 
     // cluster name
-    char cluster[256];
     bptr = eptr + 1;
     eptr = strchr(bptr, ',');
     if(!eptr)
         return false;
 
-    len = eptr - bptr;
-    strncpy(cluster, bptr, len);
-    cluster[len] = 0;
-
-    if (cluster && *cluster)
+    if (eptr > bptr)
     {
-        clusterStr.clear().append(cluster);
-        if (clusterName && *clusterName && stricmp(cluster, clusterName))
+        clusterStr.clear().append(eptr - bptr, bptr);
+        if (!isEmptyString(clusterName) && !strieq(clusterStr, clusterName))
             return false;
     }
 
@@ -502,6 +495,10 @@ bool readECLWUCurrentJob(const char* curjob, const char* clusterName, const char
     if(!eptr)
         return false;
 
+    //The graph number in the job string may be in 2 formats:
+    //a number (for example: 2) or with the 'graph' in front of the number (for example: group2).
+    //Skip the 'graph' if it is in front of the number.
+    int len = eptr - bptr;
     if (bptr[0] == 'g' && len > 5)
         bptr += 5;
 
@@ -1403,8 +1400,29 @@ void CWsWorkunitsSoapBindingEx::createAndDownloadWUZAPFile(IEspContext& context,
     ensureWsWorkunitAccess(context, *cwu, SecAccess_Read);
 
     request->getParameter("URL", zapInfoReq.url);
-    request->getParameter("ESPIPAddress", zapInfoReq.espIP);
-    request->getParameter("ThorIPAddress", zapInfoReq.thorIP);
+    double version = context.getClientVersion();
+    if (version >= 1.95)
+    {
+        request->getParameter("ESPApplication", zapInfoReq.esp);
+        if (zapInfoReq.esp.isEmpty())
+            zapInfoReq.esp.set(espApplicationName.get());
+        request->getParameter("ThorProcesses", zapInfoReq.thor);
+
+        if (version >= 1.97)
+        {
+            zapInfoReq.populateLogFilter(request);
+        }
+    }
+    else
+    {
+        request->getParameter("ESPIPAddress", zapInfoReq.esp);
+        if (zapInfoReq.esp.isEmpty())
+        {
+            IpAddress ipaddr = queryHostIP();
+            ipaddr.getHostText(zapInfoReq.esp);
+        }
+        request->getParameter("ThorIPAddress", zapInfoReq.thor);
+    }
     request->getParameter("ProblemDescription", zapInfoReq.problemDesc);
     request->getParameter("WhatChanged", zapInfoReq.whatChanged);
     request->getParameter("WhereSlow", zapInfoReq.whereSlow);
@@ -1434,17 +1452,28 @@ void CWsWorkunitsSoapBindingEx::createAndDownloadWUZAPFile(IEspContext& context,
             zapInfoReq.emailFrom.set(wswService->zapEmailFrom.str());
     }
 
-    double version = context.getClientVersion();
     if (version >= 1.70)
         request->getParameter("ZAPPassword", zapInfoReq.password);
     else
         request->getParameter("Password", zapInfoReq.password);
+    if (isContainerized() && (version >= 2.00))
+    {
+        StringBuffer s;
+        request->getParameter("IncludeRelatedLogs", s);
+        zapInfoReq.includeRelatedLogs = strToBool(s.str());
+        request->getParameter("IncludePerComponentLogs", s.clear());
+        zapInfoReq.includePerComponentLogs = strToBool(s.str());
+    }
+
+    Owned<IFile> tempDir = createUniqueTempDirectory();
 
     //CWsWuFileHelper may need ESP's <Directories> settings to locate log files. 
     CWsWuFileHelper helper(directories);
-    response->setContent(helper.createWUZAPFileIOStream(context, cwu, zapInfoReq, thorSlaveLogThreadPoolSize));
+    response->setContent(helper.createWUZAPFileIOStream(context, cwu, zapInfoReq, tempDir->queryFilename(), thorSlaveLogThreadPoolSize));
     response->setContentType(HTTP_TYPE_OCTET_STREAM);
     response->send();
+
+    recursiveRemoveDirectory(tempDir);
 }
 
 void CWsWorkunitsSoapBindingEx::downloadWUFiles(IEspContext& context, CHttpRequest* request, CHttpResponse* response)
@@ -1503,6 +1532,9 @@ int CWsWorkunitsSoapBindingEx::onGet(CHttpRequest* request, CHttpResponse* respo
     IEspContext *ctx = request->queryContext();
     IProperties *params = request->queryParameters();
 
+    double defaultClientVersion = 0.0;
+    if ((ctx->getClientVersion() <= 0) && getDefaultClientVersion(defaultClientVersion))
+        ctx->setClientVersion(defaultClientVersion);
 
     try
     {
@@ -1543,9 +1575,6 @@ int CWsWorkunitsSoapBindingEx::onGet(CHttpRequest* request, CHttpResponse* respo
             SecAccessFlags accessOwn;
             SecAccessFlags accessOthers;
             getUserWuAccessFlags(*ctx, accessOwn, accessOthers, true);
-
-            if (ctx->getClientVersion()<=0)
-                ctx->setClientVersion(1.51);
 
             const char *cluster = params->queryProp("Cluster");
             const char *startDate = params->queryProp("StartDate");
@@ -1615,13 +1644,6 @@ int CWsWorkunitsSoapBindingEx::onGet(CHttpRequest* request, CHttpResponse* respo
             response->send();
             return 0;
         }
-        else if (!strnicmp(path.str(), "/WsWorkunits/WUResultBin", 24))
-        {
-            CWsWuResultOutHelper helper;
-            if (!helper.getWUResultStreaming(request, response, wuResultDownloadFlushThreshold))
-                return CWsWorkunitsSoapBinding::onGet(request,response);
-            return 0;
-        }
         else if (!strnicmp(path.str(), REQPATH_CREATEANDDOWNLOADZAP, sizeof(REQPATH_CREATEANDDOWNLOADZAP) - 1))
         {
             createAndDownloadWUZAPFile(*ctx, request, response);
@@ -1640,6 +1662,34 @@ int CWsWorkunitsSoapBindingEx::onGet(CHttpRequest* request, CHttpResponse* respo
     }
 
     return CWsWorkunitsSoapBinding::onGet(request,response);
+}
+
+int CWsWorkunitsSoapBindingEx::onGetInstantQuery(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method)
+{
+    if (strieq(method, "WUResultBin"))
+    {
+        CWsWuResultOutHelper helper;
+        if (helper.getWUResultStreaming(request, response, wuResultDownloadFlushThreshold))
+            return 0;
+    }
+    else if (strieq(method, "WUFile"))
+    {
+        StringBuffer type;
+        request->getParameter("Type", type);
+        if (strieq(type.str(), File_ComponentLog))
+        {
+            CWsWuFileHelper helper(nullptr);
+            helper.sendWUComponentLogStreaming(request, response);
+            return 0;
+        }
+        if (strieq(type.str(), getEnumText(FileTypePostMortem, queryFileTypes)))
+        {
+            CWsWuFileHelper helper(nullptr);
+            helper.sendLocalFileStreaming(request, response); //The post-mortem files are local files.
+            return 0;
+        }
+    }
+    return CWsWorkunitsSoapBinding::onGetInstantQuery(context, request, response, service, method);
 }
 
 bool CWsWorkunitsEx::onWUClusterJobQueueXLS(IEspContext &context, IEspWUClusterJobQueueXLSRequest &req, IEspWUClusterJobQueueXLSResponse &resp)

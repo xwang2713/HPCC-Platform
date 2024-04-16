@@ -22,12 +22,13 @@
 
 project(ws_sql)
 
-if(WSSQL_SERVICE AND USE_JAVA)
+if(WSSQL_SERVICE)
     find_package(Java REQUIRED)
     find_package(ANTLR REQUIRED)
 
     include(${HPCC_SOURCE_DIR}/esp/scm/additional.cmake)
     include(${HPCC_SOURCE_DIR}/esp/scm/smcscm.cmake)
+    include(${HPCC_SOURCE_DIR}/esp/scm/espscm.cmake)
 
     include(antlr3c.cmake)
 
@@ -43,6 +44,8 @@ if(WSSQL_SERVICE AND USE_JAVA)
         ${ESPSCM_GENERATED_DIR}/common_esp.cpp
         ${ESPSCM_GENERATED_DIR}/ws_sql_esp.cpp
         ${ESPSCM_GENERATED_DIR}/ws_workunits_struct_esp.cpp
+        ${ESPSCM_GENERATED_DIR}/ws_workunits_req_resp_esp.cpp
+        ${ESPSCM_GENERATED_DIR}/ws_logaccess_esp.cpp
         ${ESPSCM_GENERATED_DIR}/ws_topology_esp.cpp
         ${HPCC_SOURCE_DIR}/esp/services/ws_ecl/ws_ecl_wuinfo.cpp
         ${HPCC_SOURCE_DIR}/esp/services/ws_workunits/ws_workunitsHelpers.cpp
@@ -96,13 +99,17 @@ if(WSSQL_SERVICE AND USE_JAVA)
         ${ESPSCM_GENERATED_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/SQL2ECL
         ${HPCC_SOURCE_DIR}/common/thorhelper
+        ${HPCC_SOURCE_DIR}/esp/bindings/http/platform
+        ${HPCC_SOURCE_DIR}/rtl/eclrtl
+        ${HPCC_SOURCE_DIR}/rtl/include
+        ${HPCC_SOURCE_DIR}/esp/espcommon
         )
 
     if (CMAKE_COMPILER_IS_CLANG)
       set_source_files_properties(${ANTLR_sql2ecl_SOURCES} PROPERTIES COMPILE_FLAGS -Wno-parentheses-equality)
     endif()
-    
-    add_definitions(-D_USRDLL)
+
+    add_definitions(-D_USRDLL -Dwssql_API_LOCAL -DESP_SERVICE_wssql)
     HPCC_ADD_LIBRARY(ws_sql SHARED ${SRCS})
     add_dependencies(ws_sql espscm sql2ecl)
     target_link_libraries(
@@ -115,6 +122,7 @@ if(WSSQL_SERVICE AND USE_JAVA)
         dalibase
         libantlr3c
         wuwebview
+        ${COMMON_ESP_SERVICE_LIBS}
         )
 
     SET_DIRECTORY_PROPERTIES(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "antlr3c")
@@ -124,7 +132,7 @@ IF (USE_OPENSSL)
     	securesocket
     )
 ENDIF()
-         
+
     install(TARGETS ws_sql
         RUNTIME DESTINATION ${EXEC_DIR}
         LIBRARY DESTINATION ${LIB_DIR}

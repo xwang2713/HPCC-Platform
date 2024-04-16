@@ -22,6 +22,7 @@
 
 #include <assert.h>
 #include <atomic>
+#include <functional>
 #include "jiface.hpp"
 #include "jsem.hpp"
 
@@ -31,7 +32,7 @@ extern jlib_decl void spinUntilReady(std::atomic_uint &value);
 
 #ifdef _DEBUG
 //#define SPINLOCK_USE_MUTEX // for testing
-//#define SPINLOCK_RR_CHECK     // checks for realtime threads
+#define SPINLOCK_RR_CHECK     // checks for realtime threads
 #define _ASSERT_LOCK_SUPPORT
 #endif
 
@@ -377,8 +378,8 @@ public:
     {
         if (locked)
             return;
-        crit.enter();
         locked = true;
+        crit.enter();
     }
     inline void leave()
     {
@@ -429,7 +430,7 @@ public:
     inline void enter()       
     { 
         ThreadId self = GetCurrentThreadId(); 
-#ifdef SPINLOCK_RR_CHECK    // as requested by RKC 
+#if defined(SPINLOCK_RR_CHECK) && !defined(_WIN32)    // as requested by RKC
         int policy;
         sched_param param;
         if ((pthread_getschedparam(self, &policy, &param)==0)&&(policy==SCHED_RR)) {
@@ -1001,10 +1002,43 @@ template <typename X>
 class Singleton
 {
 public:
-    template <typename FUNC> X * query(FUNC factory) { return querySingleton(singleton, cs, factory); }
-    X * queryExisting() const { return singleton.load(std::memory_order_acquire); }
+    X * query()
+    {
+        if (initialized.load(std::memory_order_acquire))
+            return singleton.load(std::memory_order_acquire);
+        return nullptr;
+    }
+
+    template <typename FUNC> X * query(FUNC factory)
+    {
+        if (initialized.load(std::memory_order_acquire))
+            return singleton.load(std::memory_order_acquire); // avoid crit
+        CriticalBlock block(cs);
+        if (initialized.load(std::memory_order_acquire))
+            return singleton.load(std::memory_order_acquire);
+        X * value = factory();
+        singleton.store(value, std::memory_order_release);
+        initialized.store(true, std::memory_order_release);
+        return value;
+    }
+
+    //destroy() is designed to be called from a static destructor, not thread safe with calls to query() ...
+    void destroy(std::function<void (X*)> destructor)
+    {
+        X * value = singleton.exchange(nullptr, std::memory_order_acq_rel);
+        if (value)
+            destructor(value);
+        initialized = false;
+    }
+    void destroy()
+    {
+        X * value = singleton.exchange(nullptr, std::memory_order_acq_rel);
+        delete value;
+        initialized = false;
+    }
 private:
     std::atomic<X *> singleton = {nullptr};
+    std::atomic<bool> initialized = {false};
     CriticalSection cs;
 };
 

@@ -40,6 +40,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/esp/services
          ${HPCC_SOURCE_DIR}/esp/services/common
          ${HPCC_SOURCE_DIR}/esp/clients
+         ${HPCC_SOURCE_DIR}/esp/clients/wsecl
          ${HPCC_SOURCE_DIR}/esp/bindings
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp
          ${HPCC_SOURCE_DIR}/esp/bindings/http/client
@@ -48,10 +49,11 @@ include_directories (
          ${HPCC_SOURCE_DIR}/system/security/securesocket
          ${HPCC_SOURCE_DIR}/system/security/shared
          ${HPCC_SOURCE_DIR}/system/include
+         ${HPCC_SOURCE_DIR}/system/masking/include
          ${HPCC_SOURCE_DIR}/system/mp
          ${HPCC_SOURCE_DIR}/common/deftype
          ${HPCC_SOURCE_DIR}/common/environment
-         ${HPCC_SOURCE_DIR}/common/dllserver 
+         ${HPCC_SOURCE_DIR}/common/dllserver
          ${HPCC_SOURCE_DIR}/common/thorhelper
          ${HPCC_SOURCE_DIR}/common/workunit
          ${HPCC_SOURCE_DIR}/common/wuwebview
@@ -59,6 +61,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/rtl/eclrtl
          ${HPCC_SOURCE_DIR}/rtl/include
          ${HPCC_SOURCE_DIR}/esp/esdllib
+         ${HPCC_SOURCE_DIR}/esp/esdlscriptlib
          ${HPCC_SOURCE_DIR}/esp/logging/logginglib
          ${HPCC_SOURCE_DIR}/esp/logging/loggingmanager
          ${CMAKE_BINARY_DIR}
@@ -84,8 +87,10 @@ target_link_libraries ( esdl_svc_engine
          remote
          dalibase
          esdllib
+         esdlscriptlib
          dllserver
          dalibase
+         ${COMMON_ESP_SERVICE_LIBS}
     )
 
 IF (USE_OPENSSL)

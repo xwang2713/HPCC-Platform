@@ -36,7 +36,6 @@
 #include <list>
 #include <map>
 #include <string>
-using namespace std;
 
 //ESP
 #include "esp.hpp"
@@ -114,8 +113,8 @@ class CSessionCleaner : public Thread
     bool       m_isDetached;
 
 public:
-    CSessionCleaner(const char* _espSessionSDSPath, int _checkSessionTimeoutSeconds) : Thread("CSessionCleaner"),
-        espSessionSDSPath(_espSessionSDSPath), checkSessionTimeoutSeconds(_checkSessionTimeoutSeconds) , m_isDetached(false){ }
+    CSessionCleaner(const char* _espSessionSDSPath, bool detachedFromDali, int _checkSessionTimeoutSeconds) : Thread("CSessionCleaner"),
+        espSessionSDSPath(_espSessionSDSPath), checkSessionTimeoutSeconds(_checkSessionTimeoutSeconds) , m_isDetached(detachedFromDali){ }
 
     virtual ~CSessionCleaner()
     {
@@ -148,9 +147,9 @@ private:
 
     SocketEndpoint m_address;
 
-    map<string, protocol_cfg*> m_protocols; 
-    list<binding_cfg*> m_bindings; 
-    map<string, srv_cfg*> m_services;
+    std::map<std::string, protocol_cfg*> m_protocols;
+    std::list<binding_cfg*> m_bindings;
+    std::map<std::string, srv_cfg*> m_services;
 
     IArrayOf<IEspPlugin> m_plugins;
 
@@ -160,12 +159,16 @@ private:
     bool m_detachedFromDali = false;
     bool m_subscribedToDali = false;
     StringBuffer m_daliAttachStateFileName;
-    bool sdsSessionEnsured = false;
     bool sdsSessionNeeded = false;
     int  serverSessionTimeoutSeconds = 120 * ESP_SESSION_TIMEOUT;//2 x clientSessionTimeoutSeconds
+    std::list<int> bindingPorts;
+    std::list<int> bindingPortsNotInSDSSession;
+    CriticalSection bindingPortCrit;
 
 private:
     CEspConfig(CEspConfig &);
+    IPropertyTree* querySDSSessionTree(IRemoteConnection* conn);
+    void ensureSDSSessionApplications(IPropertyTree* espSession, unsigned short port);
 
 public:
     IMPLEMENT_IINTERFACE;
@@ -240,8 +243,9 @@ public:
     const SocketEndpoint &getLocalEndpoint(){return m_address;}
 
     void readSessionDomainsSetting();
-    void ensureSDSSessionApplications(IPropertyTree* espSession);
-    void ensureSDSSession();
+    void initSDSSessionCleaner(bool detachedFromDali);
+    void addBindingForSDSSession(unsigned short port);
+    void ensureBindingsInSDSSession();
 
     void loadProtocols();
     void loadServices();
@@ -263,8 +267,10 @@ public:
             throw(ie);
         }
         loadBindings();
-        if(useDali)
-            startEsdlMonitor();
+
+        //in spite of the "monitor" name, the ESDLMonitor currently loads both DALI and non-dali bindings and should always be run
+        //  in the future it would be nice to separate the two, and phase out DALI bindings in time, as we migrate to the cloud
+        startEsdlMonitor();
     }
 
     bool reSubscribeESPToDali();
@@ -276,7 +282,7 @@ public:
     IEspPlugin* getPlugin(const char* name);
 
     void loadBuiltIns();
-    builtin *getBuiltIn(string name);
+    builtin *getBuiltIn(std::string name);
 
     void loadProtocol(protocol_cfg &cfg);
     void loadBinding(binding_cfg &cfg);
@@ -295,8 +301,10 @@ public:
         unloadBindings();
         unloadServices();
         unloadProtocols();
-        if(useDali)
-           stopEsdlMonitor();
+
+        //in spite of the "monitor" name, the ESDLMonitor currently loads both DALI and non-dali bindings and should always be run
+        //  in the future it would be nice to separate the two, and phase out DALI bindings in time, as we migrate to the cloud
+        stopEsdlMonitor();
 
         serverstatus=NULL;
         
@@ -325,7 +333,7 @@ public:
 
     IEspProtocol* queryProtocol(const char* name)
     {
-        map<string, protocol_cfg*>::iterator pit = m_protocols.find(name);
+        std::map<std::string, protocol_cfg*>::iterator pit = m_protocols.find(name);
         if (pit != m_protocols.end())
             return (*pit).second->prot;
         return nullptr;

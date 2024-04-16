@@ -481,7 +481,7 @@ bool dfsfile(const char *lname, IUserDescriptor *userDesc, StringBuffer &out, Un
     CDfsLogicalFileName lfn;
     lfn.set(lname);
     if (!lfn.isExternal()) {
-        Owned<IPropertyTree> tree = queryDistributedFileDirectory().getFileTree(lname,userDesc,NULL,daliConnectTimeoutMs,true); //,userDesc);
+        Owned<IPropertyTree> tree = queryDistributedFileDirectory().getFileTree(lname,userDesc,NULL,daliConnectTimeoutMs,GetFileTreeOpts::expandNodes|GetFileTreeOpts::appendForeign); //,userDesc);
         if (partslist)
             filterParts(tree,*partslist);
         if (!tree) {
@@ -491,7 +491,7 @@ bool dfsfile(const char *lname, IUserDescriptor *userDesc, StringBuffer &out, Un
         toXML(tree,out);
     }
     else {
-        Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,userDesc,false,false,false,nullptr,defaultPrivilegedUser);
+        Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,userDesc,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
         if (file) {
             Owned<IFileDescriptor> fdesc = file->getFileDescriptor();
             Owned<IPropertyTree> t = createPTree("File");
@@ -536,7 +536,7 @@ void setdfspartattr(const char *lname, unsigned partNum, const char *attr, const
         throw MakeStringException(0, "External file not supported");
     if (lfn.isForeign()) 
         throw MakeStringException(0, "Foreign file not supported");
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname, userDesc, false, false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname, userDesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
     if (!file)
         throw MakeStringException(0, "Could not find file: '%s'", lname);
     if (file->querySuperFile())
@@ -628,7 +628,7 @@ static void writeGroup(IGroup *group, const char *name, const char *outputFilena
     StringBuffer eps;
     for (unsigned i=0;i<group->ordinality();i++)
     {
-        group->queryNode(i).endpoint().getUrlStr(eps.clear());
+        group->queryNode(i).endpoint().getEndpointHostText(eps.clear());
         if (io)
         {
             eps.newline();
@@ -811,7 +811,7 @@ bool dfsLs(const char *name, const char *options, StringBuffer &out)
 
 bool dfsmap(const char *lname, IUserDescriptor *user, StringBuffer &out)
 {
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     if (!file) {
         out.appendf("File %s not found",lname);
         return false;
@@ -845,7 +845,7 @@ int dfsexists(const char *lname,IUserDescriptor *user)
 
 void dfsparents(const char *lname, IUserDescriptor *user, StringBuffer &out)
 {
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,false,false,true,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,AccessMode::tbdRead,false,true,nullptr,defaultPrivilegedUser);
     if (file) {
         Owned<IDistributedSuperFileIterator> iter = file->getOwningSuperFiles();
         ForEach(*iter) 
@@ -859,7 +859,7 @@ void dfsunlink(const char *lname, IUserDescriptor *user)
 {
     for (;;)
     {
-        Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,false,false,true,nullptr,defaultPrivilegedUser);
+        Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,AccessMode::tbdRead,false,true,nullptr,defaultPrivilegedUser);
         if (!file)
         {
             UERRLOG("File '%s' not found", lname);
@@ -986,7 +986,7 @@ public:
 int dfsverify(const char *name,CDateTime *cutoff, IUserDescriptor *user)
 {
     static CIpTable dafilesrvips;
-    Owned<IDistributedFile> file=queryDistributedFileDirectory().lookup(name,user,false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> file=queryDistributedFileDirectory().lookup(name,user,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     if (!file) {
         UERRLOG("VERIFY: cannot find %s",name);
         return 1;
@@ -1014,7 +1014,7 @@ int dfsverify(const char *name,CDateTime *cutoff, IUserDescriptor *user)
                 SocketEndpoint ep(part->queryNode()->endpoint());
                 if (!dafilesrvips.verifyDaliFileServer(ep)) {
                     StringBuffer ips;
-                    ep.getIpText(ips);
+                    ep.getHostText(ips);
                     UERRLOG("VERIFY: file %s, cannot run DAFILESRV on %s",name,ips.str());
                     return 4;
                 }
@@ -1059,13 +1059,13 @@ int dfsverify(const char *name,CDateTime *cutoff, IUserDescriptor *user)
             try
             {
                 partfile.setown(createIFile(rfn));
-                // OUTLOG("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getUrlStr(eps).str());
+                // OUTLOG("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getEndpointHostText(eps).str());
                 if (partfile) {
                     CriticalUnblock unblock(crit);
                     item.crc = partfile->getCRC();
                     partfile->getTime(NULL,&item.dt,NULL);
                     if ((item.crc==0)&&!partfile->exists()) {
-                        UERRLOG("VERIFY: does not exist part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getUrlStr(eps).str());
+                        UERRLOG("VERIFY: does not exist part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getEndpointHostText(eps).str());
                         ok = false;
                     }
                 }
@@ -1076,7 +1076,7 @@ int dfsverify(const char *name,CDateTime *cutoff, IUserDescriptor *user)
             catch (IException *e)
             {
                 StringBuffer s;
-                s.appendf("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getUrlStr(eps).str());
+                s.appendf("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getEndpointHostText(eps).str());
                 EXCLOG(e, s.str());
                 e->Release();
                 ok = false;
@@ -1105,7 +1105,7 @@ int dfsverify(const char *name,CDateTime *cutoff, IUserDescriptor *user)
 
 void setprotect(const char *filename, const char *callerid, IUserDescriptor *user, StringBuffer &out)
 {
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(filename,user,false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(filename,user,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     file->setProtect(callerid,true);
     out.appendf("%s is protected", file->queryLogicalName());
 }
@@ -1114,7 +1114,7 @@ void setprotect(const char *filename, const char *callerid, IUserDescriptor *use
 
 void unprotect(const char *filename, const char *callerid, IUserDescriptor *user, StringBuffer &out)
 {
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(filename,user,false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(filename,user,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     file->setProtect((strcmp(callerid,"*")==0)?NULL:callerid,false);
     out.appendf("%s is unprotected", file->queryLogicalName());
 }
@@ -1568,7 +1568,7 @@ static offset_t getCompressedSize(IDistributedFile *file)
 
 void dfscompratio (const char *lname, IUserDescriptor *user)
 {
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(lname,user,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     StringBuffer out;
     out.appendf("File %s ",lname);
     if (file) {
@@ -1751,7 +1751,7 @@ void normalizeFileNames(IUserDescriptor *user, const char *name)
         Owned<IDistributedFile> dFile;
         try
         {
-            dFile.setown(queryDistributedFileDirectory().lookup(dlfn, user, true, false, false, nullptr, defaultPrivilegedUser, 30000)); // 30 sec timeout
+            dFile.setown(queryDistributedFileDirectory().lookup(dlfn, user, AccessMode::tbdWrite, false, false, nullptr, defaultPrivilegedUser, 30000)); // 30 sec timeout
             if (!dFile)
                 UWARNLOG("Could not find file lfn = %s", dlfn.get());
         }
@@ -1917,23 +1917,23 @@ void dfsreplication(const char *clusterMask, const char *lfnMask, unsigned redun
 
 void holdlock(const char *logicalFile, const char *mode, IUserDescriptor *userDesc)
 {
-    bool write;
+    AccessMode accessMode;
     if (strieq(mode, "read"))
-        write = false;
+        accessMode = AccessMode::tbdRead;
     else if (strieq(mode, "write"))
-        write = true;
+        accessMode = AccessMode::tbdWrite;
     else
         throw MakeStringException(0,"Invalid mode: %s", mode);
 
     PROGLOG("Looking up file: %s, mode=%s", logicalFile, mode);
-    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(logicalFile, userDesc, write, false, false, NULL, defaultPrivilegedUser, 5000);
+    Owned<IDistributedFile> file = queryDistributedFileDirectory().lookup(logicalFile, userDesc, accessMode, false, false, NULL, defaultPrivilegedUser, 5000);
     if (!file)
     {
         UERRLOG("File not found: %s", logicalFile);
         return;
     }
     OwnedPtr<DistributedFilePropertyLock> writeLock;
-    if (write)
+    if (isWrite(accessMode))
         writeLock.setown(new DistributedFilePropertyLock(file));
     PROGLOG("File: %s, locked, mode=%s - press a key to release", logicalFile, mode);
     getchar();
@@ -2192,7 +2192,7 @@ void daliping(const char *dalis,unsigned connecttime,unsigned n)
     StringBuffer qname("TESTINGQ_");
     SocketEndpoint ep;
     ep.setLocalHost(0);
-    ep.getUrlStr(qname);
+    ep.getEndpointHostText(qname);
     Owned<INamedQueueConnection> qconn;
     qconn.setown(createNamedQueueConnection(0));
     Owned<IQueueChannel> channel;
@@ -2577,7 +2577,7 @@ void dumpProgress(const char *wuid, const char * graph)
     Owned<IConstWUGraphProgress> progress = workunit->getGraphProgress(graph);
     if (!progress)
         return;
-    Owned<IPropertyTree> tree = progress->getProgressTree();
+    Owned<IPropertyTree> tree = progress->getProgressTree(true);
     saveXML("stdout:", tree);
 }
 
@@ -3058,9 +3058,9 @@ void migrateFiles(const char *srcGroup, const char *tgtGroup, const char *filema
                                     Owned<IFileIOStream> iFileIOStream = getFileIOStream(relPos+1);
 
                                     StringBuffer outputLine;
-                                    srcEp.getIpText(outputLine);
+                                    srcEp.getHostText(outputLine);
                                     outputLine.append(",");
-                                    tgtEp.getIpText(outputLine);
+                                    tgtEp.getHostText(outputLine);
                                     outputLine.append(",");
 
                                     IPartDescriptor *part = fileDesc->queryPart(partNum);
@@ -3224,13 +3224,16 @@ void removeOrphanedGlobalVariables(bool dryrun, bool reconstruct)
     {
         const char *name = varMapIt->first.c_str();
 
+        bool advanced = false;
         try
         {
             CDfsLogicalFileName lfn;
-            lfn.set(name);
-            lfn.makeFullnameQuery(lfnXpath.clear(), DXB_File);
-
-            Owned<IRemoteConnection> fConn = querySDS().connect(lfnXpath, myProcessSession(), RTM_LOCK_READ, daliConnectTimeoutMs);
+            Owned<IRemoteConnection> fConn;
+            if (lfn.setValidate(name))
+            {
+                lfn.makeFullnameQuery(lfnXpath.clear(), DXB_File);
+                fConn.setown(querySDS().connect(lfnXpath, myProcessSession(), RTM_LOCK_READ, daliConnectTimeoutMs));
+            }
             if (!fConn) // doesn't exist, clear up Variable and associates
             {
                 ++deletes;
@@ -3247,11 +3250,13 @@ void removeOrphanedGlobalVariables(bool dryrun, bool reconstruct)
                     }
                     varMapIt++;
                 }
+                advanced = true;
             }
             else
             {
                 ++existingPersists;
                 varMapIt++;
+                advanced = true;
             }
         }
         catch (IException *e)
@@ -3259,6 +3264,11 @@ void removeOrphanedGlobalVariables(bool dryrun, bool reconstruct)
             VStringBuffer errMsg("Skipping: %s", name);
             EXCLOG(e, errMsg.str());
             e->Release();
+            if (!advanced)
+            {
+                varMapIt++;
+                advanced = true;
+            }
         }
         ++checked;
 

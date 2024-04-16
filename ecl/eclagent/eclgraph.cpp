@@ -402,7 +402,7 @@ bool EclGraphElement::alreadyUpToDate(IAgentContext & agent)
         UNIMPLEMENTED;
     }
 
-    Owned<ILocalOrDistributedFile> ldFile = agent.resolveLFN(filename.get(), "Read", true, false, false, nullptr, isCodeSigned);
+    Owned<ILocalOrDistributedFile> ldFile = agent.resolveLFN(filename.get(), "Read", true, false, AccessMode::tbdRead, nullptr, isCodeSigned);
     if (!ldFile)
         return false;
     IDistributedFile * f = ldFile->queryDistributedFile();
@@ -499,7 +499,7 @@ void EclGraphElement::createActivity(IAgentContext & agent, EclSubGraph * owner)
             ForEachItemIn(i2, branches)
             {
                 EclGraphElement & input = branches.item(i2);
-                IHThorInput * probe = NULL;
+                IHThorInput * useInput = NULL;
 
                 if (probeManager)
                 {
@@ -512,18 +512,14 @@ void EclGraphElement::createActivity(IAgentContext & agent, EclSubGraph * owner)
                                                         0,//input.id,
                                                         0,//id,
                                                         0);
-                        probe = & dynamic_cast<IHThorInput &> (base->queryInput());
+                        useInput = & dynamic_cast<IHThorInput &> (base->queryInput());
                     }
                 }
                 else
                 {
-                    probe = subgraph->createLegacyProbe(input.queryOutput(branchIndexes.item(i2)),
-                                                    input.id,
-                                                    id,
-                                                    0,
-                                                    agent.queryWorkUnit());
+                    useInput = input.queryOutput(branchIndexes.item(i2));
                 }
-                activity->setInput(i2, probe);
+                activity->setInput(i2, useInput);
             }
             break;
         }
@@ -758,8 +754,8 @@ IHThorException * EclGraphElement::makeWrappedException(IException * e)
 
 //---------------------------------------------------------------------------
 
-EclSubGraph::EclSubGraph(IAgentContext & _agent, EclGraph & _parent, EclSubGraph * _owner, unsigned _seqNo, bool enableProbe, CHThorDebugContext * _debugContext, IProbeManager * _probeManager)
-    : probeEnabled(enableProbe), seqNo(_seqNo), parent(_parent), owner(_owner), debugContext(_debugContext), probeManager(_probeManager), isLoopBody(false)
+EclSubGraph::EclSubGraph(IAgentContext & _agent, EclGraph & _parent, EclSubGraph * _owner, unsigned _seqNo, CHThorDebugContext * _debugContext, IProbeManager * _probeManager)
+    : seqNo(_seqNo), parent(_parent), owner(_owner), debugContext(_debugContext), probeManager(_probeManager), isLoopBody(false)
 {
     executed = false;
     created = false;
@@ -768,6 +764,7 @@ EclSubGraph::EclSubGraph(IAgentContext & _agent, EclGraph & _parent, EclSubGraph
     elapsedGraphCycles = 0;
 
     subgraphCodeContext.set(_agent.queryCodeContext());
+    subgraphCodeContext.setWfid(parent.queryWfid());
     subgraphCodeContext.setContainer(this);
     subgraphAgentContext.setCodeContext(&subgraphCodeContext);
     subgraphAgentContext.set(&_agent);
@@ -805,7 +802,7 @@ void EclSubGraph::createFromXGMML(EclGraph * graph, ILoadedDllEntry * dll, IProp
             if (probeManager)
                 childProbe.setown(probeManager->startChildGraph(subGraphSeqNo, NULL));
 
-            Owned<EclSubGraph> subgraph = new EclSubGraph(*agent, *graph, this, subGraphSeqNo++, probeEnabled, debugContext, probeManager);
+            Owned<EclSubGraph> subgraph = new EclSubGraph(*agent, *graph, this, subGraphSeqNo++, debugContext, probeManager);
             subgraph->createFromXGMML(graph, dll, &cur, subGraphSeqNo, resultsGraph);
             if (probeManager)
                 probeManager->endChildGraph(childProbe, NULL);
@@ -883,25 +880,25 @@ void EclSubGraph::updateProgress()
         Owned<IWUGraphStats> progress = parent.updateStats(queryStatisticsComponentType(), queryStatisticsComponentName(), parent.queryWfid(), id);
         IStatisticGatherer & stats = progress->queryStatsBuilder();
         updateProgress(stats);
-
+        Owned<IStatisticCollection> statsCollection = stats.getResult();
+        agent->mergeAggregatorStats(*statsCollection, parent.queryWfid(), parent.queryGraphName(), id);
         if (startGraphTime || elapsedGraphCycles)
         {
             WorkunitUpdate lockedwu(agent->updateWorkUnit());
+            agent->updateAggregates(lockedwu);
             StringBuffer subgraphid;
             subgraphid.append(parent.queryGraphName()).append(":").append(SubGraphScopePrefix).append(id);
             if (startGraphTime)
                 parent.updateWUStatistic(lockedwu, SSTsubgraph, subgraphid, StWhenStarted, nullptr, startGraphTime);
+            StringBuffer scope;
+            scope.append(WorkflowScopePrefix).append(parent.queryWfid()).append(":").append(subgraphid);
             if (elapsedGraphCycles)
             {
                 unsigned __int64 elapsedTime = cycle_to_nanosec(elapsedGraphCycles);
                 parent.updateWUStatistic(lockedwu, SSTsubgraph, subgraphid, StTimeElapsed, nullptr, elapsedTime);
                 const cost_type cost = money2cost_type(calcCost(agent->queryAgentMachineCost(), nanoToMilli(elapsedTime)));
                 if (cost)
-                {
-                    StringBuffer scope;
-                    scope.append(WorkflowScopePrefix).append(parent.queryWfid()).append(":").append(subgraphid);
                     lockedwu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTsubgraph, scope, StCostExecute, NULL, cost, 1, 0, StatsMergeReplace);
-                }
             }
         }
     }
@@ -929,6 +926,11 @@ void EclSubGraph::updateProgress(IStatisticGatherer &progress)
     }
     ForEachItemIn(i2, subgraphs)
         subgraphs.item(i2).updateProgress(progress);
+
+    Owned<IStatisticCollection> statsCollection = progress.getResult();
+    const cost_type costDiskAccess = statsCollection->aggregateStatistic(StCostFileAccess);
+    if (costDiskAccess)
+        progress.addStatistic(StCostFileAccess, costDiskAccess);
 }
 
 bool EclSubGraph::prepare(const byte * parentExtract, bool checkDependencies)
@@ -1029,13 +1031,15 @@ void EclSubGraph::execute(const byte * parentExtract)
     doExecute(parentExtract, false);
 
     if(!owner)
-        PROGLOG("Completed subgraph %u", id);
-    if (!owner && !parent.queryLibrary())
     {
-        updateProgress();
-        cleanupActivities();
+        PROGLOG("Completed subgraph %u", id);
+        if (!parent.queryLibrary())
+        {
+            updateProgress();
+            cleanupActivities();
+            agent->updateWULogfile(nullptr);//Update workunit logfile name in case of rollover
+        }
     }
-    agent->updateWULogfile(nullptr);//Update workunit logfile name in case of rollover
 }
 
 
@@ -1170,7 +1174,7 @@ void EclGraph::associateSubGraph(EclSubGraph * subgraph)
     subgraphMap.setValue(subgraph->id, subgraph);
 }
 
-void EclGraph::createFromXGMML(ILoadedDllEntry * dll, IPropertyTree * xgmml, bool enableProbe)
+void EclGraph::createFromXGMML(ILoadedDllEntry * dll, IPropertyTree * xgmml)
 {
     Owned<IPropertyTreeIterator> iter = xgmml->getElements("node");
     unsigned subGraphSeqNo = 0;
@@ -1181,7 +1185,7 @@ void EclGraph::createFromXGMML(ILoadedDllEntry * dll, IPropertyTree * xgmml, boo
         if (probeManager)
             childProbe.setown(probeManager->startChildGraph(subGraphSeqNo, NULL));
 
-        Owned<EclSubGraph> subgraph = new EclSubGraph(*agent, *this, NULL, subGraphSeqNo++, enableProbe, debugContext, probeManager);
+        Owned<EclSubGraph> subgraph = new EclSubGraph(*agent, *this, NULL, subGraphSeqNo++, debugContext, probeManager);
         subgraph->createFromXGMML(this, dll, &iter->query(), subGraphSeqNo, NULL);
         if (probeManager)
             probeManager->endChildGraph(childProbe, NULL);
@@ -1272,13 +1276,11 @@ void EclGraph::execute(const byte * parentExtract)
             unsigned __int64 elapsedNs = milliToNano(elapsed);
             updateWorkunitStat(wu, SSTgraph, queryGraphName(), StTimeElapsed, description.str(), elapsedNs, wfid);
 
+            StringBuffer scope;
+            scope.append(WorkflowScopePrefix).append(wfid).append(":").append(queryGraphName());
             const cost_type cost = money2cost_type(calcCost(agent->queryAgentMachineCost(), elapsed));
             if (cost)
-            {
-                StringBuffer scope;
-                scope.append(WorkflowScopePrefix).append(wfid).append(":").append(queryGraphName());
                 wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTgraph, scope, StCostExecute, NULL, cost, 1, 0, StatsMergeReplace);
-            }
         }
 
         if (agent->queryRemoteWorkunit())
@@ -1347,8 +1349,12 @@ void EclGraph::updateLibraryProgress()
     {
         EclSubGraph & cur = graphs.item(idx);
         unsigned wfid = cur.parent.queryWfid();
-        Owned<IWUGraphStats> progress = wu->updateStats(queryGraphName(), queryStatisticsComponentType(), queryStatisticsComponentName(), wfid, cur.id);
-        cur.updateProgress(progress->queryStatsBuilder());
+
+        Owned<IWUGraphStats> progress =  wu->updateStats(queryGraphName(), queryStatisticsComponentType(), queryStatisticsComponentName(), wfid, cur.id, false);
+        IStatisticGatherer & stats = progress->queryStatsBuilder();
+        cur.updateProgress(stats);
+        Owned<IStatisticCollection> statsCollection = stats.getResult();
+        agent->mergeAggregatorStats(*statsCollection, wfid, queryGraphName(), cur.id);
     }
 }
 
@@ -1490,7 +1496,7 @@ void GraphResults::setResult(unsigned id, IHThorGraphResult * result)
 
 IWUGraphStats *EclGraph::updateStats(StatisticCreatorType creatorType, const char * creator, unsigned activeWfid, unsigned subgraph)
 {
-    return wu->updateStats (queryGraphName(), creatorType, creator, activeWfid, subgraph);
+    return wu->updateStats(queryGraphName(), creatorType, creator, activeWfid, subgraph, false);
 }
 
 void EclGraph::updateWUStatistic(IWorkUnit *lockedwu, StatisticScopeType scopeType, const char * scope, StatisticKind kind, const char * descr, unsigned __int64 value)
@@ -1538,12 +1544,11 @@ EclGraph * EclAgent::loadGraph(const char * graphName, IConstWorkUnit * wu, ILoa
 {
     Owned<IConstWUGraph> wuGraph = wu->getGraph(graphName);
     assertex(wuGraph);
-    Owned<IPropertyTree> xgmml = wuGraph->getXGMMLTree(false);
-
-    bool probeEnabled = wuRead->getDebugValueBool("_Probe", false);
+    Owned<IPropertyTree> xgmml = wuGraph->getXGMMLTree(false, false);
 
     Owned<EclGraph> eclGraph = new EclGraph(*this, graphName, wu, isLibrary, debugContext, probeManager, wuGraph->getWfid());
-    eclGraph->createFromXGMML(dll, xgmml, probeEnabled);
+    eclGraph->createFromXGMML(dll, xgmml);
+    statsAggregator.loadExistingAggregates(*wu);
     return eclGraph.getClear();
 }
 
@@ -1563,15 +1568,14 @@ void EclAgent::updateWULogfile(IWorkUnit *outputWU)
             rlf.setLocalPath(logname);
             rlf.getRemotePath(logname.clear());
 
-            if (outputWU)
+            Owned<IWorkUnit> w;
+            if (!outputWU)
             {
-                outputWU->addProcess("EclAgent", agentTopology->queryProp("@name"), GetCurrentProcessId(), 0, nullptr, false, logname.str());
+                w.setown(updateWorkUnit());
+                outputWU = w;
             }
-            else
-            {
-                Owned<IWorkUnit> w = updateWorkUnit();
-                w->addProcess("EclAgent", agentTopology->queryProp("@name"), GetCurrentProcessId(), 0, nullptr, false, logname.str());
-            }
+
+            outputWU->addProcess("EclAgent", agentTopology->queryProp("@name"), GetCurrentProcessId(), 0, nullptr, false, logname.str());
         }
         else
         {

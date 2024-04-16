@@ -19,6 +19,8 @@
 #include "eclrtl_imp.hpp"
 
 #include "hqlexpr.hpp"
+#include "hqlutil.hpp"
+#include "hqlattr.hpp"
 #include "fileview.hpp"
 #include "fvresultset.ipp"
 #include "fvidxsource.ipp"
@@ -26,45 +28,7 @@
 #include "dasess.hpp"
 #include "rtlrecord.hpp"
 #include "rtldynfield.hpp"
-
-#define MAX_FILE_READ_FAIL_COUNT 3
-
-//cloned from hthor - a candidate for commoning up.
-static IKeyIndex *openKeyFile(IDistributedFilePart *keyFile)
-{
-    unsigned failcount = 0;
-    unsigned numCopies = keyFile->numCopies();
-    assertex(numCopies);
-    for (unsigned copy=0; copy < numCopies && failcount < MAX_FILE_READ_FAIL_COUNT; copy++)
-    {
-        RemoteFilename rfn;
-        try
-        {
-            OwnedIFile ifile = createIFile(keyFile->getFilename(rfn,copy));
-            unsigned __int64 thissize = ifile->size();
-            if (thissize != -1)
-            {
-                StringBuffer remotePath;
-                rfn.getPath(remotePath);
-                unsigned crc = 0;
-                keyFile->getCrc(crc);
-                return createKeyIndex(remotePath.str(), crc, false);
-            }
-        }
-        catch (IException *E)
-        {
-            EXCLOG(E, "While opening index file");
-            E->Release();
-            failcount++;
-        }
-    }
-    RemoteFilename rfn;
-    StringBuffer url;
-    keyFile->getFilename(rfn).getRemotePath(url);
-    throw MakeStringException(1001, "Could not open key file at %s%s", url.str(), (numCopies > 1) ? " or any alternate location." : ".");
-}
-
-//---------------------------------------------------------------------------
+#include "thorfile.hpp"
 
 #define MIN_CACHED_ROWS         150
 #define MAX_CACHED_ROWS         200
@@ -137,7 +101,7 @@ IndexDataSource::IndexDataSource(const char * _logicalName, IHqlExpression * _di
         udesc->set(_username, _password);
     }
 
-    df.setown(queryDistributedFileDirectory().lookup(logicalName, udesc.get(),false,false,false,nullptr,defaultPrivilegedUser));
+    df.setown(queryDistributedFileDirectory().lookup(logicalName, udesc.get(),AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser));
     filtered = false;
 }
 
@@ -173,15 +137,40 @@ bool IndexDataSource::init()
     singlePart = (numParts == 1);
     ignoreSkippedRows = true;               // better if skipping to a particular point
     StringBuffer partName;
-    Owned<IDistributedFilePart> kf = df->getPart(numParts-1);
-    tlk.setown(openKeyFile(kf));
-    if (!tlk)
-        return false;
 
     IPropertyTree & properties = df->queryAttributes();
     //Need to assign the transformed record to meta
     if (!diskMeta)
-        diskMeta.setown(new DataSourceMetaData(diskRecord, 0, true, false, tlk->keyedSize()));
+    {
+        size32_t keyedSize;
+        IHqlExpression * payloadAttr = diskRecord->queryAttribute(_payload_Atom);
+        if (payloadAttr)
+        {
+            //Modern record structures indicate how many payload fields are present - so the keyed length can
+            //be calculated without having to open the index file.
+            unsigned payload = (unsigned)getIntValue(payloadAttr->queryChild(0));
+            Linked<IHqlExpression> keyedRecord = diskRecord;
+            if (payload)
+            {
+                HqlExprArray keyedFields;
+                unwindChildren(keyedFields, diskRecord);
+                keyedFields.popn(payload);
+                keyedRecord.setown(diskRecord->clone(keyedFields));
+            }
+
+            bool hasKnownSize = true;
+            bool usedDefault = false;
+            keyedSize = getMaxRecordSize(keyedRecord, 0, hasKnownSize, usedDefault);
+            assertex(!usedDefault);
+
+            //Sanity check in debug mode to check the calculation
+            dbgassertex(keyedSize == queryTLK()->keyedSize());
+        }
+        else
+            keyedSize = queryTLK()->keyedSize();
+
+        diskMeta.setown(new DataSourceMetaData(diskRecord, 0, true, false, keyedSize));
+    }
 
     if (!returnedMeta)
     {
@@ -213,6 +202,16 @@ bool IndexDataSource::init()
     return true;
 }
 
+IKeyIndex * IndexDataSource::queryTLK()
+{
+    if (!cachedTLK)
+    {
+        Owned<IDistributedFilePart> kf = df->getPart(numParts-1);
+        cachedTLK.setown(openKeyFile(*kf));
+    }
+    return cachedTLK;
+}
+
 __int64 IndexDataSource::numRows(bool force)
 {
     if (!filtered)
@@ -228,11 +227,11 @@ __int64 IndexDataSource::numRows(bool force)
         manager->setKey(NULL);
         curPart.clear();
         if (singlePart)
-            curPart.set(tlk);
+            curPart.set(queryTLK());
         else
         {
             Owned<IDistributedFilePart> kf = df->getPart(matchingParts.item(i));
-            curPart.setown(openKeyFile(kf));
+            curPart.setown(openKeyFile(*kf));
             if (!curPart)
             {
                 total = UNKNOWN_NUM_ROWS;
@@ -291,11 +290,11 @@ bool IndexDataSource::getNextRow(MemoryBuffer & out, bool extractRow)
             if ((unsigned)++curPartIndex >= matchingParts.ordinality())
                 return false;
             if (singlePart)
-                curPart.set(tlk);
+                curPart.set(queryTLK());
             else
             {
                 Owned<IDistributedFilePart> kf = df->getPart(matchingParts.item(curPartIndex));
-                curPart.setown(openKeyFile(kf));
+                curPart.setown(openKeyFile(*kf));
                 if (!curPart)
                     return false;
             }
@@ -436,7 +435,7 @@ bool IndexDataSource::addFilter(unsigned column, unsigned matchLen, unsigned siz
 
 void IndexDataSource::applyFilter()
 {
-    manager.setown(createLocalKeyManager(diskRecordMeta->queryRecordAccessor(true), tlk, NULL, false, false));
+    manager.setown(createLocalKeyManager(diskRecordMeta->queryRecordAccessor(true), queryTLK(), NULL, false, false));
     ForEachItemIn(i, values)
     {
         IStringSet & cur = values.item(i);

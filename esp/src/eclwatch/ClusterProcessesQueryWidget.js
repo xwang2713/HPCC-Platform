@@ -17,14 +17,16 @@ define([
     "hpcc/DelayLoadWidget",
     "hpcc/PreflightDetailsWidget",
     "hpcc/MachineInformationWidget",
-    "hpcc/IFrameWidget"
+    "hpcc/IFrameWidget",
+
+    "dijit/Dialog",
 ], function (declare, nlsHPCCMod, topic,
     registry,
     tree, selector,
     GridDetailsWidget, ESPPreflight, ESPRequest, WsTopology, Utility, ESPUtil, DelayLoadWidget, PreflightDetailsWidget, MachineInformationWidget, IFrameWidget) {
 
     var nlsHPCC = nlsHPCCMod.default;
-    return declare("CluserProcessesQueryWidget", [GridDetailsWidget, ESPUtil.FormHelper], {
+    return declare("ClusterProcessesQueryWidget", [GridDetailsWidget, ESPUtil.FormHelper], {
         i18n: nlsHPCC,
 
         gridTitle: nlsHPCC.title_Clusters,
@@ -56,7 +58,6 @@ define([
                 return;
 
             this.refreshActionState();
-            this.refreshGrid();
 
             this.machineFilter.on("apply", function (evt) {
                 var selection = context.grid.getSelected();
@@ -107,7 +108,7 @@ define([
 
         createGrid: function (domID) {
             var context = this;
-            var retVal = new declare([ESPUtil.Grid(true, true, false, true)])({
+            var retVal = new declare([ESPUtil.Grid(true, true, undefined, true)])({
                 store: ESPPreflight.CreateClusterProcessStore(),
                 columns: {
                     col1: selector({

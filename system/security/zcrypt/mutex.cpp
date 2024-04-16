@@ -20,7 +20,6 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string>
-using namespace std;
 
 #ifndef _WIN32
 #include <pthread.h>
@@ -41,12 +40,20 @@ ZMutex::~ZMutex()
 
 void ZMutex::lock()
 {
-    pthread_mutex_lock(&mutex);
+    int rc = pthread_mutex_lock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_lock()");
     while ((owner!=0) && !pthread_equal(owner, pthread_self()))
-        pthread_cond_wait(&lock_free, &mutex);
+    {
+        rc = pthread_cond_wait(&lock_free, &mutex);
+        if (rc != 0)
+            assert(!"Unexpected error in ZMutex pthread_cond_wait()");
+    }
     if (lockcount++==0)
         owner = pthread_self();
-    pthread_mutex_unlock(&mutex);
+    rc = pthread_mutex_unlock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_unlock()");
 }
 
 bool ZMutex::lockWait(long timeout)
@@ -64,52 +71,74 @@ bool ZMutex::lockWait(long timeout)
         abs.tv_nsec-=1000000000;
         abs.tv_sec++;
     }
-    pthread_mutex_lock(&mutex);
+    int rc = pthread_mutex_lock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_lock()");
     while ((owner!=0) && !pthread_equal(owner, pthread_self())) {
         if (pthread_cond_timedwait(&lock_free, &mutex, &abs)==ETIMEDOUT) {
-            pthread_mutex_unlock(&mutex);
+            rc = pthread_mutex_unlock(&mutex);
+            if (rc != 0)
+                assert(!"Unexpected error in ZMutex pthread_mutex_unlock()");
             return false;
         }
     }
     if (lockcount++==0)
         owner = pthread_self();
-    pthread_mutex_unlock(&mutex);
+    rc = pthread_mutex_unlock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_unlock()");
     return true;
 }
 
 void ZMutex::unlock()
 {
-    pthread_mutex_lock(&mutex);
+    int rc = pthread_mutex_lock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_lock()");
     if (--lockcount==0)
     {
-        pthread_cond_signal(&lock_free);
+        rc = pthread_cond_signal(&lock_free);
+        if (rc != 0)
+            assert(!"Unexpected error in ZMutex pthread_cond_signal()");
         owner = 0;
     }
-    pthread_mutex_unlock(&mutex);
+    rc = pthread_mutex_unlock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_unlock()");
 }
 
 void ZMutex::lockAll(int count)
 {
     if (count) {
-        pthread_mutex_lock(&mutex);
+        int rc = pthread_mutex_lock(&mutex);
+        if (rc != 0)
+            assert(!"Unexpected error in ZMutex pthread_mutex_lock()");
         while ((owner!=0) && !pthread_equal(owner, pthread_self()))
             pthread_cond_wait(&lock_free, &mutex);
         lockcount = count;
         owner = pthread_self();
-        pthread_mutex_unlock(&mutex);
+        rc = pthread_mutex_unlock(&mutex);
+        if (rc != 0)
+            assert(!"Unexpected error in ZMutex pthread_mutex_unlock()");
     }
 }
 
 int ZMutex::unlockAll()
 {
-    pthread_mutex_lock(&mutex);
+    int rc = pthread_mutex_lock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_lock()");
     int ret = lockcount;
     if (lockcount!=0) {
-        pthread_cond_signal(&lock_free);
+        rc = pthread_cond_signal(&lock_free);
+        if (rc != 0)
+            assert(!"Unexpected error in ZMutex pthread_cond_signal()");
         lockcount = 0;
         owner = 0;
     }
-    pthread_mutex_unlock(&mutex);
+    rc = pthread_mutex_unlock(&mutex);
+    if (rc != 0)
+        assert(!"Unexpected error in ZMutex pthread_mutex_unlock()");
     return ret;
 }
 
@@ -120,7 +149,7 @@ void zsynchronized::throwLockException(unsigned timeout)
 {
     char exbuf[256];
     sprintf(exbuf, "Can not lock - %d",timeout);
-    throw string(exbuf);
+    throw std::string(exbuf);
 }
 
 

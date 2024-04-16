@@ -25,6 +25,7 @@
 #include "hqlexpr.hpp"
 #include "hqlerrors.hpp"
 
+#include "hqlrepository.hpp"        // MORE: Temporary until HPCC-27173 is implemented
 #ifdef _USE_ZLIB
 #include "zcrypt.hpp"
 #endif
@@ -50,6 +51,8 @@ public:
     IMPLEMENT_IINTERFACE
 };
 
+static constexpr const char * specialDependencyDirectory = "node_modules";
+static bool isSpecialDependencyDirectory(const char * tail) { return streq(tail, specialDependencyDirectory); }
 
 //-------------------------------------------------------------------------------------------------------------------
 
@@ -60,9 +63,10 @@ public:
     CEclSource(IIdAtom * _eclId, EclSourceType _type) : type(_type), eclId(_eclId)  { }
 
 //interface IEclSource
-    virtual IProperties * getProperties() { return NULL; }
-    virtual IIdAtom * queryEclId() const { return eclId; }
-    virtual EclSourceType queryType() const { return type; }
+    virtual IProperties * getProperties() override { return NULL; }
+    virtual IIdAtom * queryEclId() const override { return eclId; }
+    virtual EclSourceType queryType() const override { return type; }
+    virtual const char * queryPath() const override { return nullptr; }
 
 // new virtuals implemented by the child classes
     virtual IEclSource * getSource(IIdAtom * searchName) = 0;
@@ -80,11 +84,11 @@ public:
     CEclCollection(IIdAtom * _eclName, EclSourceType _type) : CEclSource(_eclName, _type) { expandedChildren = false; fullyDefined = false; }
 
 //interface IEclSource
-    virtual IFileContents * queryFileContents() { return NULL; }
+    virtual IFileContents * queryFileContents() override { return NULL; }
 
 //CEclSource virtuals
-    virtual IEclSource * getSource(IIdAtom * searchName);
-    virtual IEclSourceIterator * getContained();
+    virtual IEclSource * getSource(IIdAtom * searchName) override;
+    virtual IEclSourceIterator * getContained() override;
     virtual void populateChildren() {}
     virtual void populateDefinition() {}
 
@@ -153,12 +157,12 @@ public:
     FileSystemFile(const char * eclName, IFileContents * _fileContents);
 
 //interface IEclSource
-    virtual IProperties * getProperties();
-    virtual IFileContents * queryFileContents() { return fileContents; }
+    virtual IProperties * getProperties() override;
+    virtual IFileContents * queryFileContents() override { return fileContents; }
 
 //CEclSource virtuals
-    virtual IEclSource * getSource(IIdAtom * searchName) { return NULL; }
-    virtual IEclSourceIterator * getContained() { return NULL; }
+    virtual IEclSource * getSource(IIdAtom * searchName) override { return NULL; }
+    virtual IEclSourceIterator * getContained() override { return NULL; }
 
     bool checkValid();
 
@@ -184,14 +188,31 @@ public:
 
     void addFile(const char * eclName, IFileContents * fileContents);
     FileSystemDirectory * addDirectory(const char * name);
+    void processDependencies(IPropertyTree * dependTree, const char * path, bool isPackageLock);
+    void processDependencies(const char * rootPath);
 
 protected:
-    virtual void populateChildren();
+    virtual void populateChildren() override;
+    void processDependencies(IDirectoryIterator * dir);
 
 public:
     Linked<IFile> directory;
 };
 
+class PackageDependency : public CEclCollection
+{
+public:
+    PackageDependency(IIdAtom * _eclName, const char * _url, bool _onlyAllowSHA)
+    : CEclCollection(_eclName, ESTdependency), url(_url), onlyAllowSHA(_onlyAllowSHA)
+    {
+    }
+
+    virtual const char * queryPath() const override { return url; }
+
+public:
+    StringBuffer url;
+    bool onlyAllowSHA;
+};
 
 //MORE: Create a base class for some of this code.
 class FileSystemEclCollection : public CEclSourceCollection
@@ -207,7 +228,7 @@ public:
     virtual IEclSourceIterator * getContained(IEclSource * optParent);
     virtual void checkCacheValid();
 
-    void processFilePath(IErrorReceiver * errs, const char * sourceSearchPath, bool allowPlugins);
+    void processFilePath(IErrorReceiver * errs, const char * sourceSearchPath, bool allowPlugins, bool processDependencies, bool complainIfMissing);
     void processSingle(const char * attrName, IFileContents * contents);
 
 public:
@@ -440,6 +461,12 @@ void FileSystemDirectory::expandDirectoryTree(IDirectoryIterator * dir, bool all
     ForEach (*dir)
     {
         IFile &file = dir->query();
+        const char * filename = file.queryFilename();
+        const char * tail = pathTail(filename);
+        //Ignore the special directory created by npm when it installs dependencies
+        //This allows the source control to be separated from compiling if desired...
+        if (isSpecialDependencyDirectory(tail))
+            continue;
         addFile(file, allowPlugins);
     }
     expandedChildren = true;
@@ -454,6 +481,110 @@ void FileSystemDirectory::populateChildren()
     }
 }
 
+void FileSystemDirectory::processDependencies(const char * rootPath)
+{
+    StringBuffer fullname;
+    StringBuffer searchPath(rootPath);
+    //Implement the node import rules.  Allow node_modules in this directory, or any parent directory
+    //and if present include the contents as dependencies.
+    for (;;)
+    {
+        addPathSepChar(fullname.clear().append(searchPath)).append(specialDependencyDirectory);
+        Owned<IFile> file = createIFile(fullname);
+        if (file->isDirectory() == fileBool::foundYes)
+        {
+            Owned<IDirectoryIterator> dir = file->directoryFiles(NULL, false, true);
+            processDependencies(dir);
+        }
+
+        //Now check if there is a node_modules directory in the parent directory
+        StringBuffer parentPath;
+        splitFilename(searchPath, &parentPath, &parentPath, nullptr, nullptr);
+
+        removeTrailingPathSepChar(parentPath);
+        if (parentPath.isEmpty() || isRootDirectory(parentPath))
+            return;
+
+        searchPath.set(parentPath);
+    }
+}
+
+void FileSystemDirectory::processDependencies(IDirectoryIterator * dir)
+{
+    ForEach (*dir)
+    {
+        IFile &file = dir->query();
+        const char * filename = file.queryFilename();
+        const char * tail = pathTail(filename);
+        if (file.isDirectory() == fileBool::foundYes)
+        {
+            if (isValidIdentifier(tail))
+            {
+                //If there is a directory within node_module, then treat that directory as a package
+                PackageDependency * depend = new PackageDependency(createIdAtom(tail), filename, false);
+                contents.append(*depend);
+            }
+        }
+        else if (file.isFile() == fileBool::foundYes)
+        {
+            //MORE: Possible future feature - see HPCC-26523
+#if 0
+            if (endsWith(filename, ".eclxml"))
+            {
+                //MORE: Add the archive as a package
+            }
+            else if (endsWith(filename, ".link"))
+            {
+                //Read the contents of the file, and use that as a link to a url etc.
+            }
+#endif
+        }
+    }
+    expandedChildren = true;
+}
+
+
+void FileSystemDirectory::processDependencies(IPropertyTree * dependTree, const char * path, bool isPackageLock)
+{
+    bool onlyAllowSHA = isPackageLock;
+    Owned<IPropertyTreeIterator> depends = dependTree->getElements(path);
+    StringBuffer decodedName;
+    ForEach(*depends)
+    {
+        IPropertyTree & cur = depends->query();
+        const char * name = cur.queryName();
+
+        // An empty string means this package - so ignore it.  It is specially encoded in the ptree.
+        if (isNullPtreeName(name, isPTreeNameEncoded(&cur)))
+            continue;
+
+        //npm generates entries in the format "node_modules/package", so skip the leading "node_modules/"
+        //Note because the "tag" contains a / the name will be encoded.
+        const char * encodedNodeModules = "node__modules_f"; // "node_modules/"
+        if (startsWith(name, encodedNodeModules))
+        {
+            name += strlen(encodedNodeModules);
+            //Ensure that any underscores (or other encoded characters), are decoded.
+            decodePtreeName(decodedName.clear(), name);
+            name = decodedName;
+        }
+
+        if (!isValidIdentifier(name))
+            continue;
+
+        //Ignore the entry if it has already been defined (node_modules has precedence over package-lock.json over package.json)
+        IIdAtom * id = createIdAtom(name);
+        if (find(id))
+            continue;
+
+        const char * url = isPackageLock ? cur.queryProp("resolved") : cur.queryProp(nullptr);
+        if (!canReadPackageFrom(url))
+            continue;
+
+        PackageDependency * depend = new PackageDependency(id, url, onlyAllowSHA);
+        contents.append(*depend);
+    }
+}
 
 //---------------------------------------------------------------------------------------
 
@@ -473,7 +604,7 @@ IEclSourceIterator * FileSystemEclCollection::getContained(IEclSource * optParen
     return parent->getContained();
 }
 
-void FileSystemEclCollection::processFilePath(IErrorReceiver * errs, const char * sourceSearchPath, bool allowPlugins)
+void FileSystemEclCollection::processFilePath(IErrorReceiver * errs, const char * sourceSearchPath, bool allowPlugins, bool processDependencies, bool complainIfMissing)
 {
     if (!sourceSearchPath)
         return;
@@ -501,11 +632,75 @@ void FileSystemEclCollection::processFilePath(IErrorReceiver * errs, const char 
             {
                 Owned<IDirectoryIterator> dir = file->directoryFiles(NULL, false, true);
                 root.expandDirectoryTree(dir, allowPlugins);
+
+                if (processDependencies)
+                {
+                    //Support dependencies in 3 different ways (processed in order of precedence)
+                    //a) node_modules directories (in this directory and parents)
+                    root.processDependencies(absolutePath);
+
+                    bool lockProcessed = false;
+                    //b) A package-lock.json file which ties down the package to a particular SHA
+                    {
+                        StringBuffer dependencyFilename(absolutePath);
+                        addPathSepChar(dependencyFilename).append("package-lock.json");
+
+                        Owned<IFile> dependencies = createIFile(dependencyFilename);
+                        if (dependencies->isFile() == fileBool::foundYes)
+                        {
+                            try
+                            {
+                                StringBuffer jsonText;
+                                jsonText.loadFile(dependencies);
+
+                                Owned<IPropertyTree> dependTree = createPTreeFromJSONString(jsonText);
+                                root.processDependencies(dependTree, "packages/*", true);
+                                //MORE: This needs re-implementing once Tony has added support for more general tags to json parsing
+                                //root.processDependencies(dependTree, "packages/node_modules/*", true);
+                                lockProcessed = true;
+                            }
+                            catch (IException * e)
+                            {
+                                StringBuffer errMsg;
+                                e->errorMessage(errMsg);
+                                errs->reportError(e->errorCode(), errMsg, dependencyFilename.str(), 0, 0, 0);
+                            }
+                        }
+                    }
+
+                    //c) A package.json file which allows branches/tags or semantic versioning (once supported)
+                    if (!lockProcessed)
+                    {
+                        StringBuffer dependencyFilename(absolutePath);
+                        addPathSepChar(dependencyFilename).append("package.json");
+
+                        Owned<IFile> dependencies = createIFile(dependencyFilename);
+                        if (dependencies->isFile() == fileBool::foundYes)
+                        {
+                            try
+                            {
+                                StringBuffer jsonText;
+                                jsonText.loadFile(dependencies);
+
+                                Owned<IPropertyTree> dependTree = createPTreeFromJSONString(jsonText);
+                                root.processDependencies(dependTree, "dependencies/*", false);
+                            }
+                            catch (IException * e)
+                            {
+                                StringBuffer errMsg;
+                                e->errorMessage(errMsg);
+                                errs->reportError(e->errorCode(), errMsg, dependencyFilename.str(), 0, 0, 0);
+                            }
+                        }
+                    }
+                }
             }
             else if (file->isFile() == fileBool::foundYes)
             {
                 root.addFile(*file, allowPlugins);
             }
+            else if (complainIfMissing)
+                ERRLOG("Path '%s' in search path not found", absolutePath.str());
         }
         else
         {
@@ -539,7 +734,7 @@ void FileSystemEclCollection::checkCacheValid()
 extern HQL_API IEclSourceCollection * createFileSystemEclCollection(IErrorReceiver *errs, const char * path, unsigned flags, unsigned trace)
 {
     Owned<FileSystemEclCollection> collection = new FileSystemEclCollection(trace);
-    collection->processFilePath(errs, path, (flags & ESFallowplugins) != 0);
+    collection->processFilePath(errs, path, (flags & ESFallowplugins) != 0, (flags & ESFdependencies) != 0, !(flags & ESFoptional));
     return collection.getClear();
 }
 
@@ -586,6 +781,7 @@ public:
     }
 
     virtual void populateChildren();
+    virtual const char * queryPath() const override { return elemTree->queryProp("@package"); }
     virtual void setTree(IPropertyTree * _elemTree) { elemTree.set(_elemTree); }
 
     CXmlEclElement * find(IIdAtom * searchName) { return static_cast<CXmlEclElement *>(CEclCollection::find(searchName)); }
@@ -595,6 +791,7 @@ public:
 protected:
     void expandAttribute(const char * modname, IPropertyTree * tree);
     void expandChildren(IPropertyTree * xml);
+    void expandDependency(const char * modname, const char * package, IPropertyTree * tree);
     void expandModule(const char * modname, IPropertyTree * tree);
     void getFullName(StringBuffer & target);
 
@@ -635,7 +832,12 @@ void CXmlEclElement::expandChildren(IPropertyTree * xml)
     {
         IPropertyTree & cur = modit->query();
         const char* modname = cur.queryProp("@name");
-        expandModule(modname, &cur);
+        const char* package = cur.queryProp("@package");
+
+        if (!package)
+            expandModule(modname, &cur);
+        else
+            expandDependency(modname, package, &cur);
     }
 
     Owned<IPropertyTreeIterator> attrit = xml->getElements("Attribute");
@@ -688,6 +890,21 @@ void CXmlEclElement::expandModule(const char * modname, IPropertyTree * tree)
         expandChildren(tree);
 }
 
+
+void CXmlEclElement::expandDependency(const char * modname, const char * package, IPropertyTree * tree)
+{
+    assertex(modname && package);
+    const char * dot = strchr(modname, '.');
+    if (dot)
+    {
+        IIdAtom * name = createIdAtom(modname, dot-modname);
+        select(name, ESTcontainer, NULL)->expandModule(dot+1, tree);
+        return;
+    }
+
+    IIdAtom * thisName = createIdAtom(modname);
+    select(thisName, ESTdependency, tree);
+}
 
 void CXmlEclElement::expandAttribute(const char * modname, IPropertyTree * tree)
 {
@@ -940,8 +1157,8 @@ public:
         updateKey();
     }
 
-    virtual void populateChildren();
-    virtual void populateDefinition();
+    virtual void populateChildren() override;
+    virtual void populateDefinition() override;
 
     inline const char * queryName() { return elemTree ? elemTree->queryProp("@name") : NULL; }
 

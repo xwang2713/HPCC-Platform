@@ -19,6 +19,7 @@
 
 #include "ws_dfuXRefService.hpp"
 
+#include "jconfig.hpp"
 #include "dadfs.hpp"
 #include "daft.hpp"
 #include "dautils.hpp"
@@ -26,9 +27,10 @@
 #include "exception_util.hpp"
 #include "package.h"
 #include "roxiecontrol.hpp"
+#include "hpccconfig.hpp"
 
 
-static const char* FEATURE_URL = "DfuXrefAccess";
+static const char* XREF_FEATURE_URL = "DfuXrefAccess";
 
 static void appendReplyMessage(bool json, StringBuffer &reply, const char *href,const char *format,...) __attribute__((format(printf, 4, 5)));
 static void appendReplyMessage(bool json, StringBuffer &reply, const char *href,const char *format,...)
@@ -119,14 +121,14 @@ void CWsDfuXRefEx::init(IPropertyTree *cfg, const char *process, const char *ser
 
     //Start out builder thread......
     m_XRefbuilder.setown(new CXRefExBuilderThread());
-    m_XRefbuilder->start();
+    m_XRefbuilder->start(false);
 }
 
 bool CWsDfuXRefEx::onDFUXRefArrayAction(IEspContext &context, IEspDFUXRefArrayActionRequest &req, IEspDFUXRefArrayActionResponse &resp)
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Full, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefArrayAction: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Full, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefArrayAction: Permission denied.");
 
         const char *action = req.getAction();
         const char *type = req.getType();
@@ -176,7 +178,10 @@ bool CWsDfuXRefEx::onDFUXRefArrayAction(IEspContext &context, IEspDFUXRefArrayAc
             else 
             {   // DeleteLogical:
                 // Note we don't want to physically delete 'lost' files - this will end up with orphans on next time round but that is safer
-                if (fileNode->RemoveLogical(file, userDesc, cluster, err))
+                if (!canRemoveLogicalFile(file, userDesc, req.getRemoveFromSuperfiles(), err))
+                    appendReplyMessage(fmt==ESPSerializationJSON, returnStr, nullptr,
+                        "Error(s) removing File %s\n%s", file, err.str());
+                else if (fileNode->RemoveLogical(file, userDesc, cluster, err))
                     appendReplyMessage(fmt==ESPSerializationJSON, returnStr, nullptr,
                         "Removed Logical File %s", file);
                 else
@@ -197,6 +202,47 @@ bool CWsDfuXRefEx::onDFUXRefArrayAction(IEspContext &context, IEspDFUXRefArrayAc
     catch(IException *e)
     {   
         FORWARDEXCEPTION(context, e, ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
+bool CWsDfuXRefEx::canRemoveLogicalFile(const char *logicalFile, IUserDescriptor *userDesc, bool removeFromSuperfiles, StringBuffer &errStr)
+{
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalFile, userDesc, AccessMode::tbdWrite, false, false, nullptr, defaultPrivilegedUser);
+    if (!df)
+    {
+        errStr.appendf("Logical file %s not found", logicalFile);
+        return false;
+    }
+    Owned<IDistributedSuperFileIterator> superOwners = df->getOwningSuperFiles();
+    if (!superOwners->first())
+        return true;
+
+    if (!removeFromSuperfiles)
+    {
+        errStr.appendf("Cannot remove logical file %s as owned by SuperFile(s)", logicalFile);
+        return false;
+    }
+    return removeLogicalFileFromSuperfiles(logicalFile, superOwners, errStr);
+}
+
+bool CWsDfuXRefEx::removeLogicalFileFromSuperfiles(const char *logicalFile, IDistributedSuperFileIterator *superOwners, StringBuffer &errStr)
+{
+    ForEach(*superOwners)
+    {
+        IDistributedSuperFile &superOwner = superOwners->query();
+        try
+        {
+            superOwner.removeSubFile(logicalFile, false, false, nullptr);
+            PROGLOG("File %s is removed from superfile %s", logicalFile, superOwner.queryLogicalName());
+        }
+        catch(IException *e)
+        {
+            errStr.appendf("Could not remove file %s from superfile %s: ", logicalFile, superOwner.queryLogicalName());
+            e->errorMessage(errStr);
+            e->Release();
+            return false;
+        }
     }
     return true;
 }
@@ -231,9 +277,9 @@ void CWsDfuXRefEx::readLostFileQueryResult(IEspContext &context, StringBuffer &b
 
         try
         {
-            Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(fileName, userDesc, false, false, false, NULL, defaultPrivilegedUser, 0);
-            if(df)
-                item.addPropInt64("Size", queryDistributedFileSystem().getSize(df));
+            Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(fileName, userDesc, AccessMode::tbdRead, false, false, NULL, defaultPrivilegedUser, 0);
+            if (df)
+                item.addPropInt64("Size", df->getFileSize(true, false));
         }
         catch(IException *e)
         {
@@ -251,7 +297,7 @@ bool CWsDfuXRefEx::onDFUXRefLostFiles(IEspContext &context, IEspDFUXRefLostFiles
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefLostFiles: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefLostFiles: Permission denied.");
 
         Owned<IXRefNode> xRefNode = getXRefNodeByCluster(req.getCluster());
         Owned<IXRefFilesNode> lostFiles = xRefNode->getLostFiles();
@@ -278,7 +324,7 @@ bool CWsDfuXRefEx::onDFUXRefFoundFiles(IEspContext &context, IEspDFUXRefFoundFil
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefFoundFiles: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefFoundFiles: Permission denied.");
 
         Owned<IXRefNode> xRefNode = getXRefNodeByCluster(req.getCluster());
         Owned<IXRefFilesNode> foundFiles = xRefNode->getFoundFiles();
@@ -304,7 +350,7 @@ bool CWsDfuXRefEx::onDFUXRefOrphanFiles(IEspContext &context, IEspDFUXRefOrphanF
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefOrphanFiles: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefOrphanFiles: Permission denied.");
 
         Owned<IXRefNode> xRefNode = getXRefNodeByCluster(req.getCluster());
         Owned<IXRefFilesNode> orphanFiles = xRefNode->getOrphanFiles();
@@ -330,7 +376,7 @@ bool CWsDfuXRefEx::onDFUXRefMessages(IEspContext &context, IEspDFUXRefMessagesQu
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefMessages: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefMessages: Permission denied.");
 
         StringBuffer buf;
         Owned<IXRefNode> xRefNode = getXRefNodeByCluster(req.getCluster());
@@ -352,7 +398,7 @@ bool CWsDfuXRefEx::onDFUXRefCleanDirectories(IEspContext &context, IEspDFUXRefCl
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Write, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefCleanDirectories: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Write, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefCleanDirectories: Permission denied.");
 
         StringBuffer err;
         Owned<IXRefNode> xRefNode = getXRefNodeByCluster(req.getCluster());
@@ -373,7 +419,7 @@ bool CWsDfuXRefEx::onDFUXRefDirectories(IEspContext &context, IEspDFUXRefDirecto
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefDirectories: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefDirectories: Permission denied.");
 
         StringBuffer buf;
         Owned<IXRefNode> xRefNode = getXRefNodeByCluster(req.getCluster());
@@ -439,7 +485,7 @@ bool CWsDfuXRefEx::onDFUXRefBuild(IEspContext &context, IEspDFUXRefBuildRequest 
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Full, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefBuild: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Full, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefBuild: Permission denied.");
 
         const char *cluster = req.getCluster();
         if (isEmptyString(cluster))
@@ -490,7 +536,7 @@ bool CWsDfuXRefEx::onDFUXRefBuildCancel(IEspContext &context, IEspDFUXRefBuildCa
 {
     try
     {
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Full, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefBuildCancel: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Full, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefBuildCancel: Permission denied.");
 
         m_XRefbuilder->cancel();
         StringBuffer returnStr;
@@ -556,7 +602,7 @@ bool CWsDfuXRefEx::onDFUXRefList(IEspContext &context, IEspDFUXRefListRequest &r
 #ifdef _CONTAINERIZED
         IERRLOG("CONTAINERIZED(CWsDfuXRefEx::onDFUXRefList)");
 #else
-        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefList: Permission denied.");
+        context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefList: Permission denied.");
 
         CConstWUClusterInfoArray clusters;
         getEnvironmentClusterInfo(clusters);
@@ -610,7 +656,7 @@ void addUsedFilesFromPackageMaps(MapStringTo<bool> &usedFileMap, const char *pro
         throw MakeStringException(ECLWATCH_PACKAGEMAP_NOTRESOLVED, "Unable to retrieve package information from dali /PackageMaps");
     StringArray pmids;
 #ifdef _CONTAINERIZED
-    Owned<IStringIterator> targets = getContainerTargetClusters("roxie", process);
+    Owned<IStringIterator> targets = config::getContainerTargets("roxie", process);
 #else
     Owned<IStringIterator> targets = getTargetClusters("RoxieCluster", process);
 #endif
@@ -701,47 +747,83 @@ void CWsDfuXRefEx::findUnusedFilesWithDetailsInDFS(IEspContext &context, const c
     }
 }
 
-bool CWsDfuXRefEx::onDFUXRefUnusedFiles(IEspContext &context, IEspDFUXRefUnusedFilesRequest &req, IEspDFUXRefUnusedFilesResponse &resp)
+void CWsDfuXRefEx::getRoxieFiles(const char *process, bool checkPackageMaps, MapStringTo<bool> &usedFileMap)
 {
-#ifdef _CONTAINERIZED
-    UNIMPLEMENTED_X("CONTAINERIZED(CWsDfuXRefEx::onDFUXRefUnusedFiles)");
-#else
-    const char *process = req.getProcessCluster();
-    if (isEmptyString(process))
-        throw MakeStringExceptionDirect(ECLWATCH_INVALID_INPUT, "process cluster not specified.");
-
     SocketEndpointArray servers;
+#ifdef _CONTAINERIZED
+    StringBuffer epStr;
+    getService(epStr, process, true);
+    SocketEndpoint ep(epStr);
+    servers.append(ep);
+#else
     getRoxieProcessServers(process, servers);
     if (!servers.length())
         throw MakeStringExceptionDirect(ECLWATCH_INVALID_CLUSTER_INFO, "process cluster, not found.");
+#endif
 
-    Owned<ISocket> sock = ISocket::connect_timeout(servers.item(0), 5000);
-    Owned<IPropertyTree> controlXrefInfo = sendRoxieControlQuery(sock, "<control:getQueryXrefInfo/>", 5000);
+    Owned<ISocket> sock = ISocket::connect_timeout(servers.item(0), ROXIECONNECTIONTIMEOUT);
+    Owned<IPropertyTree> controlXrefInfo = sendRoxieControlQuery(sock, "<control:getQueryXrefInfo/>", ROXIECONTROLXREFTIMEOUT);
     if (!controlXrefInfo)
         throw MakeStringExceptionDirect(ECLWATCH_INTERNAL_ERROR, "roxie cluster, not responding.");
-    MapStringTo<bool> usedFileMap;
     Owned<IPropertyTreeIterator> roxieFiles = controlXrefInfo->getElements("//File");
     ForEach(*roxieFiles)
         addLfnToUsedFileMap(usedFileMap, roxieFiles->query().queryProp("@name"));
 
-    if (req.getCheckPackageMaps())
+    if (checkPackageMaps)
         addUsedFilesFromPackageMaps(usedFileMap, process);
+}
+
+bool CWsDfuXRefEx::onDFUXRefUnusedFiles(IEspContext &context, IEspDFUXRefUnusedFilesRequest &req, IEspDFUXRefUnusedFilesResponse &resp)
+{
+    const char *process = req.getProcessCluster();
+    StringArray &processList = req.getProcessClusterList();
+    if (isEmptyString(process) && !processList.length())
+        throw MakeStringExceptionDirect(ECLWATCH_INVALID_INPUT, "process cluster not specified.");
+    bool checkPackageMaps = req.getCheckPackageMaps();
+    MapStringTo<bool> usedFileMap;
+    if (!isEmptyString(process))
+        getRoxieFiles(process, checkPackageMaps, usedFileMap);
+    ForEachItemIn(i, processList)
+    {
+        getRoxieFiles(processList.item(i), checkPackageMaps, usedFileMap);
+    }
+
+    StringArray &checkPlanes = req.getCheckPlanes();
+    if (isContainerized() && (checkPlanes.length() == 0))
+        throw makeStringExceptionV(ECLWATCH_INVALID_INPUT, "Storage planes must be specified for a containerized system");
+
     if (!req.getGetFileDetails())
     {
         StringArray unusedFiles;
-        findUnusedFilesInDFS(unusedFiles, process, usedFileMap);
+        if (checkPlanes.length())
+        {
+            ForEachItemIn(idx, checkPlanes)
+            {
+                findUnusedFilesInDFS(unusedFiles, checkPlanes.item(idx), usedFileMap);
+
+            }
+        }
+        else
+            findUnusedFilesInDFS(unusedFiles, process, usedFileMap);
         resp.setUnusedFileCount(unusedFiles.length());
         resp.setUnusedFiles(unusedFiles);
     }
     else
     {
         IArrayOf<IEspDFULogicalFile> unusedLFs;
-        findUnusedFilesWithDetailsInDFS(context, process, usedFileMap, unusedLFs);
+        if (checkPlanes.length())
+        {
+            ForEachItemIn(idx, checkPlanes)
+            {
+                findUnusedFilesWithDetailsInDFS(context, checkPlanes.item(idx), usedFileMap, unusedLFs);
+            }
+        }
+        else
+            findUnusedFilesWithDetailsInDFS(context, process, usedFileMap, unusedLFs);
         resp.setUnusedFileCount(unusedLFs.length());
         resp.setUnusedFilesWithDetails(unusedLFs);
     }
     return true;
-#endif
 }
 
 IXRefNode *CWsDfuXRefEx::getXRefNodeByCluster(const char* cluster)

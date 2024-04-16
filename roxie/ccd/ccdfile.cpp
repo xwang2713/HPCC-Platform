@@ -98,6 +98,7 @@ protected:
     bool copying = false;
     bool isCompressed = false;
     bool remote = false;
+    bool isKey = false;
     IRoxieFileCache *cached = nullptr;
     unsigned fileIdx = 0;
     unsigned crc = 0;
@@ -110,8 +111,8 @@ protected:
 public:
     IMPLEMENT_IINTERFACE;
 
-    CRoxieLazyFileIO(IFile *_logical, offset_t size, const CDateTime &_date, bool _isCompressed, unsigned _crc)
-        : logical(_logical), fileSize(size), isCompressed(_isCompressed), crc(_crc), fileStats(diskLocalStatistics)
+    CRoxieLazyFileIO(IFile *_logical, offset_t size, const CDateTime &_date, bool _isCompressed, bool _isKey, unsigned _crc)
+        : logical(_logical), fileSize(size), isCompressed(_isCompressed), isKey(_isKey), crc(_crc), fileStats(diskLocalStatistics)
     {
         fileDate.set(_date);
         currentIdx = 0;
@@ -221,7 +222,7 @@ public:
         }
         catch (IException *E) 
         {
-            if (traceLevel > 5)
+            if (doTrace(traceRoxieFiles))
             {
                 StringBuffer s;
                 DBGLOG("setFailure ignoring exception %s from IFileIO close", E->errorMessage(s).str());
@@ -239,7 +240,10 @@ public:
     IFileIO *getCheckOpen(unsigned &activeIdx)
     {
         CriticalBlock b(crit);
-        _checkOpen();
+        //Duplicate the check on current here so that the fast path (where it is already open) minimizes the time
+        //the critical section is held by avoiding calling a function with relatively expensive prolog
+        if (current.get() == &failure)
+            _checkOpen();
         activeIdx = currentIdx;
         return LINK(current);
     }
@@ -268,7 +272,7 @@ public:
                         throw MakeStringException(ROXIE_FILE_OPEN_FAIL, "Failed to open file %s at any of the following remote locations %s", logical->queryFilename(), filesTried.str()); // operations doesn't want a trap
                 }
                 const char *sourceName = sources.item(currentIdx).queryFilename();
-                if (traceLevel > 10)
+                if (doTrace(traceRoxieFiles, TraceFlags::Detailed))
                     DBGLOG("Trying to open %s", sourceName);
                 try
                 {
@@ -281,20 +285,22 @@ public:
                     fileStatus = queryFileCache().fileUpToDate(f, fileSize, fileDate, isCompressed, false);
                     if (fileStatus == FileIsValid)
                     {
-                        if (isCompressed)
+                        if (isCompressed && !isKey)
                             current.setown(createCompressedFileReader(f));
                         else
                             current.setown(f->open(IFOread));
                         if (current)
                         {
-                            if (traceLevel > 5)
+                            if (doTrace(traceRoxieFiles))
                                 DBGLOG("Opening %s", sourceName);
-                            disconnectRemoteIoOnExit(current);
+                            if (useRemoteResources)
+                                disconnectRemoteIoOnExit(current);
                             break;
                         }
     //                  throwUnexpected();  - try another location if this one has the wrong version of the file
                     }
-                    disconnectRemoteFile(f);
+                    if (useRemoteResources)
+                        disconnectRemoteFile(f);
                 }
                 catch (IException *E)
                 {
@@ -332,7 +338,7 @@ public:
     {
         if (newSource)
         {
-            if (traceLevel > 10)
+            if (doTrace(traceRoxieFiles, TraceFlags::Max))
                 DBGLOG("Adding information for location %s for %s", newSource->queryFilename(), logical->queryFilename());
             CriticalBlock b(crit);
             sources.append(*newSource);
@@ -552,10 +558,20 @@ static int getClusterPriority(const char *clusterName)
     return priority ? *priority : 100;
 }
 
-static void appendRemoteLocations(IPartDescriptor *pdesc, StringArray &locations, const char *localFileName, const char *fromCluster, bool includeFromCluster)
+static void appendRemoteLocations(IPartDescriptor *pdesc, StringArray &locations, const char *localFileName, const StringArray &fromClusters, bool includeFromCluster)
 {
     if (traceRemoteFiles)
-        DBGLOG("appendRemoteLocations lfn=%s fromCluster=%s, includeFromCluster=%s", nullText(localFileName), nullText(fromCluster), boolToStr(includeFromCluster));
+    {
+        StringBuffer s;
+        ForEachItemIn(ifc, fromClusters)
+        {
+            const char *fromCluster = fromClusters.item(ifc);
+            if (s.length())
+                s.append('/');
+            s.append(fromCluster);
+        }
+        DBGLOG("appendRemoteLocations lfn=%s fromCluster=%s, includeFromCluster=%s", nullText(localFileName), s.str(), boolToStr(includeFromCluster));
+    }
     IFileDescriptor &fdesc = pdesc->queryOwner();
     unsigned numCopies = pdesc->numCopies();
     unsigned lastClusterNo = (unsigned) -1;
@@ -570,9 +586,9 @@ static void appendRemoteLocations(IPartDescriptor *pdesc, StringArray &locations
         fdesc.getClusterGroupName(clusterNo, clusterName);
         if (traceRemoteFiles)
            DBGLOG("appendRemoteLocations found entry in cluster %s", clusterName.str());
-        if (fromCluster && *fromCluster)
+        if (fromClusters.length())
         {
-            bool matches = strieq(clusterName.str(), fromCluster);
+            bool matches = fromClusters.contains(clusterName);
             if (matches!=includeFromCluster)
                 continue;
         }
@@ -617,6 +633,14 @@ static void appendRemoteLocations(IPartDescriptor *pdesc, StringArray &locations
                 DBGLOG("appendRemoteLocations adding location %s at position %u", path.str(), idx+initialSize);
         }
     }
+}
+
+static void appendRemoteLocations(IPartDescriptor *pdesc, StringArray &locations, const char *localFileName, const char *fromCluster, bool includeFromCluster)
+{
+    StringArray fromClusters;
+    if (!isEmptyString(fromCluster))
+        fromClusters.append(fromCluster);
+    appendRemoteLocations(pdesc, locations, localFileName, fromClusters, includeFromCluster);
 }
 
 //----------------------------------------------------------------------------------------------
@@ -682,6 +706,11 @@ public:
     void sortAndDedup()
     {
         // NOTE: single-threaded
+        // It's unfortunate that this is done by sorting the entire set, as it means we can't say
+        // "limit the result to most recent N bytes", where N is what is being reported as hot by the OS. 
+        // Though it's debatable whether such a limit would be useful given the way accounting is done, allocating
+        // cache usage to the first pod to request a given page.
+
         unsigned sortSize;
         if (recentReadHead > recentReadSize)
             sortSize = recentReadSize;
@@ -808,7 +837,7 @@ public:
             startOffset = ((startOffset+nodeSize-1)/nodeSize)*nodeSize;
             do
             {
-                if (traceLevel > 8)
+                if (doTrace(traceRoxiePrewarm))
                     DBGLOG("prewarming index page %u %s %" I64F "x-%" I64F "x", (int) nodeType, filename, startOffset, endOffset);
                 bool loaded = keyIndex->prewarmPage(startOffset, nodeType);
                 if (!loaded)
@@ -869,7 +898,9 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
 
     RoxieFileStatus fileUpToDate(IFile *f, offset_t size, const CDateTime &modified, bool isCompressed, bool autoDisconnect=true)
     {
-        // Ensure that SockFile does not keep these sockets open (or we will run out)
+        // Ensure that SockFile does not keep these sockets open (or we will run out, or at least empty our LRU cache)
+        // If useRemoteResources is not set, all checks for fileUpToDate are likely to be followed quickly by calls to copy,
+        // so autoclosing is unnecessary and undesireable.
         class AutoDisconnector
         {
         public:
@@ -877,19 +908,42 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
             ~AutoDisconnector() { if (f) disconnectRemoteFile(f); }
         private:
             IFile *f;
-        } autoDisconnector(f, autoDisconnect);
+        } autoDisconnector(f, autoDisconnect && useRemoteResources);
 
         offset_t fileSize = f->size();
         if (fileSize != (offset_t) -1)
         {
             // only check size if specified
             if ( (size != (offset_t) -1) && !isCompressed && fileSize != size) // MORE - should be able to do better on compressed you'da thunk
-                return FileSizeMismatch;
+            {
+                DBGLOG("File size mismatch for '%s': local %llu, DFS %llu", f->queryFilename(), fileSize, size);
+                if (!ignoreFileSizeMismatches)
+                    return FileSizeMismatch;
+            }
             // A temporary fix - files stored on azure don't have an accurate time stamp, so treat them as up to date.
             if (isUrl(f->queryFilename()))
                 return FileIsValid;
+            if (modified.isNull()) 
+                return FileIsValid;
             CDateTime mt;
-            return (modified.isNull() || (f->getTime(NULL, &mt, NULL) &&  mt.equals(modified, false))) ? FileIsValid : FileDateMismatch;
+            if (f->getTime(NULL, &mt, NULL))
+            {
+                if (fileTimeFuzzySeconds)
+                {
+                    time_t mtt = mt.getSimple();
+                    time_t modt = modified.getSimple();
+                    __int64 diff = mtt-modt;
+                    if (std::abs(diff) <= (__int64) fileTimeFuzzySeconds)
+                        return FileIsValid;
+                }
+                else if (mt.equals(modified, false))
+                    return FileIsValid;
+            }
+            StringBuffer s1, s2;
+            DBGLOG("File date mismatch for '%s': local %s, DFS %s", f->queryFilename(), mt.getString(s1).str(), modified.getString(s2).str());
+            if (ignoreFileDateMismatches)
+                return FileIsValid;
+            return FileDateMismatch;
         }
         else
             return FileNotFound;
@@ -907,11 +961,22 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 cidtSleep.wait(cacheReportPeriodSeconds * 1000);
                 if (closing)
                     break;
-                if (traceLevel>8)
+                if (doTrace(traceRoxieFiles, TraceFlags::Max))
                     DBGLOG("Cache info dump");
+
                 // Note - cache info is stored in the DLLSERVER persistent area - which we should perhaps consider renaming
-                const char* dllserver_root = getenv("HPCC_DLLSERVER_PATH");
-                assertex(dllserver_root != nullptr);
+                StringBuffer cacheRootDirectory;
+                if (isContainerized())
+                {
+                    if (!getConfigurationDirectory(nullptr, "query", nullptr, nullptr, cacheRootDirectory))
+                        throwUnexpected();
+                }
+                else
+                {
+                    const char* dllserver_root = getenv("HPCC_DLLSERVER_PATH");
+                    assertex(dllserver_root != nullptr);
+                    cacheRootDirectory.append(dllserver_root);
+                }
 
                 Owned<const ITopologyServer> topology = getTopology();
                 Owned<CacheReportingBuffer> tempCacheReportingBuffer = new CacheReportingBuffer(*activeCacheReportingBuffer);
@@ -923,9 +988,9 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 if (ret.length())
                 {
                     // NOTE - this location is shared with other nodes - who may also be writing
-                    VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", dllserver_root, roxieName.str(), 0);
+                    VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", cacheRootDirectory.str(), roxieName.str(), 0);
                     atomicWriteFile(cacheFileName, ret);
-                    if (traceLevel > 8)
+                    if (doTrace(traceRoxiePrewarm))
                         DBGLOG("Channel 0 cache info:\n%s", ret.str());
                 }
                 for (unsigned channel : topology->queryChannels())
@@ -933,9 +998,9 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                     tempCacheReportingBuffer->report(ret.clear(), channel, cacheIndexes, cacheIndexChannels);
                     if (ret.length())
                     {
-                        VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", dllserver_root, roxieName.str(), channel);
+                        VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", cacheRootDirectory.str(), roxieName.str(), channel);
                         atomicWriteFile(cacheFileName, ret);
-                        if (traceLevel > 8)
+                        if (doTrace(traceRoxiePrewarm))
                             DBGLOG("Channel %u cache info:\n%s", channel, ret.str());
                     }
                 }
@@ -976,17 +1041,27 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
 
     ILazyFileIO *openFile(const char *lfn, unsigned partNo, unsigned channel, const char *localLocation,
                            IPartDescriptor *pdesc,
+                           const StringArray &localEnoughLocationInfo,
                            const StringArray &remoteLocationInfo,
                            offset_t size, const CDateTime &modified)
     {
         Owned<IFile> local = createIFile(localLocation);
         if (traceRemoteFiles)
             DBGLOG("openFile adding file %s (localLocation %s)", lfn, localLocation);
-        bool isCompressed = selfTestMode ? false : pdesc->queryOwner().isCompressed();
         unsigned crc = 0;
+        bool isCompressed = false;
+        bool isKey = false;
         if (!selfTestMode)
+        {
             pdesc->getCrc(crc);
-        Owned<CRoxieLazyFileIO> ret = new CRoxieLazyFileIO(local.getLink(), size, modified, isCompressed, crc);
+            IFileDescriptor &fdesc = pdesc->queryOwner();
+            isCompressed = fdesc.isCompressed();
+            const char *kind = fdesc.queryKind();
+            if (kind && streq(kind, "key"))
+                isKey = true;
+        }
+
+        Owned<CRoxieLazyFileIO> ret = new CRoxieLazyFileIO(local.getLink(), size, modified, isCompressed, isKey, crc);
         RoxieFileStatus fileStatus = fileUpToDate(local, size, modified, isCompressed);
         if (fileStatus == FileIsValid)
         {
@@ -999,7 +1074,35 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
         {
             bool addedOne = false;
 
-#ifndef _CONTAINERIZED
+#ifdef _CONTAINERIZED
+            // put the localEnoughLocations next in the list
+            ForEachItemIn(plane_idx, localEnoughLocationInfo)
+            {
+                try
+                {
+                    const char *localEnoughName = localEnoughLocationInfo.item(plane_idx);
+                    Owned<IFile> localEnoughFile = createIFile(localEnoughName);
+                    RoxieFileStatus status = fileUpToDate(localEnoughFile, size, modified, isCompressed);
+                    if (status==FileIsValid)
+                    {
+                        if (miscDebugTraceLevel > 5)
+                            DBGLOG("adding local enough location %s", localEnoughName);
+                        ret->addSource(localEnoughFile.getClear());
+                        addedOne = true;
+                        //do not set ret->setRemote(true) these locations are treated as if found locally, and not copied to the default plane
+                    }
+                    else if (localEnoughFile->exists() && !ignoreOrphans)  // Implies local dali and local enough file out of sync
+                        throw MakeStringException(ROXIE_FILE_ERROR, "Direct access (local enough) file %s does not match DFS information", localEnoughName);
+                    else if (miscDebugTraceLevel > 10)
+                        DBGLOG("Checked local enough data plane location %s, status=%d", localEnoughName, (int) status);
+                }
+                catch (IException *E)
+                {
+                    EXCLOG(MCoperatorError, E, "While creating local enough file reference");
+                    E->Release();
+                }
+            }
+#else
             // put the peerRoxieLocations next in the list
             StringArray localLocations;
             if (selfTestMode)
@@ -1048,7 +1151,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                     {
                         const char *remoteName = remoteLocationInfo.item(idx);
                         Owned<IFile> remote = createIFile(remoteName);
-                        if (traceLevel > 5)
+                        if (doTrace(traceRoxieFiles))
                             DBGLOG("checking remote location %s", remoteName);
                         RoxieFileStatus status = fileUpToDate(remote, size, modified, isCompressed);
                         if (status==FileIsValid)
@@ -1082,7 +1185,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                     throw MakeStringException(ROXIE_FILE_ERROR, "Local file %s does not match DFS information", localLocation);
                 else
                 {
-                    if (traceLevel >= 2)
+                    if (doTrace(TraceFlags::Always, TraceFlags::Standard))
                     {
 #ifndef _CONTAINERIZED
                         DBGLOG("Failed to open file at any of the following %d local locations:", localLocations.length());
@@ -1108,34 +1211,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
         return ret.getClear();
     }
 
-    static void deleteTempFiles(const char *targetFilename)
-    {
-        try
-        {
-            StringBuffer destPath;
-            StringBuffer prevTempFile;
-            splitFilename(targetFilename, &destPath, &destPath, &prevTempFile, &prevTempFile);
-            prevTempFile.append("*.$$$");
-            Owned<IDirectoryIterator> iter = createDirectoryIterator(destPath, prevTempFile, false, false);
-            ForEach(*iter)
-            {
-                OwnedIFile thisFile = createIFile(iter->query().queryFilename());
-                if (thisFile->isFile() == fileBool::foundYes)
-                    thisFile->remove();
-            }
-        }
-        catch(IException *E)
-        {
-            StringBuffer err;
-            OERRLOG("Could not remove tmp file %s", E->errorMessage(err).str());
-            E->Release();
-        }
-        catch(...)
-        {
-        }
-    }
-
-    static bool doCopyFile(ILazyFileIO *f, const char *tempFile, const char *targetFilename, const char *destPath, const char *msg, CFflags copyFlags=CFnone)
+    static bool doCopyFile(ILazyFileIO *f, const char *targetFilename, const char *destPath, const char *msg, CFflags copyFlags=CFnone)
     {
         bool fileCopied = false;
         IFile *sourceFile;
@@ -1152,7 +1228,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
         }
 
         unsigned __int64 freeDiskSpace = getFreeSpace(destPath);
-        deleteTempFiles(targetFilename);
         offset_t fileSize = sourceFile->size();
         if ( (fileSize + minFreeDiskSpace) > freeDiskSpace)
         {
@@ -1165,7 +1240,7 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
         }
         else
         {
-            Owned<IFile> destFile = createIFile(tempFile);
+            Owned<IFile> destFile = createIFile(targetFilename);
 
             bool hardLinkCreated = false;
             unsigned start = msTick();
@@ -1186,16 +1261,16 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 else
                 {
                     DBGLOG("%sing %s to %s", msg, sourceFile->queryFilename(), targetFilename);
-                    if (traceLevel > 5)
+                    if (doTrace(traceRoxieFiles))
                     {
                         StringBuffer str;
                         str.appendf("doCopyFile %s", sourceFile->queryFilename());
                         TimeSection timing(str.str());
-                        sourceFile->copyTo(destFile,DEFAULT_COPY_BLKSIZE,NULL,false,copyFlags);
+                        sourceFile->copyTo(destFile,DEFAULT_COPY_BLKSIZE,NULL,true,copyFlags);
                     }
                     else
                     {
-                        sourceFile->copyTo(destFile,DEFAULT_COPY_BLKSIZE,NULL,false,copyFlags);
+                        sourceFile->copyTo(destFile,DEFAULT_COPY_BLKSIZE,NULL,true,copyFlags);
                     }
                 }
                 f->setCopying(false);
@@ -1206,7 +1281,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 f->setCopying(false);
                 EXCLOG(E, "Copy exception - remove templocal");
                 destFile->remove();
-                deleteTempFiles(targetFilename);
                 throw;
             }
             catch(...)
@@ -1214,7 +1288,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 f->setCopying(false);
                 IERRLOG("%s exception - remove templocal", msg);
                 destFile->remove();
-                deleteTempFiles(targetFilename);
                 throw;
             }
             if (!hardLinkCreated)  // for hardlinks no rename needed
@@ -1226,7 +1299,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 catch(IException *)
                 {
                     f->setCopying(false);
-                    deleteTempFiles(targetFilename);
                     throw;
                 }
                 unsigned elapsed = msTick() - start;
@@ -1237,7 +1309,6 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
 
             f->copyComplete();
         }
-        deleteTempFiles(targetFilename);
         return fileCopied;
     }
 
@@ -1248,9 +1319,8 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
         else
         {
             const char *targetFilename = f->queryTarget()->queryFilename();
-            StringBuffer tempFile(targetFilename);
             StringBuffer destPath;
-            splitFilename(tempFile.str(), &destPath, &destPath, NULL, NULL);
+            splitFilename(targetFilename, &destPath, &destPath, NULL, NULL);
             if (destPath.length())
                 recursiveCreateDirectory(destPath.str());
             else
@@ -1260,9 +1330,8 @@ class CRoxieFileCache : implements IRoxieFileCache, implements ICopyFileProgress
                 return false;
             }
             
-            tempFile.append(".$$$");
             const char *msg = background ? "Background copy" : "Copy";
-            return doCopyFile(f, tempFile.str(), targetFilename, destPath.str(), msg, copyFlags);
+            return doCopyFile(f, targetFilename, destPath.str(), msg, copyFlags);
         }
         return false;  // if we get here there was no file copied
     }
@@ -1285,14 +1354,43 @@ public:
             offset_t cacheTrackSize = compConfig->getPropInt64("@cacheTrackSize", (offset_t) -1);
             if (cacheTrackSize == (offset_t) -1)
             {
-                const char *memLimit = compConfig->queryProp("resources/limits/@memory");
+                const char *memLimit = nullptr;
+#ifdef __linux__                        
+                StringBuffer contents;
+                try
+                {
+                    // In theory this limit should be useful on "bare-metal" on VM systems...
+                    contents.loadFile("/sys/fs/cgroup/memory.max");
+                    memLimit = contents.str();
+                }
+                catch (IException *E)
+                {
+                    E->Release();
+                }
+#endif
                 if (!memLimit)
-                    memLimit = compConfig->queryProp("resources/requests/@memory");
+                {
+                    if (isContainerized())
+                    {
+                        memLimit = compConfig->queryProp("resources/limits/@memory");
+                        if (!memLimit)
+                            memLimit = compConfig->queryProp("resources/requests/@memory");
+                    }
+                    else
+                    {
+                        // MORE - can we pick up from /proc/meminfo MemTotal: line? Is it useful to do so?
+                    }
+                }
                 if (memLimit)
                 {
                     try
                     {
                         cacheTrackSize = friendlyStringToSize(memLimit);
+                        offset_t roxiemem = roxiemem::getTotalMemoryLimit();
+                        if (cacheTrackSize > roxiemem)
+                            cacheTrackSize -= roxiemem;
+                        else
+                            cacheTrackSize = 0;
                     }
                     catch (IException *E)
                     {
@@ -1304,7 +1402,7 @@ public:
                 else
                     cacheTrackSize = 0x10000 * (1<<CacheInfoEntry::pageBits);
             }
-            if (cacheTrackSize)
+            if (cacheTrackSize && cacheTrackSize != (offset_t) -1)
                 activeCacheReportingBuffer = new CacheReportingBuffer(cacheTrackSize);
         }
     }
@@ -1322,12 +1420,12 @@ public:
         delete activeCacheReportingBuffer;
     }
 
-    virtual void start()
+    virtual void start() override
     {
         if (!started)
         {
-            bct.start();
-            hct.start();
+            bct.start(false);
+            hct.start(false);
             bctStarted.wait();
             hctStarted.wait();
         }
@@ -1342,7 +1440,7 @@ public:
 #endif
         if (activeCacheReportingBuffer && cacheReportPeriodSeconds)
         {
-            cidt.start();
+            cidt.start(false);
             cidtStarted.wait();
             cidtActive = true;
         }
@@ -1418,7 +1516,6 @@ public:
                         {
                             next.setown(popped);
                         }
-                        numFilesToProcess--;    // must decrement counter for SNMP accuracy
                     }
                 }
                 if (next)
@@ -1489,14 +1586,18 @@ public:
                     break;
 #ifdef _CONTAINERIZED
                 // Periodically recheck the list to see what is now local, and remove them from the buddyCopying list
-                ICopyArrayOf<ILazyFileIO> checkBuddies;
+                IArrayOf<ILazyFileIO> checkBuddies;
                 {
                     CriticalBlock b(crit);
-                    if (buddyCopying.length())
+                    while (buddyCopying.length())
                     {
-                        buddyCopying.swapWith(checkBuddies);
-                        buddyChecking = true;
+                        ILazyFileIO *popped = &buddyCopying.popGet();
+                        if (popped->isAliveAndLink())
+                        {
+                            checkBuddies.append(*popped);
+                        }
                     }
+                    buddyChecking = true;
                 }
                 if (checkBuddies.length())
                 {
@@ -1610,18 +1711,28 @@ public:
             if (file == &todo.item(idx))
             {
                 todo.remove(idx);
-                numFilesToProcess--;    // must decrement counter for SNMP accuracy
             }
         }
+#ifdef _CONTAINERIZED
+        ForEachItemInRev(idx2, buddyCopying)
+        {
+            if (file == &buddyCopying.item(idx2))
+            {
+                buddyCopying.remove(idx2);
+            }
+        }
+#endif
     }
 
     virtual ILazyFileIO *lookupFile(const char *lfn, RoxieFileType fileType,
                                      IPartDescriptor *pdesc, unsigned numParts, unsigned channel,
+                                     const StringArray &localEnoughLocationInfo,
                                      const StringArray &deployedLocationInfo, bool startFileCopy)
     {
         unsigned replicationLevel = getReplicationLevel(channel);
         IPropertyTree &partProps = pdesc->queryProperties();
         offset_t dfsSize = partProps.getPropInt64("@size", -1);
+        dfsSize = partProps.getPropInt64("@compressedSize", dfsSize); // Disk size is the compressed size if it has been filled in.
         bool local = partProps.getPropBool("@local");
         CDateTime dfsDate;
         if (checkFileDate)
@@ -1640,17 +1751,9 @@ public:
         }
         else
         {
-            // MORE - not at all sure about this. Foreign files should stay foreign ?
-            CDfsLogicalFileName dlfn;
-            dlfn.set(lfn);
-            if (dlfn.isForeign())
-                dlfn.clearForeign();
-#ifdef _CONTAINERIZED
-            const char *defaultDir = defaultPlaneDirPrefix;
-#else
-            const char *defaultDir = nullptr;
-#endif
-            makePhysicalPartName(dlfn.get(), partNo, numParts, localLocation, replicationLevel, DFD_OSdefault, defaultDir);
+            RemoteFilename rfn;
+            pdesc->getFilename(replicationLevel, rfn);
+            rfn.getLocalPath(localLocation);
         }
         Owned<ILazyFileIO> ret;
         try
@@ -1695,7 +1798,7 @@ public:
                     return f.getClear();
             }
 
-            ret.setown(openFile(lfn, partNo, channel, localLocation, pdesc, deployedLocationInfo, dfsSize, dfsDate));
+            ret.setown(openFile(lfn, partNo, channel, localLocation, pdesc, localEnoughLocationInfo, deployedLocationInfo, dfsSize, dfsDate));
 
             if (startFileCopy)
             {
@@ -1727,8 +1830,15 @@ public:
                         reportedFilesToCopy = true;
                         if (iShouldCopy)
                         {
+                            if (!useRemoteResources)
+                            {
+                                b.leave();
+                                ret->checkOpen();
+                                doCopy(ret, false, CFflush_rdwr);
+                                return ret.getLink();
+                            }
+
                             todo.append(*ret);
-                            numFilesToProcess++;  // must increment counter for SNMP accuracy
                             toCopy.signal();
                         }
                         else
@@ -1740,7 +1850,7 @@ public:
 #else
                         // Single-part files and top-level keys are copied immediately rather than being read remotely while background copying
                         // This is to avoid huge contention on the source dafilesrv if the Roxie is live.
-                        if (numParts==1 || (partNo==numParts && fileType==ROXIE_KEY))
+                        if (numParts==1 || (partNo==numParts && fileType==ROXIE_KEY) || !useRemoteResources)
                         {
                             b.leave();
                             ret->checkOpen();
@@ -1758,7 +1868,6 @@ public:
                             todo.add(*ret, 0);
                         else
                             todo.append(*ret);
-                        numFilesToProcess++;  // must increment counter for SNMP accuracy
                         toCopy.signal();
 #endif
 
@@ -1852,16 +1961,22 @@ public:
 
     void doLoadSavedOsCacheInfo(unsigned channel)
     {
-        const char* dllserver_root = getenv("HPCC_DLLSERVER_PATH");
-#ifdef _CONTAINERIZED
-        assertex(dllserver_root != nullptr);
-#else
-        //Default behaviour is to not load or saving anything on bare metal
-        if (!dllserver_root)
-            return;
-#endif
-        unsigned cacheWarmTraceLevel = topology->getPropInt("@cacheWarmTraceLevel", traceLevel);
-        VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", dllserver_root, roxieName.str(), channel);
+        StringBuffer cacheRootDirectory;
+        if (isContainerized())
+        {
+            if (!getConfigurationDirectory(nullptr, "query", nullptr, nullptr, cacheRootDirectory))
+                throwUnexpected();
+        }
+        else
+        {
+            //Default behaviour is to not load or saving anything on bare metal
+            const char* dllserver_root = getenv("HPCC_DLLSERVER_PATH");
+            if (!dllserver_root)
+                return;
+            cacheRootDirectory.append(dllserver_root);
+        }
+
+        VStringBuffer cacheFileName("%s/%s/cacheInfo.%d", cacheRootDirectory.str(), roxieName.str(), channel);
         StringBuffer cacheInfo;
         try
         {
@@ -1869,8 +1984,8 @@ public:
             {
 #ifndef _WIN32
                 StringBuffer output;
-                VStringBuffer command("ccdcache %s -t %u", cacheFileName.str(), cacheWarmTraceLevel);
-                unsigned retcode = runExternalCommand(nullptr, output, output, command, nullptr);
+                VStringBuffer command("ccdcache %s -t %u", cacheFileName.str(), doTrace(traceRoxiePrewarm, TraceFlags::Max) ? 2 : (doTrace(traceRoxiePrewarm) ? 1 : 0));
+                unsigned retcode = runExternalCommand(nullptr, output, output, command, nullptr, ".", nullptr);
                 if (output.length())
                 {
                     StringArray outputLines;
@@ -1948,7 +2063,7 @@ public:
                         unsigned age = msTick() - f->getLastAccessed();
                         if (age > maxFileAge[remote])
                         {
-                            if (traceLevel > 5)
+                            if (doTrace(traceRoxieFiles))
                             {
                                 // NOTE - querySource will cause the file to be opened if not already open
                                 // That's OK here, since we know the file is open and remote.
@@ -1975,7 +2090,7 @@ public:
                 ILazyFileIO &f = goers.item(idx++);
                 if (!f.isCopying())
                 {
-                    if (traceLevel > 5)
+                    if (doTrace(traceRoxieFiles))
                     {
                         unsigned age = msTick() - f.getLastAccessed();
                         DBGLOG("Closing %s (last accessed %u ms ago)", f.queryFilename(), age);
@@ -2038,21 +2153,31 @@ public:
     }
 
     virtual StringAttrMapping *queryFileErrorList() { return &fileErrorList; }  // returns list of files that could not be open
-
-    static inline bool validFNameChar(char c)
-    {
-        static const char *invalids = "*\"/:<>?\\|";
-        return (c>=32 && c<127 && !strchr(invalids, c));
-    }
 };
+
+#ifdef _CONTAINERIZED
+static bool getDirectAccessStoragePlanes(StringArray &planes)
+{
+    Owned<IPropertyTreeIterator> iter = getComponentConfigSP()->getElements("directAccessPlanes");
+    ForEach(*iter)
+    {
+        const char *plane = iter->query().queryProp("");
+        if (!isEmptyString(plane))
+            planes.appendUniq(plane);
+    }
+
+    return !planes.empty();
+}
+#endif
 
 ILazyFileIO *createPhysicalFile(const char *id, IPartDescriptor *pdesc, IPartDescriptor *remotePDesc, RoxieFileType fileType, int numParts, bool startCopy, unsigned channel)
 {
 #ifdef _CONTAINERIZED
-    const char *myCluster = defaultPlane.str();
+    const char *myCluster = (ROXIE_KEY == fileType) ? defaultIndexBuildPlane.str() : defaultPlane.str();
 #else
     const char *myCluster = roxieName.str();
 #endif
+    StringArray localEnoughLocations; //files from these locations won't be copied to the default plane
     StringArray remoteLocations;
     const char *peerCluster = pdesc->queryOwner().queryProperties().queryProp("@cloneFromPeerCluster");
     if (peerCluster)
@@ -2061,11 +2186,21 @@ ILazyFileIO *createPhysicalFile(const char *id, IPartDescriptor *pdesc, IPartDes
             appendRemoteLocations(pdesc, remoteLocations, NULL, peerCluster, true);  // Add only from specified cluster
     }
     else
+    {
+#ifdef _CONTAINERIZED
+        StringArray localEnoughPlanes;
+        if (getDirectAccessStoragePlanes(localEnoughPlanes))
+            appendRemoteLocations(pdesc, localEnoughLocations, NULL, localEnoughPlanes, true);
+        localEnoughPlanes.append(myCluster);
+        appendRemoteLocations(pdesc, remoteLocations, NULL, localEnoughPlanes, false);      // Add from any plane on same dali, other than default or loacal enough
+#else
         appendRemoteLocations(pdesc, remoteLocations, NULL, myCluster, false);      // Add from any cluster on same dali, other than mine
+#endif
+    }
     if (remotePDesc)
         appendRemoteLocations(remotePDesc, remoteLocations, NULL, NULL, false);    // Then any remote on remote dali
 
-    return queryFileCache().lookupFile(id, fileType, pdesc, numParts, channel, remoteLocations, startCopy);
+    return queryFileCache().lookupFile(id, fileType, pdesc, numParts, channel, localEnoughLocations, remoteLocations, startCopy);
 }
 
 //====================================================================================================
@@ -2218,6 +2353,7 @@ class CFileIOArray : implements IFileIOArray, public CInterface
     UnsignedArray subfiles;
     StringArray filenames;
     Int64Array bases;
+    mutable Int64Array sizes;     // Lazy-evaluated and cached
     int actualCrc = 0;
     unsigned valid = 0;
     bool multipleFormatsSeen = false;
@@ -2283,6 +2419,7 @@ public:
             valid++;
         files.append(f);
         bases.append(base);
+        sizes.append(-1);    // Calculated if/when needed
         if (_actualCrc)
         {
             if (actualCrc && actualCrc != _actualCrc)
@@ -2333,12 +2470,26 @@ public:
             totalSize = 0;
             ForEachItemIn(idx, files)
             {
-                IFileIO *file = files.item(idx);
-                if (file)
-                    totalSize += file->size();
+                totalSize += partSize(idx);
             }
         }
         return totalSize;
+    }
+
+    virtual unsigned __int64 partSize(unsigned idx) const override
+    {
+        CriticalBlock b(crit);
+        __int64 fsize = sizes.item(idx);
+        if (fsize == -1)
+        {
+            IFileIO *file = files.item(idx);
+            if (file)
+                fsize = file->size();
+            else
+                fsize = 0;
+            sizes.replace(fsize, idx);
+        }
+        return (unsigned __int64) fsize;
     }
 
     virtual StringBuffer &getId(StringBuffer &ret) const override
@@ -2544,7 +2695,7 @@ protected:
 
     virtual void notify(SubscriptionId id, const char *xpath, SDSNotifyFlags flags, unsigned valueLen, const void *valueData)
     {
-        if (traceLevel > 2)
+        if (doTrace(traceRoxieFiles))
             DBGLOG("Superfile %s change detected", lfn.get());
 
         {
@@ -2555,7 +2706,7 @@ protected:
                 cached = NULL;
             }
         }
-        globalPackageSetManager->requestReload(false, false);
+        globalPackageSetManager->requestReload(false, false, false);
     }
 
     // We cache all the file maps/arrays etc here. 
@@ -2568,15 +2719,16 @@ protected:
 public:
     IMPLEMENT_IINTERFACE;
 
-    CResolvedFile(const char *_lfn, const char *_physicalName, IDistributedFile *_dFile, RoxieFileType _fileType, IRoxieDaliHelper* _daliHelper, bool isDynamic, bool cacheIt, bool writeAccess, bool _isSuperFile)
+    CResolvedFile(const char *_lfn, const char *_physicalName, IDistributedFile *_dFile, RoxieFileType _fileType, IRoxieDaliHelper* _daliHelper, bool isDynamic, bool cacheIt, AccessMode accessMode, bool _isSuperFile)
     : lfn(_lfn), physicalName(_physicalName), dFile(_dFile), fileType(_fileType), isSuper(_isSuperFile), daliHelper(_daliHelper)
     {
+        //accessMode not used?
         cached = NULL;
         fileSize = 0;
         fileCheckSum = 0;
         if (dFile)
         {
-            if (traceLevel > 5)
+            if (doTrace(traceRoxieFiles))
                 DBGLOG("Roxie server adding information for file %s", lfn.get());
             bool tsSet = dFile->getModificationTime(fileTimeStamp);
             dFile->getFileCheckSum(fileCheckSum);
@@ -2712,7 +2864,7 @@ public:
     }
     virtual void serializePartial(MemoryBuffer &mb, unsigned channel, bool isLocal) const override
     {
-        if (traceLevel > 6)
+        if (doTrace(traceRoxieFiles, TraceFlags::Detailed))
             DBGLOG("Serializing file information for dynamic file %s, channel %d, local %d", lfn.get(), channel, isLocal);
         byte type = (byte) fileType;
         mb.append(type);
@@ -2799,7 +2951,7 @@ public:
                 const char *subname = subNames.item(idx);
                 if (fileMode!=actualMode)
                 {
-                    if (traceLevel>0)
+                    if (traceLevel && traceTranslations)
                         DBGLOG("In query %s: Not translating %s as file type does not match", queryName, subname);
                 }
                 else if (projectedFormatCrc != 0) // projectedFormatCrc is currently 0 for csv/xml which should not create translators.
@@ -2829,6 +2981,7 @@ public:
                     }
 
                     assertex(actual);
+                    bool forceTranslation = actualUnknown && !thisFormatCrc && projectedFormatCrc != expectedFormatCrc;
                     if ((thisFormatCrc != prevFormatCrc) || (idx == 0))  // Check if same translation as last subfile
                     {
                         translator.clear();
@@ -2840,20 +2993,20 @@ public:
 
                         if (thisFormatCrc == expectedFormatCrc && projectedFormatCrc == expectedFormatCrc && (actualUnknown || alwaysTrustFormatCrcs))
                         {
-                            if (traceLevel > 5)
+                            if (doTrace(traceRoxieFiles))
                                 DBGLOG("In query %s: Assume no translation required for file %s, crc's match", queryName, subname);
                         }
-                        else if (actualUnknown && mode != RecordTranslationMode::AlwaysECL)
+                        else if (actualUnknown && mode != RecordTranslationMode::AlwaysECL && !forceTranslation)
                         {
                             if (thisFormatCrc)
                                 throw MakeStringException(ROXIE_MISMATCH, "Untranslatable record layout mismatch detected for file %s (disk format not serialized)", subname);
-                            else if (traceLevel > 5)
+                            else if (doTrace(traceRoxieFiles))
                                 DBGLOG("In query %s: Assume no translation required for %s, disk format unknown", queryName, subname);
                         }
                         else
                         {
                             translator.setown(createRecordTranslator(projected->queryRecordAccessor(true), actual->queryRecordAccessor(true)));
-                            if (traceLevel>0 && traceTranslations)
+                            if (traceLevel && traceTranslations)
                             {
                                 DBGLOG("In query %s: Record layout translator created for %s", queryName, subname);
                                 translator->describe();
@@ -2873,7 +3026,7 @@ public:
                     prevFormatCrc = thisFormatCrc;
                 }
             }
-            else if (traceLevel > 5)
+            else if (doTrace(traceRoxieFiles))
                 DBGLOG("In query %s: Assume no translation required, subfile is null", queryName);
             result->addTranslator(LINK(translator), LINK(keyedTranslator), LINK(actual));
         }
@@ -3043,7 +3196,7 @@ public:
                 ret->addKey(keyset.getClear());
             else if (!isOpt)
                 throw MakeStringException(ROXIE_FILE_ERROR, "Key %s has no key parts", lfn.get());
-            else if (traceLevel > 4)
+            else if (doTrace(traceMissingOptFiles))
                 DBGLOG(ROXIE_OPT_REPORTING, "Key %s has no key parts", lfn.get());
         }
         return ret.getClear();
@@ -3128,7 +3281,7 @@ public:
     {
         if (cached)
         {
-            if (traceLevel > 9)
+            if (doTrace(traceRoxieFiles, TraceFlags::Max))
                 DBGLOG("setCache removing from prior cache %s", queryFileName());
             if (cache==NULL)
                 cached->removeCache(this);
@@ -3219,7 +3372,7 @@ public:
 
 public:
     CAgentDynamicFile(const IRoxieContextLogger &logctx, const char *_lfn, RoxiePacketHeader *header, bool _isOpt, bool _isLocal)
-        : CResolvedFile(_lfn, NULL, NULL, ROXIE_FILE, NULL, true, false, false, false), isOpt(_isOpt), isLocal(_isLocal), channel(header->channel), serverId(header->serverId)
+        : CResolvedFile(_lfn, NULL, NULL, ROXIE_FILE, NULL, true, false, AccessMode::readRandom, false), isOpt(_isOpt), isLocal(_isLocal), channel(header->channel), serverId(header->serverId)
     {
         // call back to the server to get the info
         IPendingCallback *callback = ROQ->notePendingCallback(*header, lfn); // note that we register before the send to avoid a race.
@@ -3250,7 +3403,7 @@ public:
             }
             if (ok)
             {
-                if (traceLevel > 6)
+                if (doTrace(traceRoxieFiles, TraceFlags::Detailed))
                     { StringBuffer s; DBGLOG("Processing information from server in response to %s", newHeader.toString(s).str()); }
 
                 MemoryBuffer &serverData = callback->queryData();
@@ -3325,7 +3478,7 @@ private:
         }
         else
         {
-            if (traceLevel > 6)
+            if (doTrace(traceRoxieFiles, TraceFlags::Detailed))
                 DBGLOG("No information for %s subFile %d of file %s", remote ? "remote" : "", fileNo, lfn.get());
             files.append(NULL);
         }
@@ -3334,13 +3487,13 @@ private:
 
 extern IResolvedFileCreator *createResolvedFile(const char *lfn, const char *physical, bool isSuperFile)
 {
-    return new CResolvedFile(lfn, physical, NULL, ROXIE_FILE, NULL, true, false, false, isSuperFile);
+    return new CResolvedFile(lfn, physical, NULL, ROXIE_FILE, NULL, true, false, AccessMode::readRandom, isSuperFile);
 }
 
-extern IResolvedFile *createResolvedFile(const char *lfn, const char *physical, IDistributedFile *dFile, IRoxieDaliHelper *daliHelper, bool isDynamic, bool cacheIt, bool writeAccess)
+extern IResolvedFile *createResolvedFile(const char *lfn, const char *physical, IDistributedFile *dFile, IRoxieDaliHelper *daliHelper, bool isDynamic, bool cacheIt, AccessMode accessMode)
 {
     const char *kind = dFile ? dFile->queryAttributes().queryProp("@kind") : NULL;
-    return new CResolvedFile(lfn, physical, dFile, kind && stricmp(kind, "key")==0 ? ROXIE_KEY : ROXIE_FILE, daliHelper, isDynamic, cacheIt, writeAccess, false);
+    return new CResolvedFile(lfn, physical, dFile, kind && stricmp(kind, "key")==0 ? ROXIE_KEY : ROXIE_FILE, daliHelper, isDynamic, cacheIt, accessMode, false);
 }
 
 class CAgentDynamicFileCache : implements IAgentDynamicFileCache, public CInterface
@@ -3355,7 +3508,7 @@ public:
 
     virtual IResolvedFile *lookupDynamicFile(const IRoxieContextLogger &logctx, const char *lfn, CDateTime &cacheDate, unsigned checksum, RoxiePacketHeader *header, bool isOpt, bool isLocal) override
     {
-        if (logctx.queryTraceLevel() > 5)
+        if (doTrace(traceRoxieFiles))
         {
             StringBuffer s;
             logctx.CTXLOG("lookupDynamicFile %s for packet %s", lfn, header->toString(s).str());
@@ -3442,12 +3595,12 @@ MODULE_INIT(INIT_PRIORITY_STANDARD)
 
 MODULE_EXIT()
 { 
-    auto cache = fileCache.queryExisting();
-    if (cache)
+    auto cleanup = [](CRoxieFileCache *cache)
     {
         cache->join();
         cache->Release();
-    }
+    };
+    fileCache.destroy(cleanup);
 }
 
 extern IRoxieFileCache &queryFileCache()
@@ -3546,13 +3699,11 @@ private:
         if (!dFile->isExternal())
         {
             Owned<IFileDescriptor> desc = createFileDescriptor();
+            desc->setTraceName(dFile->queryLogicalName());
             desc->setNumParts(1);
 
-            RemoteFilename rfn;
-            dFile->getPartFilename(rfn, 0, 0);
-            StringBuffer physicalName, physicalDir, physicalBase;
-            rfn.getLocalPath(physicalName);
-            splitFilename(physicalName, &physicalDir, &physicalDir, &physicalBase, &physicalBase);
+            StringBuffer physicalDir, physicalBase;
+            dFile->getDirAndFilename(physicalDir, physicalBase);
             desc->setDefaultDir(physicalDir.str());
             desc->setPartMask(physicalBase.str());
 
@@ -3586,7 +3737,6 @@ private:
                 activity->setFileProperties(desc);
 
             Owned<IDistributedFile> publishFile = queryDistributedFileDirectory().createNew(desc); // MORE - we'll create this earlier if we change the locking paradigm
-            publishFile->setAccessedTime(modifiedTime);
             IUserDescriptor * userdesc = NULL;
             if (activity)
                 userdesc = activity->queryUserDescriptor();
@@ -3650,6 +3800,10 @@ extern IRoxieWriteHandler *createRoxieWriteHandler(IRoxieDaliHelper *_daliHelper
 
 //================================================================================================================
 
+#ifndef _CONTAINERIZED
+
+// This test is not valid on containerized systems - concept of Roxie "buddy" files is not really a thing
+
 #ifdef _USE_CPPUNIT
 #include "unittests.hpp"
 
@@ -3694,6 +3848,7 @@ protected:
         remove("test.local");
         remove("test.remote");
         remove("test.buddy");
+        StringArray localEnough;
         StringArray remotes;
         DummyPartDescriptor pdesc;
         CDateTime dummy;
@@ -3707,7 +3862,7 @@ protected:
         close(f);
         CRoxieFileCache &cache = static_cast<CRoxieFileCache &>(queryFileCache());
 
-        Owned<ILazyFileIO> io = cache.openFile("test.local", 0, 0, "test.local", NULL, remotes, sizeof(int), dummy);
+        Owned<ILazyFileIO> io = cache.openFile("test.local", 0, 0, "test.local", NULL, localEnough, remotes, sizeof(int), dummy);
         CPPUNIT_ASSERT(io != NULL);
 
         // Reading it should read 1
@@ -3755,5 +3910,5 @@ protected:
 
 CPPUNIT_TEST_SUITE_REGISTRATION( CcdFileTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( CcdFileTest, "CcdFileTest" );
-
+#endif
 #endif

@@ -766,7 +766,9 @@ void CommonJsonWriter::outputBeginNested(const char *fieldname, bool nestChildre
         appendJSONName(out, fieldname);
     }
     out.append("{");
-    if (!nestChildren && !nestLimit)
+    if ((flags & XWFonlyindentroot) && !(flags & XWFnoindent))
+        nestLimit++;
+    else if (!nestChildren && !nestLimit)
         nestLimit = indent;
 }
 
@@ -789,7 +791,9 @@ void CommonJsonWriter::outputEndNested(const char *fieldname)
         }
     }
     out.append("}");
-    if (indent==nestLimit)
+    if ((flags & XWFonlyindentroot) && !(flags & XWFnoindent))
+        nestLimit--;
+    else if (indent==nestLimit)
         nestLimit = 0;
 }
 
@@ -797,6 +801,343 @@ void CommonJsonWriter::outputSetAll()
 {
     checkDelimit();
     appendJSONValue(out, "All", true);
+}
+
+
+//=====================================================================================
+
+CFormEncodedWriter::CFormEncodedWriter(unsigned _flags, IXmlStreamFlusher *_flusher)
+{
+    flusher = _flusher;
+    flags = _flags;
+}
+
+CFormEncodedWriter::~CFormEncodedWriter()
+{
+    flush(true);
+}
+
+IXmlWriterExt & CFormEncodedWriter::clear()
+{
+    out.clear();
+    return *this;
+}
+
+void CFormEncodedWriter::updateCurrentScalarItemInfo(const char *name)
+{
+    if (!nested.length())
+    {
+        curIdx = -1;
+        curUseFieldName = true;
+        curItemPath = nullptr;
+    }
+    else
+    {
+        CFormEncodedWriterItem &item = nested.tos();
+        curUseFieldName = !streq(item.name, name);
+        if (item.containerType == ContainerType::SIMPLE)
+            curIdx = -1;
+        else
+        {
+            curIdx = item.idx;
+            if (!curUseFieldName)
+                item.idx++;
+        }
+        curItemPath = item.path.str();
+    }
+}
+
+bool CFormEncodedWriter::childIsArrayItem(const char *name)
+{
+    if (!nested.length())
+        return false;
+    CFormEncodedWriterItem &item = nested.tos();
+    return (streq(name, item.name) &&(item.containerType != ContainerType::SIMPLE));
+}
+
+void CFormEncodedWriter::itemPathBeginNested(const char *name)
+{
+    if (!childIsArrayItem(name))
+        nested.append(*new CFormEncodedWriterItem(nested, name, ContainerType::SIMPLE, flags));
+}
+
+void CFormEncodedWriter::itemPathEndNested(const char *name)
+{
+    if (childIsArrayItem(name))
+        nested.tos().idx++;
+    else
+        nested.pop();
+}
+
+void CFormEncodedWriter::itemPathBeginArray(const char *name, bool isDataset)
+{
+    nested.append(*new CFormEncodedWriterItem(nested, name, (isDataset) ? ContainerType::DATASET : ContainerType::SET, flags));
+}
+
+void CFormEncodedWriter::itemPathEndArray(const char *name)
+{
+    nested.pop();
+}
+
+void CFormEncodedWriter::outputQuoted(const char *text)
+{
+}
+
+inline StringBuffer &appendFormUrlEncodedName(StringBuffer& s, int idx, const char *path, const char *name, unsigned flags)
+{
+    if (!s.isEmpty())
+        s.append('&');
+    if (isEmptyString(path))
+        appendURL(&s, name, strlen(name), 0, true);
+    else
+    {
+        appendURL(&s, path, strlen(path), 0, true);
+        if (idx >= 0)
+        {
+            if (flags & XWFhpccformenc)
+                s.append('.').append(idx);
+            else
+                s.append('[').append(idx).append(']');
+        }
+        if (!isEmptyString(name))
+        {
+            if (flags & XWFbracketformenc)
+                s.append('[');
+            else
+                s.append('.');
+            appendURL(&s, name, strlen(name), 0, true);
+            if (flags & XWFbracketformenc)
+                s.append(']');
+        }
+    }
+    return s.append('=');
+}
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, int len, const char *value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    appendURL(&s, value, len, 0, true);
+    return s;
+}
+
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, const char *value, unsigned flags)
+{
+    return appendFormUrlEncodedValue(s, idx, path, name, strlen(value), value, flags);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, bool value, unsigned flags)
+{
+    return appendFormUrlEncodedValue(s, idx, path, name, (value) ? "true" : "false", flags);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, long value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.appendlong(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, __int64 value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.append(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, unsigned __int64 value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.append(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, double value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.append(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, float value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.append(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, unsigned long value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.appendulong(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, int value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.append(value);
+}
+
+inline StringBuffer &appendFormUrlEncodedValue(StringBuffer& s, int idx, const char *path, const char *name, unsigned value, unsigned flags)
+{
+    appendFormUrlEncodedName(s, idx, path, name, flags);
+    return s.append(value);
+}
+
+void CFormEncodedWriter::outputNumericString(const char *field, const char *fieldname)
+{
+    unsigned len = (size32_t)strlen(field);
+
+    if (flags & XWFtrim)
+        len = rtlTrimStrLen(len, field);
+    if ((flags & XWFopt) && (rtlTrimStrLen(len, field) == 0))
+        return;
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), field, flags);
+}
+
+void CFormEncodedWriter::outputString(unsigned len, const char *field, const char *fieldname)
+{
+    if (flags & XWFtrim)
+        len = rtlTrimStrLen(len, field);
+    if ((flags & XWFopt) && (rtlTrimStrLen(len, field) == 0))
+        return;
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), len, field, flags);
+}
+
+void CFormEncodedWriter::outputQString(unsigned len, const char *field, const char *fieldname)
+{
+    MemoryAttr tempBuffer;
+    char * temp;
+    if (len <= 100)
+        temp = (char *)alloca(len);
+    else
+        temp = (char *)tempBuffer.allocate(len);
+    rtlQStrToStr(len, temp, len, field);
+    outputString(len, temp, fieldname);
+}
+
+void CFormEncodedWriter::outputBool(bool field, const char *fieldname)
+{
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), field, flags);
+}
+
+void CFormEncodedWriter::outputData(unsigned len, const void *field, const char *fieldname)
+{
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedName(out, curIdx, curItemPath, fieldname, flags);
+    static char hexchar[] = "0123456789ABCDEF";
+    const unsigned char *value = (const unsigned char *) field;
+    for (unsigned int i = 0; i < len; i++)
+        out.append(hexchar[value[i] >> 4]).append(hexchar[value[i] & 0x0f]);
+}
+
+void CFormEncodedWriter::outputInt(__int64 field, unsigned size, const char *fieldname)
+{
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), field, flags);
+}
+
+void CFormEncodedWriter::outputUInt(unsigned __int64 field, unsigned size, const char *fieldname)
+{
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), field, flags);
+}
+
+void CFormEncodedWriter::outputReal(double field, const char *fieldname)
+{
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), field, flags);
+}
+
+void CFormEncodedWriter::outputDecimal(const void *field, unsigned size, unsigned precision, const char *fieldname)
+{
+    char dec[50];
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedName(out, curIdx, curItemPath, fieldname, flags);
+
+    BcdCriticalBlock bcdBlock;
+    if (DecValid(true, size*2-1, field))
+    {
+        DecPushDecimal(field, size, precision);
+        DecPopCString(sizeof(dec), dec);
+        const char *finger = dec;
+        while(isspace(*finger)) finger++;
+        out.append(finger);
+    }
+}
+
+void CFormEncodedWriter::outputUDecimal(const void *field, unsigned size, unsigned precision, const char *fieldname)
+{
+    char dec[50];
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedName(out, curIdx, curItemPath, fieldname, flags);
+
+    BcdCriticalBlock bcdBlock;
+    if (DecValid(false, size*2, field))
+    {
+        DecPushUDecimal(field, size, precision);
+        DecPopCString(sizeof(dec), dec);
+        const char *finger = dec;
+        while(isspace(*finger)) finger++;
+        out.append(finger);
+    }
+}
+
+void CFormEncodedWriter::outputUnicode(unsigned len, const UChar *field, const char *fieldname)
+{
+    if (flags & XWFtrim)
+        len = rtlTrimUnicodeStrLen(len, field);
+    if ((flags & XWFopt) && (rtlTrimUnicodeStrLen(len, field) == 0))
+        return;
+    char * buff = 0;
+    unsigned bufflen = 0;
+    rtlUnicodeToCodepageX(bufflen, buff, len, field, "utf-8");
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), bufflen, buff, flags);
+    rtlFree(buff);
+}
+
+void CFormEncodedWriter::outputUtf8(unsigned len, const char *field, const char *fieldname)
+{
+    if (flags & XWFtrim)
+        len = rtlTrimUtf8StrLen(len, field);
+    if ((flags & XWFopt) && (rtlTrimUtf8StrLen(len, field) == 0))
+        return;
+    updateCurrentScalarItemInfo(fieldname);
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, checkUseFieldName(fieldname), rtlUtf8Size(len, field), field, flags);
+}
+
+void CFormEncodedWriter::outputBeginArray(const char *fieldname)
+{
+    itemPathBeginArray(fieldname, false);
+}
+
+void CFormEncodedWriter::outputEndArray(const char *fieldname)
+{
+    itemPathEndArray(fieldname);
+}
+
+void CFormEncodedWriter::outputBeginDataset(const char *dsname, bool nestChildren)
+{
+    itemPathBeginArray(dsname, true);
+}
+
+void CFormEncodedWriter::outputEndDataset(const char *dsname)
+{
+    itemPathEndArray(dsname);
+}
+
+void CFormEncodedWriter::outputBeginNested(const char *fieldname, bool nestChildren)
+{
+    itemPathBeginNested(fieldname);
+}
+
+void CFormEncodedWriter::outputEndNested(const char *fieldname)
+{
+    itemPathEndNested(fieldname);
+}
+
+void CFormEncodedWriter::outputSetAll()
+{
+    updateCurrentScalarItemInfo("All");
+    appendFormUrlEncodedValue(out, curIdx, curItemPath, "All", true, flags);
 }
 
 
@@ -1324,7 +1665,7 @@ IXmlWriterExt& CommonCSVWriter::clear()
     currentParentXPath.clear();
     headerXPathList.kill();
     topHeaderNameMap.kill();
-    contentRowsBuffer.clear();
+    contentRowsBuffer.kill();
     csvItems.kill();
     out.clear();
     auditOut.clear();
@@ -1402,17 +1743,25 @@ unsigned CommonCSVWriter::getChildrenMaxColumnID(CCSVItem* item, unsigned& maxCo
     return maxColumnID;
 }
 
-void CommonCSVWriter::escapeQuoted(unsigned len, char const* in, StringBuffer& out)
+void CommonCSVWriter::escapeString(unsigned len, char const* in, StringBuffer& out)
 {
     char const* finger = in;
     while (len--)
     {
-        //RFC-4180, paragraph "If double-quotes are used to enclose fields, then a double-quote
-        //appearing inside a field must be escaped by preceding it with another double quote."
-        //unsigned newLen = 0;
-        if (*finger == '"')
-            out.append('"');
-        out.append(*finger);
+        if (*finger != '\0')
+        {
+            //RFC-4180, paragraph "If double-quotes are used to enclose fields, then a double-quote
+            //appearing inside a field must be escaped by preceding it with another double quote."
+            if (*finger == '"')
+                out.append('"');
+            out.append(*finger);
+        }
+        else
+        {
+            //null bytes should not occur, but encode them if they do to prevent problems elsewhere
+            out.append("\000");
+        }
+
         finger++;
     }
 }
@@ -1544,7 +1893,7 @@ void CommonCSVWriter::addStringField(unsigned len, const char* field, const char
 {
     StringBuffer v;
     v.append(csvQuote);
-    escapeQuoted(len, field, v);
+    escapeString(len, field, v);
     v.append(csvQuote);
     addContentField(v.str(), fieldName);
 }
@@ -2037,5 +2386,7 @@ IXmlWriterExt * createIXmlWriterExt(unsigned _flags, unsigned _initialIndent, IX
         return new CommonJsonWriter(_flags, _initialIndent, _flusher);
     if (xmlType==WTJSONObject)
         return new CommonJsonObjectWriter(_flags, _initialIndent, _flusher);
+    if (xmlType==WTFormUrlEncoded)
+        return new CFormEncodedWriter(_flags, _flusher);
     return CreateCommonXmlWriter(_flags, _initialIndent, _flusher, xmlType);
 }

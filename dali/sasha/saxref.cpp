@@ -800,7 +800,7 @@ public:
             }
         }
         // add the first IP also
-        rawgrp->queryNode(0).endpoint().getIpText(gname.clear());
+        rawgrp->queryNode(0).endpoint().getHostText(gname.clear());
         clusters.append(gname.str());
         clusterscsl.append(',').append(gname.str());
         if (basedir.length()==0) {
@@ -970,7 +970,7 @@ public:
                 StringBuffer path(rootdir);
                 SocketEndpoint ep = parent.rawgrp->queryNode(i).endpoint();
                 StringBuffer tmp;
-                parent.log("Scanning %s directory %s",ep.getUrlStr(tmp).str(),path.str());
+                parent.log("Scanning %s directory %s",ep.getEndpointHostText(tmp).str(),path.str());
                 if (!parent.scanDirectory(i,ep,path,0,NULL,NULL)) {
                     ok = false;
                     return;
@@ -978,7 +978,7 @@ public:
                 i = (i+r)%n;
                 setReplicateFilename(path,1);   
                 ep = parent.rawgrp->queryNode(i).endpoint();
-                parent.log("Scanning %s directory %s",ep.getUrlStr(tmp.clear()).str(),path.str());
+                parent.log("Scanning %s directory %s",ep.getEndpointHostText(tmp.clear()).str(),path.str());
                 if (!parent.scanDirectory(i,ep,path,1,NULL,NULL)) {
                     ok = false;
                 }
@@ -1179,7 +1179,7 @@ public:
             pb->setPropInt("Num",i);
             pb = branch->addPropTree("Part",pb);
         }
-        pb->setProp(rep?"RNode":"Node",ep.getUrlStr(tmp.clear()).str());
+        pb->setProp(rep?"RNode":"Node",ep.getEndpointHostText(tmp.clear()).str());
     }   
 
 
@@ -1396,12 +1396,12 @@ public:
                     StringBuffer s1;
                     if (d->maxnode[drv]) {
                         dt->addPropInt64("MaxSize",d->maxsize[drv]);
-                        grp->queryNode(d->maxnode[drv]-1).endpoint().getIpText(s1);
+                        grp->queryNode(d->maxnode[drv]-1).endpoint().getHostText(s1);
                         dt->addProp("MaxIP",s1.str());
                     }
                     if (d->minnode[drv]) {
                         dt->addPropInt64("MinSize",d->minsize[drv]);
-                        grp->queryNode(d->minnode[drv]-1).endpoint().getIpText(s1.clear());
+                        grp->queryNode(d->minnode[drv]-1).endpoint().getHostText(s1.clear());
                         dt->addProp("MinIP",s1.str());
                     }
                     if (d->minsize[drv]<d->maxsize[drv]) {
@@ -1503,7 +1503,7 @@ public:
             }
             Owned<IDistributedFile> file;
             try {
-                file.setown(queryDistributedFileDirectory().lookup(lfn,udesc,false,false,false,nullptr,defaultPrivilegedUser));
+                file.setown(queryDistributedFileDirectory().lookup(lfn,udesc,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser));
             }
             catch (IException *e) {
                 EXCLOG(e,"CNewXRefManager::listLost");
@@ -1597,7 +1597,7 @@ public:
                     if (lost) {
                         Owned<IPropertyTree> pt = createPTree("Part");
                         StringBuffer tmp;
-                        rfn.queryEndpoint().getIpText(tmp);
+                        rfn.queryEndpoint().getHostText(tmp);
                         pt->setProp("Node",tmp.str());
                         pt->setPropInt("Num",pn+1);
                         if (copy>0)
@@ -2018,7 +2018,7 @@ class CSashaXRefServer: public ISashaServer, public Thread
 
 
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaXRefServer()
         : Thread("CSashaXRefServer")
@@ -2033,7 +2033,7 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
@@ -2143,6 +2143,7 @@ public:
 
     void xrefRequest(const char *servers)
     {
+        //MORE: This could still be running when the server terminates which will likely cause the thread to core
         cRunThread *thread = new cRunThread(*this,servers);
         thread->startRelease();
     }
@@ -2266,7 +2267,7 @@ class CSashaExpiryServer: public ISashaServer, public Thread
     Linked<IPropertyTree> props;
 
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaExpiryServer(IPropertyTree *_config)
         : props(_config), Thread("CSashaExpiryServer")
@@ -2289,7 +2290,7 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()

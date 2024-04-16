@@ -73,6 +73,17 @@ public:
             rolloverEnabled = true;
         }
     }
+    virtual void preStart(size32_t parentExtractSz, const byte *parentExtract) override
+    {
+        PARENT::preStart(parentExtractSz, parentExtract);
+
+        if (rolloverEnabled)
+        {
+            // Ensure stale messages from last iteration are cleared.
+            // e.g. if this slave cancelled listening (in IRowServer::stop()).
+            queryJobChannel().queryJobComm().flush(mpTag);
+        }
+    }
     virtual void start() override
     {
         ActivityTimer s(slaveTimerStats, timeActivities);
@@ -182,11 +193,11 @@ public:
         calcMetaInfoSize(info, queryInput(0));
     }
     virtual bool isGrouped() const override{ return true; }
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
-        stats.setStatistic(StNumGroups, numGroups);
-        stats.setStatistic(StNumGroupMax, numGroupMax);
-        PARENT::serializeStats(mb);
+        PARENT::gatherActiveStats(activeStats);
+        activeStats.setStatistic(StNumGroups, numGroups);
+        activeStats.setStatistic(StNumGroupMax, numGroupMax);
     }
 };
 

@@ -22,20 +22,22 @@ ARG DOCKER_REPO
 FROM ${DOCKER_REPO}/platform-build:${BUILD_LABEL}
 
 # Set the locale
+RUN apt-get update -y
 RUN apt-get install -y locales
 RUN locale-gen en_US.UTF-8
 ENV LANG en_US.UTF-8  
 ENV LANGUAGE en_US:en  
 ENV LC_ALL en_US.UTF-8     
 
-RUN apt-get install -y libcap2-bin zip libarchive13
+RUN apt-get install -y libcap2-bin zip libarchive13 libatlas3-base clang
 RUN setcap cap_sys_ptrace+eip /usr/bin/gdb
+RUN apt-get install -y elfutils
 
 ENV PATH="/opt/HPCCSystems/bin:${PATH}"
 ENV HPCC_containerized=1
-ENV HPCC_DLLSERVER_PATH=/var/lib/HPCCSystems/queries
 
 USER hpcc
+RUN cp /opt/HPCCSystems/bin/.gdbinit ~/.gdbinit
 WORKDIR /var/lib/HPCCSystems
 ARG BUILD_TAG_OVERRIDE
 ENV HPCC_BUILD_TAG=${BUILD_TAG_OVERRIDE}

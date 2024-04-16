@@ -152,10 +152,7 @@ HttpClient::HttpClient(int threads, int times, const char* host, int port, FILE*
     if(use_ssl)
     {
 #ifdef _USE_OPENSSL
-        if(sslconfig != NULL)
-            m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ClientSocket));
-        else
-            m_ssctx.setown(createSecureSocketContext(ClientSocket));
+        m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ClientSocket));
 #else
         throw MakeStringException(-1, "HttpClient: failure to create SSL connection to host '%s': OpenSSL not enabled in build", host);
 #endif
@@ -414,7 +411,7 @@ int HttpClient::sendRequest(StringBuffer& req)
             thrdlist[i] = new CHttpClientThread(it_per_thrd, this, req);
 
         for(i = 0; i < thrds; i++)
-            thrdlist[i]->start();
+            thrdlist[i]->start(false);
         for(i = 0; i < thrds; i++)
             thrdlist[i]->join();
 
@@ -516,7 +513,7 @@ int HttpClient::sendRequest(int times, HttpStat& stat, StringBuffer& req)
             socket.setown(ISocket::connect(ep));
             if(m_use_ssl && m_ssctx.get() != NULL)
             {
-                Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket.getLink());
+                Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket.getLink(), SSLogNormal, m_host.str());
                 int res = securesocket->secure_connect();
                 if(res >= 0)
                 {
@@ -539,7 +536,7 @@ int HttpClient::sendRequest(int times, HttpStat& stat, StringBuffer& req)
         if(socket.get() == NULL)
         {
             StringBuffer urlstr;
-            OERRLOG("Can't connect to %s", ep.getUrlStr(urlstr).str());
+            OERRLOG("Can't connect to %s", ep.getEndpointHostText(urlstr).str());
             continue;
         }
 
@@ -614,10 +611,7 @@ HttpServer::HttpServer(int port, const char* in, FILE* ofile, bool use_ssl, IPro
     if(use_ssl)
     {
 #ifdef _USE_OPENSSL
-        if(sslconfig != NULL)
-            m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ServerSocket));
-        else
-            m_ssctx.setown(createSecureSocketContext(ServerSocket));
+        m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ServerSocket));
 #else
         throw MakeStringException(-1, "HttpServer: failure to create SSL socket - OpenSSL not enabled in build");
 #endif
@@ -846,7 +840,7 @@ int COneServerHttpProxyThread::start()
         socket2.setown(ISocket::connect(ep));
         if(m_use_ssl && m_ssctx != NULL)
         {
-            Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket2.getLink());
+            Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket2.getLink(), SSLogNormal, m_host.str());
             int res = securesocket->secure_connect();
             if(res >= 0)
             {
@@ -857,7 +851,7 @@ int COneServerHttpProxyThread::start()
         if(socket2.get() == NULL)
         {
             StringBuffer urlstr;
-            OERRLOG("Can't connect to %s", ep.getUrlStr(urlstr).str());
+            OERRLOG("Can't connect to %s", ep.getEndpointHostText(urlstr).str());
             return -1;
         }
 
@@ -886,10 +880,8 @@ int COneServerHttpProxyThread::start()
         if(httptest_tracelevel > 5)
             fprintf(m_ofile, ">>sent the response back to %s:%d:\n", peername, port);
 
-        socket2->shutdown();
-        socket2->close();
-        m_client->shutdown();
-        m_client->close();
+        shutdownAndCloseNoThrow(socket2);
+        shutdownAndCloseNoThrow(m_client);
     }
     catch(IException *excpt)
     {
@@ -954,7 +946,7 @@ CHttpProxyThread::CHttpProxyThread(ISocket* client, FILE* ofile)
 
 void CHttpProxyThread::start()
 {
-    Thread::start();
+    Thread::start(false);
 }
 
 int CHttpProxyThread::run()
@@ -1016,8 +1008,8 @@ int CHttpProxyThread::run()
             m_remotesocket->set_nonblock(false);
             CReadWriteThread t1(m_client.get(), m_remotesocket.get());
             CReadWriteThread t2(m_remotesocket.get(), m_client.get());
-            t1.start();
-            t2.start();
+            t1.start(false);
+            t2.start(false);
             t1.join();
             t2.join();
             //printf("read/write threads returned\n");
@@ -1092,10 +1084,8 @@ int CHttpProxyThread::run()
             //m_client->write(respbuf.str(), respbuf.length());
             fflush(m_ofile);
 
-            m_remotesocket->shutdown();
-            m_remotesocket->close();
-            m_client->shutdown();
-            m_client->close();
+            shutdownAndCloseNoThrow(m_remotesocket);
+            shutdownAndCloseNoThrow(m_client);
         }
     }
     catch(IException *excpt)
@@ -1184,10 +1174,7 @@ HttpProxy::HttpProxy(int localport, const char* host, int port, FILE* ofile, boo
     if(use_ssl)
     {
 #if _USE_OPENSSL
-        if(sslconfig != NULL)
-            m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ClientSocket));
-        else
-            m_ssctx.setown(createSecureSocketContext(ClientSocket));
+        m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ClientSocket));
 #else
         throw MakeStringException(-1, "HttpProxy: failure to create SSL connection to host '%s': OpenSSL not enabled in build", host);
 #endif

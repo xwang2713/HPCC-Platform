@@ -33,7 +33,6 @@ export const DojoAdapter: React.FunctionComponent<DojoAdapterProps> = ({
     const [widget, setWidget] = React.useState<any>();
 
     React.useEffect(() => {
-
         const elem = document.createElement("div");
         const divRef = myRef.current;
         divRef.innerText = "";
@@ -61,8 +60,12 @@ export const DojoAdapter: React.FunctionComponent<DojoAdapterProps> = ({
                     },
                     ...delayProps
                 }, elem);
-                widget.startup();
-                widget.resize();
+                if (widget.startup) {
+                    widget.startup();
+                }
+                if (widget.resize) {
+                    widget.resize();
+                }
                 if (widget.init) {
                     widget.init(params || {});
                 }
@@ -90,7 +93,7 @@ export const DojoAdapter: React.FunctionComponent<DojoAdapterProps> = ({
             widget = null;  //  Avoid race condition  ---
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [widgetClass, widgetClassID]);
 
     React.useEffect(() => {
         if (!widget || !Wuid) return;
@@ -121,7 +124,7 @@ export const DojoComponent: React.FunctionComponent<DojoComponentProps> = ({
 }) => {
 
     const id = useId();
-    const divID = useConst(`dojo-component-${id}`);
+    const divID = useConst(() => `dojo-component-${id}`);
 
     React.useEffect(() => {
         const w = new Widget({
@@ -142,8 +145,7 @@ export const DojoComponent: React.FunctionComponent<DojoComponentProps> = ({
         return () => {
             w.destroyRecursive();
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [Widget, WidgetParams, divID, id, postCreate]);
 
     return <div style={{ width: "100%", height: "100%", position: "relative" }}>
         <div id={divID} className="dojo-component">

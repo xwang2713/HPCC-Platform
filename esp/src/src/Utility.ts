@@ -1,7 +1,11 @@
-﻿import { Palette } from "@hpcc-js/common";
+﻿import { getTheme } from "@fluentui/react";
+import { format as d3Format, Palette } from "@hpcc-js/common";
+import { Level, join } from "@hpcc-js/util";
 import * as arrayUtil from "dojo/_base/array";
 import * as domConstruct from "dojo/dom-construct";
 import * as entities from "dojox/html/entities";
+import { darkTheme } from "../src-react/themes";
+import nlsHPCC from "src/nlsHPCC";
 
 declare const dojoConfig;
 declare const ActiveXObject;
@@ -24,10 +28,28 @@ export function xmlEncode2(str) {
         ;
 }
 
+export const encodeHTML = function (str?: string) {
+    return str?.replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+};
+
+export const decodeHTML = function (str?: string) {
+    return str?.replace(/&apos;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&gt;/g, ">")
+        .replace(/&lt;/g, "<")
+        .replace(/&amp;/g, "&");
+};
+
 export function decodeHtml(html) {
     const txt = document.createElement("textarea");
     txt.innerHTML = html;
-    return txt.value;
+    const retVal = txt.value;
+    txt.remove();
+    return retVal;
 }
 
 export function parseXML(val) {
@@ -46,7 +68,7 @@ export function parseXML(val) {
 export function csvEncode(cell) {
     if (!isNaN(cell)) return cell;
     if (cell === undefined) return "";
-    return '"' + String(cell).replace('"', '""') + '"';
+    return '"' + String(cell).replace(/"/g, '""') + '"';
 }
 
 export function espTime2Seconds(duration?: string) {
@@ -89,10 +111,10 @@ export function espTime2SecondsTests() {
 
 export function convertedSize(intsize: number): string {
     const unitConversion = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-    if (intsize === null || intsize === undefined) {
+    if (isNaN(intsize) || intsize < 1) {
         return "";
     } else {
-        const x = Math.floor(Math.log(intsize) / Math.log(1024));
+        const x = intsize > 0 ? Math.floor(Math.log(intsize) / Math.log(1024)) : 0;
         return (intsize / Math.pow(1024, x)).toFixed(2) + " " + unitConversion[x];
     }
 }
@@ -210,18 +232,24 @@ export function espSkew2NumberTests() {
     }, this);
 }
 
-export function formatAsDelim(grid, rows: any, delim = ",") {
-    const headers = grid.columns;
+export interface Column {
+    selectorType?: string;
+    id?: string;
+    field: string;
+    label: string;
+}
+export type ColumnMap = { [id: string]: Column };
+export function formatAsDelim(columns: ColumnMap, rows: any, delim = ",") {
     const container: string[] = [];
     const headerNames: string[] = [];
 
-    for (const key in headers) {
-        if (key !== headers[key].id && headers[key].selectorType !== "checkbox") {
-            if (!headers[key].label) {
-                const str = csvEncode(headers[key].field);
+    for (const key in columns) {
+        if (key !== columns[key].id && columns[key].selectorType !== "checkbox") {
+            if (!columns[key].label) {
+                const str = csvEncode(columns[key].field);
                 headerNames.push(str);
             } else {
-                const str = csvEncode(headers[key].label);
+                const str = csvEncode(columns[key].label);
                 headerNames.push(str);
             }
         }
@@ -230,10 +258,10 @@ export function formatAsDelim(grid, rows: any, delim = ",") {
 
     rows.forEach(row => {
         const cells: any[] = [];
-        for (const key in headers) {
-            if (key !== headers[key].id && headers[key].selectorType !== "checkbox") {
-                const cell = row[headers[key].field];
-                cells.push(csvEncode(cell));
+        for (const key in columns) {
+            if (key !== columns[key].id && columns[key].selectorType !== "checkbox") {
+                const cell = row[columns[key].field] ?? row[key];
+                cells.push(csvEncode(cell ?? ""));
             }
         }
         container.push(cells.join(delim));
@@ -274,7 +302,9 @@ export function downloadToCSV(grid, rows, fileName) {
         const a = document.createElement("a");
         mimeType = mimeType || "application/octet-stream";
 
+        // @ts-ignore
         if (navigator.msSaveBlob) { // IE10
+            // @ts-ignore
             return navigator.msSaveBlob(new Blob([content], { type: mimeType }), fileName);
         } else if ("download" in a) {
             a.href = "data:" + mimeType + "," + encodeURIComponent(content);
@@ -418,7 +448,7 @@ export function alphanumCase(a, b) {
 
 export function onDomMutate(domNode, callback, observerOpts) {
     observerOpts = observerOpts || { attributes: true, attributeFilter: ["style"] };
-    var observer = new MutationObserver(mutations => {
+    const observer = new MutationObserver(mutations => {
         if (domNode.offsetParent === null) return;
         observer.disconnect();
         if (typeof callback === "function") {
@@ -428,14 +458,30 @@ export function onDomMutate(domNode, callback, observerOpts) {
     observer.observe(domNode, observerOpts);
 }
 
+export function alphanumCompare(l, r, caseInsensitive: boolean = true, reverse: boolean = true): number {
+    const cmp = caseInsensitive ? alphanumCase(l, r) : alphanum(l, r);
+    if (cmp !== 0) {
+        return cmp * (reverse ? -1 : 1);
+    }
+    return 0;
+}
+
+export function createAlphanumSortFunc(cols: string[], caseInsensitive: boolean, reverse: boolean = false) {
+    return function (l, r) {
+        for (let i = 0; i < cols.length; ++i) {
+            const col = cols[i];
+            const cmp = alphanumCompare(l[col], r[col], caseInsensitive, reverse);
+            if (cmp !== 0) {
+                return cmp;
+            }
+        }
+        return 0;
+    };
+}
+
 export function alphanumSort(arr, col, caseInsensitive, reverse: boolean = false) {
     if (arr && arr instanceof Array) {
-        arr.sort(function (l, r) {
-            if (caseInsensitive) {
-                return alphanumCase(r[col], l[col]) * (reverse ? -1 : 1);
-            }
-            return alphanum(l[col], r[col]) * (reverse ? -1 : 1);
-        });
+        arr.sort(createAlphanumSortFunc(col, caseInsensitive, reverse));
     }
 }
 
@@ -655,9 +701,6 @@ export function resolve(hpccWidget, callback) {
         case "MembersWidget":
             require(["hpcc/MembersWidget"], doLoad);
             break;
-        case "MonitoringWidget":
-            require(["hpcc/MonitoringWidget"], doLoad);
-            break;
         case "PackageMapDetailsWidget":
             require(["hpcc/PackageMapDetailsWidget"], doLoad);
             break;
@@ -735,6 +778,9 @@ export function resolve(hpccWidget, callback) {
             break;
         case "SourceFilesWidget":
             require(["hpcc/SourceFilesWidget"], doLoad);
+            break;
+        case "SummaryStatsQueryWidget":
+            require(["hpcc/SummaryStatsQueryWidget"], doLoad);
             break;
         case "SystemServersQueryWidget":
             require(["hpcc/SystemServersQueryWidget"], doLoad);
@@ -825,12 +871,20 @@ export function pathTail(path: string) {
     return pathParts.pop();
 }
 
+export function joinPath(pathSegment, pathSep: string = "/") {
+    let path = join(pathSegment);
+    if (!path.endsWith(pathSep)) {
+        path += pathSep;
+    }
+    return path;
+}
+
 export function getImageURL(name) {
-    return this.getURL("img/" + name);
+    return getURL("img/" + name);
 }
 
 export function getImageHTML(name, tooltip?) {
-    return "<img src='" + this.getImageURL(name) + "'" + (tooltip ? " title='" + tooltip + "'" : "") + " class='iconAlign'/>";
+    return "<img src='" + getImageURL(name) + "'" + (tooltip ? " title='" + tooltip + "'" : "") + " class='iconAlign'/>";
 }
 
 export function debounce(func, threshold, execAsap) {
@@ -1002,13 +1056,165 @@ export function toCSV(data, delim = ",") {
     return retVal;
 }
 
-export function downloadText(content: string, fileName: string) {
-    const encodedUri = "data:text/csv;charset=utf-8,\uFEFF" + encodeURI(content);
+function downloadText(content: string, fileName: string, type: "csv" | "plain" = "csv") {
+    const textBlob = new Blob([content], { type: `text/${type}` });
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
     link.setAttribute("download", fileName);
+    link.setAttribute("href", window.URL.createObjectURL(textBlob));
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+}
+
+export function downloadCSV(content: string, fileName: string) {
+    downloadText(content, fileName, "csv");
+}
+
+export function downloadPlain(content: string, fileName: string) {
+    downloadText(content, fileName, "plain");
+}
+
+const d3FormatNum = d3Format(",");
+
+export function parseCookies(): Record<string, any> {
+    const cookies = {};
+    document.cookie.split(";").map(pair => {
+        const [key, ...values] = pair.split("=");
+        cookies[key.trim()] = values.join("=");
+    });
+    return cookies;
+}
+
+export function deleteCookie(name: string) {
+    const expireDate = new Date();
+    expireDate.setSeconds(expireDate.getSeconds() + 1);
+    document.cookie = `${name}=; domain=${window.location.hostname}; expires=${expireDate.toUTCString()}`;
+}
+
+const d3FormatDecimal = d3Format(",.2f");
+const d3FormatInt = d3Format(",.0f");
+
+export function formatDecimal(num: number): string {
+    if (!num) return "";
+    if (isNaN(num)) return num.toString();
+    return d3FormatDecimal(num);
+}
+
+export function formatNum(num: number): string {
+    if (!num) return "";
+    if (isNaN(num)) return num.toString();
+    return d3FormatNum(num);
+}
+
+export function safeFormatNum(num: number): string {
+    if (!num) return "";
+    if (isNaN(num)) return num.toString();
+    if (num < 0) return nlsHPCC.NotAvailable;
+    return d3FormatInt(num);
+}
+
+export function formatNums(obj) {
+    for (const key in obj) {
+        obj[key] = formatNum(obj[key]);
+    }
+    return obj;
+}
+
+export function isNumeric(n: string | undefined | null | number) {
+    return !isNaN(parseFloat(n as string)) && isFinite(n as number);
+}
+
+export function formatLine(labelTpl, obj): string {
+    let retVal = "";
+    let lpos = labelTpl.indexOf("%");
+    let rpos = -1;
+    let replacementFound = lpos >= 0 ? false : true;  //  If a line has no symbols always include it, otherwise only include that line IF a replacement was found  ---
+    while (lpos >= 0) {
+        retVal += labelTpl.substring(rpos + 1, lpos);
+        rpos = labelTpl.indexOf("%", lpos + 1);
+        if (rpos < 0) {
+            console.log("Invalid Label Template");
+            break;
+        }
+        const key = labelTpl.substring(lpos + 1, rpos);
+        replacementFound = replacementFound || !!obj[labelTpl.substring(lpos + 1, rpos)];
+        retVal += !key ? "%" : (obj[labelTpl.substring(lpos + 1, rpos)] || "");
+        lpos = labelTpl.indexOf("%", rpos + 1);
+    }
+    retVal += labelTpl.substring(rpos + 1, labelTpl.length);
+    return replacementFound ? retVal : "";
+}
+
+export function format(labelTpl, obj) {
+    labelTpl = labelTpl.split("\\n").join("\n");
+    return labelTpl
+        .split("\n")
+        .map(line => formatLine(line, obj))
+        .filter(d => d.trim().length > 0)
+        .map(decodeHtml)
+        .join("\n")
+        ;
+}
+const theme = getTheme();
+const { semanticColors } = theme;
+
+export function logColor(level: Level): { background: string, foreground: string } {
+    const colors = {
+        background: "transparent",
+        foreground: "inherit"
+    };
+
+    switch (level) {
+        case Level.debug:
+            colors.background = semanticColors.successBackground;
+            colors.foreground = semanticColors.successIcon;
+            break;
+        case Level.info:
+        case Level.notice:
+            break;
+        case Level.warning:
+            colors.background = semanticColors.warningBackground;
+            colors.foreground = semanticColors.warningIcon;
+            break;
+        case Level.error:
+            colors.background = semanticColors.errorBackground;
+            colors.foreground = semanticColors.errorIcon;
+            break;
+        case Level.critical:
+        case Level.alert:
+        case Level.emergency:
+            colors.background = semanticColors.severeWarningBackground;
+            colors.foreground = semanticColors.severeWarningIcon;
+            break;
+    }
+
+    return colors;
+}
+
+export function themeIsDark() {
+    return theme.semanticColors.link === darkTheme.palette.themePrimary;
+}
+
+export function wrapStringWithTag(string, tag = "span") {
+    let retVal = string;
+    const unallowedTags = ["script", "style", "link", "a", "input", "form", "img", "video", "iframe", "frameset"];
+    if (!unallowedTags.includes(tag)) {
+        const elm = document.createElement(tag);
+        elm.innerText = string;
+        retVal = elm.outerHTML;
+    }
+    return retVal;
+}
+
+export function isSpill(sourceKind: string, targetKind: string): boolean {
+    return sourceKind === "2" || targetKind === "71";
+}
+
+export function wuidToDate(wuid: string): string {
+    return `${wuid.substring(1, 5)}-${wuid.substring(5, 7)}-${wuid.substring(7, 9)}`;
+}
+
+export function wuidToTime(wuid: string): string {
+    return `${wuid.substring(10, 12)}:${wuid.substring(12, 14)}:${wuid.substring(14, 16)}`;
 }

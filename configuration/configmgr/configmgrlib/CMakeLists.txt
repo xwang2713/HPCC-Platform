@@ -17,6 +17,8 @@
 
 project ( configmgr )
 
+find_package(RapidJSON CONFIG REQUIRED)
+
 SET(  SRCS
 
         EnvironmentMgr.cpp
@@ -60,17 +62,13 @@ INCLUDE_DIRECTORIES(
     ${CMAKE_PREFIX_PATH}/mkspecs/linux-g++
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../hpcc_support
-    ${HPCC_SOURCE_DIR}/configuration/configmgr/RapidJSON/include
     ${CMAKE_BINARY_DIR}
     ${CMAKE_BINARY_DIR}/oss
-    ${BOOST_REGEX_INCLUDE_DIR}
+    ${Boost_INCLUDE_DIRS}
 )
 
 ADD_DEFINITIONS( -D_USRDLL -DCFGMGRLIB_EXPORTS)
 HPCC_ADD_LIBRARY( configmgr SHARED ${SRCS} )
-if(CENTOS_6_BOOST)
-  add_dependencies(configmgr generate-boost-regex)
-endif()
 TARGET_LINK_LIBRARIES( configmgr jlib)
 
 INSTALL ( TARGETS configmgr RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )

@@ -20,6 +20,8 @@
 
 using namespace hpccMetrics;
 
+std::map<std::string, std::vector<std::string>> histogramLabels;
+
 extern "C" MetricSink* getSinkInstance(const char *name, const IPropertyTree *pSettingsTree)
 {
     return new PrometheusMetricSink(name, pSettingsTree);
@@ -28,7 +30,7 @@ extern "C" MetricSink* getSinkInstance(const char *name, const IPropertyTree *pS
 PrometheusMetricSink::PrometheusMetricSink(const char *name, const IPropertyTree *pSettingsTree) :
     MetricSink(name, PROMETHEUS_REPORTER_TYPE)
 {
-    m_metricsReporter = nullptr;
+    m_metricsManager = nullptr;
     m_metricsSinkName = name;
     m_processing = false;
     m_port = DEFAULT_PROMETHEUS_METRICS_SERVICE_PORT;
@@ -58,25 +60,27 @@ PrometheusMetricSink::PrometheusMetricSink(const char *name, const IPropertyTree
                 else
                     msg.append(" - ").append("encountered unknown error!");
 
-                LOG(MCinternalError, "PrometheusMetricsService: %s", msg.str());
+                LOG(MCdebugError, "PrometheusMetricsService: %s", msg.str());
             }
 
             VStringBuffer respmessage(PROMETHEUS_METRICS_HTTP_ERROR, msg.str(), req.path.c_str(), res.status);
             res.set_content(respmessage.str(), PROMETHEUS_METRICS_SERVICE_RESP_TYPE);
 
-            LOG(MCuserInfo, "TxSummary[status=%d;user=@%s:%d;contLen=%ld;req=%s;]\n", res.status, req.remote_addr.c_str(), req.remote_port, req.content_length, req.method.c_str());
+            LOG(MCuserError, "PrometheusMetricsService Error: %s", msg.str());
+            LOG(MCuserInfo, "TxSummary[status=%d;user=@%s:%d;contLen=%ld;req=%s;path=%s]", res.status, req.remote_addr.c_str(), req.remote_port, req.content_length, req.method.c_str(), req.path.c_str());
         });
 
         m_server.Get(m_metricsServiceName.str(), [&](const Request& req, Response& res)
         {
+            LOG(MCdebugInfo, "GET PrometheusMetricsService%s, from %s:%d", req.path.c_str(), req.remote_addr.c_str(), req.remote_port);
+
             StringBuffer payload;
-            if (!m_metricsReporter)
-                throw std::runtime_error("NULL MetricsReporter detected!");
-            else
-                toPrometheusMetrics(m_metricsReporter->queryMetricsForReport(std::string(m_metricsSinkName.str())), payload, m_verbose);
+            toPrometheusMetrics(m_metricsManager->queryMetricsForReport(std::string(m_metricsSinkName.str())), payload, m_verbose);
 
             res.set_content(payload.str(), PROMETHEUS_METRICS_SERVICE_RESP_TYPE);
-            LOG(MCuserInfo, "TxSummary[status=%d;user=@%s:%d;contLen=%ld;req=GET;]\n",res.status, req.remote_addr.c_str(), req.remote_port, req.content_length);
+            res.status = 200;
+            LOG(MCdebugInfo, "PrometheusMetricsService Response: %s\n", payload.str());
+            LOG(MCuserInfo, "TxSummary[status=%d;user=@%s:%d;contLen=%ld;req=GET;path=%s]", res.status, req.remote_addr.c_str(), req.remote_port, req.content_length, req.path.c_str());
         });
     }
 }
@@ -89,13 +93,15 @@ const char * PrometheusMetricSink::mapHPCCMetricTypeToPrometheusStr(MetricType t
         return "counter";
     case hpccMetrics::METRICS_GAUGE:
         return "gauge";
+    case hpccMetrics::METRICS_HISTOGRAM:
+        return "histogram";
     default:
-        LOG(MCdebugInfo, "Encountered unknown metric - cannot map to Prometheus metric!");
-        return nullptr;
+        LOG(MCdebugWarning, "Encountered unknown metric - cannot map to Prometheus metric!");
+        return "unknowntype";
     }
 }
 
-void PrometheusMetricSink::toPrometheusMetrics(std::vector<std::shared_ptr<IMetric>> reportMetrics, StringBuffer & out, bool verbose)
+void PrometheusMetricSink::toPrometheusMetrics(const std::vector<std::shared_ptr<IMetric>> & reportMetrics, StringBuffer & out, bool verbose)
 {
     /*
      * [# HELP <metric name> <metric summary>\n]
@@ -107,28 +113,159 @@ void PrometheusMetricSink::toPrometheusMetrics(std::vector<std::shared_ptr<IMetr
 
     for (auto &pMetric: reportMetrics)
     {
-        const std::string & name = pMetric->queryName();
+        std::string metricName = getPrometheusMetricName(pMetric);
+
+        MetricType metricType = pMetric->queryMetricType();
+
         if (verbose)
         {
+            const char * prometheusMetricType = mapHPCCMetricTypeToPrometheusStr(metricType);
             if (!pMetric->queryDescription().empty())
-                out.append("# HELP ").append(name.c_str()).append(" ").append(pMetric->queryDescription().c_str()).append("\n");
+                out.append("# HELP ").append(metricName.c_str()).append(" ").append(pMetric->queryDescription().c_str()).append("\n");
 
-            MetricType type = pMetric->queryMetricType();
-            const char * promtype = mapHPCCMetricTypeToPrometheusStr(type);
-            if (promtype)
-                out.append("# TYPE ").append(name.c_str()).append(" ").append(promtype).append("\n");
+            if (prometheusMetricType)
+                out.append("# TYPE ").append(metricName.c_str()).append(" ").append(prometheusMetricType).append("\n");
         }
 
-        out.append(name.c_str()).append(" ").append(pMetric->queryValue()).append("\n");
+        if (metricType == hpccMetrics::METRICS_HISTOGRAM)
+        {
+            toPrometheusHistogram(metricName, pMetric, out);
+        }
+        else
+        {
+            out.append(metricName.c_str());
+            const auto &metaData = pMetric->queryMetaData();
+            if (!metaData.empty())
+            {
+                out.append(" {");
+                bool firstEntry = true;
+                for (auto &metaDataIt: metaData)
+                {
+                    if (!firstEntry)
+                        out.append(",");
+                    else
+                        firstEntry = false;
+
+                    out.append(metaDataIt.key.c_str()).append("=\"").append(metaDataIt.value.c_str()).append("\"");
+                }
+                out.append("}");
+            }
+            out.append(" ").append(pMetric->queryValue()).append("\n");
+        }
     }
 }
 
-void PrometheusMetricSink::startCollection(MetricsReporter *_pReporter)
+void PrometheusMetricSink::toPrometheusHistogram(const std::string &name, const std::shared_ptr<IMetric> &pHistogram, StringBuffer & out)
 {
-    if (!_pReporter)
-        throw MakeStringException(-1, "PrometheusMetricsService: NULL MetricsReporter detected!");
+    auto labels = getHistogramLabels(name, pHistogram);
+    auto bucketCounts = pHistogram->queryHistogramValues();
+    unsigned bucketLabelIndex = 0;
+    __uint64 cumulativeBucketCount = 0;
+    for (auto const &bucketCount: bucketCounts)
+    {
+        cumulativeBucketCount += bucketCount;
+        out.append(labels[bucketLabelIndex++].c_str()).append(" ").append(cumulativeBucketCount).append("\n");
+    }
 
-    m_metricsReporter = _pReporter;
+    // Indices for the histogram value and cumulative count labels (stored sequentially after the
+    // bucket count labels in the labels vector
+    unsigned valueLabelIndex = bucketCounts.size();
+    unsigned cumulativeCountLabelIndex = valueLabelIndex + 1;
+
+    out.append(labels[valueLabelIndex].c_str()).append(" ").append(pHistogram->queryValue()).append("\n");
+    out.append(labels[cumulativeCountLabelIndex].c_str()).append(" ").append(cumulativeBucketCount).append("\n");
+}
+
+
+std::string PrometheusMetricSink::getPrometheusMetricName(const std::shared_ptr<IMetric> &pMetric)
+{
+    std::string name = pMetric->queryName();
+    // Convert to lower case - per promtool output: "metric names should be written in 'snake_case' not 'camelCase'"
+    std::transform(name.begin(), name.end(), name.begin(),
+    [](unsigned char c){ return std::tolower(c); });
+
+    //'.' is a known char used in HPCC metric names but invalid in Prometheus
+    std::replace(name.begin(), name.end(), '.', '_');
+    name.append("_").append(getPrometheusMetricUnits(pMetric));
+    return name;
+}
+
+std::string PrometheusMetricSink::getPrometheusMetricUnits(const std::shared_ptr<IMetric> &pMetric)
+{
+    std::string unitsStr;
+    switch (pMetric->queryUnits())
+    {
+        case SMeasureCount:
+            unitsStr = "total";
+            break;
+        case SMeasureSize:
+            unitsStr = "bytes";
+            break;
+        case SMeasureTimeNs:
+            unitsStr = "seconds";
+            break;
+        default:
+            unitsStr = "";
+            break;
+    }
+    return unitsStr;
+}
+
+// return a vector of label strings matching the exposition format for a histogram as defined by the Prometheus spec.
+// See https://prometheus.io/docs/instrumenting/exposition_formats/ for more information
+const std::vector<std::string> &PrometheusMetricSink::getHistogramLabels(const std::string &name, const std::shared_ptr<IMetric> &pHistogram)
+{
+    auto it = histogramLabels.find(name);
+    if (it != histogramLabels.end())
+    {
+        return it->second;
+    }
+
+    StatisticMeasure units = pHistogram->queryUnits();
+    std::vector<std::string> labels;
+    std::vector<__uint64> bucketLimits = pHistogram->queryHistogramBucketLimits();
+
+    for (const auto &limit: bucketLimits)
+    {
+        std::string label(name);
+        label.append("_bucket{le=\"");
+        if (units == SMeasureTimeNs)
+        {
+            double secs = (double)limit / 1000000000.0;
+            label.append(std::to_string(secs)).append("\"}");
+        }
+        else
+        {
+            label.append(std::to_string(limit)).append("\"}");
+        }
+        labels.emplace_back(label);
+    }
+
+    // Add the inf label
+    std::string infLabel(name);
+    infLabel.append("_bucket{le=\"+Inf\"}");
+    labels.emplace_back(infLabel);
+
+    // Sum and count
+    std::string sumLabel(name);
+    sumLabel.append("_sum{}");
+    labels.emplace_back(sumLabel);
+
+    std::string countLabel(name);
+    countLabel.append("_count{}");
+    labels.emplace_back(countLabel);
+
+    // Insert the labels for reuse
+    auto insertRet = histogramLabels.insert({name, labels});
+    return insertRet.first->second;
+};
+
+void PrometheusMetricSink::startCollection(MetricsManager *_pManager)
+{
+    if (!_pManager)
+        throw MakeStringException(-1, "PrometheusMetricsService: NULL MetricsManager detected!");
+
+    m_metricsManager = _pManager;
 
     m_collectThread = std::thread(collectionThread, this);
     m_processing = true;
@@ -136,6 +273,7 @@ void PrometheusMetricSink::startCollection(MetricsReporter *_pReporter)
 
 void PrometheusMetricSink::stopCollection()
 {
+    LOG(MCoperatorProgress, "PrometheusMetricsService stopping:  port: '%i' uri: '%s' sinkname: '%s'", m_port, m_metricsServiceName.str(), m_metricsSinkName.str());
     m_processing = false;
     m_server.stop();
     m_collectThread.join();
@@ -143,6 +281,6 @@ void PrometheusMetricSink::stopCollection()
 
 void PrometheusMetricSink::startServer()
 {
-    LOG(MCoperatorProgress, "PrometheusMetricsService started:  port: '%i' uri: '%s' sinkname: '%s'\n", m_port, m_metricsServiceName.str(), m_metricsSinkName.str());
-    m_server.listen("localhost", m_port);
+    LOG(MCoperatorProgress, "PrometheusMetricsService started:  port: '%i' uri: '%s' sinkname: '%s'", m_port, m_metricsServiceName.str(), m_metricsSinkName.str());
+    m_server.listen(BIND_ALL_LOCAL_NICS, m_port);
 }

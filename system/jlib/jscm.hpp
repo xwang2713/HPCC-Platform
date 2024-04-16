@@ -155,10 +155,26 @@ public:
     }
     inline bool setownIfNull(CLASS * _ptr)
     {
+        if (!_ptr)
+            return false;
+
         CLASS * expected = nullptr;
         if (ptr.compare_exchange_strong(expected, _ptr))
             return true;
-        ::Release(_ptr);
+        _ptr->Release();
+        return false;
+    }
+    inline bool setIfNull(CLASS * _ptr)
+    {
+        if (!_ptr)
+            return false;
+
+        CLASS * expected = nullptr;
+        if (ptr.compare_exchange_strong(expected, _ptr))
+        {
+            _ptr->Link();
+            return true;
+        }
         return false;
     }
     inline void setown(CLASS * _ptr)
@@ -279,6 +295,8 @@ class StringBuffer;
 
 typedef enum
 {
+    // Unknown target audience
+    MSGAUD_unknown    = 0x00,
     // Target audience: system admins
     // Purpose: Information useful for administering the platform, diagnosing errors and
     //          resolving system issues
@@ -292,7 +310,8 @@ typedef enum
     //          would not be resolvable by sysadmin or ECL developers. Additional information that may
     //          be useful for improving the platform.
     MSGAUD_programmer  = 0x20,
-    // MSGAUD_legacy      = 0x40, REMOVED - may be reused later
+    // Target audience: Automatic monitoring tools
+    MSGAUD_monitor     = 0x40,
     // Target audience: persons involved in accounting and security audits
     MSGAUD_audit       = 0x80,
     // MSGAUD_all is to be used for filtering or specifying which messages are to be logged

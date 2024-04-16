@@ -56,7 +56,7 @@ public:
     {
         if(_ep)
         {
-            _ep->getUrlStr(epstr);
+            _ep->getEndpointHostText(epstr);
             keystr.set(epstr);
             addKeySuffix(proto, keystr);
         }
@@ -121,7 +121,7 @@ public:
 private:
     inline StringBuffer& calcKey(SocketEndpoint& ep, PersistentProtocol proto, StringBuffer& keystr)
     {
-        ep.getUrlStr(keystr);
+        ep.getEndpointHostText(keystr);
         return addKeySuffix(proto, keystr);
     }
     SocketSet* findSet(CPersistentInfo* info, bool create = false)
@@ -193,7 +193,7 @@ private:
     StringIntMap m_instantCloseCounts;
     StringIntMap m_doNotReuseList;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
     CPersistentHandler(IPersistentSelectNotify* notify, int maxIdleTime, int maxReqs, PersistentLogLevel loglevel, bool enableDoNotReuseList)
                         : m_stop(false), m_notify(notify), m_maxIdleTime(maxIdleTime), m_maxReqs(maxReqs), m_loglevel(loglevel), m_enableDoNotReuseList(enableDoNotReuseList)
     {
@@ -205,7 +205,7 @@ public:
     {
     }
 
-    virtual void add(ISocket* sock, SocketEndpoint* ep = nullptr, PersistentProtocol proto = PersistentProtocol::ProtoTCP) override
+    virtual void add(ISocket* sock, SocketEndpoint* ep, PersistentProtocol proto) override
     {
         if (!sock || !sock->isValid())
             return;
@@ -214,17 +214,16 @@ public:
         if (m_enableDoNotReuseList && ep != nullptr)
         {
             StringBuffer epstr;
-            ep->getUrlStr(epstr);
+            ep->getEndpointHostText(epstr);
             if(m_doNotReuseList.getValue(epstr.str()) != nullptr)
             {
                 PERSILOG(PersistentLogLevel::PLogNormal, "PERSISTENT: socket %d's target endpoint %s is in DoNotReuseList, will not add it.", sock->OShandle(), epstr.str());
-                sock->shutdown();
-                sock->close();
+                shutdownAndCloseNoThrow(sock);
                 return;
             }
         }
         m_selectHandler->add(sock, SELECTMODE_READ, this);
-        Owned<CPersistentInfo> info = new CPersistentInfo(false, usTick()/1000, 0, ep, proto, sock);
+        Owned<CPersistentInfo> info = new CPersistentInfo(false, msTick(), 0, ep, proto, sock);
         m_infomap.setValue(sock, info.getLink());
         m_availkeeper.add(info);
     }
@@ -250,7 +249,7 @@ public:
             m_selectHandler->remove(sock);
     }
 
-    virtual void doneUsing(ISocket* sock, bool keep, unsigned usesOverOne) override
+    virtual void doneUsing(ISocket* sock, bool keep, unsigned usesOverOne, unsigned overrideMaxRequests) override
     {
         PERSILOG(PersistentLogLevel::PLogMax, "PERSISTENT: Done using socket %d, keep=%s", sock->OShandle(), boolToStr(keep));
         CriticalBlock block(m_critsect);
@@ -261,13 +260,14 @@ public:
         if (info)
         {
             info->useCount += usesOverOne;
-            bool reachedQuota = m_maxReqs > 0 && m_maxReqs <= info->useCount;
+            unsigned requestLimit = overrideMaxRequests ? overrideMaxRequests : m_maxReqs;
+            bool reachedQuota = requestLimit > 0 && requestLimit <= info->useCount;
             if(!sock->isValid())
                 keep = false;
             if (keep && !reachedQuota)
             {
                 info->inUse = false;
-                info->timeUsed = usTick()/1000;
+                info->timeUsed = msTick();
                 m_selectHandler->add(sock, SELECTMODE_READ, this);
                 m_availkeeper.add(info);
             }
@@ -290,7 +290,7 @@ public:
         {
             Linked<ISocket> sock = info->sock;
             info->inUse = true;
-            info->timeUsed = usTick()/1000;
+            info->timeUsed = msTick();
             info->useCount++;
             if (pShouldClose != nullptr)
                 *pShouldClose = m_maxReqs > 0 && m_maxReqs <= info->useCount;
@@ -354,7 +354,7 @@ public:
                 {
                     m_availkeeper.remove(info);
                     info->inUse = true;
-                    info->timeUsed = usTick()/1000;
+                    info->timeUsed = msTick();
                     info->useCount++;
                     reachedQuota = m_maxReqs > 0 && m_maxReqs <= info->useCount;
                 }
@@ -378,10 +378,10 @@ public:
     }
 
     //Thread
-    virtual void start() override
+    virtual void start(bool inheritThreadContext) override
     {
         m_selectHandler->start();
-        Thread::start();
+        Thread::start(inheritThreadContext);
         PERSILOG(PersistentLogLevel::PLogNormal, "PERSISTENT: Handler %d started with max idle time %d and max requests %d", m_id, m_maxIdleTime, m_maxReqs);
     }
 
@@ -392,7 +392,7 @@ public:
             m_waitsem.wait(1000);
             if (m_stop)
                 break;
-            unsigned now = usTick()/1000;
+            unsigned now = msTick();
             CriticalBlock block(m_critsect);
             std::vector<ISocket*> socks1;
             std::vector<ISocket*> socks2;
@@ -401,9 +401,9 @@ public:
                 CPersistentInfo* info = si.getValue();
                 if (!info)
                     continue;
-                if(m_maxIdleTime > 0 && !info->inUse && info->timeUsed + m_maxIdleTime*1000 < now)
+                if(m_maxIdleTime > 0 && !info->inUse && now - info->timeUsed >= m_maxIdleTime*1000)
                     socks1.push_back(*(ISocket**)(si.getKey()));
-                if(info->inUse && info->timeUsed + MAX_INFLIGHT_TIME*1000 < now)
+                if(info->inUse && now - info->timeUsed >= MAX_INFLIGHT_TIME*1000)
                     socks2.push_back(*(ISocket**)(si.getKey()));
             }
             for (auto& s:socks1)
@@ -435,7 +435,7 @@ public:
         if(!ep)
             return false;
         StringBuffer epstr;
-        ep->getUrlStr(epstr);
+        ep->getEndpointHostText(epstr);
         if(epstr.length()> 0 && m_doNotReuseList.getValue(epstr.str()) != nullptr)
             return true;
         return false;
@@ -462,6 +462,6 @@ int CPersistentHandler::CurID = 0;
 IPersistentHandler* createPersistentHandler(IPersistentSelectNotify* notify, int maxIdleTime, int maxReqs, PersistentLogLevel loglevel, bool enableDoNotReuseList)
 {
     Owned<CPersistentHandler> handler = new CPersistentHandler(notify, maxIdleTime, maxReqs, loglevel, enableDoNotReuseList);
-    handler->start();
+    handler->start(false);
     return handler.getClear();
 }

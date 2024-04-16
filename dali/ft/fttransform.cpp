@@ -507,6 +507,7 @@ void TransferServer::sendProgress(OutputProgress & curProgress)
     msg.setEndian(__BIG_ENDIAN);
     curProgress.serializeCore(msg.clear().append(false));
     curProgress.serializeExtra(msg, 1);
+    curProgress.serializeExtra(msg, 2);
     if (!catchWriteBuffer(masterSocket, msg))
         throwError(RFSERR_TimeoutWaitMaster);
 
@@ -521,7 +522,8 @@ void TransferServer::appendTransformed(unsigned chunkIndex, ITransformer * input
 
     const offset_t startInputOffset = curPartition.inputOffset;
     const offset_t startOutputOffset = curPartition.outputOffset;
-
+    stat_type prevNumWrites =  out->getStatistic(StNumDiskWrites);
+    stat_type prevNumReads = input->getStatistic(StNumDiskReads);
     for (;;)
     {
         unsigned gotLength = input->getBlock(out);
@@ -536,11 +538,17 @@ void TransferServer::appendTransformed(unsigned chunkIndex, ITransformer * input
             offset_t outputOffset = out->tell();
             offset_t inputOffset = input->tell();
             if (totalLengthToRead)
-                LOG(MCdebugProgress, unknownJob, "Progress: %d%% done. [%" I64F "u]", (unsigned)(totalLengthRead*100/totalLengthToRead), (unsigned __int64)totalLengthRead);
+                LOG(MCdebugProgress, "Progress: %d%% done. [%" I64F "u]", (unsigned)(totalLengthRead*100/totalLengthToRead), (unsigned __int64)totalLengthRead);
 
             curProgress.status = (gotLength == 0) ? OutputProgress::StatusCopied : OutputProgress::StatusActive;
             curProgress.inputLength = input->tell()-startInputOffset;
             curProgress.outputLength = out->tell()-startOutputOffset;
+            stat_type curNumWrites = out->getStatistic(StNumDiskWrites);
+            stat_type curNumReads = input->getStatistic(StNumDiskReads);
+            curProgress.numWrites += (curNumWrites - prevNumWrites);
+            curProgress.numReads += (curNumReads - prevNumReads);
+            prevNumWrites = curNumWrites;
+            prevNumReads = curNumReads;
             if (crcOut)
                 curProgress.outputCRC = crcOut->getCRC();
             if (calcInputCRC)
@@ -562,7 +570,7 @@ void TransferServer::appendTransformed(unsigned chunkIndex, ITransformer * input
 #ifdef _WIN32
         if (gpfFrequency && ((fastRand() % gpfFrequency) == 0))
         {
-            LOG(MCdebugInfo, unknownJob, "About to crash....");
+            LOG(MCdebugInfo, "About to crash....");
             *(char *)0 = 0;
         }
 #endif
@@ -580,8 +588,8 @@ void TransferServer::deserializeAction(MemoryBuffer & msg, unsigned action)
     if (!isContainerized() && !ep.isLocal())
     {
         StringBuffer host, expected;
-        queryHostIP().getIpText(host);
-        ep.getIpText(expected);
+        queryHostIP().getHostText(host);
+        ep.getHostText(expected);
         throwError2(DFTERR_WrongComputer, expected.str(), host.str());
     }
 
@@ -596,23 +604,22 @@ void TransferServer::deserializeAction(MemoryBuffer & msg, unsigned action)
     msg.read(mirror);
     msg.read(isSafeMode);
 
-    srand((unsigned)get_cycles_now());
-    int adjust = fastRand() % updateFrequency - (updateFrequency/2);
+    int adjust = get_cycles_now() % updateFrequency - (updateFrequency/2);
     lastTick = msTick() + adjust;
 
     StringBuffer localFilename;
     if (action == FTactionpull)
     {
         partition.item(0).outputName.getPath(localFilename);
-        LOG(MCdebugProgress, unknownJob, "Process Pull Command: %s", localFilename.str());
+        LOG(MCdebugProgress, "Process Pull Command: %s", localFilename.str());
     }
     else
     {
         partition.item(0).inputName.getPath(localFilename);
-        LOG(MCdebugProgress, unknownJob, "Process Push Command: %s", localFilename.str());
+        LOG(MCdebugProgress, "Process Push Command: %s", localFilename.str());
     }
-    LOG(MCdebugProgress, unknownJob, "Num Parallel Slaves=%d Adjust=%d/%d", numParallelSlaves, adjust, updateFrequency);
-    LOG(MCdebugProgress, unknownJob, "copySourceTimeStamp(%d) mirror(%d) safe(%d) incrc(%d) outcrc(%d)", copySourceTimeStamp, mirror, isSafeMode, calcInputCRC, calcOutputCRC);
+    LOG(MCdebugProgress, "Num Parallel Slaves=%d Adjust=%d/%d", numParallelSlaves, adjust, updateFrequency);
+    LOG(MCdebugProgress, "copySourceTimeStamp(%d) mirror(%d) safe(%d) incrc(%d) outcrc(%d)", copySourceTimeStamp, mirror, isSafeMode, calcInputCRC, calcOutputCRC);
 
     displayPartition(partition);
 
@@ -645,8 +652,13 @@ void TransferServer::deserializeAction(MemoryBuffer & msg, unsigned action)
 
     if (msg.remaining())
         msg.read(fileUmask);
+    if (msg.remaining())
+    {
+        ForEachItemIn(i2, progress)
+            progress.item(i2).deserializeExtra(msg, 2);
+    }
 
-    LOG(MCdebugProgress, unknownJob, "throttle(%d), transferBufferSize(%d)", throttleNicSpeed, transferBufferSize);
+    LOG(MCdebugProgress, "throttle(%d), transferBufferSize(%d)", throttleNicSpeed, transferBufferSize);
     PROGLOG("compressedInput(%d), compressedOutput(%d), copyCompressed(%d)", compressedInput?1:0, compressOutput?1:0, copyCompressed?1:0);
     PROGLOG("encrypt(%d), decrypt(%d)", encryptKey.isEmpty()?0:1, decryptKey.isEmpty()?0:1);
     if (fileUmask != -1)
@@ -679,7 +691,7 @@ void TransferServer::transferChunk(unsigned chunkIndex)
 
     StringBuffer targetPath;
     curPartition.outputName.getPath(targetPath);
-    LOG(MCdebugProgress, unknownJob, "Begin to transfer chunk %d (offset: %" I64F "d, size: %" I64F "d) to target:'%s' (offset: %" I64F "d, size: %" I64F "d) ",
+    LOG(MCdebugProgress, "Begin to transfer chunk %d (offset: %" I64F "d, size: %" I64F "d) to target:'%s' (offset: %" I64F "d, size: %" I64F "d) ",
                         chunkIndex, curPartition.inputOffset, curPartition.inputLength, targetPath.str(), curPartition.outputOffset, curPartition.outputLength);
     const unsigned __int64 startOutOffset = out->tell();
     if (startOutOffset != curPartition.outputOffset+curProgress.outputLength)
@@ -688,10 +700,12 @@ void TransferServer::transferChunk(unsigned chunkIndex)
     size32_t fixedTextLength = (size32_t)curPartition.fixedText.length();
     if (fixedTextLength || curPartition.inputName.isNull())
     {
+        stat_type prevWrites = out->getStatistic(StNumDiskWrites);
         out->write(fixedTextLength, curPartition.fixedText.get());
         curProgress.status = OutputProgress::StatusCopied;
         curProgress.inputLength = fixedTextLength;
         curProgress.outputLength = fixedTextLength;
+        curProgress.numWrites += (out->getStatistic(StNumDiskWrites)-prevWrites);
         if (crcOut)
             curProgress.outputCRC = crcOut->getCRC();
         sendProgress(curProgress);
@@ -765,7 +779,7 @@ bool TransferServer::pull()
             unsigned __int64 progressOffset = curOutputOffset + curProgress.outputLength;
             if (progressOffset > size)
             {
-                LOG(MCwarning, unknownJob, "Recovery information seems to be invalid (%" I64F "d %" I64F "d) start copying from the beginning",
+                LOG(MCwarning, "Recovery information seems to be invalid (%" I64F "d %" I64F "d) start copying from the beginning",
                          size, progressOffset);
                 //reset any remaining partitions...
                 for (i = start; i < numPartitions; i++)
@@ -782,7 +796,7 @@ bool TransferServer::pull()
 
                 StringBuffer localFilename;
                 localTempFilename.getPath(localFilename);
-                LOG(MCdebugProgress, unknownJob, "Continue pulling to file: %s from recovery position", localFilename.str());
+                LOG(MCdebugProgress, "Continue pulling to file: %s from recovery position", localFilename.str());
                 start = i;
                 goto processedProgress; // break out of both loops
             }
@@ -821,13 +835,13 @@ processedProgress:
             curOutput = curPartition.whichOutput;
             if (curProgress.status == OutputProgress::StatusRenamed)
             {
-                LOG(MCdebugProgress, unknownJob, "Renamed file found - must be CRC recovery");
+                LOG(MCdebugProgress, "Renamed file found - must be CRC recovery");
                 idx = queryLastOutput(curOutput);
                 continue;
             }
 
             const RemoteFilename & outputFilename = curPartition.outputName;
-            auto fsProperties = outputFilename.queryFileSystemProperties();
+            const auto & fsProperties = outputFilename.queryFileSystemProperties();
             RemoteFilename localTempFilename;
             if (!fsProperties.canRename)
                 localTempFilename.set(outputFilename);
@@ -851,10 +865,10 @@ processedProgress:
                     decrypt(key,encryptKey);
                     compressor.setown(createAESCompressor256(key.length(),key.str()));
                 }
-                outio.setown(createCompressedFileWriter(outio, false, 0, true, compressor, COMPRESS_METHOD_LZW));
+                outio.setown(createCompressedFileWriter(outio, false, 0, true, compressor, COMPRESS_METHOD_LZ4));
             }
 
-            LOG(MCdebugProgress, unknownJob, "Start pulling to file: %s", localFilename.str());
+            LOG(MCdebugProgress, "Start pulling to file: %s", localFilename.str());
 
             //Find the last partition entry that refers to the same file.
             if (!compressOutput && fsProperties.preExtendOutput)
@@ -864,8 +878,10 @@ processedProgress:
                 {
                     char null = 0;
                     offset_t lastOffset = lastChunk.outputOffset+lastChunk.outputLength;
+                    stat_type prevWrites = outio->getStatistic(StNumDiskWrites);
                     outio->write(lastOffset-sizeof(null),sizeof(null),&null);
-                    LOG(MCdebugProgress, unknownJob, "Extend length of target file to %" I64F "d", lastOffset);
+                    curProgress.numWrites += (outio->getStatistic(StNumDiskWrites)-prevWrites);
+                    LOG(MCdebugProgress, "Extend length of target file to %" I64F "d", lastOffset);
                 }
             }
 
@@ -937,6 +953,7 @@ processedProgress:
                     curProgress.status = OutputProgress::StatusRenamed;
                     curProgress.serializeCore(msg.clear().append(false));
                     curProgress.serializeExtra(msg, 1);
+                    curProgress.serializeExtra(msg, 2);
                     if (!catchWriteBuffer(masterSocket, msg))
                         throwError(RFSERR_TimeoutWaitMaster);
                 }
@@ -978,7 +995,7 @@ bool TransferServer::push()
                     decrypt(key,encryptKey);
                     compressor.setown(createAESCompressor256(key.length(),key.str()));
                 }
-                outio.setown(createCompressedFileWriter(outio, false, 0, true, compressor, COMPRESS_METHOD_LZW));
+                outio.setown(createCompressedFileWriter(outio, false, 0, true, compressor, COMPRESS_METHOD_LZ4));
             }
             out.setown(createIOStream(outio));
             if (!compressOutput)

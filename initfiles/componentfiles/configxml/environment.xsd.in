@@ -121,6 +121,17 @@
                                     <xs:attribute name="domain" type="xs:string"/>
                                     <xs:attribute name="computerType" type="xs:string"/>
                                 </xs:complexType>
+
+                                <xs:element name="cost">
+                                    <xs:complexType>
+                                        <xs:attribute name="currencyCode" type="xs:string"/>
+                                        <xs:attribute name="perCpu" type="xs:string"/>
+                                        <xs:attribute name="storageAtRest" type="xs:string"/>
+                                        <xs:attribute name="storageReads" type="xs:string"/>
+                                        <xs:attribute name="storageWrites" type="xs:string"/>
+                                    </xs:complexType>
+                                </xs:element>
+
                             </xs:element>
                         </xs:choice>
                         <xs:attribute name="include" type="xs:string"/>
@@ -795,7 +806,7 @@
             <xs:field xpath="@program"/>
         </xs:keyref>
         <xs:key name="processKey">
-            <xs:selector xpath=".//EclServerProcess|.//EclAgentProcess|.//SybaseProcess|.//SpareProcess|.//HoleCluster|.//ThorCluster|.//DaliServer|.//BackupNodeProcess|.//SparkThorProcess"/>
+            <xs:selector xpath=".//EclServerProcess|.//EclAgentProcess|.//SybaseProcess|.//SpareProcess|.//HoleCluster|.//ThorCluster|.//DaliServer|.//BackupNodeProcess"/>
             <xs:field xpath="@name"/>
         </xs:key>
         <xs:key name="hmonKey">

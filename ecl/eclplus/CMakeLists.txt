@@ -25,6 +25,8 @@
 project( eclplus ) 
 
 include(${HPCC_SOURCE_DIR}/esp/scm/smcscm.cmake)
+include(${HPCC_SOURCE_DIR}/esp/scm/espscm.cmake)
+
 
 set (    SRCS 
          ../../esp/bindings/bindutil.cpp 
@@ -33,6 +35,7 @@ set (    SRCS
          ${ESPSCM_GENERATED_DIR}/ws_workunits_req_resp_esp.cpp
          ${ESPSCM_GENERATED_DIR}/ws_workunits_queryset_req_resp_esp.cpp
          ${ESPSCM_GENERATED_DIR}/ws_workunits_esp.cpp 
+         ${ESPSCM_GENERATED_DIR}/ws_logaccess_esp.cpp
          DeleteHelper.cpp 
          DumpHelper.cpp 
          eclplus.cpp 
@@ -62,7 +65,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/common/thorhelper
     )
 
-ADD_DEFINITIONS( -DECLPLUS_EXPORTS -D_CONSOLE )
+ADD_DEFINITIONS( -DECLPLUS_EXPORTS -D_CONSOLE -DWSWU_API_LOCAL -Dws_logaccess_API_LOCAL )
 
 HPCC_ADD_EXECUTABLE ( eclplus ${SRCS} )
 add_dependencies ( eclplus espscm )

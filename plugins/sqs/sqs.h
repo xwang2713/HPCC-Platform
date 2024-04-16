@@ -61,7 +61,6 @@ extern "C++"
 {
   namespace SQSHPCCPlugin
   {
-    using namespace std;
     typedef struct 
     {
       int code;
@@ -115,14 +114,14 @@ extern "C++"
       Aws::String queueUrl;
       std::ofstream handlelog;
       AtomicCounter counter;
-      Aws::SQS::SQSClient* sqsClient;
+      Aws::SQS::SQSClient* sqsClient = nullptr;
       Aws::SDKOptions options;
       Aws::Auth::AWSCredentials* credentials=nullptr;
       bool RegionExists(const std::string& region);
       const char *const getRegion(const std::string& region);
       void upstr(char* s);
       std::string convertAwsStringToCharPtr(Aws::String str);
-      char*  convertStringToChar(const string& str);
+      char*  convertStringToChar(const std::string& str);
     };
 
 

@@ -86,8 +86,6 @@ interface ICassandraSession : public IInterface  // MORE - rename!
     virtual CassandraPrepared *prepareStatement(const char *query) const = 0;
     virtual void executeAsync(CIArrayOf<CassandraStatement> &batch, const char *what) const = 0;
 
-    virtual unsigned queryTraceLevel() const = 0;
-
     virtual const CassResult *fetchDataForWuid(const CassandraXmlMapping *mappings, const char *wuid, bool includeWuid) const = 0;
     virtual const CassResult *fetchDataForWuidAndKey(const CassandraXmlMapping *mappings, const char *wuid, const char *key) const = 0;
     virtual void deleteChildByWuid(const CassandraXmlMapping *mappings, const char *wuid, CassBatch *batch) const = 0;
@@ -891,7 +889,7 @@ static const CassandraXmlMapping workunitsMappings [] =
     // These are catchalls for anything not processed above or in a child table
 
     {"elements", "map<text, text>", "@Action@Application@Debug@Exceptions@Files@FilesRead@Graphs@Results@Statistics@Plugins@Query@State@Variables@Temporaries@Workflow@", elementMapColumnMapper},  // name is the suppression list, note trailing @
-    {"subtrees", "map<text, text>", "@DiskUsageStats@Parameters@Process@Tracing@", subTreeMapColumnMapper},  // name is the INCLUSION list, note trailing @
+    {"subtrees", "map<text, text>", "@Parameters@Process@Tracing@", subTreeMapColumnMapper},  // name is the INCLUSION list, note trailing @
 
     { NULL, "workunits", "((partition), wuid)|CLUSTERING ORDER BY (wuid DESC)", stringColumnMapper}
 };
@@ -2149,7 +2147,7 @@ public:
                 {
                     if (!inputs.item(idx2).nextRow())
                     {
-                        inputs.clear(); // Make sure next() fails next time it is called
+                        inputs.kill(); // Make sure next() fails next time it is called
                         break;
                     }
                 }
@@ -2216,13 +2214,13 @@ public:
 
     void executeBatch(CassandraBatch &batch, const char * what) const
     {
-        if (sessionCache->queryTraceLevel() > 1)
+        if (doTrace(traceCassandra))
             DBGLOG("Executing batch %s", what);
         batch.execute(sessionCache->querySession(), what);
     }
     void executeAsync(CIArrayOf<CassandraStatement> &batch, const char * what) const
     {
-        if (sessionCache->queryTraceLevel() > 1)
+        if (doTrace(traceCassandra))
             DBGLOG("Executing async batch %s (%d elements)", what, batch.length());
         sessionCache->executeAsync(batch, what);
     }
@@ -2253,7 +2251,7 @@ public:
     virtual void commit()
     {
         CPersistedWorkUnit::commit();
-        if (sessionCache->queryTraceLevel() >= 8)
+        if (doTrace(traceCassandra, TraceFlags::Max))
         {
             StringBuffer s; toXML(p, s); DBGLOG("CCassandraWorkUnit::commit\n%s", s.str());
         }
@@ -2296,7 +2294,7 @@ public:
             {
                 const char *path = (const char *) iter.query().getKey();
                 const CassandraXmlMapping *table = *dirtyPaths.mapToValue(&iter.query());
-                if (sessionCache->queryTraceLevel()>2)
+        if (doTrace(traceCassandra))
                     DBGLOG("Updating dirty path %s", path);
                 if (*path == '*')
                 {
@@ -2310,7 +2308,7 @@ public:
                     IPTree *dirty = p->queryPropTree(path);
                     if (dirty)
                         childXMLRowtoCassandra(sessionCache, batch, table, wuid, *dirty, 0);
-                    else if (sessionCache->queryTraceLevel())
+                    else if (doTrace(traceCassandra))
                     {
                         StringBuffer xml;
                         toXML(p, xml);
@@ -2336,7 +2334,7 @@ public:
                 }
             }
         }
-        if (sessionCache->queryTraceLevel() > 1)
+        if (doTrace(traceCassandra))
             DBGLOG("Executing commit batches");
         if (deletesBatch)
         {
@@ -2371,7 +2369,7 @@ public:
     {
         CPersistedWorkUnit::loadPTree(LINK(wuTree));
 
-        if (sessionCache->queryTraceLevel() >= 8)
+        if (doTrace(traceCassandra, TraceFlags::Max))
         {
             StringBuffer s; toXML(wuTree, s); DBGLOG("CCassandraWorkUnit::import\n%s", s.str());
         }
@@ -2395,7 +2393,7 @@ public:
         if (query)
             childXMLRowtoCassandra(sessionCache, batch, wuQueryMappings, queryWuid(), *query, 0);
 
-        if (sessionCache->queryTraceLevel() > 1)
+        if (doTrace(traceCassandra))
             DBGLOG("Executing commit batches");
 
         CassandraFuture futureBatch(cass_session_execute_batch(sessionCache->querySession(), batch));
@@ -2405,7 +2403,7 @@ public:
         if (!graphProgressTree)
             return;
 
-        if (sessionCache->queryTraceLevel() >= 8)
+        if (doTrace(traceCassandra, TraceFlags::Max))
         {
             StringBuffer s; toXML(graphProgressTree, s); DBGLOG("CCassandraWorkUnit::import\n%s", s.str());
         }
@@ -2422,7 +2420,7 @@ public:
                 const char *name=sub.queryName();
                 if (name[0]=='s' && name[1]=='g')
                 {
-                    setGraphProgress(&graph, graphName, atoi(name+2), sub.queryProp("@creator"));
+                    setGraphProgress(&graph, graphName, atoi(name+2), sub.queryProp("@creator"), false);
                 }
                 else if (streq(name, "node"))
                 {
@@ -2430,7 +2428,7 @@ public:
                     if (subid)
                     {
                         if (sub.hasChildren()) // Old format
-                            setGraphProgress(&sub, graphName, subid, sub.queryProp("@creator"));
+                            setGraphProgress(&sub, graphName, subid, sub.queryProp("@creator"), false);
                         if (sub.hasProp("@_state"))
                             setNodeState(graphName, subid, (WUGraphState) sub.getPropInt("@_state"));
                     }
@@ -2745,25 +2743,30 @@ public:
     class CCassandraWuGraphStats : public CWuGraphStats
     {
     public:
-        CCassandraWuGraphStats(const CCassandraWorkUnit *_parent, StatisticCreatorType _creatorType, const char * _creator, unsigned _wfid, const char * _rootScope, unsigned _id)
-        : CWuGraphStats(createPTree(_rootScope), _creatorType, _creator, _wfid, _rootScope, _id),
-          parent(_parent)
+        CCassandraWuGraphStats(const CCassandraWorkUnit *_parent, StatisticCreatorType _creatorType, const char * _creator, unsigned _wfid, const char * _rootScope, unsigned _id, bool _merge)
+        : CWuGraphStats(_creatorType, _creator, _wfid, _rootScope, _id, _merge),
+          progress(createPTree(_rootScope)), parent(_parent)
         {
         }
-        virtual void beforeDispose()
+        virtual IPropertyTree &queryProgressTree() override
+        {
+            return *progress.get();
+        }
+        virtual void beforeDispose() override
         {
             CWuGraphStats::beforeDispose(); // Sets up progress - should contain a single child tree sqNN where nn==id
-            parent->setGraphProgress(progress, progress->queryName(), id, creator);
+            parent->setGraphProgress(progress, progress->queryName(), id, creator, merge);
         }
 
     protected:
+        Owned<IPropertyTree> progress;
         Linked<const CCassandraWorkUnit> parent;
         StringAttr wuid;
     };
 
-    IWUGraphStats *updateStats(const char *graphName, StatisticCreatorType creatorType, const char * creator, unsigned wfid, unsigned subgraph) const override
+    IWUGraphStats *updateStats(const char *graphName, StatisticCreatorType creatorType, const char * creator, unsigned wfid, unsigned subgraph, bool merge) const override
     {
-        return new CCassandraWuGraphStats(this, creatorType, creator, wfid, graphName, subgraph);
+        return new CCassandraWuGraphStats(this, creatorType, creator, wfid, graphName, subgraph, merge);
     }
 
 
@@ -2858,8 +2861,10 @@ public:
         return p;
     }
 
-    void setGraphProgress(IPropertyTree *progress, const char *gid, unsigned subid, const char *creator) const
+    void setGraphProgress(IPropertyTree *progress, const char *gid, unsigned subid, const char *creator, bool merge) const
     {
+        if (merge)
+            UNIMPLEMENTED;
         const char *wuid=queryWuid();
         CassandraStatement statement(sessionCache->prepareStatement("INSERT INTO wuGraphProgress (partition, wuid, graphID, subgraphID, creator, progress) values (?,?,?,?,?,?);"));
         statement.bindInt32(0, rtlHash32VStr(wuid, 0) % sessionCache->queryPartitions());
@@ -3235,8 +3240,6 @@ public:
             {
                 if (strieq(opt, "randomWuidSuffix"))
                     randomizeSuffix = atoi(val);
-                else if (strieq(opt, "traceLevel"))
-                    traceLevel = atoi(val);
                 else if (strieq(opt, "partitions"))
                 {
                     partitions = atoi(val);   // Note this value is only used when creating a new repo
@@ -3313,7 +3316,7 @@ public:
             E->Release();
             DBGLOG("WARNING: repository version could not be retrieved (repository not yet created?)");
         }
-        cacheRetirer.start();
+        cacheRetirer.start(false);
         LINK(_dll);  // Yes, this leaks. Not really sure how to avoid that.
     }
 
@@ -3321,7 +3324,7 @@ public:
     {
         cacheRetirer.stop();
         cacheRetirer.join();
-        if (traceLevel)
+        if (doTrace(traceCassandra))
             DBGLOG("CCasssandraWorkUnitFactory destroyed");
     }
     virtual bool initializeStore()
@@ -3365,7 +3368,7 @@ public:
             CassandraStatement statement(prepared.getLink());
             statement.bindInt32(0, rtlHash32VStr(useWuid.str(), 0) % partitions);
             statement.bindString(1, useWuid.str());
-            if (traceLevel >= 2)
+            if (doTrace(traceCassandra))
                 DBGLOG("Try creating %s", useWuid.str());
             CassandraFuture future(cass_session_execute(querySession(), statement));
             future.wait("execute");
@@ -3428,7 +3431,7 @@ public:
                         const char *name=sub.queryName();
                         if (name[0]=='s' && name[1]=='g')
                         {
-                            wu->setGraphProgress(&graph, graphName, atoi(name+2), sub.queryProp("@creator"));
+                            wu->setGraphProgress(&graph, graphName, atoi(name+2), sub.queryProp("@creator"), false);
                         }
                         else if (streq(name, "node"))
                         {
@@ -3436,7 +3439,7 @@ public:
                             if (subid)
                             {
                                 if (sub.hasChildren()) // Old format
-                                    wu->setGraphProgress(&sub, graphName, subid, sub.queryProp("@creator"));
+                                    wu->setGraphProgress(&sub, graphName, subid, sub.queryProp("@creator"), false);
                                 if (sub.hasProp("@_state"))
                                     wu->setNodeState(graphName, subid, (WUGraphState) sub.getPropInt("@_state"));
                             }
@@ -4010,16 +4013,15 @@ public:
 
     // Interface ICassandraSession
     virtual CassSession *querySession() const { return cluster.querySession(); };
-    virtual unsigned queryTraceLevel() const { return traceLevel; };
     virtual CassandraPrepared *prepareStatement(const char *query) const
     {
-        return cluster.prepareStatement(query, traceLevel>=2);
+        return cluster.prepareStatement(query, doTrace(traceCassandra));
     }
     virtual void executeAsync(CIArrayOf<CassandraStatement> &batch, const char *what) const override
     {
         if (batch.ordinality())
         {
-            if (queryTraceLevel() > 1)
+            if (doTrace(traceCassandra))
                 DBGLOG("Executing async batch %s", what);
             cluster.executeAsync(batch, what);
         }
@@ -4035,7 +4037,7 @@ public:
 private:
     virtual void executeBatch(CassandraBatch &batch, const char *what) const
     {
-        if (queryTraceLevel() > 1)
+        if (doTrace(traceCassandra))
             DBGLOG("Executing batch %s", what);
         CassandraFuture futureBatch(cass_session_execute_batch(querySession(), batch));
         futureBatch.wait(what);
@@ -4265,7 +4267,7 @@ private:
         StringBuffer tableName;
         getFieldNames(mappings, names, tableName);
         VStringBuffer selectQuery("select %s from %s;", names.str()+1, tableName.str());
-        if (traceLevel >= 2)
+        if (doTrace(traceCassandra))
             DBGLOG("%s", selectQuery.str());
         CassandraStatement statement(cass_statement_new(selectQuery.str(), 0));
         return executeQuery(querySession(), statement);
@@ -4601,7 +4603,6 @@ private:
     } cacheRetirer;
 
     unsigned randomizeSuffix;
-    unsigned traceLevel;
     unsigned randState;
     int partitions = DEFAULT_PARTITIONS;
     int prefixSize = DEFAULT_PREFIX_SIZE;

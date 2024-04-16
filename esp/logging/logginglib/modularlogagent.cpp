@@ -272,6 +272,89 @@ bool CModule::appendProperties(StringBuffer& str) const
     return true;
 }
 
+//////////////////// CMockAgent ////////////////////
+
+bool CMockAgent::configure(const IPTree& configuration, const CModuleFactory& factory)
+{
+    bool result = Base::configure(configuration, factory);
+    const IPTree* serviceBranch = configuration.queryBranch("GetTransactionSeed");
+    if (serviceBranch)
+    {
+        m_gtsResponse.setown(createGetTransactionSeedResponse());
+        m_gtsResponse->setSeedId(serviceBranch->queryProp("@seed-id"));
+        m_gtsResponse->setStatusCode(serviceBranch->getPropInt("@status-code", -1));
+        m_gtsResponse->setStatusMessage(serviceBranch->queryProp("@status-message"));
+    }
+    serviceBranch = configuration.queryBranch("GetTransactionId");
+    if (serviceBranch)
+    {
+        m_gtiResponse.setown(new String(serviceBranch->queryProp("@id")));
+    }
+    serviceBranch = configuration.queryBranch("UpdateLog");
+    if (serviceBranch)
+    {
+        m_ulResponse.setown(createUpdateLogResponse());
+        m_ulResponse->setResponse(serviceBranch->queryProp("@response"));
+        m_ulResponse->setStatusCode(serviceBranch->getPropInt("@status-code", -1));
+        m_ulResponse->setStatusMessage(serviceBranch->queryProp("@status-message"));
+    }
+    return result;
+}
+
+bool CMockAgent::getTransactionSeed(IEspGetTransactionSeedRequest& request, IEspGetTransactionSeedResponse& response)
+{
+    if (m_gtsResponse)
+    {
+        response.setSeedId(m_gtsResponse->getSeedId());
+        response.setStatusCode(m_gtsResponse->getStatusCode());
+        response.setStatusMessage(m_gtsResponse->getStatusMessage());
+    }
+    else
+    {
+        response.setStatusCode(-1);
+        response.setStatusMessage("unsupported request (getTransactionSeed)");
+    }
+    return (response.getStatusCode() == 0);
+}
+
+void CMockAgent::getTransactionID(StringAttrMapping* fields, StringBuffer& id)
+{
+    if (m_gtiResponse)
+        id.set(m_gtiResponse->str());
+    else
+        id.set("unsupported request (getTransactionID)");
+}
+
+void CMockAgent::updateLog(IEspUpdateLogRequestWrap& request, IEspUpdateLogResponse& response)
+{
+    if (m_ulResponse)
+    {
+        response.setResponse(m_ulResponse->getResponse());
+        response.setStatusCode(m_ulResponse->getStatusCode());
+        response.setStatusMessage(m_ulResponse->getStatusMessage());
+    }
+    else
+    {
+        response.setStatusCode(-1);
+        response.setStatusMessage("unsupported request (updateLog)");
+    }
+}
+
+bool CMockAgent::hasService(LOGServiceType type) const
+{
+    switch (type)
+    {
+    case LGSTGetTransactionSeed:
+        return m_gtsResponse != nullptr;
+    case LGSTGetTransactionID:
+        return m_gtiResponse != nullptr;
+    case LGSTUpdateLOG:
+        return m_ulResponse != nullptr;
+    default:
+        return false;
+    }
+}
+
 //////////////////// CDelegatingAgent ////////////////////
 
 bool CDelegatingAgent::configure(const IPTree& configuration, const CModuleFactory& factory)
@@ -425,7 +508,7 @@ void CDelegatingUpdateLog::updateLog(const char* updateLogRequest, IEspUpdateLog
         response.setStatusCode(0); // assume success
         try
         {
-            Owned<IEsdlScriptContext> scriptContext(createEsdlScriptContext(nullptr));
+            Owned<IEsdlScriptContext> scriptContext(createEsdlScriptContext(nullptr, nullptr, nullptr));
             scriptContext->setContent(IContentTarget::sectionOriginal, updateLogRequest);
             Owned<IXpathContext> originalContent(scriptContext->createXpathContext(nullptr, IContentTarget::sectionOriginal, true));
             Owned<IXpathContext> intermediateContent;
@@ -768,7 +851,7 @@ void CFileTarget::updateTarget(IEsdlScriptContext& scriptContext, IXpathContext&
     {
         StringBuffer debugContent;
         scriptContext.toXML(debugContent);
-        if (debugContent.charAt(debugContent.length() - 1) != '\n')
+        if (!debugContent.isEmpty() && debugContent.charAt(debugContent.length() - 1) != '\n')
             debugContent.append('\n');
         if (!isEmptyString(finalContent))
         {
@@ -826,16 +909,6 @@ bool CFileTarget::appendProperties(StringBuffer& str) const
 void CFileTarget::updateFile(const char* content, const Variables& variables, IEspUpdateLogResponse& response) const
 {
     size_t contentLength = strlen(content);
-    if (contentLength > std::numeric_limits<offset_t>::max())
-    {
-        VStringBuffer body("update content length (%zu bytes) exceeds supported capacity", contentLength);
-        ierrlog(Major, "%s", body.str());
-        VStringBuffer msg("%s: %s", traceId(), body.str());
-        response.setStatusCode(-1);
-        response.setStatusMessage(msg);
-        return;
-    }
-
     StringBuffer failureTarget;
     bool updated = false;
     Owned<Pattern> pattern(m_pattern->resolve(variables));
@@ -1129,7 +1202,7 @@ void CFileTarget::resolveVariable(const char* name, const char* option, const ch
         const char* format = nullptr;
         if (isEmptyString(option))
             format = creationVarDefaultOption;
-        if (streq(option, creationVarDateTimeOption))
+        else if (streq(option, creationVarDateTimeOption))
             format = m_creationDateTimeFormat;
         else if (streq(option, creationVarDateOption))
             format = m_creationDateFormat;
@@ -1507,6 +1580,7 @@ CModuleFactory::CModuleFactory()
 {
     using namespace ModularLogAgent;
     m_agents.add<CDelegatingAgent>(keyDefault);
+    m_agents.add<CMockAgent>("mock");
     m_updateLogs.add<CDelegatingUpdateLog>(keyDefault);
     m_contentTargets.add<CContentTarget>(keyDefault);
     m_contentTargets.add<CFileTarget>(keyFile);

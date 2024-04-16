@@ -6,23 +6,26 @@
       <primary>SOAPCALL</primary>
     </indexterm></title>
 
-  <para><emphasis>result</emphasis><emphasis role="bold"> :=
-  SOAPCALL<indexterm>
-      <primary>SOAPCALL Function</primary>
-    </indexterm>( [ </emphasis><emphasis>recset, </emphasis><emphasis
-  role="bold">]</emphasis><emphasis> url, service, instructure,
-  </emphasis><emphasis role="bold">[ </emphasis><emphasis>transform,
-  </emphasis><emphasis role="bold">]</emphasis><emphasis role="bold">
-  DATASET<indexterm>
-      <primary>DATASET</primary>
-    </indexterm>(</emphasis><emphasis>outstructure</emphasis><emphasis
-  role="bold">) </emphasis><emphasis>| outstructure </emphasis><emphasis
-  role="bold">[</emphasis><emphasis>, options </emphasis><emphasis
-  role="bold">]</emphasis> <emphasis role="bold">[, UNORDERED |
+  <para><emphasis>result</emphasis><emphasis role="bold"> </emphasis><emphasis
+  role="bold"> := SOAPCALL( [ </emphasis><emphasis>recset,
+  </emphasis><emphasis role="bold">]</emphasis><emphasis> url, service,
+  instructure, </emphasis><emphasis role="bold">[
+  </emphasis><emphasis>transform, </emphasis><emphasis role="bold">]
+  DATASET(</emphasis><emphasis>outstructure</emphasis><emphasis role="bold">)
+  </emphasis><emphasis>| outstrucuture </emphasis><emphasis
+  role="bold">[</emphasis>,options <emphasis role="bold">[, UNORDERED |
   ORDERED(</emphasis> <emphasis>bool </emphasis><emphasis role="bold">) ] [,
   STABLE | UNSTABLE ] [, PARALLEL [ (</emphasis> <emphasis>numthreads
   </emphasis><emphasis role="bold">) ] ] [, ALGORITHM(</emphasis>
-  <emphasis>name </emphasis><emphasis role="bold">) ] );</emphasis></para>
+  <emphasis>name</emphasis><emphasis role="bold"> )] [, PERSIST [ (
+  </emphasis><emphasis>option</emphasis> <emphasis role="bold">) ] ] ) ;
+  <indexterm>
+      <primary>PERSIST</primary>
+    </indexterm><indexterm>
+      <primary>SOAPCALL Function</primary>
+    </indexterm><indexterm>
+      <primary>DATASET</primary>
+    </indexterm></emphasis></para>
 
   <para><emphasis role="bold">SOAPCALL( [ </emphasis><emphasis>recset,
   </emphasis><emphasis role="bold">]</emphasis><emphasis> url, service,
@@ -34,7 +37,9 @@
   ORDERED(</emphasis> <emphasis>bool </emphasis><emphasis role="bold">) ] [,
   STABLE | UNSTABLE ] [, PARALLEL [ (</emphasis> <emphasis>numthreads
   </emphasis><emphasis role="bold">) ] ] [, ALGORITHM(</emphasis>
-  <emphasis>name </emphasis><emphasis role="bold">) ] );</emphasis></para>
+  <emphasis>name</emphasis><emphasis role="bold"> )] [, PERSIST [ (
+  </emphasis><emphasis>option</emphasis> <emphasis role="bold">) ] ] ) ;
+  </emphasis></para>
 
   <para><informaltable colsep="1" frame="all" rowsep="1">
       <tgroup cols="2">
@@ -66,10 +71,10 @@
             names). This is intended to provide a means for the client to
             conduct a Federated search where the request is sent to each of
             the target systems in the list. These URLs may contain standard
-            form usernames and passwords, if required. The default
-            username/password are those contained in the workunit. If calling
-            an ESP Web service, you can append the ver_=n.nn parameter to
-            specify the version of the service. For example: <programlisting>SOAPCALL('http://127.0.0.1:8010/Wsdfu/?ver_=1.22', 
+            form usernames and passwords, if required. If calling an ESP Web
+            service, you can append the ver_=n.nn parameter to specify the
+            version of the service. For example: <programlisting
+            language="ECL" role="notrunnable">SOAPCALL('https://eclwatch.example.com:8010/Wsdfu/?ver_=1.22', 
          'DFUSearchData', 
          instructure,DATASET(outsructure));</programlisting></entry>
           </row>
@@ -184,7 +189,7 @@
             <entry><emphasis>numthreads</emphasis></entry>
 
             <entry>Optional. Try to evaluate this activity using
-            <emphasis>numthreads</emphasis> threads.</entry>
+            <emphasis>numthreads</emphasis> threads per node.</entry>
           </row>
 
           <row>
@@ -200,6 +205,22 @@
             <entry>The algorithm to use for this activity. Must be from the
             list of supported algorithms for the SORT function's STABLE and
             UNSTABLE options.</entry>
+          </row>
+
+          <row>
+            <entry><emphasis role="bold">PERSIST</emphasis></entry>
+
+            <entry>Optional. Use persistent connections. </entry>
+          </row>
+
+          <row>
+            <entry><emphasis>option</emphasis></entry>
+
+            <entry>Optional. If omitted, it uses the default number of requests per
+            connection. If TRUE, it enables persistent connections. If FALSE
+            or 0, it disables persistent connections. If set to an integer, it
+            enables persistent connections and sets the maximum number of
+            requests each connection will be used for. </entry>
           </row>
 
           <row>
@@ -294,10 +315,9 @@
                 <primary>PARALLEL</primary>
               </indexterm>(<emphasis>n</emphasis>)</entry>
 
-            <entry>Specifies the number of concurrent threads to have
-            processing Data Delivery Engine queries, to a maximum of 50 (the
-            default is 2). This is intended to limit the number of concurrent
-            sessions.</entry>
+            <entry>Specifies the number of concurrent threads per node to
+            process queries, to a maximum of 50 (the default is 2). This is
+            intended to limit the number of concurrent sessions.</entry>
           </row>
 
           <row>
@@ -389,6 +409,16 @@
           </row>
 
           <row>
+            <entry><emphasis role="bold">LOG
+            </emphasis>(<emphasis>start_expression,
+            end_expression</emphasis>)</entry>
+
+            <entry>Specifies to add the start_expression to the log when a
+            SOAPCALL begins and add the end_expression to the log when a
+            SOAPCALL ends.</entry>
+          </row>
+
+          <row>
             <entry><emphasis role="bold">ENCODING</emphasis><indexterm>
                 <primary>ENCODING</primary>
               </indexterm></entry>
@@ -431,14 +461,22 @@
 
     <para>Example:</para>
 
-    <programlisting>OutRec1 := RECORD
+    <programlisting lang="ECL" role="notrunnable">OutRec1 := RECORD
   STRING500 OutData{XPATH('OutData')};
   UNSIGNED4 Latency{XPATH('_call_latency')};
 END;
-ip := 'http://127.0.0.1:8022/';
-ips := 'https://127.0.0.1:8022/';
-ipspw := 'https://username:password@127.0.0.1:8022/';
+ip := 'http://service.example.com:8022/';
+ips := 'https://service.example.com:8022/';
 svc := 'MyModule.SomeService';
+ips_secret := 'secret:myConnectSecret';
+        /* assumes a secret named http-connect-myConnectSecret exists &amp; contains:
+        /*
+         {
+          "url": "https://service.example.com:8022/",
+          "username": "username",
+          "password": "password"
+         }
+        */ 
 
 //1 rec in, 1 rec out
 OneRec1 := SOAPCALL(ips,svc,{STRING500 InData := 'Some Input Data'},OutRec1);
@@ -451,7 +489,7 @@ OneRec2 := SOAPCALL(InputDataset,ip,svc,{STRING500 InData},OutRec1);
 
 //recordset in, recordset out
 ManyRec2 := 
- SOAPCALL(InputDataset,ipspw,svc,{STRING500 InData := 'Some In Data'},DATASET(OutRec1));
+ SOAPCALL(InputDataset,ips_secret,svc,{STRING500 InData := 'Some In Data'},DATASET(OutRec1));
 
 //TRANSFORM function usage example
 namesRecord := RECORD
@@ -485,20 +523,20 @@ outRecord genDefault2(namesRecord l) := TRANSFORM
   SELF.score := 0;
 END;
 
-ip := 'http://127.0.0.1:8022/';
-svc:= 'MyModule.SomeService';
 OUTPUT(SOAPCALL(ip, svc,{ STRING20 surname := 'Halligan',STRING20 forename := 'Kevin';},
+
 DATASET(outRecord), ONFAIL(genDefault1())));
 
 OUTPUT(SOAPCALL(ds, ip, svc, inRecord, t(LEFT),DATASET(outRecord), ONFAIL(genDefault2(LEFT))));
-
 OUTPUT(SOAPCALL(ds, ip, svc, inRecord, t(LEFT),DATASET(outRecord), ONFAIL(SKIP)));
 
+OUTPUT(SOAPCALL(ds, ip, svc, inRecord, t(LEFT),DATASET(outRecord), ONFAIL(SKIP),PERSIST(12))); 
+                                                                      //use 12 persistent connections
+                                                                  
 //Using HTTPHEADER to pass Authorization info
 OUTPUT(SOAPCALL(ds, ip, svc, inRecord, t(LEFT),DATASET(outRecord), ONFAIL(SKIP),
                 HTTPHEADER('Authorization','Basic dXNlcm5hbWU6cGFzc3dvcmQ='),
                 HTTPHEADER('MyLiteral','FOO')));
-
 </programlisting>
   </sect2>
 
@@ -514,12 +552,12 @@ OUTPUT(SOAPCALL(ds, ip, svc, inRecord, t(LEFT),DATASET(outRecord), ONFAIL(SKIP),
 
     <para>Example:</para>
 
-    <programlisting>//1 rec in, no result
-SOAPCALL( 'https://127.0.0.1:8022/','MyModule.SomeService',
+    <programlisting lang="ECL" role="notrunnable">//1 rec in, no result
+SOAPCALL( 'https://service.example.com:8022/','MyModule.SomeService',
            {STRING500 InData := 'Some Input Data'});
 
 //recordset in, no result
-SOAPCALL( InputDataset,'https://127.0.0.1:8022/','MyModule.SomeService',{STRING500 InData});
+SOAPCALL( InputDataset,'https://service.example.com:8022/','MyModule.SomeService',{STRING500 InData});
 </programlisting>
 
     <para>See Also: <link linkend="RECORD_Structure">RECORD Structure</link>,

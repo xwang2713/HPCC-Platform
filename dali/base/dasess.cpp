@@ -15,8 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#define da_decl DECL_EXPORT
-
 #include <string>
 #include <unordered_map>
 
@@ -38,6 +36,7 @@
 #include "seclib.hpp"
 #include "dasess.hpp"
 #include "digisign.hpp"
+#include "dautils.hpp"
 
 using namespace cryptohelper;
 
@@ -199,7 +198,7 @@ public:
     CdelayedTerminate(byte _err) 
     {
         err = _err;
-        start();
+        start(false);
         Release();
         Sleep(100);
     }
@@ -321,7 +320,7 @@ public:
     StringBuffer &getDetails(StringBuffer &buf)
     {
         StringBuffer ep;
-        return buf.appendf("%16" I64F "X: %s, role=%s",CSessionState::id,node->endpoint().getUrlStr(ep).str(),queryRoleName(role));
+        return buf.appendf("%16" I64F "X: %s, role=%s",CSessionState::id,node->endpoint().getEndpointHostText(ep).str(),queryRoleName(role));
     }
     void addSessionIds(CProcessSessionState &other, bool prevOnly)
     {
@@ -620,15 +619,7 @@ public:
                 Owned<IUserDescriptor> udesc=createUserDescriptor();
                 mb.read(key).read(obj);
                 udesc->deserialize(mb);
-#ifdef NULL_DALIUSER_STACKTRACE
-                //following debug code to be removed
-                StringBuffer sb;
-                udesc->getUserName(sb);
-                if (0==sb.length())
-                {
-                    DBGLOG("UNEXPECTED USER (NULL) in dasess.cpp CSessionRequestServer::processMessage() line %d", __LINE__);
-                }
-#endif
+                logNullUser(udesc);//stack trace if NULL user
                 unsigned auditflags = 0;
                 if (mb.length()-mb.getPos()>=sizeof(auditflags))
                     mb.read(auditflags);
@@ -933,18 +924,7 @@ public:
         CMessageBuffer mb;
         mb.append((int)MSR_LOOKUP_LDAP_PERMISSIONS);
         mb.append(key).append(obj);
-#ifdef NULL_DALIUSER_STACKTRACE
-        //following debug code to be removed
-        StringBuffer sb;
-        if (udesc)
-            udesc->getUserName(sb);
-        if (0==sb.length())
-        {
-            DBGLOG("UNEXPECTED USER (NULL) in dasess.cpp getPermissionsLDAP() line %d",__LINE__);
-            PrintStackReport();
-        }
-#endif
-
+        logNullUser(udesc);//stack trace if NULL user
         udesc->serializeWithoutPassword(mb);//serialize user descriptor without password
         mb.append(auditflags);
 
@@ -957,9 +937,14 @@ public:
             reqUTCTimestamp.serialize(mb);
         }
 
-
         if (!queryCoven().sendRecv(mb,RANK_RANDOM,MPTAG_DALI_SESSION_REQUEST,SESSIONREPLYTIMEOUT))
+        {
+            StringBuffer user;
+            udesc->getUserName(user);
+            OWARNLOG("Dali call unexpectedly timed out getting user '%s' '%s' permissions. Returning SecAccess_None for '%s')", user.str(), nullText(key), nullText(obj));
             return SecAccess_None;
+        }
+
         SecAccessFlags perms = SecAccess_Unavailable;
         if (mb.remaining()>=sizeof(perms)) {
             mb.read((int &)perms);
@@ -1116,7 +1101,7 @@ public:
         Owned<INode> node = createINode(ep);
         if (queryCoven().inCoven(node)) {
             StringBuffer str;
-            PROGLOG("Coven Session Stopping (%s)",ep.getUrlStr(str).str());
+            PROGLOG("Coven Session Stopping (%s)",ep.getEndpointHostText(str).str());
             if (queryCoven().size()==1)
                 notifyServerStopped(true); 
         }
@@ -1170,7 +1155,7 @@ class CLdapWorkItem : public Thread
     Linked<IUserDescriptor> udesc;
     Linked<IDaliLdapConnection> ldapconn;
     unsigned flags;
-    bool running;
+    std::atomic<bool> running;
     Semaphore contsem;
     Semaphore ready;
     Semaphore &threaddone;
@@ -1185,23 +1170,13 @@ public:
     {
         key.set(_key);
         obj.set(_obj); 
-
-#ifdef NULL_DALIUSER_STACKTRACE
-        StringBuffer sb;
-        if (_udesc)
-            _udesc->getUserName(sb);
-        if (sb.length()==0)
-        {
-            DBGLOG("UNEXPECTED USER (NULL) in dasess.cpp CLdapWorkItem::start() line %d",__LINE__);
-            PrintStackReport();
-        }
-#endif
+        logNullUser(_udesc);//stack trace if NULL user
         udesc.set(_udesc);
         flags = _flags;
         ret = CLDAPE_ldapfailure;
         if (!running) {
             running = true;
-            Thread::start();
+            Thread::start(false);
         }
         contsem.signal();
     }
@@ -1216,7 +1191,7 @@ public:
                 ret = ldapconn->getPermissions(key,obj,udesc,flags);
             }
             catch(IException *e) {
-                LOG(MCoperatorError, unknownJob, e, "CLdapWorkItem"); 
+                LOG(MCoperatorError, e, "CLdapWorkItem");
                 e->Release();
             }
             ready.signal();
@@ -1253,6 +1228,10 @@ public:
 
 };
 
+
+static unsigned last=0;
+static unsigned lasttick=0;
+static unsigned first50=0;
 
 class CCovenSessionManager: public CSessionManagerBase, implements ISessionManagerServer, implements ISubscriptionManager
 {
@@ -1304,7 +1283,7 @@ public:
 
     void start()
     {
-        sessionrequestserver.start();
+        sessionrequestserver.start(false);
     }
 
     void stop()
@@ -1346,7 +1325,7 @@ public:
     void addProcessSession(SessionId id,INode *client,DaliClientRole role)
     {
         StringBuffer str;
-        PROGLOG("Session starting %" I64F "x (%s) : role=%s",id,client->endpoint().getUrlStr(str).str(),queryRoleName(role));
+        PROGLOG("Session starting %" I64F "x (%s) : role=%s",id,client->endpoint().getEndpointHostText(str).str(),queryRoleName(role));
         CHECKEDCRITICALBLOCK(sessmanagersect,60000);
         CProcessSessionState *s = new CProcessSessionState(id,client,role);
         while (!sessionstates.add(s)) // takes ownership
@@ -1450,16 +1429,7 @@ public:
 #ifdef _NO_LDAP
         return SecAccess_Unavailable;
 #else
-#ifdef NULL_DALIUSER_STACKTRACE
-        StringBuffer sb;
-        if (udesc)
-            udesc->getUserName(sb);
-        if (sb.length()==0)
-        {
-            DBGLOG("UNEXPECTED USER (NULL) in dasess.cpp CCovenSessionManager::getPermissionsLDAP() line %d",__LINE__);
-            PrintStackReport();
-        }
-#endif
+        logNullUser(udesc);//stack trace if NULL user
         if ((ldapconn->getLDAPflags()&(DLF_SAFE|DLF_ENABLED))!=(DLF_SAFE|DLF_ENABLED))
             return ldapconn->getPermissions(key,obj,udesc,flags);
         ldapwaiting++;
@@ -1510,9 +1480,6 @@ public:
             }
             else {
                 unsigned waiting = ldapwaiting;
-                static unsigned last=0;
-                static unsigned lasttick=0;
-                static unsigned first50=0;
                 if ((waiting!=last)&&(msTick()-lasttick>1000)) {
                     OWARNLOG("%d threads waiting for ldap",waiting);
                     last = waiting;
@@ -1770,7 +1737,7 @@ protected:
     void onClose(SocketEndpoint &ep)
     {
         StringBuffer clientStr;
-        PROGLOG("Client closed (%s)", ep.getUrlStr(clientStr).str());
+        PROGLOG("Client closed (%s)", ep.getEndpointHostText(clientStr).str());
 
         SessionId idtostop;
         {
@@ -1820,7 +1787,7 @@ protected:
         if (state) {
             const CProcessSessionState *pstate = QUERYINTERFACE(state,const CProcessSessionState);
             if (pstate) 
-                return pstate->queryNode().endpoint().getUrlStr(buf);
+                return pstate->queryNode().endpoint().getEndpointHostText(buf);
         }
         return buf;
     }
@@ -1960,7 +1927,7 @@ bool registerClientProcess(ICommunicator *comm, IGroup *& retcoven,unsigned time
                     return 0;
                 }
             } *t = new cThread(comm,r,remaining);
-            t->start();
+            t->start(false);
             t->sem.wait(remaining);
             ok = t->ok;
             if (t->exc.get()) {
@@ -1987,11 +1954,17 @@ bool registerClientProcess(ICommunicator *comm, IGroup *& retcoven,unsigned time
                 retcoven = deserializeIGroup(mb);
                 if (!mySessionId)
                     throw deserializeException(mb);
+                if (lastNextLog) // see below, true if has been round timeout loop. Only output confirmation, if have issued 'Failed to connect ..' messages
+                {
+                    StringBuffer str("Connected to Dali Server ");
+                    comm->queryGroup().queryNode(r).endpoint().getEndpointHostText(str);
+                    LOG(MCoperatorProgress, "%s", str.str());
+                }
                 return true;
             }
         }
         StringBuffer str;
-        OERRLOG("Failed to connect to Dali Server %s.", comm->queryGroup().queryNode(r).endpoint().getUrlStr(str).str());
+        OERRLOG("Waiting for Dali to be available - server: %s", comm->queryGroup().queryNode(r).endpoint().getEndpointHostText(str).str());
         if (tm.timedout())
         {
             PROGLOG("%s", str.append(" Timed out.").str());

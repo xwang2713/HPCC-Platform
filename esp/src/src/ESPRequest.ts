@@ -9,6 +9,9 @@ import * as topic from "dojo/topic";
 import * as ESPUtil from "./ESPUtil";
 
 import * as hpccComms from "@hpcc-js/comms";
+import { scopedLogger } from "@hpcc-js/util";
+
+const logger = scopedLogger("src/ESPRequest.ts");
 
 declare const dojo: any;
 declare const debugConfig: any;
@@ -119,7 +122,6 @@ class RequestHelper {
                             status: "DoIdle"
                         });
                     }
-                    cookie("Status", "Locked");
                     ESPUtil.LocalStorage.removeItem("Status");
                 }
             }
@@ -133,7 +135,7 @@ class RequestHelper {
 
     send(service, action, params?): Promise<any> {
         if (!this.isSessionCall(service, action) && (!this.hasServerSetCookie() || (this.hasAuthentication() && !this.isAuthenticated()))) {
-            // tslint:disable-next-line: deprecation
+            // @ts-ignore
             window.location.reload(true);
             return new Promise((resolve, reject) => { });
         }
@@ -156,6 +158,7 @@ class RequestHelper {
                 if (lang.exists("Exceptions.Source", response) && !params.skipExceptions) {
                     let severity = params.suppressExceptionToaster ? "Info" : "Error";
                     const source = service + "." + action;
+                    let message = "";
                     if (lang.exists("Exceptions.Exception", response) && response.Exceptions.Exception.length === 1) {
                         switch (source) {
                             case "WsWorkunits.WUInfo":
@@ -189,12 +192,20 @@ class RequestHelper {
                                 }
                                 break;
                         }
+                        message = response.Exceptions.Exception[0].Message;
                     }
                     topic.publish("hpcc/brToaster", {
                         Severity: severity,
                         Source: source,
                         Exceptions: response.Exceptions.Exception
                     });
+                    if (message) {
+                        if (severity === "Error") {
+                            logger.error(message);
+                        } else {
+                            logger.info(message);
+                        }
+                    }
                 }
             }
             return response;

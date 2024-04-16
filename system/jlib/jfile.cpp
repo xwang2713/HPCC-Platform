@@ -177,6 +177,18 @@ StringBuffer &getStandardPosixPath(StringBuffer &result, const char *path)
     return result;
 }
 
+bool isRootDirectory(const char * path)
+{
+    char c = path[0];
+    //Check for linux root directory
+    if (isPathSepChar(c))
+        return path[1] == '\0';
+    //Also check for windows drive:
+    if (c && (path[1] == ':') && isPathSepChar(path[2]))
+        return path[3] == '\0';
+    return false;
+}
+
 const char *pathTail(const char *path)
 {
     if (!path)
@@ -226,18 +238,6 @@ bool checkDirExists(const char * filename)
     if (stat(filename, &info) != 0)
         return false;
     return S_ISDIR(info.st_mode);
-#endif
-}
-
-static void set_inherit(HANDLE handle, bool inherit)
-{
-#ifndef _WIN32
-    long flag = fcntl(handle, F_GETFD);
-    if(inherit)
-        flag &= ~FD_CLOEXEC;
-    else
-        flag |= FD_CLOEXEC;
-    fcntl(handle, F_SETFD, flag);
 #endif
 }
 
@@ -657,6 +657,10 @@ HANDLE CFile::openHandle(IFOmode mode, IFSHmode sharemode, bool async, int stdh)
     default:
         return NULLFILE;
     }
+    // MCK - if (extraFlags & IFEsync) should we add O_SYNC or O_DSYNC to openflags
+    //       and then not have to fdatasync() at close(), flush(), write() ?
+    //Prevent the file from being inherited by a child process;
+    openflags |= O_CLOEXEC;
     handle = _lopen(filename.get(), openflags, fileflags);
     if (handle == -1)
     {
@@ -697,9 +701,6 @@ IFileIO * CFile::open(IFOmode mode,IFEflags extraFlags)
 IFileAsyncIO * CFile::openAsync(IFOmode mode)
 {
     HANDLE handle = openHandle(mode,IFSHread,true);     // I don't think we want shared write to an async file
-#ifndef _WIN32
-    set_inherit(handle, false);
-#endif
     return new CFileAsyncIO(handle,IFSHread);
 }
 
@@ -748,6 +749,112 @@ bool CFile::remove()
 #endif
 }
 
+static std::atomic<unsigned> renameRetries = (unsigned)-1; // initially uninitialized, set on 1st use (in rename)
+static std::atomic<bool> manualRenameChk = false;
+static constexpr bool defaultManualRenameChk = true;
+static constexpr unsigned defaultNumRetries = 4;
+
+void setRenameRetries(unsigned _renameRetries, bool _manualRenameChk)
+{
+    manualRenameChk = _manualRenameChk;
+    renameRetries = _renameRetries;
+}
+
+static void initRenameRetrySettings()
+{
+    if ((unsigned)-1 != renameRetries)
+        return;
+    // NB: potentially could be >1 thread here, but that's ok.
+    try
+    {
+        Owned<IPropertyTree> globalConfig = getGlobalConfigSP();
+        Owned<IPropertyTree> config = getComponentConfigSP();
+        manualRenameChk = config->getPropBool("expert/@manualRenameChk", globalConfig->getPropBool("expert/@manualRenameChk", defaultManualRenameChk));
+        renameRetries = config->getPropInt("expert/@numRenameRetries", globalConfig->getPropInt("expert/@numRenameRetries", defaultNumRetries));
+    }
+    catch (IException *e) // handle cases where config. not available
+    {
+        EXCLOG(e, "doRename");
+        e->Release();
+        renameRetries = 0;
+        manualRenameChk = false;
+    }
+}
+
+static void doRename(const char *src, const char *dst, const char *callerName)
+{
+    initRenameRetrySettings();
+
+    unsigned retriesLeft = renameRetries;
+    unsigned retry = 0;
+    while (true)
+    {
+        // NB: if 'manualRenameChk' is on, since we don't explicitly check the existence of 'src' and 'dst' before rename
+        // it's theoretically possible the rename failure is legitimate because src does not exist and dst does.
+        // In this situation, we continue and return success below.
+        if (-1 != ::rename(src, dst))
+            return; // success
+
+        int err = errno; // preserve to use after tracing if exhausted retry attempts
+
+#ifndef _WIN32 // NB: this is primarily here to help track down the issues reported in HPCC-28454 and HPCC-29812
+        /*
+         * In testing 2 [rare] issues have been seen after rename returned -1:
+         * 1) The file was renamed (dst exists and src does not).
+         *    If 'manualRenameChk' is on, we check for this and return success.
+         * 2) Neither src nor dst exist, however, after a short time, dst appears.
+         *    Assuming 'numRenameRetries'is >0, this case is covered below by looping and trying again.
+         */
+
+        CDateTime modTime;
+        struct stat statInfo;
+        StringBuffer srcModTimeStr, dstModTimeStr;
+        int srcStatErr = stat(src, &statInfo);
+        if (0 == srcStatErr)
+        {
+            timetToIDateTime(&modTime, statInfo.st_mtime);
+            modTime.getString(srcModTimeStr);
+        }
+        int dstStatErr = stat(dst, &statInfo);
+        if (0 == dstStatErr)
+        {
+            timetToIDateTime(&modTime, statInfo.st_mtime);
+            modTime.getString(dstModTimeStr);
+        }
+
+        if (0 != srcStatErr) // probably means src does now not exist
+        {
+            if (manualRenameChk) // manually validate if rename() actually succeeded
+            {
+                if (0 == dstStatErr) // dst now exists
+                {
+                    DBGLOG("%s-doRename(%s, %s) FAILED BUT DID RENAME (dst modtime=%s)", callerName, src, dst, dstModTimeStr.str());
+                    return;
+                }
+            }
+        }
+        VStringBuffer errMsg("%s-doRename(%s, %s) FAILED [err=%d] ", callerName, src, dst, err);
+        errMsg.appendf("src stat:[err=%d", srcStatErr);
+        if (0 == srcStatErr)
+            errMsg.appendf(",modTime=%s", srcModTimeStr.str());
+        errMsg.append("]");
+        errMsg.appendf(", dst stat:[err=%d", dstStatErr);
+        if (0 == dstStatErr)
+            errMsg.appendf(",modTime=%s", dstModTimeStr.str());
+        errMsg.append("]");
+        DBGLOG("%s", errMsg.str());
+#endif
+
+        if (0 == retriesLeft)
+            throw makeErrnoExceptionV(err, "%s(%s, %s)", callerName, src, dst);
+
+        MilliSleep(retry>5 ? 5000 : (100 << retry)); // start at 100ms and double each retry, but cap at 5 seconds
+
+        --retriesLeft;
+        ++retry;
+    }
+}
+
 void CFile::rename(const char *newname)
 {
     // now hopefully newname is just file tail 
@@ -767,8 +874,7 @@ void CFile::rename(const char *newname)
         if (rfn.isLocal())
             dst = rfn.getLocalPath(path.clear()).str();
     }
-    if (-1 == ::rename(filename, dst)) 
-        throw makeErrnoExceptionV("CFile::rename(%s, %s)", filename.get(),dst);
+    doRename(filename, dst, "CFile::rename");
     filename.set(path);
 }
 
@@ -796,9 +902,7 @@ void CFile::move(const char *newname)
         Sleep(retry*100); 
     }
 #else
-    int ret=::rename(filename.get(),newname);
-    if (ret==-1)
-        throw makeErrnoExceptionV("CFile::move(%s, %s)", filename.get(), newname);
+    doRename(filename, newname, "CFile::move");
 #endif
     filename.set(newname);
 }
@@ -1738,9 +1842,9 @@ IFileIO * CFile::openShared(IFOmode mode,IFSHmode share,IFEflags extraFlags)
     HANDLE handle = openHandle(mode,share,false, stdh);
     if (handle==NULLFILE)
         return NULL;
-#ifndef _WIN32
-    set_inherit(handle, false);
-#endif
+    // MCK - if (extraFlags & IFEnocache) and mode is not WRONLY perhaps turn off read-ahead ?
+    //       No - while read-ahead can put more into page-cache, IFEnocache is a hint and
+    //       disabling readahead might affect performance negatively too much ...
     if (stdh>=0)
         return new CSequentialFileIO(handle,mode,share,extraFlags);
 
@@ -1831,10 +1935,13 @@ void CFileIO::close()
 {
     if (file != NULLFILE)
     {
-        if (!CloseHandle(file))
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
+        if (!CloseHandle(tmpHandle))
             throw makeOsException(GetLastError(),"CFileIO::close");
     }
-    file = NULLFILE;
 }
 
 void CFileIO::flush()
@@ -1908,6 +2015,35 @@ void CFileIO::setSize(offset_t pos)
 
 //-- Unix implementation ----------------------------------------------------
 
+static void syncFileData(int fd, bool notReadOnly, IFEflags extraFlags, bool wait_previous=false)
+{
+    if (notReadOnly)
+    {
+        if (extraFlags & IFEsync)
+        {
+#ifdef F_FULLFSYNC
+            fcntl(fd, F_FULLFSYNC);
+#else
+            fdatasync(fd);
+#endif
+        }
+#if defined(__linux__)
+        else if (extraFlags & IFEnocache)
+        {
+            unsigned flags = SYNC_FILE_RANGE_WRITE;
+            if (wait_previous)
+                flags |= SYNC_FILE_RANGE_WAIT_BEFORE;
+            sync_file_range(fd, 0, 0, flags);
+        }
+#endif
+    }
+
+#ifdef POSIX_FADV_DONTNEED
+    if (extraFlags & IFEnocache)
+        posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+}
+
 // More errorno checking TBD
 CFileIO::CFileIO(HANDLE handle, IFOmode _openmode, IFSHmode _sharemode, IFEflags _extraFlags)
     : unflushedReadBytes(0), unflushedWriteBytes(0)
@@ -1935,6 +2071,7 @@ CFileIO::~CFileIO()
     catch (IException * e)
     {
         EXCLOG(e, "CFileIO::~CFileIO");
+        PrintStackReport();
         e->Release();
     }
 }
@@ -1943,52 +2080,48 @@ void CFileIO::close()
 {
     if (file != NULLFILE)
     {
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
 #ifdef CFILEIOTRACE
-        DBGLOG("CFileIO::close(%d), extraFlags = %d", file, extraFlags);
+        DBGLOG("CFileIO::close(%d), extraFlags = %d", tmpHandle, extraFlags);
 #endif
-        if (extraFlags & IFEnocache)
-        {
-            if (openmode != IFOread)
-            {
-#ifdef F_FULLFSYNC
-                fcntl(file, F_FULLFSYNC);
-#else
-                fdatasync(file);
-#endif
-            }
-#ifdef POSIX_FADV_DONTNEED
-            posix_fadvise(file, 0, 0, POSIX_FADV_DONTNEED);
-#endif
-        }
-        if (::close(file) < 0)
+        if (extraFlags & (IFEnocache | IFEsync))
+            syncFileData(tmpHandle, openmode!=IFOread, extraFlags, false);
+
+        if (::close(tmpHandle) < 0)
             throw makeErrnoException(errno, "CFileIO::close");
-        file=NULLFILE;
     }
 }
 
 void CFileIO::flush()
 {
+    if (0 == (extraFlags & (IFEnocache | IFEsync)))
+        return;
+
     CriticalBlock procedure(cs);
-#ifdef F_FULLFSYNC
-    if (fcntl(file, F_FULLFSYNC) != 0)
-#else
-    if (fdatasync(file) != 0)
-#endif
-        throw makeOsException(DISK_FULL_EXCEPTION_CODE, "CFileIO::flush");
-#ifdef POSIX_FADV_DONTNEED
-    if (extraFlags & IFEnocache)
-        posix_fadvise(file, 0, 0, POSIX_FADV_DONTNEED);
-#endif
+
+    syncFileData(file, true, extraFlags, false);
 }
 
 
 offset_t CFileIO::size()
 {
+#ifndef _WIN32
+    //MORE: The current implementation of openHandle() calls fstat() to check the file is not a directory
+    //If the file hasn't been modified since open() the size could be cached and returned.
+    struct stat info;
+    if (fstat(file, &info) >= 0)
+        return info.st_size;
+    return 0;
+#else
     CriticalBlock procedure(cs);
     offset_t savedPos = lseek(file,0,SEEK_CUR);
     offset_t length = lseek(file,0,SEEK_END);
     setPos(savedPos);
     return length;
+#endif
 }
 
 size32_t CFileIO::read(offset_t pos, size32_t len, void * data)
@@ -2006,9 +2139,7 @@ size32_t CFileIO::read(offset_t pos, size32_t len, void * data)
         if (unflushedReadBytes.add_fetch(ret) >= PGCFLUSH_BLKSIZE)
         {
             unflushedReadBytes.store(0);
-#ifdef POSIX_FADV_DONTNEED
-            posix_fadvise(file, 0, 0, POSIX_FADV_DONTNEED);
-#endif
+            syncFileData(file, false, extraFlags, false);
         }
     }
     return ret;
@@ -2018,18 +2149,6 @@ void CFileIO::setPos(offset_t newPos)
 {
     if (file != NULLFILE)
         _llseek(file,newPos,SEEK_SET);
-}
-
-static void sync_file_region(int fd, offset_t offset, offset_t nbytes)
-{
-#if defined(__linux__) && defined(__NR_sync_file_range)
-    (void)syscall(__NR_sync_file_range, fd, offset,
-                    nbytes, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
-#elif defined(F_FULLFSYNC)
-    fcntl(fd, F_FULLFSYNC);
-#else
-    fdatasync(fd);
-#endif
 }
 
 size32_t CFileIO::write(offset_t pos, size32_t len, const void * data)
@@ -2044,17 +2163,13 @@ size32_t CFileIO::write(offset_t pos, size32_t len, const void * data)
         throw makeErrnoException(errno, "CFileIO::write");
     if (ret<len)
         throw makeOsException(DISK_FULL_EXCEPTION_CODE, "CFileIO::write");
-    if ( (extraFlags & IFEnocache) && (ret > 0) )
+    if ( (extraFlags & (IFEnocache | IFEsync)) && (ret > 0) )
     {
         if (unflushedWriteBytes.add_fetch(ret) >= PGCFLUSH_BLKSIZE)
         {
             unflushedWriteBytes.store(0);
-            // [possibly] non-blocking request to write-out dirty pages
-            sync_file_region(file, 0, 0);
-#ifdef POSIX_FADV_DONTNEED
-            // flush written-out pages
-            posix_fadvise(file, 0, 0, POSIX_FADV_DONTNEED);
-#endif
+            // request to write-out dirty pages
+            syncFileData(file, true, extraFlags, true);
         }
     }
     return ret;
@@ -2172,7 +2287,7 @@ void CCheckingFileIO::report(const char * format, ...)
 {
     va_list args;
     va_start(args, format);
-    VALOG(MCinternalError, unknownJob, format, args);
+    VALOG(MCdebugError, format, args);
     va_end(args);
     if (!traced)
     {
@@ -2294,10 +2409,13 @@ void CFileAsyncIO::close()
     // wait for all outstanding results
     if (file != NULLFILE)
     {
-        if (!CloseHandle(file))
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
+        if (!CloseHandle(tmpHandle))
             throw makeOsException(GetLastError(),"CFileAsyncIO::close");
     }
-    file = NULLFILE;
 }
 
 offset_t CFileAsyncIO::size()
@@ -2462,11 +2580,14 @@ void CFileAsyncIO::close()
 {
     if (file != NULLFILE)
     {
-        aio_cancel(file,NULL);
-        if (_lclose(file) < 0)
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
+        aio_cancel(tmpHandle, NULL);
+        if (_lclose(tmpHandle) < 0)
             throw makeErrnoException(errno, "CFileAsyncIO::close");
     }
-    file=NULLFILE;
 }
 
 offset_t CFileAsyncIO::size()
@@ -2556,6 +2677,7 @@ CFileIOStream::CFileIOStream(IFileIO * _io)
 
 void CFileIOStream::flush()
 {
+    io->flush();
 }
 
 
@@ -2804,6 +2926,10 @@ protected:
         return sz;
     }
     virtual offset_t directSize() { return io->size(); }
+    virtual unsigned __int64 getStatistic(StatisticKind kind)
+    {
+        return io->getStatistic(kind);
+    }
 
 protected:
     IFileIOAttr             io;
@@ -2914,6 +3040,7 @@ public:
     virtual size32_t directRead(size32_t len, void * data) { assertex(false); return 0; }           // shouldn't get called
     virtual size32_t directWrite(size32_t len, const void * data) { assertex(false); return 0; }    // shouldn't get called
     virtual offset_t directSize() { waitAsyncWrite(); return io->size(); }
+    virtual unsigned __int64 getStatistic(StatisticKind kind) { return io->getStatistic(kind); }
 };
 
 
@@ -3004,8 +3131,9 @@ void CIOStreamReadWriteSeq::reset()
 
 size32_t read(IFileIO * in, offset_t pos, size32_t len, MemoryBuffer & buffer)
 {
-    const size32_t checkLengthLimit = 0x1000;
-    if (len >= checkLengthLimit)
+    // it's assumed if len is specified the caller knows what they're doing,
+    // and we don't want to wastefully call size() to check otherwise.
+    if ((size32_t)-1 == len)
     {
         //Don't allocate a stupid amount of memory....
         offset_t fileLength = in->size();
@@ -3162,7 +3290,8 @@ void doCopyFile(IFile * target, IFile * source, size32_t buffersize, ICopyFilePr
         // try to delete partial copy
         StringBuffer s;
         s.append("copyFile target=").append(dest->queryFilename()).append(" source=").append(source->queryFilename()).appendf("; read/write failure (%d): ",e->errorCode());
-        exc.setown(MakeStringException(e->errorCode(), "%s", s.str()));
+        e->errorMessage(s);
+        exc.setown(makeStringException(e->errorCode(), s.str()));
         e->Release();
         EXCLOG(exc, "doCopyFile");
     }
@@ -3294,7 +3423,7 @@ StringBuffer &createUNCFilename(const char * filename, StringBuffer &UNC, bool u
         if (useHostNames)
             UNC.append(GetCachedHostName());
         else
-            queryHostIP().getIpText(UNC);
+            queryHostIP().getHostText(UNC);
         UNC.append("\\").append((char)tolower(buf[0])).append(getShareChar()).append(buf+2);
     }
     else 
@@ -3312,7 +3441,7 @@ StringBuffer &createUNCFilename(const char * filename, StringBuffer &UNC, bool u
         if (useHostNames)
             UNC.append(GetCachedHostName());
         else
-            queryHostIP().getIpText(UNC);
+            queryHostIP().getHostText(UNC);
 
         if (*filename != '/')
         {
@@ -4154,8 +4283,20 @@ void recursiveRemoveDirectory(IFile *dir)
             recursiveRemoveDirectory(thisFile);
         else
         {
+            try
+            {
+                thisFile->remove();
+                continue; // i.e. continue if returns true (removed), or false (file no longer exists)
+            }
+            catch(IException *e)
+            {
+                e->Release();
+            }
+
+            // NB: not sure this is worth it. In linux the file can be read-only and still be deleted if the directory is writable
+            // Perhaps should ensure that the parent directory is writable, but that would require extra file ops. or interface changes
             thisFile->setReadOnly(false);
-            thisFile->remove();
+            thisFile->remove(); // if gets here, the file should exist (ignore return false if doesn't), throws an exception if fails for other reason
         }
     }
     dir->remove();
@@ -4284,6 +4425,19 @@ IFile * createIFile(const char * filename)
 #endif
 }
 
+void touchFile(IFile *iFile)
+{
+    Owned<IFileIO> iFileIO = iFile->open(IFOcreate);
+    if (!iFileIO)
+        throw makeStringExceptionV(0, "touchFile: failed to create file %s", iFile->queryFilename());
+}
+
+void touchFile(const char *filename)
+{
+    Owned<IFile> iFile = createIFile(filename);
+    touchFile(iFile);
+}
+
 
 IFileIOStream * createIOStream(IFileIO * file)
 {
@@ -4312,6 +4466,88 @@ IFileIOStream * createBufferedAsyncIOStream(IFileAsyncIO * io, unsigned bufsize)
     if (bufsize == (unsigned)-1)
         bufsize = DEFAULT_BUFFER_SIZE*2;
     return new CBufferedAsyncIOStream(io, bufsize);
+}
+
+IFileIOStream * createIOStreamFromFile(const char *fileNameWithPath, IFOmode mode)
+{
+    Owned<IFile> iFile = createIFile(fileNameWithPath);
+    Owned<IFileIO> iFileIO = iFile->open(mode);
+    if (!iFileIO)
+        return nullptr;
+    return createIOStream(iFileIO);
+}
+
+IFileIOStream * createBufferedIOStreamFromFile(const char *fileNameWithPath, IFOmode mode, unsigned bufsize)
+{
+    Owned<IFile> iFile = createIFile(fileNameWithPath);
+    Owned<IFileIO> iFileIO = iFile->open(mode);
+    if (!iFileIO)
+        return nullptr;
+    return createBufferedIOStream(iFileIO, bufsize);
+}
+
+IFileIOStream *createProgressIFileIOStream(IFileIOStream *iFileIOStream, offset_t totalSize, const char *msg, unsigned periodSecs)
+{
+    class CProgressIFileIOStream : public CSimpleInterfaceOf<IFileIOStream>
+    {
+        Linked<IFileIOStream> iFileIOStream;
+        offset_t totalSize = 0;
+        StringAttr msg;
+        void log(double pct)
+        {
+            PROGLOG("%s - %.2f%% complete", msg.get(), pct);
+        }
+        PeriodicTimer periodTimer;
+    public:
+        CProgressIFileIOStream(IFileIOStream *_iFileIOStream, offset_t _totalSize, const char *_msg, unsigned periodSecs)
+            : iFileIOStream(_iFileIOStream), totalSize(_totalSize), msg(_msg), periodTimer(periodSecs*1000, true)
+        {
+        }
+        ~CProgressIFileIOStream()
+        {
+            offset_t pos = iFileIOStream->tell();
+            if (pos == totalSize)
+                log(100.0);
+        }
+        // implements ISimpleReadStream
+        virtual size32_t read(size32_t max_len, void * data) override
+        {
+            if (periodTimer.hasElapsed())
+            {
+                offset_t pos = iFileIOStream->tell();
+                double pct = ((double)pos) / totalSize * 100;
+                log(pct);
+            }
+            return iFileIOStream->read(max_len, data);
+        }
+        // implements IIOStream
+        virtual void flush() override
+        {
+            throwUnexpected();
+        }
+        virtual size32_t write(size32_t len, const void * data) override
+        {
+            throwUnexpected();
+        }
+        // implements IFileIOStream
+        virtual void seek(offset_t pos, IFSmode origin) override
+        {
+            return iFileIOStream->seek(pos, origin);
+        }
+        virtual offset_t size() override
+        {
+            return iFileIOStream->size();
+        }
+        virtual offset_t tell() override
+        {
+            return iFileIOStream->tell();
+        }
+        virtual unsigned __int64 getStatistic(StatisticKind kind) override
+        {
+            return iFileIOStream->getStatistic(kind);
+        }
+    };
+    return new CProgressIFileIOStream(iFileIOStream, totalSize, msg, periodSecs);
 }
 
 IReadSeq *createReadSeq(IFileIOStream * stream, offset_t offset, size32_t size)
@@ -4597,7 +4833,7 @@ StringBuffer & RemoteFilename::getRemotePath(StringBuffer & out) const
 
     char c=getPathSeparator();
     out.append(c).append(c);
-    ep.getUrlStr(out);
+    ep.getEndpointHostText(out);
     const char *fn;
     StringBuffer loc;
     if (sharehead.length()) 
@@ -4767,7 +5003,7 @@ void RemoteFilename::setPath(const SocketEndpoint & _ep, const char * _filename)
         tailpath.clear();
 #ifdef _TRACERFN
     StringBuffer eps;
-    PROGLOG("setPath (%s,%s) -> '%s' '%s' '%s'",ep.getUrlStr(eps).str(),_filename?_filename:"NULL",sharehead.get()?sharehead.get():"NULL",localhead.get()?localhead.get():"NULL",tailpath.get()?tailpath.get():"NULL");
+    PROGLOG("setPath (%s,%s) -> '%s' '%s' '%s'",ep.getEndpointHostText(eps).str(),_filename?_filename:"NULL",sharehead.get()?sharehead.get():"NULL",localhead.get()?localhead.get():"NULL",tailpath.get()?tailpath.get():"NULL");
 #endif
 }
 
@@ -5346,6 +5582,46 @@ bool isRemotePath(const char *path)
     }
 }
 
+bool containsRelPaths(const char *path)
+{
+    if (isEmptyString(path))
+        return false;
+    if (*path == '~')
+        return true;
+
+    const char *cur = path;
+    char sepChar = getPathSepCharEx(path);
+    char previousChar = sepChar;
+    for (;;)
+    {
+        switch (*cur)
+        {
+        case '.':
+        {
+            if (previousChar == sepChar)
+            {
+                cur++;
+                if ((*cur == sepChar) || (*cur == '\0')) // '.'
+                    return true;
+                    
+                if ('.' == *cur)
+                {
+                    cur++;
+                    if ((*cur == sepChar) || (*cur == '\0')) // '..'
+                        return true;
+                }
+            }
+            break;
+        }
+        case '\0':
+            return false;
+        }
+
+        previousChar = *cur;
+        cur++;
+    }
+}
+
 StringBuffer &makeAbsolutePath(const char *relpath,StringBuffer &out, bool mustExist)
 {
     // NOTE - this function also normalizes the supplied path to remove . and .. references
@@ -5474,6 +5750,24 @@ const char *splitRelativePath(const char *full,const char *basedir,StringBuffer 
     if (t!=full) 
         reldir.append(t-full,full);
     return t;
+}
+
+const char *getRelativePath(const char *path,const char *leadingPath)
+{
+    size_t pathLen = strlen(path);
+    size_t leadingLen = strlen(leadingPath);
+    if ((pathLen==leadingLen-1)&&isPathSepChar(leadingPath[leadingLen-1]))
+        --leadingLen;
+    if (0 == strncmp(path,leadingPath,leadingLen))
+    {
+        const char *rel = path + leadingLen;
+        if ('\0' == *rel)
+            return rel;
+        if (isPathSepChar(*rel))
+            return rel+1;
+        return rel;
+    }
+    return nullptr;
 }
 
 const char *splitDirMultiTail(const char *multipath,StringBuffer &dir,StringBuffer &tail)
@@ -5707,7 +6001,7 @@ bool mountDrive(const char *drv,const RemoteFilename &rfn)
     for (unsigned vtry=0;vtry<2;vtry++) {
         StringBuffer cmd;
         cmd.append("mount ");
-        rfn.queryIP().getIpText(cmd);
+        rfn.queryIP().getHostText(cmd);
         cmd.append(':');
         rfn.getLocalPath(cmd);
         cmd.append(' ').append(drv).append(" -t nfs ");
@@ -5771,6 +6065,24 @@ IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, 
             return nullptr;
         t += getRandom();
     }
+}
+
+IFile * writeToProtectedTempFile(const char * component, const char * prefix, size_t len, const void * data)
+{
+    Owned<IFile> protectedFile;
+    StringBuffer tempDir;
+    getTempFilePath(tempDir, component, nullptr);
+
+    StringBuffer tempFilename;
+    OwnedIFileIO io = createUniqueFile(tempDir, prefix, NULL, tempFilename);
+    io->write(0, len, data);
+    io->close();
+
+    //Prevent any other users from accessing the file
+    protectedFile.setown(createIFile(tempFilename));
+    protectedFile->setFilePermissions(0700);
+
+    return protectedFile.getClear();
 }
 
 unsigned sortDirectory( CIArrayOf<CDirectoryEntry> &sortedfiles,
@@ -6911,11 +7223,14 @@ IFileIOCache* createFileIOCache(unsigned max)
 }
 
 
-extern jlib_decl IFile * createSentinelTarget()
+extern jlib_decl IFile * createSentinelTarget(const char *suffix)
 {
     const char * sentinelFilename = getenv("SENTINEL");
-    if (sentinelFilename)
-        return createIFile(sentinelFilename);
+    if (sentinelFilename && *sentinelFilename)
+    {
+        VStringBuffer usename("%s%s", sentinelFilename, suffix ? suffix : "");
+        return createIFile(usename);
+    }
     else
         return NULL;
 }
@@ -6946,7 +7261,7 @@ extern jlib_decl void writeSentinelFile(IFile * sentinelFile)
 {
     if ( sentinelFile )
     {
-        DBGLOG("Creating sentinel file %s for rerun from script", sentinelFile->queryFilename());
+        DBGLOG("Creating sentinel file %s", sentinelFile->queryFilename());
         try
         {
             Owned<IFileIO> sentinel = sentinelFile->open(IFOcreate);
@@ -6955,7 +7270,7 @@ extern jlib_decl void writeSentinelFile(IFile * sentinelFile)
         catch(IException *E)
         {
             StringBuffer s;
-            EXCLOG(E, s.appendf("Failed to create sentinel file %s for rerun from script", sentinelFile->queryFilename()).str());
+            EXCLOG(E, s.appendf("Failed to create sentinel file %s", sentinelFile->queryFilename()).str());
             E->Release();
             throw makeOsException(errno, "writeSentinelFile - file not created.");
         }
@@ -7108,12 +7423,31 @@ void FileIOStats::trace()
 
 static constexpr FileSystemProperties linuxFileSystemProperties     {true, true, true, true, 0x10000};             // 64K
 static constexpr FileSystemProperties defaultUrlFileSystemProperties{false, false, false, false, 0x400000};        // 4Mb
+static constexpr FileSystemProperties linuxFileSystemNoRenameProperties{false, true, true, true, 0x10000};         // 64K
+
+static std::atomic<int> avoidRename{-1};
+static CriticalSection avoidRenameCS;
+static bool isAvoidRenameEnabled()
+{
+    if (-1 == avoidRename)
+    {
+        CriticalBlock b(avoidRenameCS);
+        if (-1 == avoidRename)
+        {
+            avoidRename = getComponentConfigSP()->getPropBool("expert/@avoidRename");
+            DBGLOG("FileSystemProperties.canRename = %s", boolToStr(!avoidRename)); // NB: canRename if !avoidRename
+        }
+    }
+    return avoidRename;
+}
 
 //This implementation should eventually make use of the file hook.
 const FileSystemProperties & queryFileSystemProperties(const char * filename)
 {
     if (isUrl(filename))
         return defaultUrlFileSystemProperties;
+    else if (isAvoidRenameEnabled())
+        return linuxFileSystemNoRenameProperties;
     else
         return linuxFileSystemProperties;
 }
@@ -7225,7 +7559,7 @@ public:
         if (stopped)
         {
             stopped = false;
-            threaded.start();
+            threaded.start(false);
         }
     }
     virtual void stop() override
@@ -7372,4 +7706,162 @@ IPropertyTree * getStoragePlane(const char * name)
     VStringBuffer xpath("storage/planes[@name='%s']", name);
     Owned<IPropertyTree> global = getGlobalConfig();
     return global->getPropTree(xpath);
+}
+
+IPropertyTree * getRemoteStorage(const char * name)
+{
+    VStringBuffer xpath("storage/remote[@name='%s']", name);
+    Owned<IPropertyTree> global = getGlobalConfig();
+    return global->getPropTree(xpath);
+}
+
+IPropertyTreeIterator * getRemoteStoragesIterator()
+{
+    return getGlobalConfigSP()->getElements("storage/remote");
+}
+
+IPropertyTreeIterator * getPlanesIterator(const char * category, const char *name)
+{
+    StringBuffer xpath("storage/planes");
+    if (!isEmptyString(category))
+        xpath.appendf("[@category='%s']", category);
+    if (!isEmptyString(name))
+        xpath.appendf("[@name='%s']", name);
+    return getGlobalConfigSP()->getElements(xpath);
+}
+
+IAPICopyClient * createApiCopyClient(IStorageApiInfo * source, IStorageApiInfo * target)
+{
+    ReadLockBlock block(containedFileHookLock);
+    ForEachItemIn(i, containedFileHooks)
+    {
+        IAPICopyClient * copyClient = containedFileHooks.item(i).getCopyApiClient(source, target);
+        if (copyClient)
+            return copyClient;
+    }
+    return nullptr;
+}
+
+
+// NB: This implementation is not thread-safe.
+// Therefore it should only be used by use cases that are single threaded
+class CBlockedFileIO : public CSimpleInterfaceOf<IFileIO>
+{
+    Owned<IFileIO> io;
+    size32_t blockSize = 0;
+    size32_t readLen = 0;
+    void *buffer = nullptr;
+    offset_t lastReadPos = (offset_t)-1;
+    MemoryBuffer mb;
+public:
+    CBlockedFileIO(IFileIO *_io, size32_t _blockSize) : io(_io), blockSize(_blockSize)
+    {
+        buffer = mb.reserveTruncate(blockSize);
+    }
+    virtual size32_t read(offset_t pos, size32_t len, void *data) override
+    {
+        if (len > blockSize)
+            return io->read(pos, len, data);
+        size32_t totalCopied = 0;
+        byte *dest = (byte *) data;
+        while (len)
+        {
+            offset_t readPos = (pos / blockSize) * blockSize; // NB: could be beyond end of file
+            if (readPos != lastReadPos)
+            {
+                readLen = io->read(readPos, blockSize, buffer); // NB: can be less than blockSize (and 0 if beyond end of file)
+                lastReadPos = readPos;
+            }
+            offset_t endPos = readPos+readLen;
+            size32_t copyNow;
+            if (pos+len <= endPos) // common case hopefully
+                copyNow = len;
+            else if (pos < endPos)
+                copyNow = endPos-pos;
+            else // nothing to copy
+                break;
+            memcpy(dest, ((byte *)buffer) + pos-readPos, copyNow);
+            len -= copyNow;
+            pos += copyNow;
+            dest += copyNow;
+            totalCopied += copyNow;
+        }
+        return totalCopied;
+    }
+    virtual offset_t size() override { return io->size(); }
+    virtual size32_t write(offset_t pos, size32_t len, const void * data) override { throwUnexpected(); }
+    virtual offset_t appendFile(IFile *file, offset_t pos=0, offset_t len=(offset_t)-1) override { throwUnexpected(); }
+    virtual void setSize(offset_t size) override { throwUnexpected(); }
+    virtual void flush() override { throwUnexpected(); }
+    virtual void close() override { io->close(); }
+    virtual unsigned __int64 getStatistic(StatisticKind kind) override { return io->getStatistic(kind); }
+};
+
+extern IFileIO *createBlockedIO(IFileIO *base, size32_t blockSize)
+{
+    return new CBlockedFileIO(base, blockSize);
+}
+
+///---------------------------------------------------------------------------------------------------------------------
+
+// Module-level global that will contain a list of pluggable file type
+// names (e.g. "parquet", "csv") that are supported through the
+// generic disk reader
+static StringArray genericFileTypeNameList;
+
+void addAvailableGenericFileTypeName(const char * name)
+{
+    genericFileTypeNameList.append(name);
+}
+
+// Determine if file type is defined; used by the ECL parser
+bool hasGenericFiletypeName(const char * name)
+{
+    ForEachItemIn(idx, genericFileTypeNameList)
+    {
+        if (strieq(genericFileTypeNameList.item(idx), name))
+            return true;
+    }
+
+    return false;
+}
+
+///---------------------------------------------------------------------------------------------------------------------
+
+// Cache/update plane index blocked IO settings
+static unsigned planeBlockIOMapCBId = 0;
+static std::unordered_map<std::string, size32_t> planeBlockedIOMap;
+static CriticalSection planeBlockedIOMapCrit;
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    auto updateFunc = [&](const IPropertyTree *oldComponentConfiguration, const IPropertyTree *oldGlobalConfiguration)
+    {
+        CriticalBlock b(planeBlockedIOMapCrit);
+        planeBlockedIOMap.clear();
+        Owned<IPropertyTreeIterator> planesIter = getPlanesIterator(nullptr, nullptr);
+        ForEach(*planesIter)
+        {
+            const IPropertyTree &plane = planesIter->query();
+            size32_t blockedFileIOSize = plane.getPropInt("@blockedFileIOKB") * 1024;
+            planeBlockedIOMap[plane.queryProp("@name")] = blockedFileIOSize;
+        }
+    };
+    planeBlockIOMapCBId = installConfigUpdateHook(updateFunc, true);
+    return true;
+}
+
+MODULE_EXIT()
+{
+    removeConfigUpdateHook(planeBlockIOMapCBId);
+}
+
+
+size32_t getBlockedFileIOSize(const char *planeName, size32_t defaultSize)
+{
+    CriticalBlock b(planeBlockedIOMapCrit);
+    auto it = planeBlockedIOMap.find(planeName);
+    if (it != planeBlockedIOMap.end())
+        return it->second;
+    else
+        return defaultSize;
 }

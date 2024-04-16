@@ -19,6 +19,7 @@
 #include "jmd5.hpp"
 #include "esdl_binding.hpp"
 #include "esdl_svc_engine.hpp"
+#include "daclient.hpp"
 #include <memory>
 
 class CEsdlInstance : public CInterface
@@ -44,7 +45,7 @@ public:
 class CEsdlShare : implements IEsdlShare, public Thread
 {
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
     CEsdlShare() : m_stop(false)
     {
     }
@@ -157,9 +158,9 @@ public:
     CEsdlMonitor() : m_isSubscribed(false)
     {
         constructEnvptTemplate();
-        m_pCentralStore.setown(createEsdlCentralStore());
+        m_pCentralStore.setown(getEsdlCentralStore(true));
         m_esdlShare.setown(new CEsdlShare());
-        m_esdlShare->start();
+        m_esdlShare->start(false);
         DBGLOG("EsdlMonitor started.");
     }
 
@@ -176,28 +177,28 @@ public:
 
     void setupSubscription()
     {
-        if (false == getComponentConfigSP()->getPropBool("@loadDaliBindings", true))
-            return;
-        m_isSubscribed = true;
         m_pSubscription.setown(createEsdlSubscription(this));
+        m_isSubscribed = m_pSubscription.get()!=nullptr;
     }
 
     virtual void subscribe() override
     {
         CriticalBlock cb(m_CritSect);
-        if(m_isSubscribed)
-            return;
-        m_isSubscribed = true;
-        m_pSubscription->subscribe();
+        if (m_pSubscription && !m_isSubscribed)
+        {
+            m_isSubscribed = true;
+            m_pSubscription->subscribe();
+        }
     }
 
     virtual void unsubscribe() override
     {
         CriticalBlock cb(m_CritSect);
-        if(!m_isSubscribed)
-            return;
-        m_isSubscribed = false;
-        m_pSubscription->unsubscribe();
+        if (m_pSubscription && m_isSubscribed)
+        {
+            m_isSubscribed = false;
+            m_pSubscription->unsubscribe();
+        }
     }
 
     //Reference count increment is done by the function
@@ -236,7 +237,7 @@ public:
 
         VStringBuffer portStr("%d", port);
         StringBuffer protocol, serviceName;
-        Owned<IPropertyTree> envpt = getEnvpt(static_binding, id, portStr, protocol, serviceName);
+        Owned<IPropertyTree> envpt = getEnvpt(static_binding, id, portStr, port, protocol, serviceName);
         if (protocol.length() == 0)
             protocol.set("http");
         StringBuffer envptxml;
@@ -258,7 +259,15 @@ public:
         Owned<IPropertyTree> compConfig = getComponentConfig();
         const char *paths = compConfig->queryProp("@bindings");
         if (isEmptyString(paths))
+        {
+            IPropertyTree* procpt = queryEspServer()->queryProcConfig();
+            if (procpt)
+                paths = procpt->queryProp("@bindings");
+        }
+
+        if (isEmptyString(paths))
             return;
+
         StringArray entries;
         entries.appendList(paths, ";");
 
@@ -275,7 +284,7 @@ public:
 
     void loadDynamicBindings()
     {
-        if (false == getComponentConfigSP()->getPropBool("@loadDaliBindings", true))
+        if (!m_pCentralStore)
             return;
         Owned<IPropertyTree> esdlBindings = m_pCentralStore->getBindings();
         if (!esdlBindings)
@@ -475,11 +484,12 @@ private:
 
     IPropertyTree* getEnvpt(EsdlNotifyData* notifyData, StringBuffer& protocol, StringBuffer& serviceName)
     {
+        unsigned port = notifyData->port;
         VStringBuffer portStr("%d", notifyData->port);
-        return getEnvpt(notifyData->name.str(), notifyData->id.str(), portStr.str(), protocol, serviceName);
+        return getEnvpt(notifyData->name.str(), notifyData->id.str(), portStr.str(), port, protocol, serviceName);
     }
 
-    IPropertyTree* getEnvpt(const char* bindingName, const char* bindingId, const char* port, StringBuffer& protocol, StringBuffer& serviceName)
+    IPropertyTree* getEnvpt(const char* bindingName, const char* bindingId, const char* port, unsigned &bindingPort, StringBuffer& protocol, StringBuffer& serviceName)
     {
         if (!bindingName || !*bindingName)
             bindingName = bindingId;
@@ -515,9 +525,36 @@ private:
                     servicetree = createPTreeFromIPT(servicetree);
                     bindingtree->setProp("@name", bindingName);
                     bindingtree->setProp("@service", serviceName.str());
-                    bindingtree->setProp("@port", port);
+                    if (!streq(port, "0"))
+                        bindingtree->setProp("@port", port);
+                    bindingPort = bindingtree->getPropInt("@port");
                     servicetree->setProp("@name", serviceName.str());
                     servicetree->setProp("@type", "DynamicESDL");
+
+                    // Copy resource_map properties from the desdlBinding.resource_map section
+                    // for this dynamic service into the bindingtree
+                    IPropertyTree* desdlBindingConfig = bindingtree->queryPropTree("desdlBinding");
+                    if (desdlBindingConfig)
+                    {
+                        IPropertyTree* bindingAuthenticate = bindingtree->queryPropTree("Authenticate");
+                        xpath.setf("resource_map/%s", serviceName.str());
+                        IPropertyTree* resourceMap = desdlBindingConfig->queryPropTree(xpath.str());
+                        if (resourceMap && bindingAuthenticate)
+                        {
+                            mergePTree(bindingAuthenticate, resourceMap);
+                            desdlBindingConfig->removeProp(xpath.str());
+                        }
+
+                        // Likewise copy over any additional dynamic service-specific binding configuration
+                        xpath.setf("additionalInfo/%s", serviceName.str());
+                        IPropertyTree* addtlInfo = desdlBindingConfig->queryPropTree(xpath.str());
+                        if (addtlInfo)
+                        {
+                            mergePTree(bindingtree, addtlInfo);
+                            desdlBindingConfig->removeProp(xpath.str());
+                        }
+                    }
+
                     Owned<IPropertyTree> envpttree = createPTreeFromIPT(m_envptTemplate.get());
                     envpttree->addPropTree("Software/EspProcess/EspBinding", bindingtree);
                     envpttree->addPropTree("Software/EspProcess/EspService", servicetree);

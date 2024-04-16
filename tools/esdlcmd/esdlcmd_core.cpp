@@ -25,6 +25,7 @@
 
 #include "esdl2ecl.cpp"
 #include "esdl-publish.cpp"
+#include "esdlcmd_manifest.cpp"
 
 class Esdl2XSDCmd : public EsdlHelperConvertCmd
 {
@@ -113,6 +114,8 @@ public:
         StringAttr oneOption;
         if (iter.matchOption(oneOption, ESDLOPT_INCLUDE_PATH) || iter.matchOption(oneOption, ESDLOPT_INCLUDE_PATH_S))
             return false;  //Return false to negate allowing the include path options from parent class
+        if (iter.matchFlag(optNoExceptionsInline, ESDLOPT_NO_EXCEPT_INLINE))
+            return true;
 
         if (EsdlConvertCmd::parseCommandLineOption(iter))
             return true;
@@ -220,6 +223,21 @@ public:
         cmdHelper.loadDefinition(optSource, optService.get(), optInterfaceVersion,"", optTraceFlags());
         createOptionals();
 
+        if (optInterfaceVersion == 0.0)
+        {
+            DBGLOG("Target interface version for service '%s' not provided...", optService.get());
+            const char * esdlsrvversion =  cmdHelper.esdlDef->queryService(optService.get())->queryProp("version");
+            if (isEmptyString(esdlsrvversion))
+            {
+                WARNLOG("Could not determine Service '%s' version from ECM definition!", optService.get());
+            }
+            else
+            {
+                optInterfaceVersion = atof(esdlsrvversion);
+                DBGLOG("Target interface version set to latest from ECM definition: '%s'", esdlsrvversion);
+            }
+        }
+
         Owned<IEsdlDefObjectIterator> structs = cmdHelper.esdlDef->getDependencies( optService.get(), optMethod.get(), ESDLOPTLIST_DELIMITER, optInterfaceVersion, opts.get(), optFlags );
 
         if( optRawOutput )
@@ -276,6 +294,7 @@ public:
         puts("   --no-arrayof                         Supresses the use of the arrrayof element. arrayof optimizes the XML output to include 'ArrayOf...'" );
         puts("                                        structure definitions for those EsdlArray elements with no item_tag attribute. Works in conjunction" );
         puts("                                        with an optimized stylesheet that doesn't generate these itself. This defaults to on.");
+        puts("   --no-exceptions-inline               Do not modify the interface to include an Exceptions element inline in the response.");
     }
 
     virtual void usage()
@@ -341,6 +360,11 @@ public:
         if( optNoAnnot )
         {
             params->setProp( "no_annot_Param", "true()" );
+        }
+
+        if( optNoExceptionsInline )
+        {
+            params->setProp( "no_exceptions_inline", "true()" );
         }
     }
 
@@ -449,6 +473,7 @@ public:
     bool optNoCollapse;
     bool optNoArrayOf;
     bool optUnversionedNamespace;
+    bool optNoExceptionsInline;
 
 protected:
     StringBuffer outputBuffer;
@@ -511,6 +536,21 @@ public:
     {
         cmdHelper.loadDefinition(optSource, optService.get(), optInterfaceVersion, "", optTraceFlags());
         createOptionals();
+
+        if (optInterfaceVersion == 0.0)
+        {
+            DBGLOG("Target interface version for service '%s' not provided...", optService.get());
+            const char * esdlsrvversion =  cmdHelper.esdlDef->queryService(optService.get())->queryProp("version");
+            if (isEmptyString(esdlsrvversion))
+            {
+                WARNLOG("Could not determine Service '%s' version from ECM definition!", optService.get());
+            }
+            else
+            {
+                optInterfaceVersion = atof(esdlsrvversion);
+                DBGLOG("Target interface version set to latest from ECM definition: '%s'", esdlsrvversion);
+            }
+        }
 
         Owned<IEsdlDefObjectIterator> structs = cmdHelper.esdlDef->getDependencies( optService.get(), optMethod.get(), ESDLOPTLIST_DELIMITER, optInterfaceVersion, opts.get(), optFlags );
 
@@ -578,6 +618,11 @@ public:
 
         params->setProp( "create_wsdl", "true()" );
         setXpathQuotedParam(params, "location", optWsdlAddress.str());
+
+        if( optNoExceptionsInline )
+        {
+            params->setProp( "no_exceptions_inline", "true()" );
+        }
     }
 
 public:
@@ -1123,6 +1168,157 @@ protected:
     Owned<IProperties> params;
 };
 
+class Esdl2XmlCmd : public EsdlHelperConvertCmd
+{
+protected:
+    StringBuffer outputBuffer;
+    StringAttr optService;
+    bool optProcessAllIncludes;
+    bool optRollup;
+
+public:
+    Esdl2XmlCmd() : optRollup(false), optProcessAllIncludes(false)
+    {}
+
+    virtual bool parseCommandLineOptions(ArgvIterator &iter) override
+    {
+        if (iter.done())
+        {
+            usage();
+            return false;
+        }
+
+        //First parameters' order is fixed.
+        const char *arg = iter.query();
+        if (*arg != '-')
+        {
+            if (optSource.isEmpty())
+                optSource.set(arg);
+        }
+        else
+        {
+            fprintf(stderr, "\noption detected before required parameters: %s\n", arg);
+            usage();
+            return false;
+        }
+
+        iter.next();
+
+        for (; !iter.done(); iter.next())
+        {
+            if (parseCommandLineOption(iter))
+                continue;
+
+            if (matchCommandLineOption(iter, true)!=EsdlCmdOptionMatch)
+                return false;
+        }
+
+        return true;
+    }
+
+    virtual bool parseCommandLineOption(ArgvIterator &iter) override
+    {
+        if (iter.matchOption(optService, ESDLOPT_SERVICE))
+            return true;
+        if (iter.matchOption(optOutDirPath, ESDL_CONVERT_OUTDIR))
+            return true;
+        if (iter.matchFlag(optRollup, ESDL_OPTION_ROLLUP))
+            return true;
+        if (iter.matchFlag(optProcessAllIncludes, ESDLOPT_RECURSIVE) || iter.matchFlag(optProcessAllIncludes, ESDLOPT_RECURSIVE_S))
+            return true;
+        if (EsdlConvertCmd::parseCommandLineOption(iter))
+            return true;
+
+        return false;
+    }
+
+    esdlCmdOptionMatchIndicator matchCommandLineOption(ArgvIterator &iter, bool finalAttempt)
+    {
+        return EsdlConvertCmd::matchCommandLineOption(iter, true);
+    }
+
+    virtual bool finalizeOptions(IProperties *globals) override
+    {
+        extractEsdlCmdOption(optIncludePath, globals, ESDLOPT_INCLUDE_PATH_ENV, ESDLOPT_INCLUDE_PATH_INI, NULL, NULL);
+
+        if (optSource.isEmpty())
+        {
+            usage();
+            throw( MakeStringException(0, "\nError: Source file parameter required\n"));
+        }
+
+        if (optRollup)
+        {
+            if(optService.isEmpty())
+            {
+                usage();
+                throw( MakeStringException(0, "\nError: `--service` option required when generating rolled-up output\n"));
+            }
+        }
+
+        cmdHelper.verbose = optVerbose;
+        return true;
+    }
+
+    virtual void doTransform(IEsdlDefObjectIterator& objs, StringBuffer &out, double version=0, IProperties *opts=NULL, const char *ns=NULL, unsigned flags=0 ) override
+    {
+    }
+
+    virtual void loadTransform( StringBuffer &xsltpath, IProperties *params ) override
+    {
+    }
+
+    virtual void setTransformParams(IProperties *params ) override
+    {
+    }
+
+    virtual int processCMD() override
+    {
+        if (!optRollup)
+        {
+            // duplicate behavior of the old esdl2xml command
+            Esdl2Esxdl old2XmlCmd(optProcessAllIncludes, optVerbose);
+            old2XmlCmd.transform(optSource, optOutDirPath);
+        } else {
+            StringBuffer esxml;
+            cmdHelper.getServiceESXDL(optSource.get(), optService.get(), esxml, 0, NULL, (DEPFLAG_INCLUDE_TYPES & ~DEPFLAG_INCLUDE_METHOD), optIncludePath.str(), optTraceFlags());
+            if (esxml.length()==0)
+            {
+                fprintf(stderr,"\nESDL Definition for service %s could not be loaded from: %s\n", optService.get(), optSource.get());
+                return -1;
+            }
+            StringBuffer filename;
+            splitFilename(optSource.str(), nullptr, nullptr, &filename, nullptr);
+            saveAsFile(optOutDirPath.get(), filename.str(), esxml.str(), ".xml");
+        }
+        return 0;
+    }
+
+    void printOptions()
+    {
+        puts("Options:");
+        puts("   --rollup         Output a single XML file containing all definitions used by");
+        puts("                    <serviceName>");
+        puts("   -r, --recursive  Process all includes. Implied when generating monolithic");
+        puts("                    output");
+        puts("   --service        Name of ESDL Service defined in the given ECM file. Required");
+        puts("                    when generating monolithic output.");
+        puts(ESDLOPT_INCLUDE_PATH_USAGE);
+    }
+
+    virtual void usage() override
+    {
+        puts("Usage:");
+
+        puts("esdl xml sourcePath [options]\n\n" );
+        puts("sourcePath   - Absolute path to the ECM which contains ESDL Service definition.\n" );
+
+        printOptions();
+        EsdlConvertCmd::usage();
+    }
+
+};
+
 
 //=========================================================================================
 
@@ -1130,6 +1326,8 @@ IEsdlCommand *createCoreEsdlCommand(const char *cmdname)
 {
     if (!cmdname || !*cmdname)
         return NULL;
+    if (strieq(cmdname, "XML"))
+        return new Esdl2XmlCmd();
     if (strieq(cmdname, "XSD"))
         return new Esdl2XSDCmd();
     if (strieq(cmdname, "ECL"))
@@ -1160,6 +1358,8 @@ IEsdlCommand *createCoreEsdlCommand(const char *cmdname)
         return new EsdlListESDLDefCmd();
     if (strieq(cmdname, "LIST-BINDINGS"))
         return new EsdlListESDLBindingsCmd();
+    if (strieq(cmdname, "MANIFEST"))
+        return new EsdlManifestCmd();
     if (strieq(cmdname, "BIND-LOG-TRANSFORM"))
         return new EsdlBindLogTransformCmd();
     if (strieq(cmdname, "UNBIND-LOG-TRANSFORM"))

@@ -14,7 +14,7 @@
 #    limitations under the License.
 ################################################################################
 IF (USE_OPENLDAP)
-HPCC_ADD_SUBDIRECTORY (LdapSecurity)
+  HPCC_ADD_SUBDIRECTORY (LdapSecurity)
 ENDIF(USE_OPENLDAP)
 IF (USE_OPENSSL)
   HPCC_ADD_SUBDIRECTORY (securesocket)
@@ -31,3 +31,4 @@ HPCC_ADD_SUBDIRECTORY (plugins/singleuserSecurity)
 IF (NOT WIN32)
   HPCC_ADD_SUBDIRECTORY (plugins/jwtSecurity)
 ENDIF()
+HPCC_ADD_SUBDIRECTORY (plugins/testauthSecurity)

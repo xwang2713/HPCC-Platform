@@ -42,12 +42,12 @@
 
 
 class jlib_decl ICopyArray : public CopyReferenceArrayOf<IInterface> {};
-class jlib_decl IArray : public OwnedReferenceArrayOf<IInterface> {};
+class jlib_decl IArray : public OwnedReferenceArrayOf<IInterface> { inline void clear(bool) = delete; };
 class jlib_decl IPointerArray : public OwnedPointerArrayOf<IInterface> {};
-class jlib_decl IConstPointerArray : public OwnedConstPointerArrayOf<IInterface> {};
+class jlib_decl IConstPointerArray : public OwnedConstPointerArrayOf<IInterface> { inline void clear(bool) = delete; };
 
 class jlib_decl CICopyArray : public CopyReferenceArrayOf<CInterface> {};
-class jlib_decl CIArray : public OwnedReferenceArrayOf<CInterface> {};
+class jlib_decl CIArray : public OwnedReferenceArrayOf<CInterface> { inline void clear(bool) = delete; };
 
 class jlib_decl CharArray : public ArrayOf<char> { };
 class jlib_decl IntArray : public ArrayOf<int> { };
@@ -271,7 +271,7 @@ public:
     inline bool zap(TYPE * x)                   { return ConstPointerArray::zap(x); }
 };
 
-enum DAFSConnectCfg { SSLNone = 0, SSLOnly, SSLFirst, UnsecureFirst };
+enum DAFSConnectCfg { SSLNone = 0, SSLOnly, SSLFirst, UnsecureFirst, UnsecureAndSSL };
 
 #include "jstring.hpp"
 #include "jarray.hpp"
@@ -395,6 +395,6 @@ inline constexpr X operator | (X l, X r) { return (X)((unsigned)l | (unsigned)r)
 inline constexpr X operator & (X l, X r) { return (X)((unsigned)l & (unsigned)r); } \
 inline constexpr X operator ~ (X l) { return (X)(~(unsigned)l); } \
 inline X & operator |= (X & l, X r) { l = l | r; return l; } \
-inline X & operator &= (X & l, X r) { l = (X)(l & r); return l; }
-
+inline X & operator &= (X & l, X r) { l = (X)(l & r); return l; } \
+inline bool hasMask(X l, X r) { return (l & r) != (X)0; }
 #endif

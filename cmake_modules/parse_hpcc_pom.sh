@@ -54,13 +54,16 @@ function parse_cmake()
     # branch on gold release
     HPCC_MATURITY=release
   elif [ "$HPCC_MATURITY" == "SNAPSHOT" ] ; then
-    if (( "$HPCC_POINT" % 2 != 1 )) ; then
-      HPCC_MATURITY=rc
+    if (( "$HPCC_MINOR" % 2 == 1 )) ; then
+      HPCC_MATURITY=trunk
     else
-      HPCC_MATURITY=closedown
+      if (( "$HPCC_POINT" % 2 != 1 )) ; then
+        HPCC_MATURITY=rc
+      else
+        HPCC_MATURITY=closedown
+      fi
     fi
   fi
-
 }
 
 function set_tag()
@@ -82,10 +85,16 @@ function update_version_file()
     local _new_point=$2
     local _new_sequence=$3
     local _new_minor=$4
+    local _new_major=$5
     if [ -z "$_new_minor" ] ; then
       _new_minor=$HPCC_MINOR
     fi
-    if [ "$_new_maturity" == "rc" ]; then
+    if [ -z "$_new_major" ] ; then
+      _new_major=$HPCC_MAJOR
+    fi
+    if [ "$_new_maturity" == "trunk" ]; then
+      _new_maturity=-SNAPSHOT
+    elif [ "$_new_maturity" == "rc" ]; then
       _new_maturity=-SNAPSHOT
     elif [ "$_new_maturity" == "closedown" ]; then
       _new_maturity=-SNAPSHOT
@@ -93,11 +102,11 @@ function update_version_file()
       # don't set for non-snapshots
       _new_maturity=
     fi
-    local _v="${HPCC_MAJOR}.${_new_minor}.${_new_point}-${_new_sequence}${_new_maturity}"
+    local _v="${_new_major}.${_new_minor}.${_new_point}-${_new_sequence}${_new_maturity}"
     if [ $_mvn_return_value -eq 0 ]; then
         local version_update_cmd="mvn versions:set -DnewVersion=$_v"
     else
-        local version_update_cmd="sed -i .old 's/${HPCC_VERSION}/${_v}/' pom.xml"
+        local version_update_cmd="sed -i.old 's/${HPCC_VERSION}/${_v}/' pom.xml"
     fi
     if [ -n "$VERBOSE" ] ; then
       echo  "$version_update_cmd"

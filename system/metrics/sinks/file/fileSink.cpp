@@ -25,10 +25,12 @@ extern "C" MetricSink* getSinkInstance(const char *name, const IPropertyTree *pS
 
 
 FileMetricSink::FileMetricSink(const char *name, const IPropertyTree *pSettingsTree) :
-    PeriodicMetricSink(name, "file", pSettingsTree)
+    PeriodicMetricSink(name, "file", pSettingsTree),
+    ignoreZeroMetrics(false)
 {
     pSettingsTree->getProp("@filename", fileName);
     clearFileOnStartCollecting = pSettingsTree->getPropBool("@clear", false);
+    ignoreZeroMetrics = pSettingsTree->getPropBool("@ignoreZeroMetrics", true);
 }
 
 
@@ -37,13 +39,14 @@ void FileMetricSink::prepareToStartCollecting()
     fhandle = fopen(fileName.str(), clearFileOnStartCollecting ? "w" : "a");
 }
 
+
 void FileMetricSink::doCollection()
 {
-    auto reportMetrics = pReporter->queryMetricsForReport(name);
+    auto reportMetrics = pManager->queryMetricsForReport(name);
     writeReportHeaderToFile();
     for (auto &pMetric: reportMetrics)
     {
-        writeMeasurementToFile(pMetric->queryName(), pMetric->queryValue(), pMetric->queryDescription());
+        writeMeasurementToFile(pMetric);
     }
 }
 
@@ -54,9 +57,61 @@ void FileMetricSink::collectingHasStopped()
 }
 
 
-void FileMetricSink::writeMeasurementToFile(const std::string &metricName, __uint64 value, const std::string &metricDescription) const
+void FileMetricSink::writeMeasurementToFile(const std::shared_ptr<IMetric> &pMetric) const
 {
-    fprintf(fhandle, "  %s -> %" I64F "d, %s\n", metricName.c_str(), value, metricDescription.c_str());
+    std::string name = pMetric->queryName();
+    const auto & metaData = pMetric->queryMetaData();
+    for (auto &metaDataIt: metaData)
+    {
+        name.append(".").append(metaDataIt.value);
+    }
+
+    const char *unitsStr = pManager->queryUnitsString(pMetric->queryUnits());
+
+    if (pMetric->queryMetricType() != METRICS_HISTOGRAM)
+    {
+        __uint64 metricValue = pMetric->queryValue();
+        if (!ignoreZeroMetrics || metricValue)
+        {
+            if (!isEmptyString(unitsStr))
+            {
+                name.append(".").append(unitsStr);
+            }
+            fprintf(fhandle, "%s -> %" I64F "d, %s\n", name.c_str(), metricValue, pMetric->queryDescription().c_str());
+        }
+    }
+    else
+    {
+        std::vector<__uint64> values = pMetric->queryHistogramValues();
+        std::vector<__uint64> limits = pMetric->queryHistogramBucketLimits();
+        size_t countBucketValues = values.size();
+
+        // If not ignoring or measurements exist, output the log entries
+        __uint64 sum = pMetric->queryValue();
+        if (!ignoreZeroMetrics || sum)
+        {
+            __uint64 cumulative = 0;
+            for (size_t i = 0; i < countBucketValues - 1; ++i)
+            {
+                cumulative += values[i];
+                if (!ignoreZeroMetrics || values[i])
+                {
+                    fprintf(fhandle, "name=%s, bucket le %" I64F "d=%" I64F "d\n", name.c_str(), limits[i], cumulative);
+                }
+            }
+
+            // The inf bucket count is the last element in the array of values returned.
+            // Add it to the cumulative count and print the value
+            cumulative += values[countBucketValues - 1];
+            fprintf(fhandle, "name=%s, bucket inf=%" I64F "d\n", name.c_str(), cumulative);
+
+            // sum - total of all observations
+            fprintf(fhandle, "name=%s, sum=%" I64F "d\n", name.c_str(), sum);
+
+            // count - total of all bucket counts (same as inf)
+            fprintf(fhandle, "name=%s, count=%" I64F "d\n", name.c_str(), cumulative);
+        }
+    }
     fflush(fhandle);
 }
 

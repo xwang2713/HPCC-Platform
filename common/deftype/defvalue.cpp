@@ -385,6 +385,9 @@ unsigned MemoryValue::getHash(unsigned initval)
 {
     size32_t size = getSize();
     assertThrow(val.length()>=size);
+    constexpr unsigned maxHashLength = 0x100000;     //Only hash the first 1M - to avoid pathological performance for (string4000000000)'x' etc.
+    if (size > maxHashLength)
+        size = maxHashLength;
     return hashc((unsigned char *) val.get(), size, initval);
 }
 
@@ -1485,6 +1488,7 @@ const char *CharValue::generateCPP(StringBuffer &out, CompilerType compiler)
         case '\r': out.append("'\\r'"); break;
         case '\t': out.append("'\\t'"); break;
         case '\'': out.append("'\\''"); break;
+        case '\\': out.append("'\\\\'"); break;
         default:
             if ((val >= ' ') && (val <= 126))
                 out.append('\'').append(val).append('\'');
@@ -1694,6 +1698,7 @@ static void generateUnsignedCPP(StringBuffer &s, __uint64 val, unsigned size, Co
     switch (compiler)
     {
     case GccCppCompiler:
+    case ClangCppCompiler:
         if (val && (size > sizeof(unsigned)))
             s.append("LLU");
         else
@@ -1722,6 +1727,7 @@ static void generateSignedCPP(StringBuffer &s, __int64 val, unsigned size, Compi
             switch (compiler)
             {
             case GccCppCompiler:
+            case ClangCppCompiler:
                 s.append("LL");
                 break;
             case Vs6CppCompiler:
@@ -2027,6 +2033,7 @@ void RealValue::toMem(void *target)
     RealUnion u;
 
     size32_t size = type->getSize();
+    u.r8 = 0;
     switch (size)
     {
     case 4:
@@ -2044,6 +2051,7 @@ unsigned RealValue::getHash(unsigned initval)
     RealUnion u;
 
     size32_t size = type->getSize();
+    u.r8 = 0;
     switch (size)
     {
     case 4:

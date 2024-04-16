@@ -1,6 +1,10 @@
 import UniversalRouter, { ResolveContext } from "universal-router";
-import { parse, ParsedQuery, stringify } from "query-string";
-import { hashSum } from "@hpcc-js/util";
+import { parse, ParsedQuery, pick, stringify } from "query-string";
+import { hashSum, scopedLogger } from "@hpcc-js/util";
+import { userKeyValStore } from "src/KeyValStore";
+import { QuerySortItem } from "src/store/Store";
+
+const logger = scopedLogger("../util/history.ts");
 
 let g_router: UniversalRouter;
 
@@ -16,7 +20,7 @@ export function resolve(pathnameOrContext: string | ResolveContext) {
     return g_router.resolve(pathnameOrContext);
 }
 
-function parseHash(hash: string): HistoryLocation {
+export function parseHash(hash: string): HistoryLocation {
     if (hash[0] !== "#") {
         return {
             pathname: "/",
@@ -33,20 +37,60 @@ function parseHash(hash: string): HistoryLocation {
     };
 }
 
-export function parseSearch<T = ParsedQuery<string | boolean | number>>(_: string): T {
+export function parseQuery<T = ParsedQuery<string | boolean | number>>(_: string): T {
     if (_[0] !== "?") return {} as T;
     return { ...parse(_.substring(1), { parseBooleans: true, parseNumbers: true }) } as unknown as T;
+}
+
+export function parseSearch<T = ParsedQuery<string | boolean | number>>(_: string): T {
+    const parsed = parseQuery(_);
+    const excludeKeys = ["sortBy", "pageNum"];
+    Object.keys(parsed).forEach(key => {
+        if (excludeKeys.includes(key)) {
+            delete parsed[key];
+        }
+    });
+    return { ...parsed } as unknown as T;
+}
+
+export function parseSort(_?: string): QuerySortItem | undefined {
+    if (!_) return undefined;
+    const filter = parse(pick(_.substring(1), ["sortBy"]));
+    let descending = false;
+    let sortBy = filter?.sortBy?.toString();
+    if (filter?.sortBy?.toString().charAt(0) === "-") {
+        descending = true;
+        sortBy = filter?.sortBy.toString().substring(1);
+    }
+    return { attribute: sortBy, descending };
+}
+
+export function updateSort(sorted: boolean, descending: boolean, sortBy: string) {
+    updateParam("sortBy", sorted ? (descending ? "-" : "") + sortBy : undefined);
+}
+
+export function parsePage(_: string): number {
+    const filter = parse(pick(_.substring(1), ["pageNum"]));
+    const pageNum = filter?.pageNum?.toString() ?? "1";
+    return parseInt(pageNum, 10);
+}
+
+export function updatePage(pageNum: string) {
+    updateParam("pageNum", pageNum);
 }
 
 interface HistoryLocation {
     pathname: string;
     search: string;
     id: string;
+    state?: { [key: string]: any }
 }
 
 export type ListenerCallback<S extends object = object> = (location: HistoryLocation, action: string) => void;
 
 const globalHistory = globalThis.history;
+
+const STORE_HISTORY_ID = "history";
 
 class History<S extends object = object> {
 
@@ -56,6 +100,7 @@ class History<S extends object = object> {
         id: hashSum("#/")
     };
     state: S = {} as S;
+    _store = userKeyValStore();
 
     constructor() {
         this.location = parseHash(document.location.hash);
@@ -70,23 +115,49 @@ class History<S extends object = object> {
         });
 
         window.addEventListener("popstate", ev => {
-            console.log("popstate: " + document.location + ", state: " + JSON.stringify(ev.state));
+            logger.debug("popstate: " + document.location + ", state: " + JSON.stringify(ev.state));
             this.state = ev.state;
+        });
+
+        this._store.get(STORE_HISTORY_ID).then((str: string) => {
+            if (typeof str === "string") {
+                const retVal: HistoryLocation[] = JSON.parse(str);
+                if (Array.isArray(retVal)) {
+                    this._recent = retVal;
+                }
+            }
+        }).catch(err => logger.error(err)).finally(() => {
+            this._recent = this._recent === undefined ? [] : this._recent;
         });
     }
 
-    push(to: { pathname?: string, search?: string }, state?: S) {
-        const newHash = `#${to.pathname || this.location.pathname}${to.search || ""}`;
-        globalHistory.pushState(state, "", newHash);
-        this.location = parseHash(newHash);
-        this.broadcast("PUSH");
+    trimRightSlash(str: string): string {
+        return str.replace(/\/+$/, "");
     }
 
-    replace(to: { pathname?: string, search?: string }, state?: S) {
-        const newHash = `#${to.pathname || this.location.pathname}${to.search || ""}`;
-        globalHistory.replaceState(state, "", newHash);
-        this.location = parseHash(newHash);
-        this.broadcast("REPLACE");
+    fixHash(hashUrl: string): string {
+        if (hashUrl[0] !== "#") {
+            return `#${hashUrl}`;
+        }
+        return hashUrl;
+    }
+
+    push(to: { pathname?: string, search?: string }) {
+        const newHash = this.fixHash(`${this.trimRightSlash(to.pathname || this.location.pathname)}${to.search || ""}`);
+        if (window.location.hash !== newHash) {
+            globalHistory.pushState(undefined, "", newHash);
+            this.location = parseHash(newHash);
+            this.broadcast("PUSH");
+        }
+    }
+
+    replace(to: { pathname?: string, search?: string }) {
+        const newHash = this.fixHash(`${this.trimRightSlash(to.pathname || this.location.pathname)}${to.search || ""}`);
+        if (window.location.hash !== newHash) {
+            globalHistory.replaceState(globalHistory.state, "", newHash);
+            this.location = parseHash(newHash);
+            this.broadcast("REPLACE");
+        }
     }
 
     _listenerID = 0;
@@ -99,16 +170,19 @@ class History<S extends object = object> {
         };
     }
 
-    protected _recent: HistoryLocation[] = [];
+    protected _recent;
     recent() {
-        return this._recent;
+        return this._recent === undefined ? [] : this._recent;
     }
 
     updateRecent() {
-        this._recent = this._recent?.filter(row => row.id !== this.location.id) || [];
-        this._recent.unshift(this.location);
-        if (this._recent.length > 10) {
-            this._recent.length = 10;
+        if (this._recent !== undefined) {
+            this._recent = this._recent?.filter(row => row.id !== this.location.id) || [];
+            this._recent.unshift(this.location);
+            if (this._recent.length > 10) {
+                this._recent.length = 10;
+            }
+            this._store.set(STORE_HISTORY_ID, JSON.stringify(this._recent)).catch(err => logger.error(err));
         }
     }
 
@@ -116,43 +190,50 @@ class History<S extends object = object> {
         this.updateRecent();
         for (const key in this._listeners) {
             const listener = this._listeners[key];
-            listener(this.location, action);
+            listener({ ...this.location, state: { ...globalHistory.state } }, action);
         }
     }
 }
 
 export const hashHistory = new History<any>();
 
-export function pushSearch(_: object, state?: any) {
+export function pushSearch(_: object) {
     const search = stringify(_ as any);
     hashHistory.push({
         search: search ? "?" + search : ""
-    }, state);
+    });
 }
 
-export function pushUrl(_: string, state?: any) {
-    hashHistory.push({
-        pathname: _
-    }, state);
-}
-
-export function updateSearch(_: object, state?: any) {
+export function updateSearch(_: object) {
     const search = stringify(_ as any);
     hashHistory.replace({
         search: search ? "?" + search : ""
-    }, state);
+    });
 }
 
-export function pushParam(key: string, val?: string | string[] | number | boolean, state?: any) {
-    pushParams({ [key]: val }, state);
+export function pushUrl(_: string) {
+    hashHistory.push({
+        pathname: _
+    });
 }
 
-export function pushParamExact(key: string, val?: string | string[] | number | boolean, state?: any) {
-    pushParams({ [key]: val }, state, true);
+export function replaceUrl(_: string, refresh: boolean = false) {
+    hashHistory.replace({
+        pathname: _
+    });
+    if (refresh) window.location.reload();
 }
 
-export function pushParams(search: { [key: string]: string | string[] | number | boolean }, state?: any, keepEmpty: boolean = false) {
-    const params = parseSearch(hashHistory.location.search);
+export function pushParam(key: string, val?: string | string[] | number | boolean) {
+    pushParams({ [key]: val });
+}
+
+export function pushParamExact(key: string, val?: string | string[] | number | boolean) {
+    pushParams({ [key]: val }, true);
+}
+
+export function pushParams(search: { [key: string]: string | string[] | number | boolean }, keepEmpty: boolean = false) {
+    const params = parseQuery(hashHistory.location.search);
     for (const key in search) {
         const val = search[key];
         //  No empty strings OR "false" booleans...
@@ -162,15 +243,25 @@ export function pushParams(search: { [key: string]: string | string[] | number |
             params[key] = val;
         }
     }
-    pushSearch(params, state);
+    pushSearch(params);
 }
 
-export function updateParam(key: string, val?: string | string[] | number | boolean, state?: any) {
-    const params = parseSearch(hashHistory.location.search);
+export function updateParam(key: string, val?: string | string[] | number | boolean) {
+    const params = parseQuery(hashHistory.location.search);
     if (val === undefined) {
         delete params[key];
     } else {
         params[key] = val;
     }
-    updateSearch(params, state);
+    updateSearch(params);
+}
+
+export function updateState(key: string, val?: string | string[] | number | boolean) {
+    const state = { ...globalHistory.state };
+    if (val === undefined) {
+        delete state[key];
+    } else {
+        state[key] = val;
+    }
+    globalHistory.replaceState(state, "");
 }

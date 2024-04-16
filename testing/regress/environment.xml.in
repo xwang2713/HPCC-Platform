@@ -13,6 +13,11 @@
             name="localhost"
             netAddress="."/>
   <Switch name="Switch"/>
+  <cost currencyCode="USD"
+        perCpu="0.113"
+        storageAtRest="0.0135"
+        storageReads="0.0485"
+        storageWrites="0.0038"/>
  </Hardware>
  <Software>
   <DropZone build="_"
@@ -23,6 +28,7 @@
             name="mydropzone"
             umask="022"/>
   <RoxieCluster allFilesDynamic="true"
+                allowedPipePrograms="*"
                 blindLogging="false"
                 blobCacheMem="0"
                 build="_"
@@ -54,7 +60,6 @@
                 defaultStripLeadingWhitespace="1"
                 description="Roxie cluster"
                 directory="${RUNTIME_PATH}/myroxie"
-                diskReadBufferSize="65536"
                 doIbytiDelay="true"
                 enableHeartBeat="true"
                 enableKeyDiff="true"
@@ -398,6 +403,11 @@
                          path="CodeSignAccess"
                          resource="CodeSignAccess"
                          service="ws_codesign"/>
+    <AuthenticateFeature authenticate="Yes"
+                         description="Access to DFS service"
+                         path="DfsAccess"
+                         resource="DfsAccess"
+                         service="ws_dfsservice"/>
     <Authenticate access="Read"
                   description="Root access to SMC service"
                   path="/"
@@ -642,6 +652,10 @@
                          path="CodeSignAccess"
                          resource="CodeSignAccess"
                          service="ws_codesign"/>
+    <AuthenticateFeature description="Access to DFS service"
+                         path="DfsAccess"
+                         resource="DfsAccess"
+                         service="ws_dfsservice"/>
     <ProcessFilters>
      <Platform name="Windows">
       <ProcessFilter name="any">
@@ -715,7 +729,8 @@
              throttleCPULimit="75"
              throttleDelayMs="5000"/>
   </DafilesrvProcess>
-  <ThorCluster autoAffinity="true"
+  <ThorCluster allowedPipePrograms="*"
+               autoAffinity="true"
                autoCopyBackup="false"
                build="_"
                buildSet="thor"
@@ -941,6 +956,10 @@
                           path="CodeSignAccess"
                           resource="CodeSignAccess"
                           service="ws_codesign"/>
+    <AuthenticateFeature  description="Access to DFS service"
+                          path="DfsAccess"
+                          resource="DfsAccess"
+                          service="ws_dfsservice"/>
      <ProcessFilters>
       <Platform name="Windows">
        <ProcessFilter name="any">

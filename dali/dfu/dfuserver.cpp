@@ -191,12 +191,14 @@ int main(int argc, const char *argv[])
             startLogMsgParentReceiver();    // for auditing
             connectLogMsgManagerToDali();
 
-            engine.setown(createDFUengine());
+            engine.setown(createDFUengine(globals));
             engine->setDFUServerName(name);
             addAbortHandler(exitDFUserver);
 
             IPropertyTree * config = nullptr;
             installDefaultFileHooks(config);
+
+            initializeStorageGroups(true);
         }
         StringBuffer queue, monitorQueue;
 #ifndef _CONTAINERIZED
@@ -290,7 +292,7 @@ int main(int argc, const char *argv[])
             engine->joinListeners();
             if (replserver.get())
                 replserver->stopServer();
-            LOG(MCprogress, unknownJob, "Exiting");
+            LOG(MCprogress, "Exiting");
         }
 
     }

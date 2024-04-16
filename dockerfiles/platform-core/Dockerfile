@@ -20,7 +20,7 @@
 ARG BUILD_LABEL
 ARG DOCKER_REPO
 FROM ${DOCKER_REPO}/platform-build:${BUILD_LABEL} as build
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get clean -y && \
     apt-get autoclean -y && \
@@ -30,23 +30,19 @@ RUN apt-get clean -y && \
 
 RUN apt-get install -y \
   default-jdk \
+  elfutils \
   g++ \
+  git \
+  git-lfs \
   openssh-client \
-  libapr1 \
-  libnuma1 \
-  libboost-regex1.71.0 \
-  libpython3.8 \
-  libmemcached11 \
-  libmemcachedutil2 \
-  libmysqlclient21 \
-  libxslt1.1 \
   locales \
-  python \ 
+  python3 \ 
+  python3-dev \ 
   psmisc \
   r-base-core \
   zip \
-  libarchive13 \
-  curl
+  curl \
+  clang
 
 ARG USE_CPPUNIT=1
 RUN if [ ${USE_CPPUNIT} -eq 1 ] ; then apt-get install -y libcppunit-1.15-0 ; fi 
@@ -55,6 +51,7 @@ RUN if [ ${USE_CPPUNIT} -eq 1 ] ; then apt-get install -y libcppunit-1.15-0 ; fi
 
 RUN apt-get install -y \
     dnsutils \
+    gdb \
     nano 
 
 # Set the locale
@@ -70,7 +67,7 @@ COPY --from=build /usr/local/bin/kubectl /usr/local/bin/kubectl
 # based on it. Only /opt/HPCCSystems is copied over.
 
 RUN groupadd -g 10001 hpcc
-RUN useradd -s /bin/bash -r -N -c "hpcc runtime User" -u 10000 -g hpcc hpcc
+RUN useradd -s /bin/bash -m -r -N -c "hpcc runtime User" -u 10000 -g hpcc hpcc
 RUN passwd -l hpcc 
 
 RUN mkdir /var/lib/HPCCSystems && chown hpcc:hpcc /var/lib/HPCCSystems
@@ -81,6 +78,5 @@ RUN mkdir /var/run/HPCCSystems && chown hpcc:hpcc /var/run/HPCCSystems
 USER hpcc
 ENV PATH="/opt/HPCCSystems/bin:${PATH}"
 ENV HPCC_containerized=1
-ENV HPCC_DLLSERVER_PATH=/var/lib/HPCCSystems/queries
 WORKDIR /var/lib/HPCCSystems
 RUN eclcc -pch

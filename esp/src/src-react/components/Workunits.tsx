@@ -1,20 +1,27 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
-import * as domClass from "dojo/dom-class";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Image, Link } from "@fluentui/react";
+import { SizeMe } from "react-sizeme";
+import { scopedLogger } from "@hpcc-js/util";
+import { CreateWUQueryStore, Get, WUQueryStore } from "src/ESPWorkunit";
 import * as WsWorkunits from "src/WsWorkunits";
-import * as ESPWorkunit from "src/ESPWorkunit";
-import * as Utility from "src/Utility";
+import { formatCost } from "src/Session";
 import nlsHPCC from "src/nlsHPCC";
-import { HolyGrail } from "../layouts/HolyGrail";
+import { useConfirm } from "../hooks/confirm";
+import { useMyAccount } from "../hooks/user";
 import { pushParams } from "../util/history";
+import { useHasFocus, useIsMounted } from "../hooks/util";
+import { HolyGrail } from "../layouts/HolyGrail";
+import { FluentPagedGrid, FluentPagedFooter, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid, selector } from "./DojoGrid";
+import { ShortVerticalDivider } from "./Common";
+import { QuerySortItem } from "src/store/Store";
+
+const logger = scopedLogger("src-react/components/Workunits.tsx");
 
 const FilterFields: Fields = {
     "Type": { type: "checkbox", label: nlsHPCC.ArchivedOnly },
+    "Protected": { type: "checkbox", label: nlsHPCC.Protected },
     "Wuid": { type: "string", label: nlsHPCC.WUID, placeholder: "W20200824-060035" },
     "Owner": { type: "string", label: nlsHPCC.Owner, placeholder: nlsHPCC.jsmi },
     "Jobname": { type: "string", label: nlsHPCC.JobName, placeholder: nlsHPCC.log_analysis_1 },
@@ -24,11 +31,11 @@ const FilterFields: Fields = {
     "LogicalFile": { type: "string", label: nlsHPCC.LogicalFile, placeholder: nlsHPCC.somefile },
     "LogicalFileSearchType": { type: "logicalfile-type", label: nlsHPCC.LogicalFileType, placeholder: "", disabled: (params: Fields) => !params.LogicalFile.value },
     "LastNDays": { type: "string", label: nlsHPCC.LastNDays, placeholder: "2" },
-    "StartDate": { type: "datetime", label: nlsHPCC.FromDate, placeholder: "" },
-    "EndDate": { type: "datetime", label: nlsHPCC.ToDate, placeholder: "" },
+    "StartDate": { type: "datetime", label: nlsHPCC.FromDate },
+    "EndDate": { type: "datetime", label: nlsHPCC.ToDate },
 };
 
-function formatQuery(_filter) {
+function formatQuery(_filter): { [id: string]: any } {
     const filter = { ..._filter };
     if (filter.LastNDays) {
         const end = new Date();
@@ -42,9 +49,19 @@ function formatQuery(_filter) {
             filter.StartDate = new Date(filter.StartDate).toISOString();
         }
         if (filter.EndDate) {
-            filter.EndDate = new Date(filter.StartDate).toISOString();
+            filter.EndDate = new Date(filter.EndDate).toISOString();
         }
     }
+    if (filter.Type === true) {
+        filter.Type = "archived workunits";
+    }
+    if (filter.Type === true) {
+        filter.Type = "archived workunits";
+    }
+    if (filter.Protected === true) {
+        filter.Protected = "Protected";
+    }
+    logger.debug(filter);
     return filter;
 }
 
@@ -59,72 +76,140 @@ const defaultUIState = {
 };
 
 interface WorkunitsProps {
-    filter?: object;
-    store?: any;
+    filter?: { [id: string]: any };
+    sort?: QuerySortItem;
+    store?: WUQueryStore;
+    page?: number;
 }
 
-const emptyFilter = {};
+const emptyFilter: { [id: string]: any } = {};
+export const defaultSort = { attribute: "Wuid", descending: true };
 
 export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
     filter = emptyFilter,
+    sort = defaultSort,
+    page = 1,
     store
 }) => {
 
-    const [grid, setGrid] = React.useState<any>(undefined);
+    const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
+
     const [showFilter, setShowFilter] = React.useState(false);
-    const [mine, setMine] = React.useState(false);
-    const [selection, setSelection] = React.useState([]);
+    const { currentUser } = useMyAccount();
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
+    const {
+        selection, setSelection,
+        pageNum, setPageNum,
+        pageSize, setPageSize,
+        total, setTotal,
+        refreshTable } = useFluentStoreState({ page });
+
+    //  Refresh on focus  ---
+    const isMounted = useIsMounted();
+    const hasFocus = useHasFocus();
+    React.useEffect(() => {
+        if (isMounted && hasFocus) {
+            refreshTable.call();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hasFocus]);
 
     //  Grid ---
-    const gridStore = useConst(() => store ? store : ESPWorkunit.CreateWUQueryStore({}));
-    const gridQuery = useConst(formatQuery(filter));
-    const gridSort = useConst([{ attribute: "Wuid", "descending": true }]);
-    const gridColumns = useConst({
-        col1: selector({
-            width: 27,
-            selectorType: "checkbox"
-        }),
-        Protected: {
-            renderHeaderCell: function (node) {
-                node.innerHTML = Utility.getImageHTML("locked.png", nlsHPCC.Protected);
+    const query = React.useMemo(() => {
+        return formatQuery(filter);
+    }, [filter]);
+
+    const gridStore = React.useMemo(() => {
+        return store ? store : CreateWUQueryStore();
+    }, [store]);
+
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            col1: {
+                width: 16,
+                selectorType: "checkbox"
             },
-            width: 25,
-            sortable: false,
-            formatter: function (_protected) {
-                if (_protected === true) {
-                    return Utility.getImageHTML("locked.png");
+            Protected: {
+                headerIcon: "LockSolid",
+                headerTooltip: nlsHPCC.Protected,
+                width: 16,
+                sortable: true,
+                formatter: (_protected) => {
+                    if (_protected === true) {
+                        return <Icon iconName="LockSolid" />;
+                    }
+                    return "";
                 }
-                return "";
+            },
+            Wuid: {
+                label: nlsHPCC.WUID, width: 120,
+                sortable: true,
+                formatter: (Wuid, row) => {
+                    const wu = Get(Wuid);
+                    return <>
+                        <Image src={wu.getStateImage()} styles={{ root: { minWidth: "16px" } }} />
+                        &nbsp;
+                        <Link href={`#/workunits/${Wuid}`}>{Wuid}</Link>
+                    </>;
+                }
+            },
+            Owner: { label: nlsHPCC.Owner, width: 80 },
+            Jobname: { label: nlsHPCC.JobName },
+            Cluster: { label: nlsHPCC.Cluster },
+            RoxieCluster: { label: nlsHPCC.RoxieCluster, sortable: false },
+            State: { label: nlsHPCC.State, width: 60 },
+            TotalClusterTime: {
+                label: nlsHPCC.TotalClusterTime, width: 120,
+                justify: "right",
+            },
+            "Compile Cost": {
+                label: nlsHPCC.CompileCost, width: 100,
+                justify: "right",
+                formatter: (cost, row) => {
+                    return `${formatCost(row.CompileCost)}`;
+                }
+            },
+            "Execution Cost": {
+                label: nlsHPCC.ExecuteCost, width: 100,
+                justify: "right",
+                formatter: (cost, row) => {
+                    return `${formatCost(row.ExecuteCost)}`;
+                }
+            },
+            "File Access Cost": {
+                label: nlsHPCC.FileAccessCost, width: 100,
+                justify: "right",
+                formatter: (cost, row) => {
+                    return `${formatCost(row.FileAccessCost)}`;
+                }
             }
-        },
-        Wuid: {
-            label: nlsHPCC.WUID, width: 180,
-            formatter: function (Wuid) {
-                const wu = ESPWorkunit.Get(Wuid);
-                return `${wu.getStateImageHTML()}&nbsp;<a href='#/workunits/${Wuid}' class='dgrid-row-url''>${Wuid}</a>`;
-            }
-        },
-        Owner: { label: nlsHPCC.Owner, width: 90 },
-        Jobname: { label: nlsHPCC.JobName, width: 500 },
-        Cluster: { label: nlsHPCC.Cluster, width: 90 },
-        RoxieCluster: { label: nlsHPCC.RoxieCluster, width: 99 },
-        State: { label: nlsHPCC.State, width: 90 },
-        TotalClusterTime: {
-            label: nlsHPCC.TotalClusterTime, width: 117,
-            renderCell: function (object, value, node) {
-                domClass.add(node, "justify-right");
-                node.innerText = value;
-            }
+        };
+    }, []);
+
+    const copyButtons = useCopyButtons(columns, selection, "workunits");
+
+    const doActionWithWorkunits = React.useCallback(async (action: "Delete" | "Abort") => {
+        const unknownWUs = selection.filter(wu => wu.State === "unknown");
+        if (action === "Delete" && unknownWUs.length) {
+            await WsWorkunits.WUAction(unknownWUs, "SetToFailed");
         }
+        await WsWorkunits.WUAction(selection, action);
+        refreshTable.call(true);
+    }, [refreshTable, selection]);
+
+    const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
+        title: nlsHPCC.Delete,
+        message: nlsHPCC.DeleteSelectedWorkunits,
+        items: selection.map(s => s.Wuid),
+        onSubmit: () => doActionWithWorkunits("Delete")
     });
 
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", formatQuery(filter));
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [filter, grid]);
+    const [AbortConfirm, setShowAbortConfirm] = useConfirm({
+        title: nlsHPCC.Abort,
+        message: nlsHPCC.AbortSelectedWorkunits,
+        items: selection.map(s => s.Wuid),
+        onSubmit: () => doActionWithWorkunits("Abort")
+    });
 
     //  Filter  ---
     const filterFields: Fields = {};
@@ -132,15 +217,11 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         filterFields[fieldID] = { ...FilterFields[fieldID], value: filter[fieldID] };
     }
 
-    React.useEffect(() => {
-        refreshTable();
-    }, [refreshTable, filter, store?.data]);
-
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshTable.call()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -157,12 +238,7 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         },
         {
             key: "delete", text: nlsHPCC.Delete, disabled: !uiState.hasNotProtected, iconProps: { iconName: "Delete" },
-            onClick: () => {
-                const list = selection.map(s => s.Wuid);
-                if (confirm(nlsHPCC.DeleteSelectedWorkunits + "\n" + list)) {
-                    WsWorkunits.WUAction(selection, "Delete").then(() => refreshTable(true));
-                }
-            }
+            onClick: () => setShowDeleteConfirm(true)
         },
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -171,35 +247,38 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         },
         {
             key: "abort", text: nlsHPCC.Abort, disabled: !uiState.hasNotCompleted,
-            onClick: () => { WsWorkunits.WUAction(selection, "Abort"); }
+            onClick: () => setShowAbortConfirm(true)
         },
         { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
             key: "protect", text: nlsHPCC.Protect, disabled: !uiState.hasNotProtected,
-            onClick: () => { WsWorkunits.WUAction(selection, "Protect"); }
+            onClick: () => {
+                WsWorkunits.WUAction(selection, "Protect").then(() => refreshTable.call());
+            }
         },
         {
             key: "unprotect", text: nlsHPCC.Unprotect, disabled: !uiState.hasProtected,
-            onClick: () => { WsWorkunits.WUAction(selection, "Unprotect"); }
+            onClick: () => {
+                WsWorkunits.WUAction(selection, "Unprotect").then(() => refreshTable.call());
+            }
         },
         { key: "divider_4", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
-            key: "filter", text: nlsHPCC.Filter, disabled: !!store, iconProps: { iconName: "Filter" },
-            onClick: () => {
-                setShowFilter(true);
-            }
+            key: "filter", text: nlsHPCC.Filter, disabled: !!store, iconProps: { iconName: hasFilter ? "FilterSolid" : "Filter" },
+            onClick: () => { setShowFilter(true); }
         },
         {
-            key: "mine", text: nlsHPCC.Mine, disabled: true, iconProps: { iconName: "Contact" }, canCheck: true, checked: mine,
+            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username || !total, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter.Owner === currentUser.username,
             onClick: () => {
-                setMine(!mine);
+                if (filter.Owner === currentUser.username) {
+                    filter.Owner = "";
+                } else {
+                    filter.Owner = currentUser.username;
+                }
+                pushParams(filter);
             }
         },
-    ], [mine, refreshTable, selection, store, uiState.hasNotCompleted, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
-
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "workunits.csv")
-    ], [grid, selection]);
+    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowAbortConfirm, setShowDeleteConfirm, store, total, uiState.hasNotCompleted, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
 
     //  Selection  ---
     React.useEffect(() => {
@@ -231,12 +310,41 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
     }, [selection]);
 
     return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
             <>
-                <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
+                <SizeMe monitorHeight>{({ size }) =>
+                    <div style={{ width: "100%", height: "100%" }}>
+                        <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
+                            <FluentPagedGrid
+                                store={gridStore}
+                                query={query}
+                                sort={sort}
+                                pageNum={pageNum}
+                                pageSize={pageSize}
+                                total={total}
+                                columns={columns}
+                                height={`${size.height}px`}
+                                setSelection={setSelection}
+                                setTotal={setTotal}
+                                refresh={refreshTable}
+                            ></FluentPagedGrid>
+                        </div>
+                    </div>
+                }</SizeMe>
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
+                <DeleteConfirm />
+                <AbortConfirm />
             </>
         }
+        footer={<FluentPagedFooter
+            persistID={"workunits"}
+            pageNum={pageNum}
+            selectionCount={selection.length}
+            setPageNum={setPageNum}
+            setPageSize={setPageSize}
+            total={total}
+        ></FluentPagedFooter>}
+        footerStyles={{}}
     />;
 };

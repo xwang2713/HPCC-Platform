@@ -30,6 +30,7 @@
 #include "dautils.hpp"
 #include "dasds.hpp"
 #include "workunit.hpp"
+#include "jsecrets.hpp"
 
 #include <map>
 #include <string>
@@ -255,6 +256,7 @@ private:
     int                  m_ldap_secure_port;
     StringBuffer         m_adminGroupDN;//fully qualified DN of the HPCC administrator
     StringBuffer         m_protocol;
+    StringBuffer         m_cipherSuite;
     StringBuffer         m_basedn;
     StringBuffer         m_domain;
     StringBuffer         m_authmethod;
@@ -265,7 +267,6 @@ private:
     StringBuffer         m_filescope_basedn;
     StringBuffer         m_view_basedn;
     StringBuffer         m_workunitscope_basedn;
-    StringBuffer         m_sudoers_basedn;
     StringBuffer         m_template_name;
 
     StringBuffer         m_sysuser;
@@ -276,12 +277,50 @@ private:
     bool                 m_sysuser_specified;
     StringBuffer         m_sysuser_dn;
 
+    StringBuffer         m_HPCCAdminUser_username;
+    StringBuffer         m_HPCCAdminUser_password;
+
     int                  m_maxConnections;
     
     StringBuffer         m_sdfieldname;
 
     int                  m_timeout;
     bool                 m_isAzureAD = false;
+
+#ifdef _DEBUG
+    void debugPrintout()
+    {
+        DBGLOG("@@LDAP CONFIG--------------");
+        StringBuffer sb;
+        getLdapHost(sb);
+        DBGLOG("LDAP host = %s", sb.str());
+        DBGLOG("m_adminGroupDN = %s", m_adminGroupDN.str());
+        DBGLOG("m_protocol = %s", m_protocol.str());
+        DBGLOG("m_cipherSuite = %s", m_cipherSuite.str());
+        DBGLOG("m_basedn = %s", m_basedn.str());
+        DBGLOG("m_domain = %s", m_domain.str());
+        DBGLOG("m_authmethod = %s", m_authmethod.str());
+
+        DBGLOG("m_user_basedn = %s", m_user_basedn.str());
+        DBGLOG("m_group_basedn = %s", m_group_basedn.str());
+        DBGLOG("m_resource_basedn = %s", m_resource_basedn.str());
+        DBGLOG("m_filescope_basedn = %s",m_filescope_basedn.str());
+        DBGLOG("m_view_basedn = %s", m_view_basedn.str());
+        DBGLOG("m_workunitscope_basedn = %s", m_workunitscope_basedn.str());
+
+        DBGLOG("m_HPCCAdminUser_username = %s", m_HPCCAdminUser_username.str());
+//        DBGLOG("m_HPCCAdminUser_password = %s", m_HPCCAdminUser_password.str());
+
+        DBGLOG("m_sysuser = %s", m_sysuser.str());
+        DBGLOG("m_sysuser_dn = %s", m_sysuser_dn.str());
+        DBGLOG("m_sysuser_commonname = %s", m_sysuser_commonname.str());
+//        DBGLOG("m_sysuser_password = %s", m_sysuser_password.str());
+        DBGLOG("m_sysuser_basedn = %s", m_sysuser_basedn.str());
+        DBGLOG("m_sdfieldname = %s", m_sdfieldname.str());
+        DBGLOG("@@END LDAP CONFIG--------------");
+    }
+#endif
+
 public:
     IMPLEMENT_IINTERFACE
 
@@ -335,6 +374,8 @@ public:
             m_protocol.append("ldap");
         }
         
+        cfg->getProp(".//@ldapCipherSuite", m_cipherSuite);
+
         StringBuffer portbuf;
         cfg->getProp(".//@ldapPort", portbuf);
         if(portbuf.length() == 0)
@@ -351,48 +392,83 @@ public:
 
         m_timeout = cfg->getPropInt(".//@ldapTimeoutSecs", LDAPTIMEOUT);
 
+        //------------------------------------------------
+        //Get LDAP Admin account username (m_sysuser_commonname) and password (m_sysuser_password)
+        // Can be specified as
+        //  - Kubernetes secret : lookup key value ldapAdminSecretKey
+        //  - Vault secret : lookup key value ldapAdminVaultId, ldapAdminSecretKey
+        //  - Hardcoded : systemCommonName, systemPassword (legacy environment.xml)
+        //------------------------------------------------
+
+        StringBuffer adminUserSecretKey;
+        cfg->getProp(".//@ldapAdminSecretKey", adminUserSecretKey);//vault/secrets LDAP username key
+        if (!adminUserSecretKey.isEmpty())
+        {
+            StringBuffer vaultId;
+            cfg->getProp(".//@ldapAdminVaultId", vaultId);//optional HashiCorp vault ID
+
+            DBGLOG("Retrieving LDAP Admin username/password from secrets repo: %s %s", !vaultId.isEmpty() ? vaultId.str() : "", adminUserSecretKey.str());
+
+            Owned<const IPropertyTree> secretTree(getSecret("authn", adminUserSecretKey.str(), vaultId, nullptr));
+            if (!secretTree)
+                throw MakeStringException(-1, "Error retrieving LDAP Admin username/password");
+
+            getSecretKeyValue(m_sysuser_commonname, secretTree, "username");
+            getSecretKeyValue(m_sysuser_password, secretTree, "password");
+
+            if (m_sysuser_commonname.isEmpty() || m_sysuser_password.isEmpty())
+            {
+                throw MakeStringException(-1, "Error extracting LDAP Admin username/password");
+            }
+            m_sysuser.set(m_sysuser_commonname);
+        }
+        else
+        {
+            //Legacy component config from environment.xml configuration
+            cfg->getProp(".//@systemCommonName", m_sysuser_commonname);
+            if (m_sysuser_commonname.isEmpty())
+                throw MakeStringException(-1, "systemCommonName is empty");
+
+            StringBuffer pwd;
+            cfg->getProp(".//@systemPassword", pwd);
+            if (pwd.isEmpty())
+                throw MakeStringException(-1, "systemPassword is empty");
+            decrypt(m_sysuser_password, pwd.str());//MD5 encrypted in config
+        }
+
+        StringBuffer sysBasedn;
+        cfg->getProp(".//@systemBasedn", sysBasedn);
+        if (sysBasedn.isEmpty())
+            throw MakeStringException(-1, "systemBasedn is empty");
+
+        //----------------------------------------------------
+        //Ensure at least one specified LDAP host is available
+        //----------------------------------------------------
+
         int rc = LDAP_OTHER;
         StringBuffer hostbuf, dcbuf;
         const char * ldapDomain = cfg->queryProp(".//@ldapDomain");
         for (int numHosts=0; numHosts < getHostCount(); numHosts++)
         {
-            getLdapHost(hostbuf);
             unsigned port = strieq("ldaps",m_protocol) ? m_ldap_secure_port : m_ldapport;
-            StringBuffer sysUserDN, decPwd;
 
-            {
-                StringBuffer pwd;
-                cfg->getProp(".//@systemPassword", pwd);
-                if (pwd.isEmpty())
-                    throw MakeStringException(-1, "systemPassword is empty");
-                decrypt(decPwd, pwd.str());
-
-                StringBuffer sysUserCN;
-                cfg->getProp(".//@systemCommonName", sysUserCN);
-                if (sysUserCN.isEmpty())
-                    throw MakeStringException(-1, "systemCommonName is empty");
-
-                StringBuffer sysBasedn;
-                cfg->getProp(".//@systemBasedn", sysBasedn);
-                if (sysBasedn.isEmpty())
-                    throw MakeStringException(-1, "systemBasedn is empty");
-
-                //Guesstimate system user baseDN based on config settings. It will be used if anonymous bind fails
-                sysUserDN.append("cn=").append(sysUserCN.str()).append(",").append(sysBasedn.str());
-            }
+            //Guesstimate system user baseDN based on config settings. It will be used if anonymous bind fails
+            StringBuffer sysUserDN;
+            if(m_serverType == OPEN_LDAP)
+                sysUserDN.append("uid=").append(m_sysuser_commonname).append(",").append(sysBasedn);
+            else
+                sysUserDN.append("cn=").append(m_sysuser_commonname).append(",").append(sysBasedn);
 
             for(int retries = 0; retries <= LDAPSEC_MAX_RETRIES; retries++)
             {
-                rc = LdapUtils::getServerInfo(hostbuf.str(), sysUserDN.str(), decPwd.str(), m_protocol, port, dcbuf, m_serverType, ldapDomain, m_timeout);
-                if(!LdapServerDown(rc) || retries >= LDAPSEC_MAX_RETRIES)
+                getLdapHost(hostbuf);//get next available AD, as it may have changed
+                rc = LdapUtils::getServerInfo(hostbuf.str(), sysUserDN.str(), m_sysuser_password.str(), m_protocol, port, m_cipherSuite, dcbuf, m_serverType, ldapDomain, m_timeout);
+                if(rc != LDAP_TIMEOUT || retries >= LDAPSEC_MAX_RETRIES)
                     break;
                 sleep(LDAPSEC_RETRY_WAIT);
-                if(retries < LDAPSEC_MAX_RETRIES)
-                {
-                    DBGLOG("Server %s temporarily unreachable, retrying...", hostbuf.str());
-                }
+                DBGLOG("LDAP AD Server %s temporarily unreachable for user %s on port %d, retrying...", hostbuf.str(), sysUserDN.str(), port);
             }
-            if (rc != LDAP_SUCCESS)
+            if(LdapServerDown(rc))
             {
                 rejectHost(hostbuf);
             }
@@ -403,6 +479,28 @@ public:
         if(rc != LDAP_SUCCESS)
         {
             throw MakeStringException(-1, "getServerInfo error - %s", ldap_err2string(rc));
+        }
+
+        //------------------------------------------------
+        //Get optional HPCC Admin account username
+        // Can be specified as
+        //  - Kubernetes secret : lookup key value hpccAdminSecretKey
+        //  - Vault secret : lookup key value hpccAdminVaultId, hpccAdminSecretKey
+        //------------------------------------------------
+        cfg->getProp(".//@hpccAdminSecretKey", adminUserSecretKey.clear());//vault/secrets HPCC Admin username key
+        if (!adminUserSecretKey.isEmpty())
+        {
+            StringBuffer vaultId;
+            cfg->getProp(".//@hpccAdminVaultId", vaultId);//optional HashiCorp vault ID
+
+            DBGLOG("Retrieving optional HPCC Admin username/password from secrets repo: %s %s", !vaultId.isEmpty() ? vaultId.str() : "", adminUserSecretKey.str());
+            Owned<const IPropertyTree> secretTree(getSecret("authn", adminUserSecretKey.str(), vaultId, nullptr));
+            if (secretTree)
+            {
+                getSecretKeyValue(m_HPCCAdminUser_username, secretTree, "username");
+                getSecretKeyValue(m_HPCCAdminUser_password, secretTree, "password");
+                DBGLOG("Retrieved HPCC Admin username %s", m_HPCCAdminUser_username.str());
+            }
         }
 
         const char* basedn = cfg->queryProp(".//@commonBasedn");
@@ -487,12 +585,6 @@ public:
             throw MakeStringException(-1, "One of the following basedns need to be defined: modulesBasedn, resourcesBasedn, filesBasedn or workunitScopesBasedn.");
         }
 
-        dnbuf.clear();
-        cfg->getProp(".//@sudoersBasedn", dnbuf);
-        if(dnbuf.length() == 0)
-            dnbuf.append("ou=SUDOers");
-        LdapUtils::normalizeDn(dnbuf.str(), m_basedn.str(), m_sudoers_basedn);
-
         cfg->getProp(".//@templateName", m_template_name);
         cfg->getProp(".//@authMethod", m_authmethod);
         cfg->getProp(".//@ldapDomain", m_domain);
@@ -511,21 +603,12 @@ public:
         }
 
         m_sysuser_specified = true;
-        cfg->getProp(".//@systemUser", m_sysuser);
         if(m_sysuser.length() == 0)
         {
-            m_sysuser_specified = false;
+            cfg->getProp(".//@systemUser", m_sysuser);
+            if(m_sysuser.length() == 0)
+                m_sysuser_specified = false;
         }
-
-        cfg->getProp(".//@systemCommonName", m_sysuser_commonname);
-        if(m_sysuser_specified && (m_sysuser_commonname.length() == 0))
-        {
-            throw MakeStringException(-1, "SystemUser commonname is empty");
-        }
-
-        StringBuffer passbuf;
-        cfg->getProp(".//@systemPassword", passbuf);
-        decrypt(m_sysuser_password, passbuf.str());
 
         StringBuffer sysuser_basedn;
         cfg->getProp(".//@systemBasedn", sysuser_basedn);
@@ -562,10 +645,12 @@ public:
                 else
                 {
                     if (nullptr == strchr(m_sysuser_commonname.str(), '='))
-                        m_sysuser_dn.append("uid=").append(m_sysuser_commonname.str()).append(",").append(m_sysuser_basedn.str()).append(",").append(m_basedn.str());
+                        m_sysuser_dn.append("uid=").append(m_sysuser_commonname.str()).append(",").append(m_sysuser_basedn.str());
                     else
                         m_sysuser_dn.append(m_sysuser_commonname.str());//includes FQDN prefix, use as is (likely from initldap)
                 }
+                if (!strstr(m_sysuser_dn.str(), ",dc="))
+                    m_sysuser_dn.append(",").append(m_basedn.str());
             }
         }
 
@@ -579,6 +664,9 @@ public:
             m_sdfieldname.append("aci");
         else if(m_serverType == OPEN_LDAP)
             m_sdfieldname.append("aci");
+#ifdef _DEBUG
+        debugPrintout();
+#endif
     }
 
     virtual const char * getAdminGroupDN()
@@ -638,6 +726,10 @@ public:
         return m_protocol.str();
     }
 
+    virtual const char* getCipherSuite()
+    {
+        return m_cipherSuite.str();
+    }
 
     virtual const char* getBasedn()
     {
@@ -657,6 +749,11 @@ public:
     virtual const char* getUserBasedn()
     {
         return m_user_basedn.str();
+    }
+
+    virtual void setUserBasedn(const char * basedn)
+    {
+        m_user_basedn.set(basedn);
     }
 
     virtual const char* getGroupBasedn()
@@ -679,8 +776,6 @@ public:
             return m_view_basedn.str();
         else if(rtype == RT_WORKUNIT_SCOPE)
             return m_workunitscope_basedn.str();
-        else if(rtype == RT_SUDOERS)
-            return m_sudoers_basedn.str();
         else
             return m_resource_basedn.str();
     }
@@ -718,6 +813,16 @@ public:
     virtual bool sysuserSpecified()
     {
         return m_sysuser_specified;
+    }
+
+    virtual const char* getHPCCAdminUser_username()
+    {
+        return m_HPCCAdminUser_username.str();
+    }
+
+    virtual const char* getHPCCAdminUser_password()
+    {
+        return m_HPCCAdminUser_password.str();
     }
 
     virtual int getMaxConnections()
@@ -782,6 +887,7 @@ private:
     time_t               m_lastaccesstime;
     bool                 m_connected;
     bool                 m_useSSL;
+    StringBuffer         m_connectedHost;
 
 public:
     IMPLEMENT_IINTERFACE
@@ -809,7 +915,8 @@ private:
         if(!ldapserver || *ldapserver == '\0')
             return -1;
 
-        m_ld = LdapUtils::LdapInit(protocol, ldapserver, m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort());
+        m_connectedHost.clear();
+        m_ld = LdapUtils::LdapInit(protocol, ldapserver, m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort(), m_ldapconfig->getCipherSuite());
         int rc = LDAP_SUCCESS;
         if(m_ldapconfig->sysuserSpecified())
             rc =  LdapUtils::LdapBind(m_ld, m_ldapconfig->getLdapTimeout(), m_ldapconfig->getDomain(), m_ldapconfig->getSysUser(), m_ldapconfig->getSysUserPassword(), m_ldapconfig->getSysUserDn(), m_ldapconfig->getServerType(), m_ldapconfig->getAuthMethod());
@@ -820,6 +927,7 @@ private:
         {
             time(&m_lastaccesstime);
             m_connected = true;
+            m_connectedHost.append(ldapserver);
             const char * ldap = NULL;
             switch (m_ldapconfig->getServerType())
             {
@@ -868,41 +976,21 @@ public:
         StringBuffer hostbuf;
         for (int numHosts=0; numHosts < m_ldapconfig->getHostCount(); numHosts++)
         {
-            m_ldapconfig->getLdapHost(hostbuf);
-
             for(int retries = 0; retries <= LDAPSEC_MAX_RETRIES; retries++)
             {
+                m_ldapconfig->getLdapHost(hostbuf);//get next available AD, as it may have changed
                 rc = connect(hostbuf.str(), proto);
-                if(!LdapServerDown(rc) || retries > LDAPSEC_MAX_RETRIES)
+                if(rc == LDAP_SUCCESS)
+                    return true;
+                if(rc != LDAP_TIMEOUT || retries >= LDAPSEC_MAX_RETRIES)
                     break;
                 sleep(LDAPSEC_RETRY_WAIT);
-                if(retries < LDAPSEC_MAX_RETRIES)
-                    DBGLOG("Server temporarily unreachable, retrying ...");
+                DBGLOG("Server %s temporarily unreachable, retrying ...", hostbuf.str());
             }
-
-            if(rc == LDAP_SERVER_DOWN)
-            {
-                StringBuffer dc;
-                LdapUtils::getDcName(m_ldapconfig->getDomain(), dc);
-                if(dc.length() > 0)
-                {
-                    WARNLOG("Using automatically obtained LDAP Server %s", dc.str());
-                    rc = connect(dc.str(), proto);
-                }
-            }
-
-            if (rc != LDAP_SUCCESS)
-            {
-                m_ldapconfig->rejectHost(hostbuf);
-            }
-            else
-                break;
+            m_ldapconfig->rejectHost(hostbuf);
         }
 
-        if(rc == LDAP_SUCCESS)
-            return true;
-        else
-            return false;
+        return false;
     }
 
     virtual LDAP* getLd()
@@ -912,12 +1000,27 @@ public:
 
     virtual bool validate()
     {
+        if(!m_connected)
+            return connect();
+
+        //Ensure we are not using a rejected LDAP AD host
+        StringBuffer hostbuf;
+        m_ldapconfig->getLdapHost(hostbuf);
+        if (strcmp(hostbuf.str(), m_connectedHost.str()))
+        {
+            if (m_ld)//different host, disconnect from previous and try to reconnect to new one
+            {
+                LDAP_UNBIND(m_ld);
+                m_ld = NULL;
+            }
+            m_connected = false;
+            return connect();
+        }
+
         time_t now;
         time(&now);
 
-        if(!m_connected)
-            return connect();
-        else if(now - m_lastaccesstime <= 300)
+        if(now - m_lastaccesstime <= 300)
             return true;
         else
         {
@@ -1531,6 +1634,18 @@ public:
     virtual void init(IPermissionProcessor* pp)
     {
         m_pp = pp;
+
+        //Isolate optional HPCC Admin group name
+        StringBuffer adminGroupName;
+        if (!isEmptyString(m_ldapconfig->getAdminGroupDN()))
+        {
+            const char * p = strchr(m_ldapconfig->getAdminGroupDN(), '=');
+            if (p)
+            {
+                adminGroupName.append(++p);
+                adminGroupName.replace(',', (char)0);
+            }
+        }
         static bool createdOU = false;
         CriticalBlock block(lcCrit);
         if (!createdOU)
@@ -1555,15 +1670,61 @@ public:
 
             //Create base LDAP OU tree. Specify PT_ADMINISTRATORS_ONLY to ensure each OU
             //grants access to Administrators only
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_DEFAULT), PT_ADMINISTRATORS_ONLY);
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE), PT_DEFAULT);
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_VIEW_SCOPE), PT_ADMINISTRATORS_ONLY);
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_WORKUNIT_SCOPE), PT_DEFAULT);
-            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_SUDOERS), PT_ADMINISTRATORS_ONLY);
+            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_DEFAULT), PT_ADMINISTRATORS_ONLY, nullptr);
+            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE), PT_DEFAULT, nullptr);
+            createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(RT_WORKUNIT_SCOPE), PT_DEFAULT, nullptr);
 
-            createLdapBasedn(NULL, m_ldapconfig->getUserBasedn(), PT_ADMINISTRATORS_ONLY);
-            createLdapBasedn(NULL, m_ldapconfig->getGroupBasedn(), PT_ADMINISTRATORS_ONLY);
+            createLdapBasedn(NULL, m_ldapconfig->getUserBasedn(), PT_ADMINISTRATORS_ONLY, nullptr);
+            createLdapBasedn(NULL, m_ldapconfig->getGroupBasedn(), PT_ADMINISTRATORS_ONLY, nullptr);
+
+            //Create the HPCC Administrators group and admin user
+            if (!adminGroupName.isEmpty())
+            {
+                //Create HPCC admin group
+                {
+                    DBGLOG("Adding HPCC Admin group %s", adminGroupName.str());
+                    try { addGroup(adminGroupName.str(), nullptr, "HPCC Administrators"); }
+                    catch(...) {}//group may already exist, so just move on
+
+                    //Create HPCC Admin user
+                    const char * pUser = m_ldapconfig->getHPCCAdminUser_username();
+                    if (!isEmptyString(pUser))
+                    {
+                        DBGLOG("Creating HPCC Admin user %s", pUser);
+                        Owned<ISecUser> user = new CLdapSecUser(pUser, nullptr);
+                        user->credentials().setPassword(m_ldapconfig->getHPCCAdminUser_password());
+                        try { addUser(*user.get()); }
+                        catch(...) {}//user may already exist, so just move on
+
+                        //Add HPCC Admin user to admin group
+                        DBGLOG("Adding HPCC Admin user %s to HPCC Admin group %s", pUser, adminGroupName.str());
+                        try { changeUserGroup("add", pUser, adminGroupName); }
+                        catch(...) {}//user may already be in group so just move on
+                    }
+                    else
+                        DBGLOG("HPCC Admin user not specified in configuration (hpccAdminSecretKey)");
+                }
+            }
             createdOU = true;
+        }
+
+        //Set ECLWatch permissions for HPCC admin group
+        if (!adminGroupName.isEmpty())
+        {
+            //SmcAccess OU attribute is not created until later in
+            // startup, so this action must be delayed until here
+            CPermissionAction action;
+            action.m_action = "update";
+            action.m_basedn = m_ldapconfig->getResourceBasedn(RT_DEFAULT);
+            action.m_rname = "SmcAccess";
+            action.m_rtype = RT_SERVICE;
+            action.m_account_name = adminGroupName;
+            action.m_account_type = GROUP_ACT;
+            action.m_allows = SecAccess_Full;
+            action.m_denies = 0;
+            DBGLOG("Setting permissions for HPCC Admin group %s", adminGroupName.str());
+            try { changePermission(action); }
+            catch(...) {}//nothing to do here, so just move on
         }
     }
 
@@ -1580,7 +1741,7 @@ public:
     virtual void setResourceBasedn(const char* rbasedn, SecResourceType rtype)
     {
         m_ldapconfig->setResourceBasedn(rbasedn, rtype);
-        createLdapBasedn(NULL, m_ldapconfig->getResourceBasedn(rtype), PT_ADMINISTRATORS_ONLY);
+        createLdapBasedn(nullptr, m_ldapconfig->getResourceBasedn(rtype), PT_ADMINISTRATORS_ONLY, nullptr);
     }
 
     void calcPWExpiry(CDateTime &dt, unsigned len, char * val)
@@ -1762,38 +1923,43 @@ public:
             ldap_memfree(userdn);
 
             StringBuffer hostbuf;
-            m_ldapconfig->getLdapHost(hostbuf);
             int rc = LDAP_SERVER_DOWN;
             char *ldap_errstring=NULL;
-
             for(int retries = 0; retries <= LDAPSEC_MAX_RETRIES; retries++)
             {
-                DBGLOG("LdapBind for user %s (retries=%d).", username, retries);
+                m_ldapconfig->getLdapHost(hostbuf);//get next available AD, as it may have changed
+                DBGLOG("LdapBind for user %s (retries=%d) on host %s.", username, retries, hostbuf.str());
                 {
-                    LDAP* user_ld = LdapUtils::LdapInit(m_ldapconfig->getProtocol(), hostbuf.str(), m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort());
+                    LDAP* user_ld = LdapUtils::LdapInit(m_ldapconfig->getProtocol(), hostbuf.str(), m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort(), m_ldapconfig->getCipherSuite());
                     rc = LdapUtils::LdapBind(user_ld, m_ldapconfig->getLdapTimeout(), m_ldapconfig->getDomain(), username, password, userdnbuf.str(), m_ldapconfig->getServerType(), m_ldapconfig->getAuthMethod());
                     if(rc != LDAP_SUCCESS)
                         ldap_get_option(user_ld, LDAP_OPT_ERROR_STRING, &ldap_errstring);
                     LDAP_UNBIND(user_ld);
                 }
                 DBGLOG("finished LdapBind for user %s, rc=%d", username, rc);
-                if(!LdapServerDown(rc) || retries > LDAPSEC_MAX_RETRIES)
+
+                if(rc==LDAP_SERVER_DOWN || rc==LDAP_UNAVAILABLE)
+                {
+                    m_ldapconfig->rejectHost(hostbuf);
+                    continue;//try again with next configured LDAP host
+                }
+                else if(rc==LDAP_TIMEOUT && retries < LDAPSEC_MAX_RETRIES)
+                {
+                    sleep(LDAPSEC_RETRY_WAIT);
+                    DBGLOG("Server %s temporarily unreachable, retrying ...", hostbuf.str());
+                }
+                else
                     break;
-                sleep(LDAPSEC_RETRY_WAIT);
-                if(retries < LDAPSEC_MAX_RETRIES)
-                    DBGLOG("Server temporarily unreachable, retrying ...");
-                // Retrying next ldap sever, might be the same server
-                m_ldapconfig->getLdapHost(hostbuf);
             }
 
-            if(rc == LDAP_SERVER_DOWN)
+            if(LdapServerDown(rc))
             {
                 StringBuffer dc;
                 LdapUtils::getDcName(NULL, dc);
                 if(dc.length() > 0)
                 {
                     WARNLOG("Using automatically obtained LDAP Server %s", dc.str());
-                    LDAP* user_ld = LdapUtils::LdapInit(m_ldapconfig->getProtocol(), dc.str(), m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort());
+                    LDAP* user_ld = LdapUtils::LdapInit(m_ldapconfig->getProtocol(), dc.str(), m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort(), m_ldapconfig->getCipherSuite());
                     rc = LdapUtils::LdapBind(user_ld, m_ldapconfig->getLdapTimeout(), m_ldapconfig->getDomain(), username, password, userdnbuf.str(), m_ldapconfig->getServerType(), m_ldapconfig->getAuthMethod());
                     if(rc != LDAP_SUCCESS)
                         ldap_get_option(user_ld, LDAP_OPT_ERROR_STRING, &ldap_errstring);
@@ -2072,69 +2238,6 @@ public:
             return false;
         }
         
-        if(infotype && stricmp(infotype, "sudoers") == 0)
-        {
-            CLdapSecUser* ldapuser = dynamic_cast<CLdapSecUser*>(&user);
-            if (ldapuser == nullptr)
-            {
-                throw MakeStringException(-1, "Unable to cast user %s to CLdapSecUser", username);
-            }
-
-            TIMEVAL timeOut = {m_ldapconfig->getLdapTimeout(),0};
-            Owned<ILdapConnection> lconn = m_connections->getConnection();
-            LDAP* ld = lconn.get()->getLd();
-
-            StringBuffer filter("sudoUser=");
-            filter.append(username);
-            char  *attrs[] = {"sudoHost", "sudoCommand", "sudoOption", NULL};
-            const char* basedn = m_ldapconfig->getResourceBasedn(RT_SUDOERS);
-            CLDAPMessage searchResult;
-            int rc = ldap_search_ext_s(ld, (char*)basedn, LDAP_SCOPE_SUBTREE, (char*)filter.str(), attrs, 0, NULL, NULL, &timeOut, LDAP_NO_LIMIT, &searchResult.msg);
-
-            if ( rc != LDAP_SUCCESS )
-            {
-                DBGLOG("ldap_search_ext_s error: %s, when searching %s under %s", ldap_err2string( rc ), filter.str(), basedn);
-                ldapuser->setSudoersEnabled(false);
-                ldapuser->setInSudoers(false);
-                return false;
-            }
-            
-            ldapuser->setSudoersEnabled(true);
-
-            unsigned entries = ldap_count_entries(ld, searchResult);
-            if(entries == 0)
-            {
-                ldapuser->setInSudoers(false);
-                return true;
-            }
-
-            message = LdapFirstEntry(ld, searchResult);
-            if(message == NULL)
-            {
-                ldapuser->setInSudoers(false);
-                return true;
-            }
-
-            ldapuser->setInSudoers(true);
-            CLDAPGetAttributesWrapper   atts(ld, searchResult);
-            for ( attribute = atts.getFirst();
-                  attribute != NULL;
-                  attribute = atts.getNext())
-            {
-                CLDAPGetValuesLenWrapper vals(ld, message, attribute);
-                if (vals.hasValues())
-                {
-                    if(stricmp(attribute, "sudoHost") == 0)
-                        ldapuser->setSudoHost(vals.queryCharValue(0));
-                    else if(stricmp(attribute, "sudoCommand") == 0)
-                        ldapuser->setSudoCommand(vals.queryCharValue(0));
-                    else if(stricmp(attribute, "sudoOption") == 0)
-                        ldapuser->setSudoOption(vals.queryCharValue(0));
-                }
-            }
-            return true;
-        }
-        else
         {
             StringBuffer filter;
             const char* basedn = m_ldapconfig->getUserBasedn();
@@ -2529,17 +2632,29 @@ public:
     virtual void lookupSid(const char* act_name, MemoryBuffer& act_sid, ACT_TYPE act_type)
     {
         StringBuffer filter;
-        const char* basedn;
+        const char* basedn = "";
+
+        if (strchr(act_name, '='))//passed in a fully qualified DN?
+        {
+            int finger = 0;
+            while (',' != act_name[finger])
+                filter.append((char)act_name[finger++]);
+            basedn = act_name + finger + 1;
+        }
+
         if(act_type == USER_ACT)
         {
-            if(m_ldapconfig->getServerType() == ACTIVE_DIRECTORY)
-                filter.append("sAMAccountName=").append(act_name);
-            else
-                filter.append("uid=").append(act_name);
+            if (filter.isEmpty())
+            {
+                if(m_ldapconfig->getServerType() == ACTIVE_DIRECTORY)
+                    filter.append("sAMAccountName=").append(act_name);
+                else
+                    filter.append("uid=").append(act_name);
+                basedn = m_ldapconfig->getUserBasedn();
+                if (m_ldapconfig->isAzureAD() && strieq(act_name, m_ldapconfig->getSysUser()))
+                    basedn = m_ldapconfig->getSysUserBasedn();
+            }
 
-            basedn = m_ldapconfig->getUserBasedn();
-            if (m_ldapconfig->isAzureAD() && strieq(act_name, m_ldapconfig->getSysUser()))
-                basedn = m_ldapconfig->getSysUserBasedn();
             lookupSid(basedn, filter.str(), act_sid);
             if(act_sid.length() == 0)
             {
@@ -2556,8 +2671,11 @@ public:
         }
         else
         {
-            filter.append("cn=").append(act_name);
-            basedn = m_ldapconfig->getGroupBasedn();
+            if (filter.isEmpty())
+            {
+                filter.append("cn=").append(act_name);
+                basedn = m_ldapconfig->getGroupBasedn();
+            }
             lookupSid(basedn, filter.str(), act_sid);
             if(act_sid.length() == 0)
             {
@@ -3099,168 +3217,6 @@ public:
                 rc = ldap_modify_ext_s(ld, (char*)userdn.str(), attrs, NULL, NULL);
             }
         }
-        else if(stricmp(type, "sudoersadd") == 0)
-        {
-            CLdapSecUser* ldapuser = dynamic_cast<CLdapSecUser*>(&user);
-            if (ldapuser == nullptr)
-            {
-                throw MakeStringException(-1, "Unable to cast user %s to CLdapSecUser", username);
-            }
-
-            char *cn_values[] = {(char*)username, NULL };
-            LDAPMod cn_attr =
-            {
-                LDAP_MOD_ADD,
-                "cn",
-                cn_values
-            };
-
-            char *oc_values[] = {"sudoRole", NULL };
-            LDAPMod oc_attr =
-            {
-                LDAP_MOD_ADD,
-                "objectClass",
-                oc_values
-            };
-
-            char *user_values[] = {(char*)username, NULL };
-            LDAPMod user_attr =
-            {
-                LDAP_MOD_ADD,
-                "sudoUser",
-                user_values
-            };
-
-            char* sudoHost = (char*)ldapuser->getSudoHost();
-            char* sudoCommand = (char*)ldapuser->getSudoCommand();
-            char* sudoOption = (char*)ldapuser->getSudoOption();
-
-            char *host_values[] = {sudoHost, NULL };
-            LDAPMod host_attr = 
-            {
-                LDAP_MOD_ADD,
-                "sudoHost",
-                host_values
-            };
-            char *cmd_values[] = {sudoCommand, NULL };
-            LDAPMod cmd_attr = 
-            {
-                LDAP_MOD_ADD,
-                "sudoCommand",
-                cmd_values
-            };
-            char *option_values[] = {sudoOption, NULL };
-            LDAPMod option_attr = 
-            {
-                LDAP_MOD_ADD,
-                "sudoOption",
-                option_values
-            };
-
-            LDAPMod *attrs[8];
-            int ind = 0;
-            
-            attrs[ind++] = &cn_attr;
-            attrs[ind++] = &oc_attr;
-            attrs[ind++] = &user_attr;
-            if(sudoHost && *sudoHost)
-                attrs[ind++] = &host_attr;
-            if(sudoCommand && *sudoCommand)
-                attrs[ind++] = &cmd_attr;
-            if(sudoOption && *sudoOption)
-                attrs[ind++] = &option_attr;
-
-            attrs[ind] = NULL;
-
-            Owned<ILdapConnection> lconn = m_connections->getConnection();
-            LDAP* ld = lconn.get()->getLd();
-            StringBuffer dn;
-            dn.append("cn=").append(username).append(",").append(m_ldapconfig->getResourceBasedn(RT_SUDOERS));
-            int rc = ldap_add_ext_s(ld, (char*)dn.str(), attrs, NULL, NULL);
-            if ( rc != LDAP_SUCCESS )
-            {
-                if(rc == LDAP_ALREADY_EXISTS)
-                {
-                    throw MakeStringException(-1, "can't add %s to sudoers, an LDAP object with this name already exists", username);
-                }
-                else
-                {
-                    DBGLOG("error adding %s to sudoers: %s", username, ldap_err2string( rc ));
-                    throw MakeStringException(-1, "error adding %s to sudoers: %s", username, ldap_err2string( rc ));
-                }
-            }
-        }
-        else if(stricmp(type, "sudoersdelete") == 0)
-        {
-            StringBuffer dn;
-            dn.append("cn=").append(username).append(",").append(m_ldapconfig->getResourceBasedn(RT_SUDOERS));
-
-            Owned<ILdapConnection> lconn = m_connections->getConnection();
-            LDAP* ld = lconn.get()->getLd();
-
-            int rc = ldap_delete_ext_s(ld, (char*)dn.str(), NULL, NULL);
-
-            if ( rc != LDAP_SUCCESS )
-            {
-                throw MakeStringException(-1, "Error deleting user %s from sudoers: %s", username, ldap_err2string(rc));
-            }
-        }
-        else if(stricmp(type, "sudoersupdate") == 0)
-        {
-            CLdapSecUser* ldapuser = dynamic_cast<CLdapSecUser*>(&user);
-            if (ldapuser == nullptr)
-            {
-                throw MakeStringException(-1, "Unable to cast user %s to CLdapSecUser", username);
-            }
-
-            char* sudoHost = (char*)ldapuser->getSudoHost();
-            char* sudoCommand = (char*)ldapuser->getSudoCommand();
-            char* sudoOption = (char*)ldapuser->getSudoOption();
-
-            char *host_values[] = {(sudoHost&&*sudoHost)?sudoHost:NULL, NULL };
-            LDAPMod host_attr =
-            {
-                LDAP_MOD_REPLACE,
-                "sudoHost",
-                host_values
-            };
-
-            char *cmd_values[] = {(sudoCommand&&*sudoCommand)?sudoCommand:NULL, NULL };
-            LDAPMod cmd_attr =
-            {
-                LDAP_MOD_REPLACE,
-                "sudoCommand",
-                cmd_values
-            };
-
-            char *option_values[] = {(sudoOption&&*sudoOption)?sudoOption:NULL, NULL };
-            LDAPMod option_attr =
-            {
-                LDAP_MOD_REPLACE,
-                "sudoOption",
-                option_values
-            };
-
-            LDAPMod *attrs[4];
-            int ind = 0;
-
-            attrs[ind++] = &host_attr;
-            attrs[ind++] = &cmd_attr;
-            attrs[ind++] = &option_attr;
-
-            attrs[ind] = NULL;
-
-            Owned<ILdapConnection> lconn = m_connections->getConnection();
-            LDAP* ld = lconn.get()->getLd();
-            StringBuffer dn;
-            dn.append("cn=").append(username).append(",").append(m_ldapconfig->getResourceBasedn(RT_SUDOERS));
-            int rc = ldap_modify_ext_s(ld, (char*)dn.str(), attrs, NULL, NULL);
-            if ( rc != LDAP_SUCCESS )
-            {
-                DBGLOG("error modifying sudoers for user %s: %s", username, ldap_err2string( rc ));
-                throw MakeStringException(-1, "error modifying sudoers for user %s: %s", username, ldap_err2string( rc ));
-            }
-        }
 
         if (rc == LDAP_SUCCESS )
             DBGLOG("User %s successfully updated", username);
@@ -3377,7 +3333,7 @@ public:
         StringBuffer hostbuf;
         m_ldapconfig->getLdapHost(hostbuf);
 
-        LDAP* user_ld = LdapUtils::LdapInit(m_ldapconfig->getProtocol(), hostbuf.str(), m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort());
+        LDAP* user_ld = LdapUtils::LdapInit(m_ldapconfig->getProtocol(), hostbuf.str(), m_ldapconfig->getLdapPort(), m_ldapconfig->getLdapSecurePort(), m_ldapconfig->getCipherSuite());
         int rc = LdapUtils::LdapBind(user_ld, m_ldapconfig->getLdapTimeout(),m_ldapconfig->getDomain(), username, password, userdn, m_ldapconfig->getServerType(), m_ldapconfig->getAuthMethod());
         if(rc != LDAP_SUCCESS)
             ldap_get_option(user_ld, LDAP_OPT_ERROR_STRING, &ldap_errstring);
@@ -3400,6 +3356,12 @@ public:
             return false;
         }
 
+        if(isEmptyString(newPassword))
+        {
+            DBGLOG("CLdapClient::updateUserPassword password must be provided");
+            return false;
+        }
+
         if (currPassword)
         {
             //User will not be authenticated if their password was expired,
@@ -3418,6 +3380,12 @@ public:
         if(!username || !*username)
         {
             DBGLOG("CLdapClient::updateUserPassword username must be provided");
+            return false;
+        }
+
+        if(isEmptyString(newPassword))
+        {
+            DBGLOG("CLdapClient::updateUserPassword password must be provided");
             return false;
         }
 
@@ -4001,8 +3969,40 @@ public:
 
     virtual bool changePermission(CPermissionAction& action)
     {
+        if (action.m_rname.isEmpty() && (action.m_rtype == RT_FILE_SCOPE || action.m_rtype == RT_WORKUNIT_SCOPE))
+        {
+            //Default permission action. Workunits, or File scopes...
+            const char * p = action.m_basedn.str();
+            if (!isEmptyString(p))
+            {
+                if (strchr(p, '=') >= strchr(p, ','))//ensure contain ou= and comma separator
+                    throw MakeStringException(-1, "changePermission 'action.m_basedn' (%s) appears malformed", action.m_basedn.str());
+                //Isolate OU name as resource name (ie "ou=workunits,ou=ecl,ou=hpcc",
+                // m_rname will be "workunits", m_basedn will be "ou=ecl,ou=hpcc")
+                while (*p != '=')
+                    p++;//skip leading "ou="
+                if (!isEmptyString(p))
+                {
+                    p++;
+                    while (*p && *p != ',')
+                        action.m_rname.append((char)*p++);
+                    action.m_basedn.remove(0, p - action.m_basedn.str() + 1 );//strip off leading "ou=workunits,"
+                    if (action.m_basedn.isEmpty())
+                        throw MakeStringException(-1, "changePermission action.m_basedn cannot be empty");
+                    if (action.m_rname.isEmpty())
+                        throw MakeStringException(-1, "changePermission action.m_rname cannot be empty");
+                }
+                else
+                    throw MakeStringException(-1, "changePermission 'action.m_basedn' (%s) appears malformed", action.m_basedn.str());
+             }
+             else
+                throw MakeStringException(-1, "changePermission 'action.m_basedn' must be specified");
+         }
+
+        //Get security descriptor for Resource Name
         StringBuffer basednbuf;
         LdapUtils::normalizeDn(action.m_basedn.str(), m_ldapconfig->getBasedn(), basednbuf);
+
         Owned<CSecurityDescriptor> sd = new CSecurityDescriptor(action.m_rname.str());
         IArrayOf<CSecurityDescriptor> sdlist;
         sdlist.append(*LINK(sd));
@@ -4011,17 +4011,23 @@ public:
         else
             getSecurityDescriptors(sdlist, basednbuf.str());
 
+        //Ensure Account Name is fully qualified
         if(m_ldapconfig->getServerType() != ACTIVE_DIRECTORY)
         {
-            StringBuffer act_dn;
-            if(action.m_account_type == GROUP_ACT)
-                getGroupDN(action.m_account_name.str(), act_dn);
-            else
-                getUserDN(action.m_account_name.str(), act_dn);
-            
-            action.m_account_name.clear().append(act_dn.str());
+            //if not already fully qualified
+            if (0 == strstr(action.m_account_name, "dc=") &&
+                0 == strstr(action.m_account_name, "ou="))
+            {
+                StringBuffer act_dn;
+                if(action.m_account_type == GROUP_ACT)
+                    getGroupDN(action.m_account_name.str(), act_dn);
+                else
+                    getUserDN(action.m_account_name.str(), act_dn);
+                action.m_account_name.set(act_dn.str());
+            }
         }
 
+        //Compute new security descriptor (newsd) for Resource Name
         Owned<CSecurityDescriptor> newsd = m_pp->changePermission(sd.get(), action);
 
         StringBuffer normdnbuf;
@@ -4039,7 +4045,7 @@ public:
             struct berval** sd_values = (struct berval**)alloca(sizeof(struct berval*)*(numberOfSegs+1));
             MemoryBuffer& sdbuf = newsd->getDescriptor();
 
-            // Active Directory acutally has only one segment.
+            // Active Directory actually has only one segment.
             if(servertype == ACTIVE_DIRECTORY)
             {
                 struct berval* sd_val = (struct berval*)alloca(sizeof(struct berval));
@@ -4098,6 +4104,7 @@ public:
 
         SDServerCtlWrapper ctlwrapper(m_ldapconfig->isAzureAD());
 
+        //Apply the modified permissions
         Owned<ILdapConnection> lconn = m_connections->getConnection();
         LDAP* ld = lconn.get()->getLd();
         int rc = ldap_modify_ext_s(ld, (char*)normdnbuf.str(), attrs, ctlwrapper.ctls, NULL);
@@ -4244,12 +4251,6 @@ public:
                 continue;
             changeUserGroup("delete", username, grp);
         }
-
-        //Remove tempfile scope for this user
-        StringBuffer resName(queryDfsXmlBranchName(DXB_Internal));
-        resName.append("::").append(username);
-        deleteResource(RT_FILE_SCOPE, resName.str(), m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE));
-        
         return true;
     }
 
@@ -4563,9 +4564,7 @@ public:
         if ( rc != LDAP_SUCCESS )
         {
             DBGLOG("error deleting %s: %s", dn.str(), ldap_err2string(rc));
-            //throw MakeStringException(-1, "error deleting %s: %s", dn.str(), ldap_err2string(rc));
         }
-        
     }
 
     virtual void renameResource(SecResourceType rtype, const char* oldname, const char* newname, const char* basedn)
@@ -5382,15 +5381,18 @@ private:
                     }
                     if(isleaf && (sd.getObjectClass() != NULL) && (stricmp(sd.getObjectClass(), "Volume") == 0))
                     {
-                        cn.append(curlen, curscope);
                         dn.append("cn=").append(curlen, curscope).append(",");
                     }
                     else
                     {
-                        cn.append(curlen, curscope);
                         dn.append("ou=").append(curlen, curscope).append(",");
                     }
                     
+                    if (cn.isEmpty())//only process leftmost part of ou, so "ou=s3,ou=s2,ou=s1" only specify ou=s3
+                    {
+                        cn.append("ou=").append(curlen, curscope);
+                    }
+
                     isleaf = false;
 
                     if (curptr == resourcename) //handle a single char as the top scope, such as x::abc
@@ -5416,7 +5418,7 @@ private:
                 }
                 else if(servertype == OPEN_LDAP)
                 {
-                    filter.append("(ou=").append(cn.str()).append(")");
+                    filter.append("(").append(cn.str()).append(")");
                 }
                 sd.setDn(dn.str());
             }
@@ -5513,7 +5515,7 @@ private:
         return rc == LDAP_SUCCESS;
     }
 
-    virtual void createLdapBasedn(ISecUser* user, const char* basedn, SecPermissionType ptype)
+    virtual void createLdapBasedn(ISecUser* user, const char* basedn, SecPermissionType ptype, const char* description)
     {
         if(basedn == NULL || basedn[0] == '\0')
         {
@@ -5543,13 +5545,13 @@ private:
         }
 
         if (ptr && strstr(ptr,"ou=") && !organizationalUnitExists(ptr))
-            createLdapBasedn(user, ptr, ptype);
+            createLdapBasedn(user, ptr, ptype, description);
 
-        addOrganizationalUnit(user, oubuf.str(), ptr, ptype);
+        addOrganizationalUnit(user, oubuf.str(), ptr, ptype, description);
 
     }
 
-    virtual bool addOrganizationalUnit(ISecUser* user, const char* name, const char* basedn, SecPermissionType ptype)
+    virtual bool addOrganizationalUnit(ISecUser* user, const char* name, const char* basedn, SecPermissionType ptype, const char* description)
     {
         if(name == NULL || basedn == NULL)
         {
@@ -5593,6 +5595,14 @@ private:
             oc_values
         };
 
+        char* description_values[] = {(char*)description, NULL};
+        LDAPMod description_attr =
+        {
+            LDAP_MOD_ADD,
+            "description",
+            description_values
+        };
+
         MemoryBuffer sdbuf;
         Owned<CSecurityDescriptor> default_sd = NULL;
         if(m_pp !=  NULL)
@@ -5600,7 +5610,7 @@ private:
         if(default_sd != NULL)
             sdbuf.append(default_sd->getDescriptor());
 
-        LDAPMod *attrs[6];
+        LDAPMod *attrs[7];
         int ind = 0;
         attrs[ind++] = &ou_attr;
         if(m_ldapconfig->getServerType() == ACTIVE_DIRECTORY)
@@ -5608,6 +5618,8 @@ private:
             attrs[ind++] = &name_attr;
         }
         attrs[ind++] = &oc_attr;
+        if (!isEmptyString(description))
+            attrs[ind++] = &description_attr;
 
         LDAPMod sd_attr;
         struct berval sd_val;
@@ -5773,7 +5785,7 @@ private:
         {
             StringBuffer extbuf;
             name2dn(rtype, resourcename, rbasedn, extbuf);
-            createLdapBasedn(&user, extbuf.str(), ptype);
+            createLdapBasedn(&user, extbuf.str(), ptype, nullptr);
             return true;
         }
 
@@ -5999,9 +6011,6 @@ private:
             act_ctrl_val |= 0x10000;
 #endif
 
-        // Ensure password required
-        act_ctrl_val &= ~(0x20);// UF_PASSWD_NOTREQD 0x0020
-
         StringBuffer new_act_ctrl;
         new_act_ctrl.append(act_ctrl_val);
 
@@ -6023,17 +6032,40 @@ private:
 
         // set the password.
         Owned<ISecUser> tmpuser = new CLdapSecUser(user->getName(), "");
-        const char* passwd = user->credentials().getPassword();
-        if(passwd == NULL || *passwd == '\0')
-            passwd = "password";
-
-        if (!updateUserPassword(*tmpuser, passwd, NULL))
+        if (!updateUserPassword(*tmpuser, user->credentials().getPassword(), nullptr))
         {
             DBGLOG("Error updating password for %s",username);
             throw MakeStringException(-1, "Error updating password for %s",username);
         }
+
+        //Now that the password is set, we can ensure passwords are always required
+
+        act_ctrl_val &= ~(0x20);// UF_PASSWD_NOTREQD 0x0020
+        new_act_ctrl.clear().append(act_ctrl_val);
+        LDAPMod attr = {
+            LDAP_MOD_REPLACE,
+            "userAccountControl",
+            ctrl_values
+        };
+        cattrs[0] = &attr;
+        cattrs[1] = NULL;
+        rc = ldap_modify_ext_s(ld, (char*)dn, cattrs, NULL, NULL);
+        if ( rc != LDAP_SUCCESS )
+        {
+            throw MakeStringException(-1, "error enableUser2 %s, ldap_modify_ext_s error2: %s", username, ldap_err2string( rc ));
+        }
+
     }
 
+    //Add new user to the given base DN
+    virtual bool addUser(ISecUser & user, const char* basedn)
+    {
+        StringBuffer prevBaseDN(m_ldapconfig->getUserBasedn());
+        m_ldapconfig->setUserBasedn(basedn);
+        bool rc = addUser(user);
+        m_ldapconfig->setUserBasedn(prevBaseDN.str());
+        return rc;
+    }
 
     virtual bool addUser(ISecUser& user)
     {
@@ -6042,6 +6074,12 @@ private:
         {
             DBGLOG("Can't add user, username not set");
             throw MakeStringException(-1, "Can't add user, username not set");
+        }
+
+        const char* userPassword = user.credentials().getPassword();
+        if(isEmptyString(userPassword))
+        {
+            throw MakeStringException(-1, "Can't add user, password not set");
         }
 
         const char* fname = user.getFirstName();
@@ -6134,10 +6172,7 @@ private:
             actname_values
         };
 
-        const char* passwd = user.credentials().getPassword();
-        if(passwd == NULL || *passwd == '\0')
-            passwd = "password";
-        char* passwd_values[] = {(char*)passwd, NULL};
+        char* passwd_values[] = {(char*)userPassword, nullptr};//password is set later (in enableUser) if ACTIVE_DIRECTORY
         LDAPMod passwd_attr =
         {
             LDAP_MOD_ADD,
@@ -6233,28 +6268,7 @@ private:
                 throw;
             }
         }
-
-        //Add tempfile scope for this user (spill, paused and checkpoint
-        //will be created under this user specific scope)
-        StringBuffer resName(queryDfsXmlBranchName(DXB_Internal));
-        resName.append("::").append(username);
-        Owned<ISecResource> resource = new CLdapSecResource(resName.str());
-        if (!addResource(RT_FILE_SCOPE, user, resource, PT_ADMINISTRATORS_AND_USER, m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE)))
-        {
-            throw MakeStringException(-1, "Error adding temp file scope %s",resName.str());
-        }
-
         return true;
-    }
-
-    bool createUserScope(ISecUser& user)
-    {
-        //Add tempfile scope for given user (spill, paused and checkpoint
-        //files will be created under this user specific scope)
-        StringBuffer resName(queryDfsXmlBranchName(DXB_Internal));
-        resName.append("::").append(user.getName());
-        Owned<ISecResource> resource = new CLdapSecResource(resName.str());
-        return addResource(RT_FILE_SCOPE, user, resource, PT_ADMINISTRATORS_AND_USER, m_ldapconfig->getResourceBasedn(RT_FILE_SCOPE));
     }
 
     virtual aindex_t getManagedScopeTree(LDAP* ld, SecResourceType rtype, const char * basedn, IArrayOf<ISecResource>& scopes)

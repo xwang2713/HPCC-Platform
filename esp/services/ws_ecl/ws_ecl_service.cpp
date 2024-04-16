@@ -1,5 +1,6 @@
 #include <memory>
 
+#include "jconfig.hpp"
 #include "daclient.hpp"
 #include "environment.hpp"
 #include "workunit.hpp"
@@ -176,11 +177,15 @@ static void escapeSingleQuote(StringBuffer& src, StringBuffer& escaped)
     }
 }
 
-static void appendServerAddress(StringBuffer &s, IPropertyTree &env, IPropertyTree &server, const char *daliAddress)
+static void appendServerAddress(StringBuffer &s, IPropertyTree &env, IPropertyTree &server, const char *daliAddress, const char *farmerPort)
 {
+    //just in case, for backward compatability with old environment.xml files, allow server rather than farmer to specify port
     const char *port = server.queryProp("@port");
-    if (port && streq(port, "0")) //roxie on demand
+    if (!port)
+        port = farmerPort;
+    if (port && streq(port, "0")) //0 == roxie listening on queue rather than port
         return;
+
     const char *netAddress = server.queryProp("@netAddress");
     if (!netAddress && server.hasProp("@computer"))
     {
@@ -196,22 +201,34 @@ static void appendServerAddress(StringBuffer &s, IPropertyTree &env, IPropertyTr
     s.append(netAddress).append(':').append(port ? port : "9876");
 }
 
+class WsEclSocketFactory : public CSmartSocketFactory
+{
+public:
+    bool includeTargetInURL;
+    StringAttr alias;
+
+    WsEclSocketFactory(IPropertyTree &service, bool _retry, bool includeTarget, const char *_alias, unsigned _dnsInterval) : CSmartSocketFactory(service, _retry, 60, _dnsInterval), includeTargetInURL(includeTarget), alias(_alias)
+    {
+    }
+
+    WsEclSocketFactory(const char *_socklist, bool _retry, bool includeTarget, const char *_alias, unsigned _dnsInterval, bool useTls) : CSmartSocketFactory(_socklist, _retry, 60, _dnsInterval), includeTargetInURL(includeTarget), alias(_alias)
+    {
+        tlsService  = useTls;
+    }
+};
+
 void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap)
 {
     Owned<IPropertyTreeIterator> services = getGlobalConfigSP()->getElements("services[@type='roxie']");
     ForEach(*services)
     {
         IPropertyTree &service = services->query();
-        const char *name = service.queryProp("@name");
-        const char *target = service.queryProp("@target");
-        const char *port = service.queryProp("@port");
 
-        if (isEmptyString(target) || isEmptyString(name)) //bad config?
+        const char *target = service.queryProp("@target");
+        if (isEmptyString(target) || isEmptyString(service.queryProp("@name"))) //bad config?
             continue;
 
-        StringBuffer s;
-        s.append(name).append(':').append(port ? port : "9876");
-        Owned<ISmartSocketFactory> sf = new RoxieSocketFactory(s.str(), false, true, nullptr, (unsigned) -1);
+        Owned<ISmartSocketFactory> sf = new WsEclSocketFactory(service, false, true, nullptr, 0);
         connMap.setValue(target, sf.get());
     }
 }
@@ -243,6 +260,7 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
         const char *vip = NULL;
         bool includeTargetInURL = true;
         unsigned dnsInterval = (unsigned) -1;
+        bool useTls = false;
         if (vips)
         {
             IPropertyTree *pc = vips->queryPropTree(xpath.clear().appendf("ProcessCluster[@name='%s']", process.str()));
@@ -251,7 +269,7 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
                 vip = pc->queryProp("@vip");
                 includeTargetInURL = pc->getPropBool("@includeTargetInURL", true);
                 dnsInterval = (unsigned) pc->getPropInt("@dnsInterval", -1);
-
+                useTls = pc->getPropBool("@tls", false);
             }
         }
         StringBuffer list;
@@ -263,19 +281,34 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
         }
         else
         {
-            VStringBuffer xpath("Software/RoxieCluster[@name='%s']", process.str());
-            Owned<IPropertyTreeIterator> it = pRoot->getElements(xpath.str());
-            ForEach(*it)
+            const char *farmerPort = nullptr;
+            VStringBuffer xpath("Software/RoxieCluster[@name='%s'][1]", process.str());
+            IPropertyTree *roxieCluster = pRoot->queryPropTree(xpath.str());
+            if (roxieCluster)
             {
-                Owned<IPropertyTreeIterator> servers = it->query().getElements("RoxieServerProcess");
+                //port and TLS config come from farmer, node addresses come from server
+                Owned<IPropertyTreeIterator> farmers = roxieCluster->getElements("RoxieFarmProcess");
+                ForEach(*farmers)
+                {
+                    IPropertyTree &farmer = farmers->query();
+                    const char *port = farmer.queryProp("@port");
+                    if (!port || streq(port, "0"))
+                        continue;
+                    farmerPort = port;
+                    const char *protocol = farmer.queryProp("@protocol");
+                    if (protocol && streq(protocol, "ssl"))
+                        useTls = true;
+                    break; //use the first one without port==0
+                }
+                Owned<IPropertyTreeIterator> servers = roxieCluster->getElements("RoxieServerProcess");
                 ForEach(*servers)
-                    appendServerAddress(list, *pRoot, servers->query(), daliAddress);
+                    appendServerAddress(list, *pRoot, servers->query(), daliAddress, farmerPort);
             }
         }
         if (list.length())
         {
             StringAttr alias(clusterInfo->getAlias());
-            Owned<ISmartSocketFactory> sf = new RoxieSocketFactory(list.str(), !loadBalanced, includeTargetInURL, loadBalanced ? alias.str() : NULL, dnsInterval);
+            Owned<ISmartSocketFactory> sf = new WsEclSocketFactory(list.str(), !loadBalanced, includeTargetInURL, loadBalanced ? alias.str() : NULL, dnsInterval, useTls);
             connMap.setValue(target.str(), sf.get());
             if (alias.length() && !connMap.getValue(alias.str())) //only need one vip per alias for routing purposes
                 connMap.setValue(alias.str(), sf.get());
@@ -317,13 +350,6 @@ bool CWsEclService::init(const char * name, const char * type, IPropertyTree * c
     else
         workunitTimeout = WAIT_FOREVER;
 
-    const char *headerName = serviceTree->queryProp("HttpGlobalIdHeader");
-    if (headerName && *headerName && !streq(headerName, "Global-Id") && !streq(headerName, "HPCC-Global-Id")) //defaults will be checked anyway
-        globalIdHttpHeader.set(headerName);
-    headerName = serviceTree->queryProp("HttpCallerIdHeader");
-    if (headerName && *headerName && !streq(headerName, "Caller-Id") && !streq(headerName, "HPCC-Caller-Id")) //defaults will be checked anyway
-        callerIdHttpHeader.set(headerName);
-
     Owned<IPropertyTreeIterator> cfgTargets = serviceTree->getElements("Targets/Target");
     ForEach(*cfgTargets)
         targets.append(cfgTargets->query().queryProp(NULL));
@@ -363,28 +389,6 @@ void CWsEclBinding::getNavigationData(IEspContext &context, IPropertyTree & data
     ensureNavDynFolder(data, "Targets", "Targets", "root=true", NULL);
 }
 
-static IStringIterator *getContainerTargetClusters()
-{
-    Owned<CStringArrayIterator> ret = new CStringArrayIterator;
-    Owned<IPropertyTreeIterator> queues = getComponentConfigSP()->getElements("queues");
-    ForEach(*queues)
-    {
-        IPropertyTree &queue = queues->query();
-        const char *qName = queue.queryProp("@name");
-        if (!isEmptyString(qName))
-            ret->append_unique(qName);
-    }
-    Owned<IPropertyTreeIterator> services = getGlobalConfigSP()->getElements("services[@type='roxie']");
-    ForEach(*services)
-    {
-        IPropertyTree &service = services->query();
-        const char *targetName = service.queryProp("@target");
-        if (!isEmptyString(targetName))
-            ret->append_unique(targetName);
-    }
-    return ret.getClear();
-}
-
 void CWsEclBinding::getRootNavigationFolders(IEspContext &context, IPropertyTree & data)
 {
     DBGLOG("CScrubbedXmlBinding::getNavigationData");
@@ -397,7 +401,7 @@ void CWsEclBinding::getRootNavigationFolders(IEspContext &context, IPropertyTree
     data.addProp("@appName", "WsECL 3.0");
 
 #ifdef _CONTAINERIZED
-    Owned<IStringIterator> envTargets = getContainerTargetClusters();
+    Owned<IStringIterator> envTargets = config::getContainerTargets(nullptr, nullptr);
 #else
     Owned<IStringIterator> envTargets = getTargetClusters(NULL, NULL);
 #endif
@@ -570,7 +574,7 @@ void CWsEclBinding::xsltTransform(const char* xml, unsigned int len, const char*
             const char *key = it->getPropKey();
             //set parameter in the XSL transform skipping over the @ prefix, if any
             const char* paramName = *key == '@' ? key+1 : key;
-            trans->setParameter(paramName, StringBuffer().append('\'').append(params->queryProp(key)).append('\'').str());
+            trans->setParameter(paramName, StringBuffer().append('\'').append(it->queryPropValue()).append('\'').str());
         }
     }
 
@@ -628,6 +632,12 @@ static void buildReqXml(StringArray& parentTypes, IXmlType* type, StringBuffer& 
             bool log = reqTree->getPropBool("@log", false);
             if (log)
                 appendXMLAttr(out, "log", "true", nullptr, true);
+            bool statsToWorkunit = reqTree->getPropBool("@statsToWorkunit", false);
+            if (statsToWorkunit)
+                appendXMLAttr(out, "statsToWorkunit", "true", nullptr, true);
+            bool summaryStats = reqTree->getPropBool("@summaryStats", false);
+            if (summaryStats)
+                appendXMLAttr(out, "summaryStats", "true", nullptr, true);
             int tracelevel = reqTree->getPropInt("@traceLevel", -1);
             if (tracelevel >= 0)
                 out.appendf(" traceLevel=\"%d\"", tracelevel);
@@ -801,7 +811,7 @@ static void buildRestURL(StringArray& parentTypes, StringArray &path, IXmlType* 
         const char* itemName = type->queryFieldName(0);
         IXmlType*   itemType = type->queryFieldType(0);
         if (!itemName || !itemType)
-            throw MakeStringException(-1,"*** Invalid array definition: tag=%s, itemName=%s", tag, itemName?itemName:"NULL");
+            throw makeStringExceptionV(-1, "*** Invalid array definition: tag=%s, itemName=%s", tag?tag:"NULL", itemName?itemName:"NULL");
 
         StringBuffer itemURLPath(itemName);
         if (depth>1)
@@ -874,7 +884,7 @@ void buildSampleJsonDataset(StringBuffer &json, IPropertyTree *xsdtree, const ch
         {
             StringArray parentTypes;
             delimitJSON(json, true);
-            JsonHelpers::buildJsonMsg(parentTypes, type, json, resultname, NULL, REQSF_SAMPLE_DATA);
+            JsonHelpers::buildJsonMsg(parentTypes, type, json, StringBuffer(resultname).toLowerCase().replace(' ', '_'), NULL, REQSF_SAMPLE_DATA);
         }
     }
 
@@ -1537,12 +1547,17 @@ int CWsEclBinding::getGenForm(IEspContext &context, CHttpRequest* request, CHttp
     xform->setParameter("useTextareaForStringArray", "1");
 
 #ifdef _CONTAINERIZED
-    bool isRoxie = wsecl->connMap.getValue(wuinfo.qsetname) != nullptr;
-#else
+    VStringBuffer xpath("queues[@name='%s']", wuinfo.qsetname.get());
+    IPropertyTree *queue = getComponentConfigSP()->queryPropTree(xpath.str());
+    if (queue && strieq(queue->queryProp("@type"), "roxie"))
+        xform->setParameter("includeRoxieOptions", queue->getPropBool("@queriesOnly") ? "2" : "3");
+    else
+        xform->setParameter("includeRoxieOptions", "0");
+ #else
     Owned<IConstWUClusterInfo> clusterInfo = getTargetClusterInfo(wuinfo.qsetname);
     bool isRoxie = clusterInfo && (clusterInfo->getPlatform() == RoxieCluster);
-#endif
     xform->setParameter("includeRoxieOptions", isRoxie ? "1" : "0");
+#endif
 
     // set the prop noDefaultValue param
     IProperties* props = context.queryRequestParameters();
@@ -1962,23 +1977,14 @@ int CWsEclBinding::submitWsEclWorkunit(IEspContext & context, WsEclWuInfo &wsinf
     StringAttr wuid(workunit->queryWuid());  // NB queryWuid() not valid after workunit,clear()
 
     bool noTimeout = false;
+
+    ISpan * activeSpan = context.queryActiveSpan();
+    OwnedSpanScope clientSpan(activeSpan->createClientSpan("run_workunit"));
+    Owned<IProperties> httpHeaders = ::getClientHeaders(clientSpan);
+    recordTraceDebugOptions(workunit, httpHeaders);
+
     if (httpreq)
     {
-        StringBuffer globalId, callerId;
-        StringAttr globalIdHeader, callerIdHeader;
-        wsecl->getHttpGlobalIdHeader(httpreq, globalId, globalIdHeader);
-        wsecl->getHttpCallerIdHeader(httpreq, callerId, callerIdHeader);
-        if (globalId.length())
-        {
-            workunit->setDebugValue("GlobalId", globalId.str(), true);
-            workunit->setDebugValue("GlobalIdHeader", globalIdHeader.str(), true);  //use same header received
-
-            StringBuffer localId;
-            appendGloballyUniqueId(localId);
-            workunit->setDebugValue("CallerId", localId.str(), true); //our localId becomes caller id for the next hop
-            workunit->setDebugValue("CallerIdHeader", callerIdHeader.str(), true); //use same header received
-            DBGLOG("GlobalId: %s, CallerId: %s, LocalId: %s, Wuid: %s", globalId.str(), callerId.str(), localId.str(), wuid.str());
-        }
         IProperties *params = httpreq->queryParameters();
         if (params)
             noTimeout = params->getPropBool(".noTimeout", false);
@@ -2050,37 +2056,21 @@ void CWsEclBinding::sendRoxieRequest(const char *target, StringBuffer &req, Stri
             throw MakeStringException(-1, "roxie target cluster not mapped: %s", target);
         ep = conn->nextEndpoint();
 
-        Owned<IHttpClientContext> httpctx = getHttpClientContext();
-        StringBuffer url("http://");
-        ep.getIpText(url).append(':').append(ep.port ? ep.port : 9876).append('/');
-        RoxieSocketFactory *roxieConn = static_cast<RoxieSocketFactory*>(conn);
+        WsEclSocketFactory *roxieConn = static_cast<WsEclSocketFactory*>(conn);
+        Owned<IHttpClientContext> httpctx = getHttpClientSecretContext(roxieConn->queryTlsIssuer());
+        StringBuffer url(roxieConn->isTlsService() ? "https://" : "http://");
+        ep.getHostText(url).append(':').append(ep.port ? ep.port : 9876).append('/');
         if (roxieConn->includeTargetInURL)
             url.append(roxieConn->alias.isEmpty() ? target : roxieConn->alias.str());
         if (!trim)
             url.append("?.trim=0");
 
-        Owned<IProperties> headers;
+        IEspContext * ctx = httpreq->queryContext();
+        Owned<IProperties> headers = ctx->getClientSpanHeaders();
         Owned<IHttpClient> httpclient = httpctx->createHttpClient(NULL, url);
         bool noTimeout = false;
         if (httpreq)
         {
-            StringBuffer globalId, callerId;
-            StringAttr globalIdHeader, callerIdHeader;
-            wsecl->getHttpGlobalIdHeader(httpreq, globalId, globalIdHeader);
-            wsecl->getHttpCallerIdHeader(httpreq, callerId, callerIdHeader);
-
-            if (globalId.length())
-            {
-                headers.setown(createProperties());
-                headers->setProp(globalIdHeader, globalId);
-
-                StringBuffer localId;
-                appendGloballyUniqueId(localId);
-                if (localId.length())
-                    headers->setProp(callerIdHeader, localId);
-                DBGLOG("GlobalId: %s, CallerId: %s, LocalId: %s", globalId.str(), callerId.str(), localId.str());
-            }
-
             IProperties *params = httpreq->queryParameters();
             if (params)
                 noTimeout = params->getPropBool(".noTimeout", false);
@@ -2124,8 +2114,18 @@ void CWsEclBinding::sendRoxieRequest(const char *target, StringBuffer &req, Stri
     }
 }
 
+static void checkWorkunitCompatibleOptions(IEspContext &context, bool submitWorkunit)
+{
+    bool statsToWorkunit = context.queryRequestParameters()->getPropBool("@statsToWorkunit", false);
+    bool summaryStats = context.queryRequestParameters()->getPropBool("@summaryStats", false);
+    if (submitWorkunit && (statsToWorkunit || summaryStats))
+        throw makeStringException(-1, "Neither 'Save stats to workunit' or 'Get summary stats' are supported for the 'Create Workunit' option");
+}
+
 int CWsEclBinding::onSubmitQueryOutput(IEspContext &context, CHttpRequest* request, CHttpResponse* response, WsEclWuInfo &wsinfo, const char *format, bool forceCreateWorkunit)
 {
+    checkWorkunitCompatibleOptions(context, forceCreateWorkunit);
+
     StringBuffer status;
     StringBuffer output;
 
@@ -2190,6 +2190,8 @@ int CWsEclBinding::onSubmitQueryOutput(IEspContext &context, CHttpRequest* reque
 
 int CWsEclBinding::onSubmitQueryOutputView(IEspContext &context, CHttpRequest* request, CHttpResponse* response, WsEclWuInfo &wsinfo, bool forceCreateWorkunit)
 {
+    checkWorkunitCompatibleOptions(context, forceCreateWorkunit);
+
     IConstWorkUnit *wu = wsinfo.ensureWorkUnit();
 
     StringBuffer soapmsg;
@@ -2528,6 +2530,20 @@ int CWsEclBinding::getWsEclExample(CHttpRequest* request, CHttpResponse* respons
 
 int CWsEclBinding::onGet(CHttpRequest* request, CHttpResponse* response)
 {
+    sub_service ss;
+    request->getEspPathInfo(ss);
+    //This method processes WsECLs REST URL formats, it's a bit more modern than some of the core ESP url formats
+    //  But don't allow caller to use core ESP access modifiers that don't match the expected types for REST URLs
+    //  all of the URL processing below is based on the following three types of core ESP access
+    //  NOTE that a few other types of core ESP access don't need to be authenticated
+    //
+    //So we have to only allow the three proper types here
+    //  [sub_serv_method, sub_serv_query, sub_serv_instant_query]
+    //
+    if (ss!=sub_serv_method && ss!=sub_serv_query && ss!=sub_serv_instant_query)
+        throw makeStringException(-1, "Unexpected URL modifier!");
+
+    //We are in WsECL REST URL mode from here
     Owned<IMultiException> me = MakeMultiException("WsEcl");
 
     try

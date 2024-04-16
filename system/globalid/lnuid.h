@@ -15,10 +15,10 @@
    limitations under the License.
 ############################################################################## */
 
+#ifndef __LNUID_INCL__
+#define __LNUID_INCL__
 #include <ctime>
 #include <string>
-
-using namespace std;
 
 /**
 * This is an implementation of Globally Unique Transaction ID’s.
@@ -35,7 +35,7 @@ namespace ln_uid {
     typedef unsigned char ln_uid_t[uid_size];
 
     ln_uid_t &createUniqueId(ln_uid_t &out);
-    string createUniqueIdString();
+    std::string createUniqueIdString();
 
     std::string uniqueIdToString(const ln_uid_t &uid);
     ln_uid_t &uniqueIdFromString(const char* uid, ln_uid_t &out);
@@ -51,3 +51,5 @@ namespace ln_uid {
 
     int get_utc_offset();
 };
+
+#endif

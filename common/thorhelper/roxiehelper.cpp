@@ -26,6 +26,7 @@
 #include "jfile.hpp"
 #include "mpbase.hpp"
 #include "dafdesc.hpp"
+#include "dautils.hpp"
 #include "dadfs.hpp"
 #include "zcrypt.hpp"
 
@@ -710,6 +711,23 @@ public:
     }
 };
 
+class CParallelTaskQuickSortAlgorithm : public CInplaceSortAlgorithm
+{
+public:
+    CParallelTaskQuickSortAlgorithm(ICompare *_compare) : CInplaceSortAlgorithm(_compare) {}
+
+    virtual void prepare(IEngineRowStream *input)
+    {
+        curIndex = 0;
+        if (input->nextGroup(sorted))
+        {
+            cycle_t startCycles = get_cycles_now();
+            taskqsortvec(const_cast<void * *>(sorted.getArray()), sorted.ordinality(), *compare);
+            elapsedCycles += (get_cycles_now() - startCycles);
+        }
+    }
+};
+
 class CTbbQuickSortAlgorithm : public CInplaceSortAlgorithm
 {
 public:
@@ -769,6 +787,17 @@ public:
     virtual void sortRows(void * * rows, size_t numRows, void * * temp)
     {
         parqsortvecstableinplace(rows, numRows, *compare, temp);
+    }
+};
+
+class CParallelTaskStableQuickSortAlgorithm : public CStableInplaceSortAlgorithm
+{
+public:
+    CParallelTaskStableQuickSortAlgorithm(ICompare *_compare) : CStableInplaceSortAlgorithm(_compare) {}
+
+    virtual void sortRows(void * * rows, size_t numRows, void * * temp)
+    {
+        taskqsortvecstableinplace(rows, numRows, *compare, temp);
     }
 };
 
@@ -1227,6 +1256,11 @@ extern ISortAlgorithm *createParallelQuickSortAlgorithm(ICompare *_compare)
     return new CParallelQuickSortAlgorithm(_compare);
 }
 
+extern ISortAlgorithm *createParallelTaskQuickSortAlgorithm(ICompare *_compare)
+{
+    return new CParallelTaskQuickSortAlgorithm(_compare);
+}
+
 extern ISortAlgorithm *createStableQuickSortAlgorithm(ICompare *_compare)
 {
     return new CStableQuickSortAlgorithm(_compare);
@@ -1235,6 +1269,11 @@ extern ISortAlgorithm *createStableQuickSortAlgorithm(ICompare *_compare)
 extern ISortAlgorithm *createParallelStableQuickSortAlgorithm(ICompare *_compare)
 {
     return new CParallelStableQuickSortAlgorithm(_compare);
+}
+
+extern ISortAlgorithm *createParallelTaskStableQuickSortAlgorithm(ICompare *_compare)
+{
+    return new CParallelTaskStableQuickSortAlgorithm(_compare);
 }
 
 extern ISortAlgorithm *createTbbQuickSortAlgorithm(ICompare *_compare)
@@ -1281,6 +1320,10 @@ extern ISortAlgorithm *createSortAlgorithm(RoxieSortAlgorithm _algorithm, ICompa
         return createParallelQuickSortAlgorithm(_compare);
     case parallelStableQuickSortAlgorithm:
         return createParallelStableQuickSortAlgorithm(_compare);
+    case parallelTaskQuickSortAlgorithm:
+        return createParallelTaskQuickSortAlgorithm(_compare);
+    case parallelTaskStableQuickSortAlgorithm:
+        return createParallelTaskStableQuickSortAlgorithm(_compare);
     case spillingQuickSortAlgorithm:
     case stableSpillingQuickSortAlgorithm:
         return createSpillingQuickSortAlgorithm(_compare, _rowManager, _rowMeta, _ctx, _tempDirectory, _activityId, _algorithm==stableSpillingQuickSortAlgorithm);
@@ -1509,7 +1552,7 @@ bool CSafeSocket::readBlocktms(StringBuffer &ret, unsigned timeoutms, HttpHelper
 
                 if (pHttpHelper->isHttpGet())
                 {
-                    pHttpHelper->checkTarget();
+                    pHttpHelper->checkHttpGetTarget();
                     return true;
                 }
 
@@ -1787,7 +1830,7 @@ public:
         if (!compressing())
         {
             header.append("Content-Length: ").append(length).append("\r\n\r\n");
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Writing HTTP header length %d to HTTP socket", header.length());
             sock->write(header.str(), header.length());
             sent += header.length();
@@ -1820,15 +1863,15 @@ public:
 
             MemoryBuffer mb;
             zlib_deflate(mb, content.str(), content.length(), GZ_DEFAULT_COMPRESSION, zt);
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Compressed content length %u to %u (%s)", content.length(), mb.length(), compressTypeName());
 
             header.append("Content-Length: ").append(mb.length()).append("\r\n\r\n");
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Writing HTTP header length %d to HTTP socket (compressed body)", header.length());
             sock->write(header.str(), header.length());
             sent += header.length();
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Writing compressed %s content, length %u, to HTTP socket", compressTypeName(), mb.length());
 
             sock->write(mb.toByteArray(), mb.length());
@@ -1857,25 +1900,25 @@ void CSafeSocket::flush()
         resp.init(contentLength, mlResponseFmt, respCompression);
         if (!adaptiveRoot || mlResponseFmt != MarkupFmt_JSON)
         {
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Writing content head length %" I64F "u to HTTP %s", static_cast<__uint64>(contentHead.length()), resp.traceName());
             resp.write(contentHead.str(), contentHead.length());
         }
         ForEachItemIn(idx2, queued)
         {
             unsigned length = lengths.item(idx2);
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Writing block length %d to HTTP %s", length, resp.traceName());
             resp.write(queued.item(idx2), length);
         }
         if (!adaptiveRoot || mlResponseFmt != MarkupFmt_JSON)
         {
-            if (traceLevel > 5)
+            if (doTrace(traceHttp))
                 DBGLOG("Writing content tail length %" I64F "u to HTTP %s", static_cast<__uint64>(contentTail.length()), resp.traceName());
             resp.write(contentTail.str(), contentTail.length());
         }
         sent += resp.finalize();
-        if (traceLevel > 5)
+            if (doTrace(traceHttp))
             DBGLOG("Total written %d", sent);
     }
 }
@@ -1901,6 +1944,11 @@ void CSafeSocket::sendException(const char *source, unsigned code, const char *m
 #ifndef _DEBUG
     catch(...) {}
 #endif
+}
+
+unsigned __int64 CSafeSocket::getStatistic(StatisticKind kind) const
+{
+    return sock->getStatistic(kind);
 }
 
 //==============================================================================================================
@@ -2109,7 +2157,7 @@ void FlushingStringBuffer::flush(bool closing)
         unsigned replyLen = s.length() - sizeof(size32_t);
         unsigned revLen = replyLen | ((isBlocked)?0x80000000:0);
         _WINREV(revLen);
-        if (logctx.queryTraceLevel() > 1)
+        if (doTrace(traceSockets))
         {
             if (isBlocked)
                 logctx.CTXLOG("Sending reply: Sending blocked %s data", getFormatName(mlFmt));
@@ -2127,7 +2175,7 @@ void FlushingStringBuffer::flush(bool closing)
             _WINREV(revRowCount);
             *(size32_t *) (s.str()+9) = revRowCount;
         }
-        if (logctx.queryTraceLevel() > 9)
+        if (doTrace(traceSockets, TraceFlags::Max))
             logctx.CTXLOG("writing block size %d to socket", replyLen);
         try
         {
@@ -2143,7 +2191,7 @@ void FlushingStringBuffer::flush(bool closing)
         }
         catch (...)
         {
-            if (logctx.queryTraceLevel() > 9)
+        if (doTrace(traceSockets, TraceFlags::Max))
                 logctx.CTXLOG("Exception caught FlushingStringBuffer::flush");
 
             s.clear();
@@ -2151,7 +2199,7 @@ void FlushingStringBuffer::flush(bool closing)
             throw;
         }
 
-        if (logctx.queryTraceLevel() > 9)
+        if (doTrace(traceSockets, TraceFlags::Max))
             logctx.CTXLOG("wrote block size %d to socket", replyLen);
 
         if (closing)
@@ -2205,15 +2253,16 @@ void FlushingStringBuffer::startDataset(const char *elementName, const char *res
                             s.append("result_").append(sequence+1).append('\'');
                         if (xmlns)
                         {
-                            Owned<IPropertyIterator> it = const_cast<IProperties*>(xmlns)->getIterator(); //should fix IProperties to be const friendly
+                            Owned<IPropertyIterator> it = xmlns->getIterator();
                             ForEach(*it)
                             {
                                 const char *name = it->getPropKey();
+                                const char *value = it->queryPropValue();
                                 s.append(' ');
                                 if (!streq(name, "xmlns"))
                                     s.append("xmlns:");
                                 s.append(name).append("='");
-                                encodeUtf8XML(const_cast<IProperties*>(xmlns)->queryProp(name), s);
+                                encodeUtf8XML(value, s);
                                 s.append("'");
                             }
                         }
@@ -2397,9 +2446,12 @@ ClusterWriteHandler::ClusterWriteHandler(char const * _logicalName, char const *
 
 void ClusterWriteHandler::getPhysicalName(StringBuffer & name, const char * cluster) const
 {
-    Owned<IStoragePlane> plane = getStoragePlane(cluster, false);
+    Owned<IStoragePlane> plane = getDataStoragePlane(cluster, false);
     const char * prefix = plane ? plane->queryPrefix() : nullptr;
-    makePhysicalPartName(logicalName.get(), 1, 1, name, 0, DFD_OSdefault, prefix);
+    unsigned stripeNum = 0;
+    if (plane)
+        stripeNum = calcStripeNumber(0, logicalName.get(), plane->numDevices());
+    makePhysicalPartName(logicalName.get(), 1, 1, name, 0, DFD_OSdefault, prefix, false, stripeNum);
 }
 
 void ClusterWriteHandler::addCluster(char const * cluster)
@@ -2454,16 +2506,25 @@ void ClusterWriteHandler::getLocalPhysicalFilename(StringAttr & out) const
     PROGLOG("%s(CLUSTER) for logical filename %s writing to local file %s", activityType.get(), logicalName.get(), out.get());
 }
 
-void ClusterWriteHandler::splitPhysicalFilename(StringBuffer & dir, StringBuffer & base) const
+void ClusterWriteHandler::getDirAndFilename(StringBuffer & dir, StringBuffer & filename) const
 {
 #ifdef _CONTAINERIZED
     assertex(localClusterName.length());
 #endif
-    StringBuffer physicalName, physicalDir, physicalBase;
-    getPhysicalName(physicalName, localClusterName);
-    splitFilename(physicalName, &physicalDir, &physicalDir, &physicalBase, &physicalBase);
-    dir.append(physicalDir);
-    base.append(physicalBase);
+    Owned<IStoragePlane> plane = getDataStoragePlane(localClusterName, false);
+    unsigned stripeNum = 0;
+    const char *prefix = nullptr;
+    if (plane)
+    {
+        stripeNum = calcStripeNumber(0, logicalName.get(), plane->numDevices());
+        prefix = plane->queryPrefix();
+    }
+
+    makePhysicalDirectory(dir, logicalName.get(), 0, DFD_OSdefault, prefix);
+
+    StringBuffer fullPath;
+    makePhysicalPartName(logicalName.get(), 1, 1, fullPath, 0, DFD_OSdefault, prefix, false, stripeNum);
+    splitFilename(fullPath, nullptr, nullptr, &filename, &filename);
 }
 
 void ClusterWriteHandler::getTempFilename(StringAttr & out) const
@@ -2699,41 +2760,15 @@ StringBuffer & mangleLocalTempFilename(StringBuffer & out, char const * in, cons
     return out;
 }
 
-static const char *skipLfnForeign(const char *lfn)
-{
-    // NOTE: The leading ~ and any leading spaces have already been stripped at this point
-    const char *finger = lfn;
-    if (strnicmp(finger, "foreign", 7)==0)
-    {
-        finger += 7;
-        while (*finger == ' ')
-            finger++;
-        if (finger[0] == ':' && finger[1] == ':')
-        {
-            // foreign scope - need to strip off the ip and port (i.e. from here to the next ::)
-            finger += 2;  // skip ::
-            finger = strstr(finger, "::");
-            if (finger)
-            {
-                finger += 2;
-                while (*finger == ' ')
-                    finger++;
-                return finger;
-            }
-        }
-    }
-    return lfn;
-}
-
 StringBuffer & expandLogicalFilename(StringBuffer & logicalName, const char * fname, IConstWorkUnit * wu, bool resolveLocally, bool ignoreForeignPrefix)
 {
     if (fname[0]=='~')
     {
-        while (*fname=='~' || *fname==' ')
-            fname++;
-        if (ignoreForeignPrefix)
-            fname = skipLfnForeign(fname);
-        logicalName.append(fname);
+        CDfsLogicalFileName dlfn;
+        dlfn.setAllowWild(true);
+        dlfn.setAllowTrailingEmptyScope(true);
+        dlfn.set(fname+1);
+        logicalName.append(dlfn.get(ignoreForeignPrefix));
     }
     else if (resolveLocally)
     {
@@ -2751,10 +2786,15 @@ StringBuffer & expandLogicalFilename(StringBuffer & logicalName, const char * fn
         if (wu)
         {
             wu->getScope(lfn);
-            if(lfn.length())
-                logicalName.append(lfn.s).append("::");
+            if (lfn.length())
+                lfn.s.append("::");
         }
-        logicalName.append(fname);
+        lfn.s.append(fname);
+        CDfsLogicalFileName dlfn;
+        dlfn.setAllowWild(true);
+        dlfn.setAllowTrailingEmptyScope(true);
+        dlfn.set(lfn.str());
+        logicalName.append(dlfn.get());
     }
     return logicalName;
 }
@@ -2798,7 +2838,7 @@ void loadHttpHeaders(IProperties *p, const char *finger)
 void HttpHelper::parseRequestHeaders(const char *headers)
 {
     if (!reqHeaders)
-        reqHeaders.setown(createProperties());
+        reqHeaders.setown(createProperties(true));
     loadHttpHeaders(reqHeaders, headers);
     const char *val = queryRequestHeader("Content-Type");
     if (val)

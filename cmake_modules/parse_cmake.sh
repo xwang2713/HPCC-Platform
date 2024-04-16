@@ -16,9 +16,7 @@ IGNORE=
 RETAG=
 VERBOSE=
 VERSIONFILE=version.cmake
-if [ ! -f $VERSIONFILE ]; then
-  VERSIONFILE=$SCRIPT_DIR/../version.cmake
-fi
+CREATE_NEW_MAJOR=0
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]
@@ -54,6 +52,10 @@ do
     shift 
     shift
     ;;
+    -m|--major)
+    CREATE_NEW_MAJOR=1
+    shift
+    ;;
     *)    # unknown option
     POSITIONAL+=("$1") # save it in an array for later
     shift # past argument
@@ -65,10 +67,6 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 if [ "$#" -ge 1 ] ; then
   VERSIONFILE=$1
   shift 1
-fi
-if [ ! -f $VERSIONFILE ]; then
-  echo "File $VERSIONFILE not found"
-  exit 2
 fi
 
 GIT_BRANCH=$(git rev-parse --symbolic-full-name --abbrev-ref HEAD)
@@ -87,6 +85,10 @@ function extract()
 
 function parse_cmake()
 {
+    if [ ! -f $VERSIONFILE ]; then
+      echo "File $VERSIONFILE not found"
+      exit 2
+    fi
     extract $VERSIONFILE HPCC_NAME
     extract $VERSIONFILE HPCC_PROJECT
     extract $VERSIONFILE HPCC_MAJOR
@@ -135,32 +137,44 @@ function update_version_file()
     local _new_point=$2
     local _new_sequence=$3
     local _new_minor=$4
+    local _new_major=$5
+    local _new_timestamp=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
+
     if [ -z "$_new_minor" ] ; then
       _new_minor=$HPCC_MINOR
+    fi
+    if [ -z "$_new_major" ] ; then
+      _new_major=$HPCC_MAJOR
     fi
     
     if [ -n "$VERBOSE" ] ; then
       echo sed -E \
+       -e "\"s/HPCC_MAJOR +$HPCC_MAJOR *\)/HPCC_MAJOR $_new_major )/\"" \
        -e "\"s/HPCC_MINOR +$HPCC_MINOR *\)/HPCC_MINOR $_new_minor )/\"" \
        -e "\"s/HPCC_POINT +$HPCC_POINT *\)/HPCC_POINT $_new_point )/\"" \
        -e "\"s/HPCC_SEQUENCE +$HPCC_SEQUENCE *\)/HPCC_SEQUENCE $_new_sequence )/\"" \
        -e "\"s/HPCC_MATURITY +\"$HPCC_MATURITY\" *\)/HPCC_MATURITY \"$_new_maturity\" )/\"" \
+       -e "\"s/HPCC_TAG_TIMESTAMP.*\)/HPCC_TAG_TIMESTAMP \"$_new_timestamp\" )/\"" \
        -i.bak $VERSIONFILE
     fi
     if [ -z "$DRYRUN" ] ; then 
       sed -E \
+       -e "s/HPCC_MAJOR +$HPCC_MAJOR *\)/HPCC_MAJOR $_new_major )/" \
        -e "s/HPCC_MINOR +$HPCC_MINOR *\)/HPCC_MINOR $_new_minor )/" \
        -e "s/HPCC_POINT +$HPCC_POINT *\)/HPCC_POINT $_new_point )/" \
        -e "s/HPCC_SEQUENCE +$HPCC_SEQUENCE *\)/HPCC_SEQUENCE $_new_sequence )/" \
        -e "s/HPCC_MATURITY +\"$HPCC_MATURITY\" *\)/HPCC_MATURITY \"$_new_maturity\" )/" \
+       -e "s/HPCC_TAG_TIMESTAMP.*\)/HPCC_TAG_TIMESTAMP \"$_new_timestamp\" )/" \
        -i.bak $VERSIONFILE
        cat $VERSIONFILE
     else
       sed -E \
+       -e "s/HPCC_MAJOR +$HPCC_MAJOR *\)/HPCC_MAJOR $_new_major )/" \
        -e "s/HPCC_MINOR +$HPCC_MINOR *\)/HPCC_MINOR $_new_minor )/" \
        -e "s/HPCC_POINT +$HPCC_POINT *\)/HPCC_POINT $_new_point )/" \
        -e "s/HPCC_SEQUENCE +$HPCC_SEQUENCE *\)/HPCC_SEQUENCE $_new_sequence )/" \
        -e "s/HPCC_MATURITY +\"$HPCC_MATURITY\" *\)/HPCC_MATURITY \"$_new_maturity\" )/" \
+       -e "s/HPCC_TAG_TIMESTAMP.*\)/HPCC_TAG_TIMESTAMP \"$_new_timestamp\" )/" \
        $VERSIONFILE
     fi
 }

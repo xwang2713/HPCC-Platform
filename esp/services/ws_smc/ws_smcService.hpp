@@ -182,6 +182,7 @@ class CWsSMCEx : public CWsSMC
     StringBuffer m_BannerColor;
     StringBuffer m_BannerScroll;
     StringBuffer m_PortalURL;
+    StringAttr espInstance;
     int m_BannerAction;
     bool m_EnableChatURL;
     CriticalSection crit;
@@ -225,6 +226,8 @@ public:
     virtual bool onGetBuildInfo(IEspContext &context, IEspGetBuildInfoRequest &req, IEspGetBuildInfoResponse &resp);
     virtual bool onBrowseResources(IEspContext &context, IEspBrowseResourcesRequest & req, IEspBrowseResourcesResponse & resp);
     virtual bool onRoxieControlCmd(IEspContext &context, IEspRoxieControlCmdRequest &req, IEspRoxieControlCmdResponse &resp);
+    virtual bool onRoxieXrefCmd(IEspContext &context, IEspRoxieXrefCmdRequest &req, IEspRoxieXrefCmdResponse &resp);
+
     virtual bool onGetStatusServerInfo(IEspContext &context, IEspGetStatusServerInfoRequest &req, IEspGetStatusServerInfoResponse &resp);
     virtual bool onLockQuery(IEspContext &context, IEspLockQueryRequest &req, IEspLockQueryResponse &resp);
 private:

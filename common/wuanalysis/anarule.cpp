@@ -129,20 +129,49 @@ public:
     {
         stat_type ioAvg = activity.getStatRaw(stat, StAvgX);
         stat_type ioMaxSkew = activity.getStatRaw(stat, StSkewMax);
+        unsigned actkind = activity.getAttr(WaKind);
         if (ioMaxSkew > options.queryOption(watOptSkewThreshold))
         {
             stat_type timeMaxLocalExecute = activity.getStatRaw(StTimeLocalExecute, StMaxX);
             stat_type timeAvgLocalExecute = activity.getStatRaw(StTimeLocalExecute, StAvgX);
 
             stat_type cost;
-            //If one node didn't spill then it is possible the skew caused all the lost time
-            unsigned actkind = activity.getAttr(WaKind);
-            if ((actkind==TAKspillread||actkind==TAKspillwrite) && activity.getStatRaw(stat, StMinX) == 0)
+            if ((actkind==TAKspillread||actkind==TAKspillwrite) && (activity.getStatRaw(stat, StMinX) == 0))
+            {
+                //If one node didn't spill then it is possible the skew caused all the lost time
                 cost = timeMaxLocalExecute;
+                result.set(ANA_IOSKEW_RECORDS_ID, cost, "Uneven worker spilling is causing uneven %s time", category);
+            }
             else
+            {
+                bool sizeSkew = false;
+                bool numRowsSkew = false;
+                IWuEdge *wuEdge = nullptr;
+                if ((stat==StTimeDiskWriteIO) || (actkind==TAKspillwrite))
+                {
+                    if (activity.getStatRaw(StSizeDiskWrite, StSkewMax)>options.queryOption(watOptSkewThreshold))
+                        sizeSkew = true;
+                    wuEdge = activity.queryInput(0);
+                }
+                else if ((stat == StTimeDiskReadIO) || (actkind==TAKspillread))
+                {
+                    if (activity.getStatRaw(StSizeDiskRead, StSkewMax)>options.queryOption(watOptSkewThreshold))
+                        sizeSkew = true;
+                    wuEdge = activity.queryOutput(0);
+                }
+                if (wuEdge && wuEdge->getStatRaw(StNumRowsProcessed, StSkewMax)>options.queryOption(watOptSkewThreshold))
+                    numRowsSkew = true;
                 cost = (timeMaxLocalExecute - timeAvgLocalExecute);
-
-            result.set(ANA_IOSKEW_RECORDS_ID, cost, "Significant skew in records causes uneven %s time", category);
+                if (sizeSkew)
+                {
+                    if (numRowsSkew)
+                        result.set(ANA_IOSKEW_RECORDS_ID, cost, "Significant skew in number of records is causing uneven %s time", category);
+                    else
+                        result.set(ANA_IOSKEW_RECORDS_ID, cost, "Significant skew in record sizes is causing uneven %s time", category);
+                }
+                else
+                    result.set(ANA_IOSKEW_RECORDS_ID, cost, "Significant skew in IO performance is causing uneven %s time", category);
+            }
             updateInformation(result, activity);
             return true;
         }
@@ -152,6 +181,57 @@ public:
 protected:
     StatisticKind stat;
     const char * category;
+};
+
+class LocalExecuteSkewRule : public AActivityRule
+{
+public:
+    virtual bool isCandidate(IWuActivity & activity) const override
+    {
+        switch (activity.getAttr(WaKind))
+        {
+            case TAKfirstn: // skew is expected, so ignore
+            case TAKtopn:
+            case TAKsort:
+                return false;
+        }
+        return true;
+    }
+
+    virtual bool check(PerformanceIssue & result, IWuActivity & activity, const IAnalyserOptions & options) override
+    {
+        stat_type localExecuteMaxSkew = activity.getStatRaw(StTimeLocalExecute, StSkewMax);
+        if (localExecuteMaxSkew<options.queryOption(watOptSkewThreshold))
+            return false;
+
+        stat_type timeMaxLocalExecute = activity.getStatRaw(StTimeLocalExecute, StMaxX);
+        stat_type timeAvgLocalExecute = activity.getStatRaw(StTimeLocalExecute, StAvgX);
+        stat_type timePenalty = (timeMaxLocalExecute - timeAvgLocalExecute);;
+        if (timePenalty<options.queryOption(watOptMinInterestingTime))
+            return false;
+
+        bool inputSkewed = false;
+        for(unsigned edgeNo = 0; IWuEdge *wuInputEdge = activity.queryInput(edgeNo); edgeNo++)
+        {
+            if (wuInputEdge->getStatRaw(StNumRowsProcessed, StSkewMax)>options.queryOption(watOptSkewThreshold))
+            {
+                inputSkewed = true;
+                break;
+            }
+        }
+        bool outputSkewed = false;
+        IWuEdge *wuOutputEdge = activity.queryOutput(0);
+        if (wuOutputEdge && (wuOutputEdge->getStatRaw(StNumRowsProcessed, StSkewMax)>options.queryOption(watOptSkewThreshold)))
+            outputSkewed = true;
+
+        if (inputSkewed)
+            result.set(ANA_EXECUTE_SKEW_ID, timePenalty, "Significant skew in local execute time caused by uneven input");
+        else if (outputSkewed)
+            result.set(ANA_EXECUTE_SKEW_ID, timePenalty, "Significant skew in local execute time caused by uneven output");
+        else
+            result.set(ANA_EXECUTE_SKEW_ID, timePenalty, "Significant skew in local execute time");
+        return true;
+    }
 };
 
 class KeyedJoinExcessRejectedRowsRule : public ActivityKindRule
@@ -192,4 +272,5 @@ void gatherRules(CIArrayOf<AActivityRule> & rules)
     rules.append(*new IoSkewRule(StTimeDiskWriteIO, "disk write"));
     rules.append(*new IoSkewRule(StTimeSpillElapsed, "spill"));
     rules.append(*new KeyedJoinExcessRejectedRowsRule);
+    rules.append(*new LocalExecuteSkewRule);
 }

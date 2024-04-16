@@ -639,8 +639,8 @@ public:
     {
         if (translator)
         {
-            assertex(_ptr==buf.toByteArray());
-            _ptr = deserializeSource.queryRow();
+            if (_ptr==buf.toByteArray())
+                _ptr = deserializeSource.queryRow();
         }
         return baseMap.ptrToFilePosition(_ptr);
     }
@@ -649,8 +649,8 @@ public:
     {
         if (translator)
         {
-            assertex(_ptr==buf.toByteArray());
-            _ptr = deserializeSource.queryRow();
+            if (_ptr==buf.toByteArray())
+                _ptr = deserializeSource.queryRow();
         }
         return baseMap.ptrToLocalFilePosition(_ptr);
     }
@@ -691,10 +691,11 @@ public:
         while (!_partNo && !thisPart && ++thisPartIdx < maxParts) // MORE
         {
             thisPart.setown(f->getFilePart(thisPartIdx, thisFileStartPos));
-            if (thisPart && _startPos >= thisPart->size())
+            offset_t thisPartSize = f->partSize(thisPartIdx);
+            if (thisPart && _startPos >= thisPartSize)
             {
-                _startPos -= thisPart->size();
-                completedStreamsSize += thisPart->size();
+                _startPos -= thisPartSize;
+                completedStreamsSize += thisPartSize;
                 thisPart.clear();
             }
         }
@@ -967,8 +968,6 @@ public:
                         Owned<IFileIO> file = files->getFilePart(idx, base);
                         offset_t size = file->size();
                         baseMap.addFragment(fileEnd, size, idx-1, base, 0);
-                        if (traceLevel > 6)
-                            DBGLOG("File fragment %d size %" I64F "d", idx, size);
                         totalSize += size; // MORE - check for overflow here
                     }
                 }
@@ -989,7 +988,7 @@ public:
                 EXCLOG(MCoperatorError, E);
                 throw E;
             }
-            if (traceLevel > 2)
+            if (doTrace(traceRoxieFiles))
                 DBGLOG("Loading in-memory file, size %" I64F "d", totalSize);
             // MORE - 32-bit systems could wrap here if totalSize > 2^32
             fileEnd = fileStart = (char *) malloc((size_t)totalSize);
@@ -1282,7 +1281,7 @@ IDirectReader *InMemoryIndexManager::selectKey(ScoredRowFilter &filter, const IT
     }
     if (bestIndex)
     {
-        if (logctx.queryTraceLevel() > 5)
+        if (doTrace(traceFilters))
         {
             StringBuffer ret;
             logctx.CTXLOG("Using key %s", bestIndex->toString(ret).str());

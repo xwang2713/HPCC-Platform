@@ -99,6 +99,15 @@
       <xsl:attribute name="analyzeWorkunit">
         <xsl:value-of select="@analyzeWorkunit"/>
       </xsl:attribute>
+      <xsl:attribute name="mapHttpCallUrlsToSecrets">
+        <xsl:value-of select="@mapHttpCallUrlsToSecrets"/>
+      </xsl:attribute>
+      <xsl:attribute name="warnIfUrlNotMappedToSecret">
+        <xsl:value-of select="@warnIfUrlNotMappedToSecret"/>
+      </xsl:attribute>
+      <xsl:attribute name="requireUrlsMappedToSecrets">
+        <xsl:value-of select="@requireUrlsMappedToSecrets"/>
+      </xsl:attribute>
 
       <xsl:attribute name="thorConnectTimeout">
         <xsl:value-of select="@thorConnectTimeout"/>
@@ -112,8 +121,28 @@
         </xsl:attribute>
       </xsl:if>
       <xsl:copy-of select="analyzerOptions"/>
+      <xsl:copy-of select="/Environment/Software/vaults"/>
       <xsl:copy-of select="/Environment/Software/Directories"/>  
-
+      <xsl:choose>
+          <xsl:when test="tracing">
+              <xsl:copy-of select="./tracing"/>
+          </xsl:when>
+          <xsl:otherwise>
+              <xsl:copy-of select="/Environment/Software/tracing"/>
+          </xsl:otherwise>
+      </xsl:choose>
+      <!--
+      # Generated for configuration info. accessed by getGlobalConfig()
+      -->
+      <global>
+        <storage>
+          <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>
+        </storage>
+        <expert>
+          <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+        </expert>
+        <xsl:copy-of select="/Environment/Hardware/cost"/>
+      </global>
     </agentexec>
   </xsl:template>
 

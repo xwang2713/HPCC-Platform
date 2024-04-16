@@ -29,6 +29,7 @@ set ( ESPSCM_SRCS
       ws_account.ecm
       ws_sql.ecm
       ws_store.ecm
+      ldapenvironment.ecm
       ##### LIST FOR ESPECL
       WsDeploy.ecm
     )
@@ -37,22 +38,24 @@ foreach ( loop_var ${ESPSCM_SRCS} )
     string(  REGEX REPLACE "[.]ecm" "" result ${loop_var} )
     if (SCM_BUILD)
       add_custom_command ( DEPENDS hidl ${ESPSCM_SOURCE_DIR}/${loop_var}
-                           OUTPUT ${ESPSCM_GENERATED_DIR}/${result}.esp ${ESPSCM_GENERATED_DIR}/${result}.hpp ${ESPSCM_GENERATED_DIR}/${result}.int ${ESPSCM_GENERATED_DIR}/${result}.ipp ${ESPSCM_GENERATED_DIR}/${result}_esp.cpp ${ESPSCM_GENERATED_DIR}/${result}_esp.ipp
-                           COMMAND $<TARGET_FILE:hidl> ${ESPSCM_SOURCE_DIR}/${result}.ecm ${ESPSCM_GENERATED_DIR}
+                           OUTPUT ${ESPSCM_GENERATED_DIR}/${result}.esp ${ESPSCM_GENERATED_DIR}/${result}.hpp ${ESPSCM_GENERATED_DIR}/${result}.ipp ${ESPSCM_GENERATED_DIR}/${result}_esp.cpp ${ESPSCM_GENERATED_DIR}/${result}_esp.ipp
+                           COMMAND ${ASAN_LEAK_SUPPRESS_PREFIX} $<TARGET_FILE:hidl> ${ESPSCM_SOURCE_DIR}/${result}.ecm ${ESPSCM_GENERATED_DIR}
                          )
       add_custom_command ( DEPENDS esdl-xml ${ESPSCM_SOURCE_DIR}/${loop_var}
                            OUTPUT ${ESPSCM_GENERATED_DIR}/${result}.xml
-                           COMMAND $<TARGET_FILE:esdl-xml> ${ESPSCM_SOURCE_DIR}/${result}.ecm ${ESPSCM_GENERATED_DIR}
+                           COMMAND ${ASAN_LEAK_SUPPRESS_PREFIX} $<TARGET_FILE:esdl-xml> ${ESPSCM_SOURCE_DIR}/${result}.ecm ${ESPSCM_GENERATED_DIR}
                          )
     endif ()
     set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}.esp PROPERTIES GENERATED TRUE)
     set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}.hpp PROPERTIES GENERATED TRUE)
-    set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}.int PROPERTIES GENERATED TRUE)
     set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}.ipp PROPERTIES GENERATED TRUE)
     set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}_esp.cpp PROPERTIES GENERATED TRUE)
     set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}_esp.ipp PROPERTIES GENERATED TRUE)
     set_source_files_properties(${ESPSCM_GENERATED_DIR}/${result}.xml PROPERTIES GENERATED TRUE)
-    set ( ESP_GENERATED_INCLUDES ${ESP_GENERATED_INCLUDES} ${ESPSCM_GENERATED_DIR}/${result}.esp ${ESPSCM_GENERATED_DIR}/${result}.hpp ${ESPSCM_GENERATED_DIR}/${result}.int ${ESPSCM_GENERATED_DIR}/${result}.ipp ${ESPSCM_GENERATED_DIR}/${result}_esp.ipp ${ESPSCM_GENERATED_DIR}/${result}.xml )
+    set ( ESP_GENERATED_INCLUDES ${ESP_GENERATED_INCLUDES} ${ESPSCM_GENERATED_DIR}/${result}.esp ${ESPSCM_GENERATED_DIR}/${result}.hpp ${ESPSCM_GENERATED_DIR}/${result}.ipp ${ESPSCM_GENERATED_DIR}/${result}_esp.ipp ${ESPSCM_GENERATED_DIR}/${result}.xml )
+    if ( PLATFORM )
+        Install( FILES ${ESPSCM_GENERATED_DIR}/${result}.xml DESTINATION componentfiles/esdl_files COMPONENT Runtime )
+    endif ( PLATFORM )
 endforeach ( loop_var ${ESPSCM_SRCS} )
 
-include_directories ( ${ESPSCM_GENERATED_DIR} )
+include_directories ( ${ESPSCM_GENERATED_DIR} ${HPCC_SOURCE_DIR}/esp/espcommon)

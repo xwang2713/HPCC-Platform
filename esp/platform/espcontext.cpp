@@ -86,18 +86,16 @@ private:
 
     ESPSerializationFormat respSerializationFormat;
 
-    Owned<IEspSecureContext> m_secureContext;
+    Owned<IEspSecureContextEx> m_secureContext;
 
     StringAttr   m_transactionID;
-    StringBuffer   m_globalId;
-    StringBuffer   m_localId;
-    StringBuffer   m_callerId;
+    OwnedSpanScope m_requestSpan;    // When the context is destroy the span will end.
     IHttpMessage* m_request;
 
 public:
     IMPLEMENT_IINTERFACE;
 
-    CEspContext(IEspSecureContext* secureContext)
+    CEspContext(IEspSecureContextEx* secureContext)
     : m_servPort(0)
     , m_bindingValue(0)
     , m_serviceValue(0)
@@ -116,9 +114,7 @@ public:
         updateTraceSummaryHeader();
         m_secureContext.setown(secureContext);
         m_SecurityHandler.setSecureContext(secureContext);
-        appendGloballyUniqueId(m_localId);
-        // use localId as globalId unless we receive another
-        m_globalId.set(m_localId);
+        m_requestSpan.setown(getNullSpan());
     }
 
     ~CEspContext()
@@ -459,12 +455,14 @@ public:
 
     virtual void ensureSuperUser(unsigned excCode, const char* excMsg)
     {
+#ifdef _USE_OPENLDAP
         CLdapSecManager* secmgr = dynamic_cast<CLdapSecManager*>(m_secmgr.get());
         if (secmgr && !secmgr->isSuperUser(m_user.get()))
         {
             setAuthStatus(AUTH_STATUS_NOACCESS);
             throw makeStringException(excCode, excMsg);
         }
+#endif
     }
 
     void AuditMessage(AuditType type, const char *filterType, const char *title, const char *parms, ...) __attribute__((format(printf, 5, 6)));
@@ -607,6 +605,10 @@ public:
     {
         return m_secureContext.get();
     }
+    IEspSecureContextEx* querySecureContextEx() override
+    {
+        return m_secureContext.get();
+    }
 
     virtual void setTransactionID(const char * trxid)
     {
@@ -624,27 +626,30 @@ public:
     {
         return m_request;
     }
+    virtual void setRequestSpan(ISpan * span) override
+    {
+        m_requestSpan.set(span);
+    }
+    virtual ISpan * queryActiveSpan() const override
+    {
+        return m_requestSpan;
+    }
 
-    virtual void setGlobalId(const char* id)
+    virtual const char* getGlobalId() const override
     {
-        m_globalId.set(id);
+        return m_requestSpan->queryGlobalId();
     }
-    virtual const char* getGlobalId()
+    virtual const char* getCallerId() const override
     {
-        return m_globalId.str();
+        return m_requestSpan->queryCallerId();
     }
-    virtual void setCallerId(const char* id)
+    virtual const char* getLocalId() const override
     {
-        m_callerId.set(id);
+        return m_requestSpan->queryLocalId();
     }
-    virtual const char* getCallerId()
+    virtual IProperties * getClientSpanHeaders() const override
     {
-        return m_callerId.str();
-    }
-    // No setLocalId() - it should be set once only when constructed
-    virtual const char* getLocalId()
-    {
-        return m_localId.str();
+        return ::getClientHeaders(m_requestSpan);
     }
 };
 
@@ -762,7 +767,7 @@ void CEspContext::updateTraceSummaryHeader()
     }
 }
 
-IEspContext* createEspContext(IEspSecureContext* secureContext)
+IEspContext* createEspContext(IEspSecureContextEx* secureContext)
 {
     return new CEspContext(secureContext);
 }
@@ -783,7 +788,7 @@ bool getUrlParams(IProperties *props, StringBuffer& params)
             params.append(key);
             if (stricmp(key,"ver_")==0)
                 hasVersion = true;
-            const char* v = props->queryProp(key);
+            const char* v = it->queryPropValue();
             if (v && *v)
                 params.appendf("=%s",v);
         }
@@ -1024,7 +1029,7 @@ void ESPLOG(LogLevel level, const char* fmt, ...)
     {
         va_list args;
         va_start(args,fmt);
-        VALOG(MCdebugInfo, unknownJob, fmt, args);
+        VALOG(MCdebugInfo, fmt, args);
         va_end(args);
     }
 }
@@ -1035,7 +1040,7 @@ void ESPLOG(IEspContext* ctx, LogLevel level, const char* fmt, ...)
     {
         va_list args;
         va_start(args,fmt);
-        VALOG(MCdebugInfo, unknownJob, fmt, args);
+        VALOG(MCdebugInfo, fmt, args);
         va_end(args);
     }
 }

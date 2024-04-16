@@ -48,7 +48,7 @@ void testAbort(const char *wuid)
         UERRLOG("WUID %s not found", wuid);
 }
 
-StringBuffer& constructFileMask(const char* filename, StringBuffer& filemask)
+static StringBuffer& constructFileMask(const char* filename, StringBuffer& filemask)
 {
     filemask.clear().append(filename).toLowerCase().append("._$P$_of_$N$");
     return filemask;
@@ -435,7 +435,7 @@ IFileDescriptor *createRoxieFileDescriptor(const char *cluster, const char *lfn,
             UERRLOG("dataDirectory not specified");
             return NULL;
         }
-        makePhysicalPartName(lfn,i+1,width,filename,false,DFD_OSdefault,dir);
+        makePhysicalPartName(lfn,i+1,width,filename,0,DFD_OSdefault,dir,false,0);
         RemoteFilename rfn;
         rfn.setPath(grp->queryNode(i).endpoint(),filename.str());
         ret->setPart(i,rfn,NULL);
@@ -564,7 +564,7 @@ void testRoxieCopies()
         queryDistributedFileDirectory().removeEntry(fn.str(),UNKNOWN_USER);
         file->attach(fn.str(),UNKNOWN_USER);
         file.clear();
-        file.setown(queryDistributedFileDirectory().lookup(fn.str(),UNKNOWN_USER,false,false,false,nullptr,defaultNonPrivilegedUser));
+        file.setown(queryDistributedFileDirectory().lookup(fn.str(),UNKNOWN_USER,AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser));
         Owned<IFileDescriptor> fdesc4 = file->getFileDescriptor();
         printDesc(fdesc4);
     }
@@ -574,8 +574,8 @@ void testRoxieCopies()
 void test2()
 {
     Owned<IDFUWorkUnitFactory> factory = getDFUWorkUnitFactory();
-    Owned<IConstDFUWorkUnit> wu = factory->openWorkUnit("D20060303-110019",false);
-    IConstDFUfileSpec *destination = wu->queryDestination();
+    Owned<IDFUWorkUnit> wu = factory->updateWorkUnit("D20060303-110019",false);
+    IDFUfileSpec *destination = wu->queryUpdateDestination();
     if (destination->getWrap())
         destination->setNumPartsOverride(51);
     Owned<IFileDescriptor> desc =  destination->getFileDescriptor();
@@ -636,7 +636,7 @@ void testPagedIterate()
     unsigned n=0;
     for (unsigned page=0;page<3;page++) {
         DFUsortfield sortorder[] = {DFUsf_user,DFUsf_state,DFUsf_term};
-        Owned<IConstDFUWorkUnitIterator> iter = factory->getWorkUnitsSorted(sortorder, NULL, NULL, page*10, 10, "nigel", &cachehint, NULL);
+        Owned<IConstDFUWorkUnitIterator> iter = factory->getWorkUnitsSorted(sortorder, NULL, NULL, page*10, 10, "nigel", &cachehint, NULL, nullptr);
         StringBuffer s;
         ForEach(*iter) {
 

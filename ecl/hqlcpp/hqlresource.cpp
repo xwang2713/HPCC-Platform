@@ -432,16 +432,12 @@ protected:
 
     void findSplitPoints(IHqlExpression * expr, unsigned pass)
     {
-        //containsNonActiveDataset() would be nice - but that isn't percolated outside assigns etc.
-        if (containsAnyDataset(expr) || containsMustHoist(expr) || !expr->isIndependentOfScope())
+        if (!gathered)
         {
-            if (!gathered)
-            {
-                gatherAmbiguousSelectors(original);
-                gathered = true;
-            }
-            analyse(expr, pass);
+            gatherAmbiguousSelectors(original);
+            gathered = true;
         }
+        analyse(expr, pass);
     }
 
     bool queryHoistDataset(IHqlExpression * ds)
@@ -617,8 +613,11 @@ protected:
                 //if rhs is a new, evaluatable, dataset then we want to add it
                 if ((rhs->isDataset() || rhs->isDictionary()) && isEvaluateable(rhs))
                 {
-                    if (queryNoteDataset(rhs))
-                        return;
+                    if (!rhs->isConstant())
+                    {
+                        if (queryNoteDataset(rhs))
+                            return;
+                    }
                 }
                 break;
             }
@@ -5550,7 +5549,9 @@ void EclResourcer::removeDuplicateIndependentLinks(CSplitterInfo & connections, 
                 ResourcerInfo & sinkInfo = *queryResourceInfo(sink);
                 if (allInputsPulledIndependently(sink))
                 {
+#ifdef TRACE_BALANCED
                     unsigned numRemoved = 0;
+#endif
                     for (unsigned j=info.balancedLinks.ordinality()-1; j > i; j--)
                     {
                         CSplitterLink & next = info.balancedLinks.item(j);
@@ -5558,7 +5559,9 @@ void EclResourcer::removeDuplicateIndependentLinks(CSplitterInfo & connections, 
                         {
                             info.balancedLinks.remove(j);
                             sinkInfo.balancedLinks.zap(next);
+#ifdef TRACE_BALANCED
                             numRemoved++;
+#endif
                         }
                     }
 
@@ -6738,7 +6741,7 @@ IHqlExpression * resourceThorGraph(HqlCppTranslator & translator, IHqlExpression
         OwnedHqlExpr transformed = hoister.transformRoot(expr);
         sanityCheckTransformation("ActivityInvariantHoister", expr, transformed);
         transformed.swap(expr);
-        translator.traceExpression("AfterInvariant Child", expr);
+        translator.traceExpression("AfterInvariantHoister", expr);
     }
 
     //Ensure that each action generates a unique activity.  If duplicate activities are shared it is impossible to know
@@ -6777,7 +6780,7 @@ static IHqlExpression * doResourceGraph(BuildCtx * ctx, HqlCppTranslator & trans
         OwnedHqlExpr transformed = hoister.transformRoot(expr);
         sanityCheckTransformation("ActivityInvariantHoister", expr, transformed);
         transformed.swap(expr);
-        translator.traceExpression("AfterInvariant Child", expr);
+        translator.traceExpression("AfterInvariantHoister", expr);
     }
 
     {
@@ -6824,7 +6827,7 @@ IHqlExpression * resourceRemoteGraph(HqlCppTranslator & translator, IHqlExpressi
         ActivityInvariantHoister hoister(options);
         HqlExprArray hoisted;
         expr.setown(hoister.transformRoot(expr));
-        translator.traceExpression("AfterInvariant Child", expr);
+        translator.traceExpression("AfterInvariantHoister", expr);
     }
 
     HqlExprArray transformed;

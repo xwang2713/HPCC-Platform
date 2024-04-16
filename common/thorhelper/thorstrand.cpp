@@ -41,7 +41,7 @@ public:
     {
         CThreaded * thread = new CThreaded("Strand", &strand);
         threads.append(*thread);
-        thread->start();
+        thread->start(true);
     }
 
     virtual void waitForStrands()
@@ -67,7 +67,7 @@ protected:
 
 protected:
     Semaphore producerStopSem;
-    CIArrayOf<CThreaded> threads;
+    IArrayOf<CThreaded> threads;
 };
 
 
@@ -109,7 +109,7 @@ public:
     {
         CThreaded * thread = new CThreaded("ReadAheadThread", &mainthread);
         threads.append(*thread);
-        thread->start();
+        thread->start(true);
     }
 
     void processConsumerStop()
@@ -174,7 +174,7 @@ private:
     const unsigned numProducers;
     Semaphore producerStopSem;
     Semaphore producerStoppedSem;
-    CIArrayOf<CThreaded> threads;
+    IArrayOf<CThreaded> threads;
     std::atomic<bool> stopping;
     bool started;
 };

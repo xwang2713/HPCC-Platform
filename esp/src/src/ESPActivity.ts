@@ -9,7 +9,7 @@ import * as ESPUtil from "./ESPUtil";
 import * as ESPWorkunit from "./ESPWorkunit";
 import * as WsSMC from "./WsSMC";
 import * as WsWorkunits from "./WsWorkunits";
-import { Memory } from "./Memory";
+import { Memory } from "./store/Memory";
 
 class Store extends Memory {
 
@@ -170,6 +170,8 @@ const Activity = declare([ESPUtil.Singleton, ESPUtil.Monitor], {
                 if (!queue) {
                     if (item.ClusterName) {
                         queue = ESPQueue.GetTargetCluster(item.ClusterName);
+                    } else if (item.Instance) {
+                        queue = ESPQueue.GetServerJobQueue(item.Instance);
                     } else {
                         queue = ESPQueue.GetServerJobQueue(item.ServerName);
                     }

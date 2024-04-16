@@ -51,12 +51,12 @@ protected:
         const LogMsgCategory* catPtr = nullptr;
         switch (flag & ReportCategoryMask)
         {
-        case ReportDisaster:  catPtr = &MCdisaster; break;
+        case ReportDisaster:  catPtr = &MCoperatorDisaster; break;
         case ReportAError:    catPtr = &MCauditError; break;
-        case ReportIError:    catPtr = &MCinternalError; break;
+        case ReportIError:    catPtr = &MCdebugError; break;
         case ReportOError:    catPtr = &MCoperatorError; break;
         case ReportUError:    catPtr = &MCuserError; break;
-        case ReportIWarning:  catPtr = &MCinternalWarning; break;
+        case ReportIWarning:  catPtr = &MCdebugWarning; break;
         case ReportOWarning:  catPtr = &MCoperatorWarning; break;
         case ReportUWarning:  catPtr = &MCuserWarning; break;
         case ReportDProgress: catPtr = &MCdebugProgress; break;
@@ -65,7 +65,6 @@ protected:
         case ReportDInfo:     catPtr = &MCdebugInfo; break;
         case ReportOInfo:     catPtr = &MCoperatorInfo; break;
         case ReportUInfo:     catPtr = &MCuserInfo; break;
-        case ReportStats:     catPtr = &MCstats; break;
         default: return;
         }
         LOG(*catPtr, "%s [%s]: %s", level, component, msg);
@@ -79,6 +78,9 @@ static const char* Scope_BindingMethod = "BindingMethod";
 static const char* Var_Service = "service";
 static const char* Var_Method = "method";
 #define ANNOTATION_AUTH_FEATURE "auth_feature"
+
+// Config flag to return the schemaLocation on non-Soap Fault method responses
+#define ANNOTATION_RETURNSCHEMALOCATION_ONOK "returnSchemaLocationOnOK"
 
 // The scope mapper and level mapper instances could be static service members, but enabling the
 // declaration of these types in the header requires inclusion of headers that unnecessarily affect
@@ -205,6 +207,62 @@ bool EsdlServiceImpl::loadLoggingManager(Owned<ILoggingManager>& manager, IPTree
     return true;
 }
 
+template <typename file_loader_t>
+inline bool EsdlServiceImpl::initMaskingEngineDirectory(const char* dir, const char* mask, file_loader_t loader)
+{
+    bool failed = false;
+    Owned<IDirectoryIterator> files = createDirectoryIterator(dir, mask, false, false);
+    ForEach(*files)
+    {
+        const char* filename = files->query().queryFilename();
+        Owned<IPropertyTree> ptree = loader(filename, 0, ptr_ignoreWhiteSpace, nullptr);
+        if (ptree)
+        {
+            if (!initMaskingEngineEmbedded(m_oStaticMaskingEngine, ptree, true))
+                failed = true;
+        }
+    }
+    return !failed;
+}
+
+bool EsdlServiceImpl::initMaskingEngineEmbedded(Owned<IDataMaskingEngine>& engine, const IPropertyTree* ptree, bool required)
+{
+    if (!ptree)
+        return !required;
+    bool created = false;
+    if (!engine)
+    {
+        engine.setown(new DataMasking::CEngine());
+        created = true;
+    }
+    size_t addedProfiles = engine->loadProfiles(*ptree);
+    switch (addedProfiles)
+    {
+    case size_t(-1):
+        if (created)
+            engine.clear();
+        return false;
+    case 0:
+        if (created)
+            engine.clear();
+        return !required;
+    default:
+        DBGLOG("initMaskingEngineEmbedded added %zu profiles to engine %p", addedProfiles, engine.get());
+        return true;
+    }
+}
+
+bool EsdlServiceImpl::initMaskingEngineDirectory(const char* dir)
+{
+    bool failed = false;
+    if (!isEmptyString(dir))
+    {
+        if (!initMaskingEngineDirectory(dir, "*.xml", createPTreeFromXMLFile))
+            failed = true;
+    }
+    return !failed;
+}
+
 void EsdlServiceImpl::init(const IPropertyTree *cfg,
                            const char *process,
                            const char *service)
@@ -228,6 +286,14 @@ void EsdlServiceImpl::init(const IPropertyTree *cfg,
             throw MakeStringException(-1, "Could not determine ESDL service configuration type: esp process '%s' service name '%s'", process, service);
 
         loadLoggingManager(m_oStaticLoggingManager, srvcfg->queryPropTree("LoggingManager"));
+
+        bool initMaskingFailed = false;
+        if (!initMaskingEngineDirectory(espcfg->queryProp("@maskingProfileDir")))
+            initMaskingFailed = true;
+        if (!initMaskingEngineEmbedded(m_oStaticMaskingEngine, srvcfg, false))
+            initMaskingFailed = true;
+        if (initMaskingFailed)
+            throw makeStringExceptionV(-1, "ESDL service '%s' failed to load masking configuration", m_espServiceName.str());
 
         m_usesURLNameSpace = false;
         m_namespaceScheme.set(srvcfg->queryProp("@namespaceScheme"));
@@ -606,6 +672,8 @@ void EsdlServiceImpl::configureTargets(IPropertyTree *cfg, const char *service)
         const char*      svcAuthBnd  = definition_cfg->queryProp("@" ANNOTATION_AUTH_FEATURE);
         m_methodAccessMaps.kill();
 
+        m_returnSchemaLocationOnOK = definition_cfg->getPropBool("@" ANNOTATION_RETURNSCHEMALOCATION_ONOK);
+
         Owned<IPropertyTreeIterator> iter = m_pServiceMethodTargets->getElements("Target");
         ForEach(*iter)
         {
@@ -668,6 +736,7 @@ void EsdlServiceImpl::configureTargets(IPropertyTree *cfg, const char *service)
                 configureUrlMethod(method, methodCfg);
             DBGLOG("Method %s configured", method);
         }
+        m_transforms->bindFunctionCalls();
     }
     else
         DBGLOG("ESDL Binding: While configuring method targets: method configuration not found for %s.", service);
@@ -676,6 +745,13 @@ void EsdlServiceImpl::configureTargets(IPropertyTree *cfg, const char *service)
 void EsdlServiceImpl::configureLogging(IPropertyTree* cfg)
 {
     loadLoggingManager(m_oDynamicLoggingManager, cfg);
+}
+
+void EsdlServiceImpl::configureMasking(IPropertyTree* cfg)
+{
+    m_oDynamicMaskingEngine.clear();
+    if (!initMaskingEngineEmbedded(m_oDynamicMaskingEngine, cfg, false))
+        throw makeStringException(-1, "failure loading masking configuration");
 }
 
 String* EsdlServiceImpl::getExplicitNamespace(const char* method) const
@@ -732,7 +808,7 @@ IEsdlScriptContext* EsdlServiceImpl::checkCreateEsdlServiceScriptContext(IEspCon
     if (!serviceEPm && !methodEPm)
         return nullptr;
 
-    Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(&context);
+    Owned<IEsdlScriptContext> scriptContext = createEsdlScriptContext(&context, m_transforms->queryFunctionRegister(mthdef.queryMethodName()), LINK(maskingEngine()));
 
     scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "service", srvdef.queryName());
     scriptContext->setAttribute(ESDLScriptCtxSection_ESDLInfo, "method", mthdef.queryMethodName());
@@ -745,6 +821,8 @@ IEsdlScriptContext* EsdlServiceImpl::checkCreateEsdlServiceScriptContext(IEspCon
         scriptContext->setContent(ESDLScriptCtxSection_TargetConfig, tgtcfg);
     if (m_oEspBindingCfg)
         scriptContext->setContent(ESDLScriptCtxSection_BindingConfig, m_oEspBindingCfg.get());
+
+    scriptContext->enableMasking(nullptr, 0);
     return scriptContext.getClear();
 }
 
@@ -1048,7 +1126,7 @@ void EsdlServiceImpl::handleServiceRequest(IEspContext &context,
             context.addTraceSummaryTimeStamp(LogNormal, "end-reqproc", TXSUMMARY_GRP_CORE|TXSUMMARY_GRP_ENTERPRISE);
             context.addTraceSummaryValue(LogNormal, "custom_fields.recCount", recordCount, TXSUMMARY_GRP_ENTERPRISE);
 
-            if(isPublishedQuery(implType))
+            if(isPublishedQuery(implType) || implType==EsdlMethodImplScript)
                 tgtctx.setown(createTargetContext(context, tgtcfg.get(), srvdef, mthdef, req));
 
             reqcontent.set(reqWriter->str());
@@ -1075,6 +1153,7 @@ void EsdlServiceImpl::handleServiceRequest(IEspContext &context,
             {
                 m_pEsdlTransformer->process(context, EsdlResponseMode, srvdef.queryName(), mthdef.queryName(), out, origResp.str(), txResultFlags, ns, schema_location);
                 runPostEsdlScript(context, scriptContext, srvdef, mthdef, out, txResultFlags, ns, schema_location);
+                logdata.set("<LogDatasets/>");
             }
         }
     }
@@ -1492,9 +1571,10 @@ void EsdlServiceImpl::sendTargetSOAP(IEspContext & context,
         httpclient->setPassword(password.str());
     }
 
-    Owned<IProperties> headers = createProperties();
-    headers->setProp(HTTP_HEADER_HPCC_GLOBAL_ID, context.getGlobalId());
-    headers->setProp(HTTP_HEADER_HPCC_CALLER_ID, context.getLocalId());
+    ISpan * activeSpan = context.queryActiveSpan();
+    OwnedSpanScope clientSpan(activeSpan->createClientSpan("soapcall"));
+
+    Owned<IProperties> headers = ::getClientHeaders(clientSpan);
     StringBuffer status;
     StringBuffer clreq(req);
 
@@ -1561,7 +1641,7 @@ void EsdlServiceImpl::getTargetResponseFile(IEspContext & context,
 }
 
 /*
-    Builds up the request string into the 'reqStr' buffer in a format 
+    Builds up the request string into the 'reqStr' buffer in a format
     suitable for submission to back-end service.
  */
 
@@ -1577,7 +1657,7 @@ void EsdlServiceImpl::prepareFinalRequest(IEspContext &context,
                                         StringBuffer &reqProcessed)
 {
     const char *mthName = mthdef.queryName();
-    
+
     reqProcessed.append(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">");
@@ -1586,7 +1666,7 @@ void EsdlServiceImpl::prepareFinalRequest(IEspContext &context,
     {
         const char *tgtQueryName =  tgtcfg->queryProp("@queryname");
         if (!isEmptyString(tgtQueryName))
-        {   
+        {
             reqProcessed.append("<soap:Body><").append(tgtQueryName).append(">");
             reqProcessed.appendf("<_TransactionId>%s</_TransactionId>", context.queryTransactionID());
 
@@ -1625,7 +1705,7 @@ void EsdlServiceImpl::prepareFinalRequest(IEspContext &context,
                     reqProcessed.trim();
                 }
             }
-        } 
+        }
         else
         {
             // Use WsException here because both callers throw this type of exception
@@ -1690,7 +1770,7 @@ EsdlBindingImpl::EsdlBindingImpl()
 
 EsdlBindingImpl::EsdlBindingImpl(IPropertyTree* cfg, IPropertyTree* esdlArchive, const char *binding,  const char *process) : CHttpSoapBinding(cfg, binding, process)
 {
-    m_pCentralStore.setown(createEsdlCentralStore());
+    m_pCentralStore.setown(getEsdlCentralStore(true));
     m_bindingName.set(binding);
     m_processName.set(process);
 
@@ -1763,6 +1843,8 @@ EsdlBindingImpl::EsdlBindingImpl(IPropertyTree* cfg, IPropertyTree* esdlArchive,
 
 IPropertyTree* EsdlBindingImpl::fetchESDLBinding(const char *process, const char *bindingName, const char * stateFileName)
 {
+    if (!m_pCentralStore)
+        return nullptr;
     if(isAttached())
     {
         Owned<IPropertyTree> esdlBinding = m_pCentralStore->fetchBinding(process, bindingName);
@@ -1838,9 +1920,9 @@ bool EsdlBindingImpl::loadLocalDefinitions(IPropertyTree *esdlArchive, const cha
 /* if the target ESDL binding contains an ESDL service definition matching this espServiceName, load it.
  * Otherwise, load the first definition available, and report it via the loadedServiceName
  */
-bool EsdlBindingImpl::loadDefinitions(const char * espServiceName, Owned<IEsdlDefinition>& esdl, IPropertyTree * config, StringBuffer & loadedServiceName, const char * stateFileName)
+bool EsdlBindingImpl::loadStoredDefinitions(const char * espServiceName, Owned<IEsdlDefinition>& esdl, IPropertyTree * config, StringBuffer & loadedServiceName, const char * stateFileName)
 {
-    if (!esdl || !config)
+    if (!esdl || !config || !m_pCentralStore)
         return false;
 
     //Loading first ESDL definition encountered, informed that espServiceName is to be treated as arbitrary
@@ -1958,13 +2040,15 @@ void EsdlBindingImpl::saveDESDLState()
 
 bool EsdlBindingImpl::reloadDefinitionsFromCentralStore(IPropertyTree * esdlBndCng, StringBuffer & loadedname)
 {
+    if (!m_pCentralStore)
+        return false;
     if (esdlBndCng == nullptr)
         esdlBndCng = m_esdlBndCfg.get();
     if ( m_pESDLService )
     {
         Owned<IEsdlDefinition> tempESDLDef = createNewEsdlDefinition();
 
-        if (!loadDefinitions(m_espServiceName.get(), tempESDLDef, esdlBndCng, loadedname, m_esdlStateFilesLocation.str()))
+        if (!loadStoredDefinitions(m_espServiceName.get(), tempESDLDef, esdlBndCng, loadedname, m_esdlStateFilesLocation.str()))
         {
             OERRLOG("Failed to reload ESDL definitions");
             return false;
@@ -1985,6 +2069,8 @@ bool EsdlBindingImpl::reloadDefinitionsFromCentralStore(IPropertyTree * esdlBndC
 
 bool EsdlBindingImpl::reloadBindingFromCentralStore(const char* bindingId)
 {
+    if (!m_pCentralStore)
+        return false;
     if(!bindingId || !*bindingId)
         return false;
     if(m_bindingId.length() == 0 || strcmp(m_bindingId.str(), bindingId) != 0)
@@ -2019,6 +2105,7 @@ bool EsdlBindingImpl::reloadBindingFromCentralStore(const char* bindingId)
             m_pESDLService->m_espServiceType.set(loadedname);
             m_pESDLService->configureTargets(tempEsdlBndCfg, loadedname);
             m_pESDLService->configureLogging(tempEsdlBndCfg->queryPropTree("Definition[1]/LoggingManager"));
+            m_pESDLService->configureMasking(tempEsdlBndCfg->queryPropTree("Definition[1]/Masking"));
             m_esdlBndCfg.setown(tempEsdlBndCfg.getClear());
         }
         else
@@ -2097,7 +2184,7 @@ void EsdlBindingImpl::addService(IPropertyTree *esdlArchive, const char * name,
                 if (esdlArchive)
                     loaded = loadLocalDefinitions(esdlArchive, name, m_esdl, m_esdlBndCfg, loadedservicename);
                 else
-                    loaded = loadDefinitions(name, m_esdl, m_esdlBndCfg, loadedservicename, m_esdlStateFilesLocation.str());
+                    loaded = loadStoredDefinitions(name, m_esdl, m_esdlBndCfg, loadedservicename, m_esdlStateFilesLocation.str());
 
                 if (!loaded)
                 {
@@ -2126,6 +2213,7 @@ void EsdlBindingImpl::addService(IPropertyTree *esdlArchive, const char * name,
 
                 m_pESDLService->configureTargets(m_esdlBndCfg, name);
                 m_pESDLService->configureLogging(m_esdlBndCfg->queryPropTree("Definition[1]/LoggingManager"));
+                m_pESDLService->configureMasking(m_esdlBndCfg->queryPropTree("Definition[1]/Masking"));
                 CEspBinding::addService(name, host, port, service);
             }
             else
@@ -2163,12 +2251,14 @@ void EsdlBindingImpl::initEsdlServiceInfo(IEsdlDefService &srvdef)
 
     IProperties *xsdparams = createProperties(false);
     xsdparams->setProp( "all_annot_Param", "true()" );
+    xsdparams->setProp( "no_exceptions_inline", "true()" );
     m_xsdgen->setTransformParams(EsdlXslToXsd, xsdparams);
 
     IProperties *wsdlparams = createProperties(false);
     wsdlparams->setProp( "location", StringBuffer().append('\'').append(getWsdlAddress()).append('\'').str() );
     wsdlparams->setProp( "create_wsdl", "true()");
     wsdlparams->setProp( "all_annot_Param", "true()" );
+    wsdlparams->setProp( "no_exceptions_inline", "true()" );
     m_xsdgen->setTransformParams(EsdlXslToWsdl, wsdlparams);
 
     StringBuffer xsltpath(getCFD());
@@ -2262,7 +2352,9 @@ int EsdlBindingImpl::onGetInstantQuery(IEspContext &context,
                     StringBuffer ns, schemaLocation;
                     generateNamespace(context, request, srvdef->queryName(), mthdef->queryName(), ns);
 
-                    getSchemaLocation(context, request, schemaLocation);
+                    if(m_pESDLService->m_returnSchemaLocationOnOK)
+                        getSchemaLocation(context, request, ns, schemaLocation);
+
                     context.setESDLBindingID(m_bindingId.get());
 
                     StringBuffer origResp;
@@ -2582,7 +2674,8 @@ int EsdlBindingImpl::HandleSoapRequest(CHttpRequest* request,
             Owned<IPropertyTree> tgtctx;
 
             // Echo back the reqeust namespace, don't generate it here
-            getSchemaLocation(*ctx, request, schemaLocation);
+            if(m_pESDLService->m_returnSchemaLocationOnOK)
+                getSchemaLocation(*ctx, request, ns, schemaLocation);
 
             ctx->setESDLBindingID(m_bindingId.get());
 
@@ -3402,7 +3495,8 @@ void EsdlBindingImpl::handleJSONPost(CHttpRequest *request, CHttpResponse *respo
 
         StringBuffer ns, schemaLocation;
         generateNamespace(*ctx, request, serviceName, methodName, ns);
-        getSchemaLocation(*ctx, request, schemaLocation);
+        if(m_pESDLService->m_returnSchemaLocationOnOK)
+            getSchemaLocation(*ctx, request, ns, schemaLocation);
 
         ctx->setESDLBindingID(m_bindingId.get());
         StringBuffer origResp;
@@ -3895,7 +3989,8 @@ int EsdlBindingImpl::onGetFile(IEspContext &context, CHttpRequest* request, CHtt
 
     StringBuffer filepath;
     getBaseFilePath(filepath);
-    if (strchr("\\/", filepath.charAt(filepath.length()-1))==NULL)
+    // Coverity scan issue #1527056 reports filepath could be empty after getBaseFilePath
+    if (!filepath.isEmpty() && strchr("\\/", filepath.charAt(filepath.length()-1))==NULL)
         filepath.append("/");
     filepath.append(pathex);
     response->httpContentFromFile(filepath.str());

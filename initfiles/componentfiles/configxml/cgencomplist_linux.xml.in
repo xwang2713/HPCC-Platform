@@ -54,10 +54,6 @@
   <Component name="backupnode" processName="BackupNode" schema="backupnode.xsd">
     <File name="backupnode_vars.xsl" method="xslt" destName="backupnode.conf"/>
   </Component>
-  <Component name="sparkthor" processName="SparkThor" schema="sparkThor.xsd">
-    <File name="sparkThor.xsl" method="xslt" destName="spark-hpcc-env.sh"/>
-    <File name="spark-defaults.xsl" method="xslt" destName="spark-defaults.conf"/>
-  </Component>
   <Component name="ldapServer" processName="LDAPServerProcess">
     <File name="ldapserver.xsl" method="xslt" destName=".ldaprc"/>
   </Component>
@@ -132,9 +128,6 @@
   </Component>
   <Component name="ws_ssn" processName='EspService' schema='ws_ssn.xsd' deployable='no'>
     <File name="@temp/esp_service.xsl" method="esp_service_module" destName="ws_ssn.xml" destPath="@temp"/>
-  </Component>
-  <Component name="ws_thing_finder" processName='EspService' schema='WsThingFinder.xsd' deployable='no'>
-    <File name="@temp/esp_service.xsl" method="esp_service_module"/>
   </Component>
   <Component name="wsaccurint" processName='EspService' schema='wsaccurint.xsd' deployable='no'>
     <File name="@temp/esp_service.xsl" method="esp_service_module"/>

@@ -79,7 +79,8 @@
   specified <emphasis>instance</emphasis> is greater than the number of
   occurrences of the <emphasis>target</emphasis> in the
   <emphasis>source</emphasis>, <emphasis role="bold">Find</emphasis> returns
-  zero (0).</para>
+  zero (0). Trailing spaces are considered to be significant when
+  comparing.</para>
 
   <para>Example:</para>
 
@@ -99,4 +100,6 @@ D := IF(STD.Str.Find('', 'BD', 1) = 0,
    'Success',
    'Failure - 4');  //success
 </programlisting>
+
+  <para>See Also: <link linkend="Contains">Contains</link></para>
 </sect1>

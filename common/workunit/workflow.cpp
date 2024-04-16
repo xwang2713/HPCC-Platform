@@ -22,6 +22,7 @@
 #include "jregexp.hpp"
 #include "workflow.hpp"
 #include "dasds.hpp"
+#include "wfcontext.hpp"
 
 //------------------------------------------------------------------------------------------
 /* Parallel Workflow explanation
@@ -532,7 +533,7 @@ public:
     {
         if(logicalSuccessors.empty())
             throwUnexpected();
-        logicalSuccessors.clear();
+        logicalSuccessors.kill();
     }
     IWorkflowDependencyIterator * getDependentSuccessors() const
     {
@@ -2173,8 +2174,9 @@ void WorkflowMachine::performItem(unsigned wfid, unsigned scheduledWfid)
     currentWfid = wfid;
     currentScheduledWfid = scheduledWfid;
     timestamp_type startTime = getTimeStampNowValue();
+    GlobalCodeContextExtra gctx(ctx, wfid);
     CCycleTimer timer;
-    process->perform(ctx, wfid);
+    process->perform(&gctx, wfid);
     noteTiming(wfid, startTime, timer.elapsedNs());
     scheduledWfid = wfidStack.popGet();
     currentWfid = wfidStack.popGet();

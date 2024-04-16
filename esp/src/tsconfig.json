@@ -18,23 +18,32 @@
         "allowJs": true,
         "skipLibCheck": true,
         "noImplicitUseStrict": true,
+        "ignoreDeprecations": "5.0",
         "downlevelIteration": true,
         "jsx": "react",
         "lib": [
             "dom",
-            "es2015"
+            "es2019"
         ],
         "typeRoots": [],
         "types": [],
         "paths": {
             "@hpcc-js/*": [
                 "./node_modules/@hpcc-js/*",
-                "../../../hpcc-js/packages/*"
+                "../../../hpcc-js/packages/*",
+                "../../../Visualization/packages/*"
             ]
         }
     },
     "include": [
         "src/**/*",
         "src-react/**/*"
-    ]
+    ],
+    "watchOptions": {
+        "watchFile": "useFsEvents",
+        "watchDirectory": "useFsEvents",
+        "excludeDirectories": [
+            "**/node_modules"
+        ],
+    }
 }

@@ -54,6 +54,7 @@
 #include "jmisc.hpp"
 #include "jstats.h"
 #include "ctfile.hpp"
+#include "jhinplace.hpp"
 
 #include "jhtree.ipp"
 #include "keybuild.hpp"
@@ -61,20 +62,35 @@
 #include "eclhelper_dyn.hpp"
 #include "rtlrecord.hpp"
 #include "rtldynfield.hpp"
+#include "eclhelper_base.hpp"
+
+constexpr __uint64 defaultFetchThresholdNs = 20000; // Assume anything < 20us comes from the page cache, everything above probably went to disk
 
 static std::atomic<CKeyStore *> keyStore(nullptr);
 static unsigned defaultKeyIndexLimit = 200;
 static CNodeCache *nodeCache = NULL;
 static CriticalSection *initCrit = NULL;
+static __uint64 fetchThresholdCycles = 0;
 
 bool useMemoryMappedIndexes = false;
 bool linuxYield = false;
-bool traceSmartStepping = false;
 bool flushJHtreeCacheOnOOM = true;
+std::atomic<unsigned __int64> branchSearchCycles{0};
+std::atomic<unsigned __int64> leafSearchCycles{0};
+
+static cycle_t traceCacheLockingFrequency{0};
+static cycle_t traceNodeLoadFrequency{0};
+static cycle_t traceCacheLockingThreshold{0};
+static cycle_t traceNodeLoadThreshold{0};
 
 MODULE_INIT(INIT_PRIORITY_JHTREE_JHTREE)
 {
     initCrit = new CriticalSection;
+    fetchThresholdCycles = nanosec_to_cycle(defaultFetchThresholdNs);
+    traceCacheLockingFrequency = millisec_to_cycle(60000);          // Report locking delays at most once per minute
+    traceNodeLoadFrequency = millisec_to_cycle(60000);              // Report slow loads at most once per minute
+    traceCacheLockingThreshold = millisec_to_cycle(50);             // Report locks that take > 50ms
+    traceNodeLoadThreshold = millisec_to_cycle(20);                 // Report node loads that take > 5ms
     return 1;
 }
 
@@ -83,6 +99,7 @@ MODULE_EXIT()
     delete initCrit;
     delete keyStore.load(std::memory_order_relaxed);
     ::Release((CInterface*)nodeCache);
+    nodeCache = nullptr;
 }
 
 //#define DUMP_NODES
@@ -228,13 +245,17 @@ bool SegMonitorList::incrementKey(unsigned segno, void *keyBuffer) const
     }
 }
 
-unsigned SegMonitorList::_lastRealSeg() const
+unsigned SegMonitorList::_lastRealSeg()
 {
+    unfiltered = false;
     unsigned seg = segMonitors.length();
     for (;;)
     {
         if (!seg)
+        {
+            unfiltered = true;
             return 0;
+        }
         seg--;
         if (!segMonitors.item(seg).isWild()) // MORE - why not just remove them? Stepping/overrides?
             return seg;
@@ -329,7 +350,8 @@ static UnexpectedVirtualFieldCallback unexpectedFieldCallback;
 class jhtree_decl CKeyLevelManager : implements IKeyManager, public CInterface
 {
 protected:
-    KeyStatsCollector stats;
+    IContextLogger *ctx = nullptr;
+    IContextLogger *activeCtx = nullptr;
     Owned <IIndexFilterList> filter;
     IKeyCursor *keyCursor;
     ConstPointerArray activeBlobs;
@@ -347,7 +369,7 @@ public:
     IMPLEMENT_IINTERFACE;
 
     CKeyLevelManager(const RtlRecord &_recInfo, IKeyIndex * _key, IContextLogger *_ctx, bool _newFilters, bool _logExcessiveSeeks)
-    : stats(_ctx), newFilters(_newFilters), logExcessiveSeeks(_logExcessiveSeeks)
+    : ctx(_ctx), newFilters(_newFilters), logExcessiveSeeks(_logExcessiveSeeks)
     {
         if (newFilters)
             filter.setown(new IndexRowFilter(_recInfo));
@@ -369,31 +391,6 @@ public:
         return keyCursor ? 1 : 0;
     }
 
-    virtual unsigned querySeeks() const
-    {
-        return stats.seeks;
-    }
-
-    virtual unsigned queryScans() const
-    {
-        return stats.scans;
-    }
-
-    virtual unsigned querySkips() const
-    {
-        return stats.skips;
-    }
-
-    virtual void resetCounts()
-    {
-        stats.reset();
-    }
-
-    virtual unsigned queryWildSeeks() const
-    {
-        return stats.wildseeks;
-    }
-
     void setKey(IKeyIndexBase * _key)
     {
         ::Release(keyCursor);
@@ -409,6 +406,9 @@ public:
                 keyedSize = ki->keyedSize();
             partitionFieldMask = ki->getPartitionFieldMask();
             indexParts = ki->numPartitions();
+
+            // If TLK don't collect context information
+            activeCtx = ki->isTopLevelKey() ? nullptr : ctx;
         }
     }
 
@@ -463,17 +463,17 @@ public:
         filter->append(option, fieldFilter);
     }
 
-    inline const byte *queryKeyBuffer()
+    inline const byte *queryKeyBuffer() override
     {
         if(layoutTrans)
         {
             buf.setLength(0);
             MemoryBufferBuilder aBuilder(buf, 0);
-            layoutSize = layoutTrans->translate(aBuilder, unexpectedFieldCallback, reinterpret_cast<byte const *>(keyCursor->queryKeyBuffer()));
+            layoutSize = layoutTrans->translate(aBuilder, unexpectedFieldCallback, keyCursor->queryRecordBuffer());
             return aBuilder.getSelf();
         }
         else
-            return reinterpret_cast<byte const *>(keyCursor->queryKeyBuffer());
+            return keyCursor->queryRecordBuffer();
     }
 
     inline size32_t queryRowSize()
@@ -489,29 +489,34 @@ public:
         return keyCursor ? keyCursor->getSequence() : 0;
     }
 
+    virtual offset_t queryFPos() const override
+    {
+        return keyCursor ? keyCursor->getFPos() : 0;
+    }
+
     virtual bool lookup(bool exact)
     {
         if (keyCursor)
-            return keyCursor->lookup(exact, stats);
+            return keyCursor->lookup(exact, activeCtx);
         else
             return false;
     }
 
     virtual bool lookupSkip(const void *seek, size32_t seekOffset, size32_t seeklen)
     {
-        return keyCursor ? keyCursor->lookupSkip(seek, seekOffset, seeklen, stats) : false;
+        return keyCursor ? keyCursor->lookupSkip(seek, seekOffset, seeklen, activeCtx) : false;
     }
 
     unsigned __int64 getCount()
     {
         assertex(keyCursor);
-        return keyCursor->getCount(stats);
+        return keyCursor->getCount(activeCtx);
     }
 
     unsigned __int64 getCurrentRangeCount(unsigned groupSegCount)
     {
         assertex(keyCursor);
-        return keyCursor->getCurrentRangeCount(groupSegCount, stats);
+        return keyCursor->getCurrentRangeCount(groupSegCount, activeCtx);
     }
 
     bool nextRange(unsigned groupSegCount)
@@ -523,7 +528,7 @@ public:
     unsigned __int64 checkCount(unsigned __int64 max)
     {
         assertex(keyCursor);
-        return keyCursor->checkCount(max, stats);
+        return keyCursor->checkCount(max, activeCtx);
     }
 
     virtual void serializeCursorPos(MemoryBuffer &mb)
@@ -533,12 +538,12 @@ public:
 
     virtual void deserializeCursorPos(MemoryBuffer &mb)
     {
-        keyCursor->deserializeCursorPos(mb, stats);
+        keyCursor->deserializeCursorPos(mb, activeCtx);
     }
 
-    virtual const byte *loadBlob(unsigned __int64 blobid, size32_t &blobsize)
+    virtual const byte *loadBlob(unsigned __int64 blobid, size32_t &blobsize, IContextLogger *ctx)
     {
-        const byte *ret = keyCursor->loadBlob(blobid, blobsize);
+        const byte *ret = keyCursor->loadBlob(blobid, blobsize, ctx);
         activeBlobs.append(ret);
         return ret;
     }
@@ -567,11 +572,40 @@ public:
         filter->describe(out);
     }
 
+    virtual void mergeStats(CRuntimeStatisticCollection & targetStats) const
+    {
+        if (keyCursor)
+            keyCursor->mergeStats(targetStats); // merge IO stats
+    }
 };
 
 
 ///////////////////////////////////////////////////////////////////////////////
 
+enum CacheType : unsigned
+{
+    CacheBranch = 0,
+    CacheLeaf = 1,
+    CacheBlob = 2,
+    //CacheTLK?
+    CacheMax = 3
+};
+static constexpr const char * cacheTypeText[CacheMax]  = { "branch", "leaf", "blob" };
+
+static_assert((unsigned)CacheBranch == (unsigned)NodeBranch, "Mismatch Cache Branch");
+static_assert((unsigned)CacheLeaf == (unsigned)NodeLeaf, "Mismatch Cache Leaf");
+static_assert((unsigned)CacheBlob == (unsigned)NodeBlob, "Mismatch Cache Blob");
+
+constexpr StatisticKind addStatId[CacheMax] = { StNumNodeCacheAdds, StNumLeafCacheAdds, StNumBlobCacheAdds };
+constexpr StatisticKind hitStatId[CacheMax] = { StNumNodeCacheHits, StNumLeafCacheHits, StNumBlobCacheHits };
+constexpr StatisticKind loadStatId[CacheMax] = { StCycleNodeLoadCycles, StCycleLeafLoadCycles, StCycleBlobLoadCycles };
+constexpr StatisticKind readStatId[CacheMax] = { StCycleNodeReadCycles, StCycleLeafReadCycles, StCycleBlobReadCycles };
+constexpr StatisticKind fetchStatId[CacheMax] = { StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches };
+constexpr StatisticKind fetchTimeId[CacheMax] = { StCycleNodeFetchCycles, StCycleLeafFetchCycles, StCycleBlobFetchCycles };
+
+constexpr RelaxedAtomic<unsigned> * hitMetric[CacheMax] = { &nodeCacheHits, &leafCacheHits, &blobCacheHits };
+constexpr RelaxedAtomic<unsigned> * addMetric[CacheMax] = { &nodeCacheAdds, &leafCacheAdds, &blobCacheAdds };
+constexpr RelaxedAtomic<unsigned> * dupMetric[CacheMax] = { &nodeCacheDups, &leafCacheDups, &blobCacheDups };
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -587,12 +621,46 @@ public:
     bool operator==(const CKeyIdAndPos &other) { return keyId == other.keyId && pos == other.pos; }
 };
 
-class CNodeMapping : public HTMapping<CJHTreeNode, CKeyIdAndPos>
+class CNodeCacheEntry : public CInterface
 {
 public:
-    CNodeMapping(CKeyIdAndPos &fp, CJHTreeNode &et) : HTMapping<CJHTreeNode, CKeyIdAndPos>(et, fp) { }
+    CriticalSection cs;
+private:
+    std::atomic<const CJHTreeNode *> node{nullptr};
+public:
+    ~CNodeCacheEntry()
+    {
+        ::Release(node.load());
+    }
+    inline bool isReady() const
+    {
+        return node != nullptr;
+    }
+    inline const CJHTreeNode *queryNode() const
+    {
+        return node;
+    }
+    inline const CJHTreeNode *getNode() const
+    {
+        assert(isReady());
+        return ::LINK(node.load());
+    }
+    inline void noteReady(const CJHTreeNode *_node)
+    {
+        node = _node;
+    }
+};
+
+class CNodeMapping : public HTMapping<CNodeCacheEntry, CKeyIdAndPos>
+{
+public:
+    CNodeMapping(CKeyIdAndPos &fp, CNodeCacheEntry &et) : HTMapping<CNodeCacheEntry, CKeyIdAndPos>(et, fp) { }
     ~CNodeMapping() { this->et.Release(); }
-    CJHTreeNode &query() { return queryElement(); }
+    const CJHTreeNode *queryNode()
+    {
+        return queryElement().queryNode();
+    }
+    CNodeCacheEntry &query() { return queryElement(); }
 
 //The following pointers are used to maintain the position in the LRU cache
     CNodeMapping * prev = nullptr;
@@ -600,8 +668,7 @@ public:
 };
 
 typedef OwningSimpleHashTableOf<CNodeMapping, CKeyIdAndPos> CNodeTable;
-#define FIXED_NODE_OVERHEAD (sizeof(CJHTreeNode))
-class CNodeMRUCache : public CMRUCacheOf<CKeyIdAndPos, CJHTreeNode, CNodeMapping, CNodeTable>
+class CNodeMRUCache final : public CMRUCacheOf<CKeyIdAndPos, CNodeCacheEntry, CNodeMapping, CNodeTable>
 {
     std::atomic<size32_t> sizeInMem{0};
     size32_t memLimit = 0;
@@ -617,15 +684,31 @@ public:
     virtual void makeSpace()
     {
         // remove LRU until !full
+        // This code could walk the list, rather than restarting at the end each time - but there are unlikely to be
+        // many entries that have no associated node, and nodes could have been associated in the meantime.
         do
         {
-            //Never evict an entry that hasn't yet loaded - otherwise the sizeInMem can become inconsistent
             CNodeMapping *tail = mruList.tail();
-            assertex(tail);
-            if (!tail->queryElement().isReady() )
-                break;
+            if (unlikely(!tail))
+                throw makeStringExceptionV(9999, "Index cache appears full but contains no entries size=%x limit=%x", sizeInMem.load(), memLimit);
 
-            clear(1);
+            //Never evict an entry that hasn't yet loaded - otherwise the sizeInMem can become inconsistent
+            //When running with slow remote storage this can take a long time to be ready - so we need
+            //to walk on to the next entry in the lrulist, otherwise we can run out of memory since nothing
+            //would be removed.
+            while (!tail->queryElement().isReady())
+            {
+                tail = tail->prev;
+                if (!tail)
+                {
+                     // no pages in the cache are ready - this could possibly happen in a tiny race-window where
+                     // sizes in the cache have been updated, but no nodes have yet been associated with the entries.
+                    return;
+                }
+            }
+
+            mruList.remove(tail);
+            table.removeExact(tail);
         }
         while (full());
     }
@@ -634,15 +717,12 @@ public:
         if (((size32_t)-1) == memLimit) return false;
         return sizeInMem > memLimit;
     }
-    virtual void elementAdded(CNodeMapping *mapping)
-    {
-        CJHTreeNode &node = mapping->queryElement();
-        sizeInMem += (FIXED_NODE_OVERHEAD+node.getMemSize());
-    }
     virtual void elementRemoved(CNodeMapping *mapping)
     {
-        CJHTreeNode &node = mapping->queryElement();
-        sizeInMem -= (FIXED_NODE_OVERHEAD+node.getMemSize());
+        const CJHTreeNode *node = mapping->queryNode();
+        //Node may be null if there was a failure loading the node from disk for some reason.
+        if (node)
+            sizeInMem -= node->getMemSize();
     }
     void reportEntries(ICacheInfoRecorder &cacheInfo)
     {
@@ -651,29 +731,25 @@ public:
         {
             CNodeMapping &mapping = iter->query();
             const CKeyIdAndPos &key = mapping.queryFindValue();
-            const CJHTreeNode &node = mapping.queryElement();
-            if (node.isReady())
-                cacheInfo.noteWarm(key.keyId, key.pos, node.getNodeSize(), node.getNodeType());
+            const CNodeCacheEntry &entry = mapping.queryElement();
+            if (entry.isReady())
+            {
+                const CJHTreeNode *node = mapping.queryNode();
+                cacheInfo.noteWarm(key.keyId, key.pos, node->getNodeDiskSize(), node->getNodeType());
+            }
         }
     }
-    void noteReady(CJHTreeNode &node)
+    void noteReady(const CJHTreeNode &node)
     {
-        //On the previous call node.getMemSize() will have returned 0 if it has not been loaded
         sizeInMem += node.getMemSize();
+    }
+    void traceState(StringBuffer & out)
+    {
+        //Should be safe to call outside of a critical section, but values may be inconsistent
+        out.append(table.ordinality()).append(":").append(sizeInMem);
     }
 };
 
-enum CacheType : unsigned
-{
-    CacheBranch = 0,
-    CacheLeaf = 1,
-    CacheBlob = 2,
-    //CacheTLK?
-    CacheMax = 3
-};
-static_assert((unsigned)CacheBranch == (unsigned)NodeBranch, "Mismatch Cache Branch");
-static_assert((unsigned)CacheLeaf == (unsigned)NodeLeaf, "Mismatch Cache Leaf");
-static_assert((unsigned)CacheBlob == (unsigned)NodeBlob, "Mismatch Cache Blob");
 
 class CNodeCache : public CInterface
 {
@@ -681,7 +757,6 @@ private:
     mutable CriticalSection lock[CacheMax];
     CNodeMRUCache cache[CacheMax];
     bool cacheEnabled[CacheMax] = { false, false, false };
-    bool legacyMode = false;
 public:
     CNodeCache(size32_t maxNodeMem, size32_t maxLeaveMem, size32_t maxBlobMem)
     {
@@ -690,7 +765,7 @@ public:
         setBlobCacheMem(maxBlobMem);
         // note that each index caches the last blob it unpacked so that sequential blobfetches are still ok
     }
-    CJHTreeNode *getNode(INodeLoader *key, unsigned keyID, offset_t pos, NodeType type, IContextLogger *ctx, bool isTLK);
+    const CJHTreeNode *getNode(const INodeLoader *key, unsigned keyID, offset_t pos, NodeType type, IContextLogger *ctx, bool isTLK);
     void getCacheInfo(ICacheInfoRecorder &cacheInfo);
 
 
@@ -706,10 +781,6 @@ public:
     {
         return setCacheMem(newSize, CacheBlob);
     }
-    inline void setLegacyLocking(bool _value)
-    {
-        legacyMode = _value;
-    }
     void clear()
     {
         for (unsigned i=0; i < CacheMax; i++)
@@ -717,6 +788,22 @@ public:
             CriticalBlock block(lock[i]);
             cache[i].kill();
         }
+    }
+    void traceState(StringBuffer & out)
+    {
+        for (unsigned i=0; i < CacheMax; i++)
+        {
+            out.append(cacheTypeText[i]).append('(');
+            cache[i].traceState(out);
+            out.appendf(" [%u:%u:%u]", hitMetric[i]->load(), addMetric[i]->load(), dupMetric[i]->load());
+            out.append(") ");
+        }
+    }
+    void logState()
+    {
+        StringBuffer state;
+        traceState(state);
+        DBGLOG("NodeCache: %s", state.str());
     }
 
 protected:
@@ -742,6 +829,15 @@ void clearNodeCache()
     queryNodeCache()->clear();
 }
 
+
+void logCacheState()
+{
+    if (nodeCache)
+        nodeCache->logState();
+    DBGLOG("Search times branch(%lluns) leaf(%lluns)", cycle_to_nanosec(branchSearchCycles), cycle_to_nanosec(leafSearchCycles));
+    branchSearchCycles = 0;
+    leafSearchCycles = 0;
+}
 
 inline CKeyStore *queryKeyStore()
 {
@@ -785,54 +881,51 @@ unsigned CKeyStore::setKeyCacheLimit(unsigned limit)
 IKeyIndex *CKeyStore::doload(const char *fileName, unsigned crc, IReplicatedFile *part, IFileIO *iFileIO, unsigned fileIdx, IMemoryMappedFile *iMappedFile, bool isTLK)
 {
     // isTLK provided by caller since flags in key header unreliable. If either say it's a TLK, I believe it.
-    {
-        MTIME_SECTION(queryActiveTimer(), "CKeyStore_load");
-        IKeyIndex *keyIndex;
-        StringBuffer fname;
-        fname.append(fileName).append('/').append(crc);
+    IKeyIndex *keyIndex;
+    StringBuffer fname;
+    fname.append(fileName).append('/').append(crc);
 
-        // MORE - holds onto the mutex way too long
-        synchronized block(mutex);
-        keyIndex = keyIndexCache.query(fname);
-        if (NULL == keyIndex)
+    // MORE - holds onto the mutex way too long
+    synchronized block(mutex);
+    keyIndex = keyIndexCache.query(fname);
+    if (NULL == keyIndex)
+    {
+        if (iMappedFile)
         {
-            if (iMappedFile)
-            {
-                assert(!iFileIO && !part);
-                keyIndex = new CMemKeyIndex(getUniqId(fileIdx), LINK(iMappedFile), fname, isTLK);
-            }
-            else if (iFileIO)
-            {
-                assert(!part);
-                keyIndex = new CDiskKeyIndex(getUniqId(fileIdx), LINK(iFileIO), fname, isTLK);
-            }
-            else
-            {
-                assert(fileIdx==(unsigned) -1);
-                Owned<IFile> iFile;
-                if (part)
-                {
-                    iFile.setown(part->open());
-                    if (NULL == iFile.get())
-                        throw MakeStringException(0, "Failed to open index file %s", fileName);
-                }
-                else
-                    iFile.setown(createIFile(fileName));
-                IFileIO *fio = iFile->open(IFOread);
-                if (fio)
-                    keyIndex = new CDiskKeyIndex(getUniqId(fileIdx), fio, fname, isTLK);
-                else
-                    throw MakeStringException(0, "Failed to open index file %s", fileName);
-            }
-            keyIndexCache.add(fname, *LINK(keyIndex));
+            assert(!iFileIO && !part);
+            keyIndex = new CMemKeyIndex(getUniqId(fileIdx), LINK(iMappedFile), fname, isTLK);
+        }
+        else if (iFileIO)
+        {
+            assert(!part);
+            keyIndex = new CDiskKeyIndex(getUniqId(fileIdx), LINK(iFileIO), fname, isTLK);
         }
         else
         {
-            LINK(keyIndex);
+            assert(fileIdx==(unsigned) -1);
+            Owned<IFile> iFile;
+            if (part)
+            {
+                iFile.setown(part->open());
+                if (NULL == iFile.get())
+                    throw MakeStringException(0, "Failed to open index file %s", fileName);
+            }
+            else
+                iFile.setown(createIFile(fileName));
+            IFileIO *fio = iFile->open(IFOread);
+            if (fio)
+                keyIndex = new CDiskKeyIndex(getUniqId(fileIdx), fio, fname, isTLK);
+            else
+                throw MakeStringException(0, "Failed to open index file %s", fileName);
         }
-        assertex(NULL != keyIndex);
-        return keyIndex;
+        keyIndexCache.replace(fname, *LINK(keyIndex));
     }
+    else
+    {
+        LINK(keyIndex);
+    }
+    assertex(NULL != keyIndex);
+    return keyIndex;
 }
 
 IKeyIndex *CKeyStore::load(const char *fileName, unsigned crc, IFileIO *iFileIO, unsigned fileIdx, bool isTLK)
@@ -959,6 +1052,28 @@ void CKeyStore::clearCacheEntry(const IFileIO *io)
     }
 }
 
+//
+
+static void noteSeeks(IContextLogger *ctx, unsigned lseeks, unsigned lscans, unsigned lwildseeks)
+{
+    if (ctx)
+    {
+        if (lseeks) ctx->noteStatistic(StNumIndexSeeks, lseeks);
+        if (lscans) ctx->noteStatistic(StNumIndexScans, lscans);
+        if (lwildseeks) ctx->noteStatistic(StNumIndexWildSeeks, lwildseeks);
+    }
+}
+
+static void noteSkips(IContextLogger *ctx, unsigned lskips, unsigned lnullSkips)
+{
+    if (ctx)
+    {
+        if (lskips) ctx->noteStatistic(StNumIndexSkips, lskips);
+        if (lnullSkips) ctx->noteStatistic(StNumIndexNullSkips, lnullSkips);
+    }
+}
+
+
 // CKeyIndex impl.
 
 CKeyIndex::CKeyIndex(unsigned _iD, const char *_name) : name(_name)
@@ -967,11 +1082,34 @@ CKeyIndex::CKeyIndex(unsigned _iD, const char *_name) : name(_name)
     cache = queryNodeCache(); // use one node cache for all key indexes;
     cache->Link();
     keyHdr = NULL;
-    rootNode = NULL;
+    rootNode = nullptr;
     cachedBlobNodePos = 0;
     keySeeks.store(0);
     keyScans.store(0);
     latestGetNodeOffset = 0;
+}
+
+const CJHSearchNode *CKeyIndex::getRootNode() const
+{
+    offset_t rootPos = keyHdr->getRootFPos();
+    Linked<CNodeCache> nodeCache = queryNodeCache();
+    // The root node may be a branch or a leaf (on TLK nodes)
+    NodeType type = getBranchDepth() != 0 ? NodeBranch : NodeLeaf;
+    Owned<const CJHSearchNode> root = (const CJHSearchNode *) nodeCache->getNode(this, iD, rootPos, type, NULL, isTopLevelKey());
+
+    // It's not uncommon for a TLK to have a "root node" that has a single entry in it pointing to a leaf node
+    // with all the info in. In such cases we can avoid a lot of cache lookups by pointing the "root" in the
+    // CKeyIndex directly to the (single) leaf.
+    // You might think it would be ok to do this for non TLK indexes, but it will not work without changes elsewhere.
+    // This extra layer is no longer generated for TLKs unless required, but skipping it here means older 
+    // indexes benefit too.
+    if (root && isTopLevelKey() && !root->isLeaf() && root->getNumKeys()==1)
+    {
+        Owned<const CJHSearchNode> oldRoot = root;
+        rootPos = root->getFPosAt(0);
+        root.setown((const CJHSearchNode *) nodeCache->getNode(this, iD, rootPos, NodeLeaf, NULL, true));
+    }
+    return root.getClear();
 }
 
 void CKeyIndex::init(KeyHdr &hdr, bool isTLK)
@@ -980,31 +1118,13 @@ void CKeyIndex::init(KeyHdr &hdr, bool isTLK)
         hdr.ktype |= HTREE_TOPLEVEL_KEY; // Once upon a time, thor did not set
     else if (hdr.ktype & HTREE_TOPLEVEL_KEY)
         isTLK = true;
+    assertex((hdr.ktype & COL_PREFIX) != 0);   // We have not generated a key without COL_PREFIX set for over 20 years
 
     keyHdr = new CKeyHdr();
     try
     {
         keyHdr->load(hdr);
-        offset_t rootPos = keyHdr->getRootFPos();
-        Linked<CNodeCache> nodeCache = queryNodeCache();
-
-        //The root node is currently a branch - but it may change - so check the branch depth for this index
-        NodeType type = getBranchDepth() != 0 ? NodeBranch : NodeLeaf;
-        rootNode = nodeCache->getNode(this, iD, rootPos, type, NULL, isTLK);
-
-        // It's not uncommon for a TLK to have a "root node" that has a single entry in it pointing to a leaf node
-        // with all the info in. In such cases we can avoid a lot of cache lookups by pointing the "root" in the
-        // CKeyIndex directly to the (single) leaf.
-        // It might also be ok to do this for non TLK indexes though it will be much less common, and has not been tested
-        // We should also consider making a change so that this extra layer is not generated - but skipping it here means older 
-        // indexes benefit too.
-        if (rootNode && isTopLevelKey() && !rootNode->isLeaf() && rootNode->getNumKeys()==1)
-        {
-            Owned<CJHTreeNode> oldRoot = rootNode;
-            rootPos = rootNode->getFPosAt(0);
-            rootNode = nodeCache->getNode(this, iD, rootPos, NodeLeaf, NULL, isTLK);
-        }
-        loadBloomFilters();
+        rootNode = getRootNode();
     }
     catch (IKeyException *ke)
     {
@@ -1033,6 +1153,7 @@ CMemKeyIndex::CMemKeyIndex(unsigned _iD, IMemoryMappedFile *_io, const char *_na
     if (io->length() < sizeof(hdr))
         throw MakeStringException(0, "Failed to read key header: file too small, could not read %u bytes", (unsigned) sizeof(hdr));
     memcpy(&hdr, io->base(), sizeof(hdr));
+
     if (hdr.ktype & USE_TRAILING_HEADER)
     {
         _WINREV(hdr.nodeSize);
@@ -1041,7 +1162,7 @@ CMemKeyIndex::CMemKeyIndex(unsigned _iD, IMemoryMappedFile *_io, const char *_na
     init(hdr, isTLK);
 }
 
-CJHTreeNode *CMemKeyIndex::loadNode(CJHTreeNode * optNode, offset_t pos)
+const CJHTreeNode *CMemKeyIndex::loadNode(cycle_t * fetchCycles, offset_t pos) const
 {
     nodesLoaded++;
     if (pos + keyHdr->getNodeSize() > io->fileSize())
@@ -1053,10 +1174,7 @@ CJHTreeNode *CMemKeyIndex::loadNode(CJHTreeNode * optNode, offset_t pos)
         throw E;
     }
     char *nodeData = (char *) (io->base() + pos);
-    MTIME_SECTION(queryActiveTimer(), "JHTREE read node");
-    if (optNode)
-        return CKeyIndex::loadNode(optNode, nodeData, pos, false);
-    return CKeyIndex::loadNode(nodeData, pos, false);
+    return CKeyIndex::_loadNode(nodeData, pos, false);
 }
 
 CDiskKeyIndex::CDiskKeyIndex(unsigned _iD, IFileIO *_io, const char *_name, bool isTLK)
@@ -1066,7 +1184,13 @@ CDiskKeyIndex::CDiskKeyIndex(unsigned _iD, IFileIO *_io, const char *_name, bool
     KeyHdr hdr;
     if (io->read(0, sizeof(hdr), &hdr) != sizeof(hdr))
         throw MakeStringException(0, "Failed to read key header: file too small, could not read %u bytes", (unsigned) sizeof(hdr));
+
+#ifdef _DEBUG
+    //In debug mode always use the trailing header if it is available to ensure that code path is tested
     if (hdr.ktype & USE_TRAILING_HEADER)
+#else
+    if (hdr.ktype & TRAILING_HEADER_ONLY)
+#endif
     {
         _WINREV(hdr.nodeSize);
         if (!io->read(io->size() - hdr.nodeSize, sizeof(hdr), &hdr))
@@ -1075,13 +1199,14 @@ CDiskKeyIndex::CDiskKeyIndex(unsigned _iD, IFileIO *_io, const char *_name, bool
     init(hdr, isTLK);
 }
 
-CJHTreeNode *CDiskKeyIndex::loadNode(CJHTreeNode * optNode, offset_t pos)
+const CJHTreeNode *CDiskKeyIndex::loadNode(cycle_t * fetchCycles, offset_t pos) const
 {
     nodesLoaded++;
     unsigned nodeSize = keyHdr->getNodeSize();
     MemoryAttr ma;
     char *nodeData = (char *) ma.allocate(nodeSize);
-    MTIME_SECTION(queryActiveTimer(), "JHTREE read node");
+
+    CCycleTimer fetchTimer(fetchCycles != nullptr);
     if (io->read(pos, nodeSize, nodeData) != nodeSize)
     {
         IException *E = MakeStringException(errno, "Error %d reading node at position %" I64F "x", errno, pos); 
@@ -1090,52 +1215,62 @@ CJHTreeNode *CDiskKeyIndex::loadNode(CJHTreeNode * optNode, offset_t pos)
         EXCLOG(E, m.str());
         throw E;
     }
-    if (optNode)
-        return CKeyIndex::loadNode(optNode, nodeData, pos, true);
-    return CKeyIndex::loadNode(nodeData, pos, true);
+    if (fetchCycles)
+        *fetchCycles = fetchTimer.elapsedCycles();
+    return CKeyIndex::_loadNode(nodeData, pos, true);
 }
 
-CJHTreeNode *CKeyIndex::createNode(NodeType type)
+CJHTreeNode *CKeyIndex::_createNode(const NodeHdr &nodeHdr) const
 {
-    switch(type)
+    if (nodeHdr.compressionType == LegacyCompression)
     {
-    case NodeBranch:
-        return new CJHTreeNode();
-    case NodeLeaf:
-        if (keyHdr->isVariable())
-            return new CJHVarTreeNode();
-        else if (keyHdr->isRowCompressed())
-            return new CJHRowCompressedNode();
-        else
-            return new CJHTreeNode();
-    case NodeBlob:
-        return new CJHTreeBlobNode();
-    case NodeMeta:
-        return new CJHTreeMetadataNode();
-    case NodeBloom:
-        return new CJHTreeBloomTableNode();
-    default:
-        throwUnexpected();
+        switch(nodeHdr.nodeType)
+        {
+        case NodeBranch:
+            return new CJHLegacySearchNode();
+        case NodeLeaf:
+            if (keyHdr->isVariable())
+                return new CJHVarTreeNode();
+            else if (keyHdr->isRowCompressed())
+                return new CJHRowCompressedNode();
+            else
+                return new CJHLegacySearchNode();
+        case NodeBlob:
+            return new CJHTreeBlobNode();
+        case NodeMeta:
+            return new CJHTreeMetadataNode();
+        case NodeBloom:
+            return new CJHTreeBloomTableNode();
+        default:
+            throwUnexpected();
+        }
+    }
+    else
+    {
+        switch(nodeHdr.compressionType)
+        {
+        case SplitPayload:
+            assertex(nodeHdr.nodeType== NodeLeaf);    // Should only be using the new format for leaf nodes
+            return new CJHSplitSearchNode();
+        case InplaceCompression:
+            if (nodeHdr.nodeType == NodeLeaf)
+                return new CJHInplaceLeafNode();
+            if (nodeHdr.nodeType == NodeBranch)
+                return new CJHInplaceBranchNode();
+            UNIMPLEMENTED;
+        default:
+            throwUnexpected();
+        }
     }
 }
 
-CJHTreeNode *CKeyIndex::loadNode(char *nodeData, offset_t pos, bool needsCopy)
-{
-    char leafFlag = ((NodeHdr *) nodeData)->leafFlag;
-    Owned<CJHTreeNode> ret = createNode((NodeType)leafFlag);
-    loadNode(ret, nodeData, pos, needsCopy);
-    return ret.getClear();
-}
-
-CJHTreeNode * CKeyIndex::loadNode(CJHTreeNode * ret, char *nodeData, offset_t pos, bool needsCopy)
+CJHTreeNode *CKeyIndex::_loadNode(char *nodeData, offset_t pos, bool needsCopy) const
 {
     try
     {
-        {
-            MTIME_SECTION(queryActiveTimer(), "JHTREE load node");
-            ret->load(keyHdr, nodeData, pos, needsCopy);
-            return ret;
-        }
+        Owned<CJHTreeNode> ret = _createNode(*(NodeHdr *) nodeData);
+        ret->load(keyHdr, nodeData, pos, needsCopy);
+        return ret.getClear();
     }
     catch (IException *E)
     {
@@ -1151,9 +1286,9 @@ CJHTreeNode * CKeyIndex::loadNode(CJHTreeNode * ret, char *nodeData, offset_t po
     }
 }
 
-bool CKeyIndex::isTopLevelKey()
+bool CKeyIndex::isTopLevelKey() const
 {
-    return (keyHdr->getKeyType() & HTREE_TOPLEVEL_KEY) != 0;
+    return isTLK();
 }
 
 bool CKeyIndex::isFullySorted()
@@ -1165,6 +1300,7 @@ __uint64 CKeyIndex::getPartitionFieldMask()
 {
     return keyHdr->getPartitionFieldMask();
 }
+
 unsigned CKeyIndex::numPartitions()
 {
     return keyHdr->numPartitions();
@@ -1176,44 +1312,17 @@ IKeyCursor *CKeyIndex::getCursor(const IIndexFilterList *filter, bool logExcessi
     return new CKeyCursor(*this, filter, logExcessiveSeeks);
 }
 
-CJHTreeNode *CKeyIndex::getNode(offset_t offset, NodeType type, IContextLogger *ctx)
+const CJHSearchNode *CKeyIndex::getNode(offset_t offset, NodeType type, IContextLogger *ctx) const
 { 
     latestGetNodeOffset = offset;
-    CJHTreeNode *node = cache->getNode(this, iD, offset, type, ctx, isTopLevelKey());
-    assertex(!node || type == node->getNodeType());
-    return node;
-}
-
-void dumpNode(FILE *out, CJHTreeNode *node, int length, unsigned rowCount, bool raw)
-{
-    if (!raw)
-        fprintf(out, "Node dump: fpos(%" I64F "d) leaf(%d)\n", node->getFpos(), node->isLeaf());
-    if (rowCount==0 || rowCount > node->getNumKeys())
-        rowCount = node->getNumKeys();
-    for (unsigned int i=0; i<rowCount; i++)
-    {
-        char *dst = (char *) alloca(node->getKeyLen()+50);
-        node->getValueAt(i, dst);
-        if (raw)
-        {
-            fwrite(dst, 1, length, out);
-        }
-        else
-        {
-            offset_t pos = node->getFPosAt(i);
-            StringBuffer s;
-            appendURL(&s, dst, length, true);
-            fprintf(out, "keyVal %d [%" I64F "d] = %s\n", i, pos, s.str());
-        }
-    }
-    if (!raw)
-        fprintf(out, "==========\n");
+    //Call isTLK() rather than isTopLevelKey() so the test is inlined (rather than a virtual)
+    return (CJHSearchNode *)cache->getNode(this, iD, offset, type, ctx, isTLK());
 }
 
 void CKeyIndex::dumpNode(FILE *out, offset_t pos, unsigned count, bool isRaw)
 {
-    Owned<CJHTreeNode> node = loadNode(pos);
-    ::dumpNode(out, node, keySize(), count, isRaw);
+    Owned<const CJHTreeNode> node = loadNode(nullptr, pos);
+    node->dump(out, keySize(), count, isRaw);
 }
 
 bool CKeyIndex::hasSpecialFileposition() const
@@ -1242,23 +1351,52 @@ bool CKeyIndex::hasPayload()
     return keyHdr->hasPayload();
 }
 
-CJHTreeBlobNode *CKeyIndex::getBlobNode(offset_t nodepos)
+const CJHTreeBlobNode *CKeyIndex::getBlobNode(offset_t nodepos, IContextLogger *ctx)
 {
-    CriticalBlock b(blobCacheCrit);
-    if (nodepos != cachedBlobNodePos)
+    Owned<const CJHTreeBlobNode> match;
+    cycle_t readCycles = 0;
+    cycle_t fetchCycles = 0;
     {
-        cachedBlobNode.setown(QUERYINTERFACE(loadNode(nodepos), CJHTreeBlobNode)); // note - don't use the cache
-        cachedBlobNodePos = nodepos;
+        CriticalBlock b(cacheCrit);
+        if (nodepos != cachedBlobNodePos)
+        {
+
+            CCycleTimer blobLoadTimer;
+            Owned<const CJHTreeNode> node = loadNode(&fetchCycles, nodepos); // note - don't use the cache
+            assertex(node->isBlob());
+            cachedBlobNode.setown(static_cast<const CJHTreeBlobNode *>(node.getClear()));
+            cachedBlobNodePos = nodepos;
+            readCycles = blobLoadTimer.elapsedCycles();
+        }
+        match.set(cachedBlobNode);
     }
-    return cachedBlobNode.getLink();
+
+    if (ctx)
+    {
+        if (readCycles != 0)
+        {
+            ctx->noteStatistic(StNumBlobCacheAdds, 1);
+            ctx->noteStatistic(StCycleBlobLoadCycles, readCycles);
+            ctx->noteStatistic(StCycleBlobReadCycles, fetchCycles);
+            if (fetchCycles >= fetchThresholdCycles)
+            {
+                ctx->noteStatistic(StNumBlobDiskFetches, 1);
+                ctx->noteStatistic(StCycleBlobFetchCycles, fetchCycles);
+            }
+        }
+        else
+            ctx->noteStatistic(StNumBlobCacheHits, 1);
+    }
+
+    return match.getClear();
 }
 
-const byte *CKeyIndex::loadBlob(unsigned __int64 blobid, size32_t &blobSize)
+const byte *CKeyIndex::loadBlob(unsigned __int64 blobid, size32_t &blobSize, IContextLogger *ctx)
 {
     offset_t nodepos = blobid & I64C(0xffffffffffff);
     size32_t offset = (size32_t) ((blobid & I64C(0xffff000000000000)) >> 44);
 
-    Owned<CJHTreeBlobNode> blobNode = getBlobNode(nodepos);
+    Owned<const CJHTreeBlobNode> blobNode = getBlobNode(nodepos, ctx);
     size32_t sizeRemaining = blobNode->getTotalBlobSize(offset);
     blobSize = sizeRemaining;
     byte *ret = (byte *) malloc(sizeRemaining);
@@ -1271,7 +1409,7 @@ const byte *CKeyIndex::loadBlob(unsigned __int64 blobid, size32_t &blobSize)
         finger += gotHere;
         if (!sizeRemaining)
             break;
-        blobNode.setown(getBlobNode(blobNode->getRightSib()));
+        blobNode.setown(getBlobNode(blobNode->getRightSib(), ctx));
         offset = 0;
     }
     return ret;
@@ -1284,17 +1422,39 @@ offset_t CKeyIndex::queryMetadataHead()
     return ret;
 }
 
+offset_t CKeyIndex::queryFirstBranchOffset()
+{
+    unsigned branchDepth = getBranchDepth();
+    if (branchDepth == 0) // Only a single leaf - return 0
+        return 0;
+    if (branchDepth == 1) // a single branch node - return the offset of the node
+        return keyHdr->getRootFPos();
+
+    Linked<const CJHSearchNode> cur = rootNode;
+    for (unsigned nextBranch = 2; ; nextBranch++)
+    {
+        offset_t branchOffset = cur->getFPosAt(0);
+        if (nextBranch == branchDepth)
+            return branchOffset;
+        IContextLogger * ctx = nullptr;
+        cur.setown(getNode(branchOffset, NodeBranch, ctx));
+    }
+}
+
 void CKeyIndex::loadBloomFilters()
 {
     offset_t bloomAddr = keyHdr->getHdrStruct()->bloomHead;
     if (!bloomAddr || bloomAddr == static_cast<offset_t>(-1))
+    {
+        bloomFiltersLoaded = true;
         return; // indexes created before introduction of bloomfilter would have FFFF... in this space
+    }
 
     while (bloomAddr)
     {
-        Owned<CJHTreeNode> node = loadNode(bloomAddr);
+        Owned<const CJHTreeNode> node = loadNode(nullptr, bloomAddr);
         assertex(node->isBloom());
-        CJHTreeBloomTableNode &bloomNode = *static_cast<CJHTreeBloomTableNode *>(node.get());
+        CJHTreeBloomTableNode &bloomNode = *(CJHTreeBloomTableNode *)node.get();
         bloomAddr = bloomNode.get8();
         unsigned numHashes = bloomNode.get4();
         __uint64 fields =  bloomNode.get8();
@@ -1303,11 +1463,11 @@ void CKeyIndex::loadBloomFilters()
         bloomTable.ensureCapacity(bloomTableSize);
         for (;;)
         {
-            static_cast<CJHTreeBloomTableNode *>(node.get())->get(bloomTable);
+            static_cast<const CJHTreeBloomTableNode *>(node.get())->get(bloomTable);
             offset_t next = node->getRightSib();
             if (!next)
                 break;
-            node.setown(loadNode(next));
+            node.setown(loadNode(nullptr, next));
             assertex(node->isBloom());
         }
         assertex(bloomTable.length()==bloomTableSize);
@@ -1315,10 +1475,19 @@ void CKeyIndex::loadBloomFilters()
         bloomFilters.append(*new IndexBloomFilter(numHashes, bloomTableSize, (byte *) bloomTable.detach(), fields));
     }
     bloomFilters.sort(IndexBloomFilter::compare);
+    bloomFiltersLoaded = true;
 }
 
 bool CKeyIndex::bloomFilterReject(const IIndexFilterList &segs) const
 {
+    if (segs.isUnfiltered())
+        return false;
+    if (!bloomFiltersLoaded)
+    {
+        CriticalBlock b(cacheCrit);
+        if (!bloomFiltersLoaded)
+            const_cast<CKeyIndex *>(this)->loadBloomFilters();
+    }
     ForEachItemIn(idx, bloomFilters)
     {
         IndexBloomFilter &filter = bloomFilters.item(idx);
@@ -1333,11 +1502,11 @@ IPropertyTree * CKeyIndex::getMetadata()
     offset_t nodepos = queryMetadataHead();
     if(!nodepos)
         return NULL;
-    Owned<CJHTreeMetadataNode> node;
+    Owned<const CJHTreeMetadataNode> node;
     StringBuffer xml;
     while(nodepos)
     {
-        node.setown(QUERYINTERFACE(loadNode(nodepos), CJHTreeMetadataNode));
+        node.setown(QUERYINTERFACE(loadNode(nullptr, nodepos), const CJHTreeMetadataNode));
         node->get(xml);
         nodepos = node->getRightSib();
     }
@@ -1360,7 +1529,7 @@ bool CKeyIndex::prewarmPage(offset_t offset, NodeType type)
 {
     try
     {
-        Owned<CJHTreeNode> page = getNode(offset, type, nullptr);
+        Owned<const CJHTreeNode> page = getNode(offset, type, nullptr);
         return page != nullptr;
     }
     catch(IException *E)
@@ -1370,96 +1539,74 @@ bool CKeyIndex::prewarmPage(offset_t offset, NodeType type)
     return false;
 }
 
-CJHTreeNode *CKeyIndex::locateFirstNode(KeyStatsCollector &stats)
+const CJHSearchNode *CKeyIndex::locateFirstLeafNode(IContextLogger *ctx) const
 {
     keySeeks++;
-    stats.seeks++;
 
-    CJHTreeNode * cur = LINK(rootNode);
+    offset_t leafOffset = keyHdr->getFirstLeafPos();
+    if (leafOffset != (offset_t)-1)
+    {
+        if (leafOffset == 0)
+            return nullptr;
+        return getNode(leafOffset, NodeLeaf, ctx);
+    }
+
+    //Unusual - an index with no elements
+    if (keyHdr->getNumRecords() == 0)
+        return nullptr;
+
+    const CJHSearchNode * cur = LINK(rootNode);
     unsigned depth = 0;
     while (!cur->isLeaf())
     {
-        CJHTreeNode * prev = cur;
+        const CJHTreeNode * prev = cur;
         depth++;
         NodeType type = (depth < getBranchDepth()) ? NodeBranch : NodeLeaf;
-        cur = getNode(cur->getFPosAt(0), type, stats.ctx);
-        //Unusual - an index with no elements
-        if (!cur)
-            return prev;
+        cur = getNode(cur->getFPosAt(0), type, ctx);
+        assertex(cur);
         prev->Release();
     }
     return cur;
 }
 
-CJHTreeNode *CKeyIndex::locateLastNode(KeyStatsCollector &stats)
+const CJHSearchNode *CKeyIndex::locateLastLeafNode(IContextLogger *ctx) const
 {
     keySeeks++;
-    stats.seeks++;
+    noteSeeks(ctx, 1, 0, 0);
 
-    CJHTreeNode * cur = LINK(rootNode);
+    //Unusual - an index with no elements
+    if (keyHdr->getNumRecords() == 0)
+        return nullptr;
+
+    const CJHSearchNode * cur = LINK(rootNode);
     unsigned depth = 0;
     //First find the last leaf node pointed to by the higher level index
     while (!cur->isLeaf())
     {
-        CJHTreeNode * prev = cur;
+        const CJHSearchNode * prev = cur;
         depth++;
         NodeType type = (depth < getBranchDepth()) ? NodeBranch : NodeLeaf;
-        cur = getNode(cur->nextNodeFpos(), type, stats.ctx);
-        //Unusual - an index with no elements
-        if (!cur)
-            return prev;
+        cur = getNode(cur->nextNodeFpos(), type, ctx);
+        assertex(cur);
         prev->Release();
     }
 
-    //Now walk the lead node siblings until there are no more.
+    //Now walk the leaf node siblings until there are no more.
     for (;;)
     {
-        CJHTreeNode * last = cur;
-        cur = getNode(cur->nextNodeFpos(), NodeLeaf, stats.ctx);
+        const CJHSearchNode * last = cur;
+        cur = getNode(cur->nextNodeFpos(), NodeLeaf, ctx);
         if (!cur)
             return last;
         ::Release(last);
     }
 }
 
-
-void KeyStatsCollector::noteSeeks(unsigned lseeks, unsigned lscans, unsigned lwildseeks)
-{
-    seeks += lseeks;
-    scans += lscans;
-    wildseeks += lwildseeks;
-    if (ctx)
-    {
-        if (lseeks) ctx->noteStatistic(StNumIndexSeeks, lseeks);
-        if (lscans) ctx->noteStatistic(StNumIndexScans, lscans);
-        if (lwildseeks) ctx->noteStatistic(StNumIndexWildSeeks, lwildseeks);
-    }
-}
-
-void KeyStatsCollector::noteSkips(unsigned lskips, unsigned lnullSkips)
-{
-    skips += lskips;
-    if (ctx)
-    {
-        if (lskips) ctx->noteStatistic(StNumIndexSkips, lskips);
-        if (lnullSkips) ctx->noteStatistic(StNumIndexNullSkips, lnullSkips);
-    }
-}
-
-void KeyStatsCollector::reset()
-{
-    seeks = 0;
-    scans = 0;
-    wildseeks = 0;
-    skips = 0;
-    nullskips = 0;
-}
-
 CKeyCursor::CKeyCursor(CKeyIndex &_key, const IIndexFilterList *_filter, bool _logExcessiveSeeks)
     : key(OLINK(_key)), filter(_filter), logExcessiveSeeks(_logExcessiveSeeks)
 {
     nodeKey = 0;
-    keyBuffer = (char *) malloc(key.keySize());  // MORE - keyedSize would do eventually
+    recordBuffer = (char *) malloc(key.keySize());  // MORE - would be nice to know real max - is it stored in metadata?
 }
 
 CKeyCursor::CKeyCursor(const CKeyCursor &from)
@@ -1468,8 +1615,9 @@ CKeyCursor::CKeyCursor(const CKeyCursor &from)
     nodeKey = from.nodeKey;
     node.set(from.node);
     unsigned keySize = key.keySize();
-    keyBuffer = (char *) malloc(keySize);  // MORE - keyedSize would do eventually. And we may not even need all of that in the derived case
-    memcpy(keyBuffer, from.keyBuffer, keySize);
+    recordBuffer = (char *) malloc(keySize);  // MORE - would be nice to know real max - is it stored in metadata?
+    memcpy(recordBuffer, from.recordBuffer, key.keyedSize());  // Just make keyed portion valid initially
+    fullBufferValid = false;
     eof = from.eof;
     matched = from.matched;
 }
@@ -1478,7 +1626,7 @@ CKeyCursor::CKeyCursor(const CKeyCursor &from)
 CKeyCursor::~CKeyCursor()
 {
     key.Release();
-    free(keyBuffer);
+    free(recordBuffer);
 }
 
 void CKeyCursor::reset()
@@ -1490,29 +1638,35 @@ void CKeyCursor::reset()
         setLow(0);
 }
 
-bool CKeyCursor::next(char *dst, KeyStatsCollector &stats)
+bool CKeyCursor::next(IContextLogger *ctx)
 {
+    return _next(ctx) && node && node->getKeyAt(nodeKey, recordBuffer);
+}
+
+bool CKeyCursor::_next(IContextLogger *ctx)
+{
+    fullBufferValid = false;
     if (!node)
     {
-        node.setown(key.locateFirstNode(stats));
+        node.setown(key.locateFirstLeafNode(ctx));
         nodeKey = 0;
-        return node && node->getValueAt(nodeKey, dst);
+        return node && node->isKeyAt(nodeKey);
     }
     else
     {
         key.keyScans++;
-        if (!node->getValueAt( ++nodeKey, dst))
+        if (!node->isKeyAt(++nodeKey))
         {
             offset_t rsib = node->getRightSib();
             NodeType type = node->getNodeType();
             node.clear();
             if (rsib != 0)
             {
-                node.setown(key.getNode(rsib, type, stats.ctx));
+                node.setown(key.getNode(rsib, type, ctx));
                 if (node != NULL)
                 {
                     nodeKey = 0;
-                    return node->getValueAt(0, dst);
+                    return node->isKeyAt(0);
                 }
             }
             return false;
@@ -1532,11 +1686,21 @@ size32_t CKeyCursor::getKeyedSize() const
     return key.keyedSize();
 }
 
-const byte *CKeyCursor::queryKeyBuffer() const
+const byte *CKeyCursor::queryRecordBuffer() const
 {
-    return (const byte *) keyBuffer;
+    assertex(node);
+    if (!fullBufferValid)
+    {
+        node->fetchPayload(nodeKey, recordBuffer);
+        fullBufferValid = true;
+    }
+    return (const byte *) recordBuffer;
 }
 
+const byte *CKeyCursor::queryKeyedBuffer() const
+{
+    return (const byte *) recordBuffer;
+}
 
 size32_t CKeyCursor::getSize()
 {
@@ -1544,7 +1708,7 @@ size32_t CKeyCursor::getSize()
     return node->getSizeAt(nodeKey);
 }
 
-offset_t CKeyCursor::getFPos()
+offset_t CKeyCursor::getFPos() const
 {
     assertex(node);
     return node->getFPosAt(nodeKey);
@@ -1556,15 +1720,21 @@ unsigned __int64 CKeyCursor::getSequence()
     return node->getSequence(nodeKey);
 }
 
-bool CKeyCursor::last(char *dst, KeyStatsCollector &stats)
+bool CKeyCursor::_last(IContextLogger *ctx)
 {
-    node.setown(key.locateLastNode(stats));
-    nodeKey = node->getNumKeys()-1;
-    return node->getValueAt( nodeKey, dst );
+    fullBufferValid = false;
+    node.setown(key.locateLastLeafNode(ctx));
+    if (node)
+    {
+        nodeKey = node->getNumKeys()-1;
+        return true;
+    }
+    return false;
 }
 
-bool CKeyCursor::gtEqual(const char *src, char *dst, KeyStatsCollector &stats)
+bool CKeyCursor::_gtEqual(IContextLogger *ctx)
 {
+    fullBufferValid = false;
     key.keySeeks++;
     unsigned lwm = 0;
     unsigned branchDepth = key.getBranchDepth();
@@ -1577,15 +1747,12 @@ bool CKeyCursor::gtEqual(const char *src, char *dst, KeyStatsCollector &stats)
         unsigned numKeys = node->getNumKeys();
         if (nodeKey < numKeys-1)
         {   
-            int rc = node->compareValueAt(src, ++nodeKey);
+            int rc = node->compareValueAt(recordBuffer, ++nodeKey);
             if (rc <= 0)
-            {
-                node->getValueAt(nodeKey, dst);
                 return true; 
-            }
             if (nodeKey < numKeys-1)
             {
-                rc = node->compareValueAt(src, numKeys-1);
+                rc = node->compareValueAt(recordBuffer, numKeys-1);
                 if (rc <= 0)
                     lwm = nodeKey+1;
             }
@@ -1598,18 +1765,8 @@ bool CKeyCursor::gtEqual(const char *src, char *dst, KeyStatsCollector &stats)
     }
     for (;;)
     {
-        unsigned int a = lwm;
-        int b = node->getNumKeys();
         // first search for first GTE entry (result in b(<),a(>=))
-        while ((int)a<b)
-        {
-            int i = a+(b-a)/2;
-            int rc = node->compareValueAt(src, i);
-            if (rc>0)
-                a = i+1;
-            else
-                b = i;
-        }
+        unsigned int a = node->locateGE(recordBuffer, lwm);
         if (node->isLeaf())
         {
             if (a<node->getNumKeys())
@@ -1617,14 +1774,11 @@ bool CKeyCursor::gtEqual(const char *src, char *dst, KeyStatsCollector &stats)
             else
             {
                 offset_t nextPos = node->nextNodeFpos();  // This can happen at eof because of key peculiarity where level above reports ffff as last
-                node.setown(key.getNode(nextPos, NodeLeaf, stats.ctx));
+                node.setown(key.getNode(nextPos, NodeLeaf, ctx));
                 nodeKey = 0;
             }
             if (node)
-            {
-                node->getValueAt(nodeKey, dst);
                 return true; 
-            }
             else
                 return false;
         }
@@ -1635,7 +1789,7 @@ bool CKeyCursor::gtEqual(const char *src, char *dst, KeyStatsCollector &stats)
                 offset_t npos = node->getFPosAt(a);
                 depth++;
                 NodeType type = (depth < branchDepth) ? NodeBranch : NodeLeaf;
-                node.setown(key.getNode(npos, type, stats.ctx));
+                node.setown(key.getNode(npos, type, ctx));
             }
             else
                 return false;
@@ -1643,8 +1797,9 @@ bool CKeyCursor::gtEqual(const char *src, char *dst, KeyStatsCollector &stats)
     }
 }
 
-bool CKeyCursor::ltEqual(const char *src, KeyStatsCollector &stats)
+bool CKeyCursor::_ltEqual(IContextLogger *ctx)
 {
+    fullBufferValid = false;
     key.keySeeks++;
     matched = false;
     unsigned lwm = 0;
@@ -1658,7 +1813,7 @@ bool CKeyCursor::ltEqual(const char *src, KeyStatsCollector &stats)
         unsigned numKeys = node->getNumKeys();
         if (nodeKey < numKeys-1)
         {   
-            int rc = node->compareValueAt(src, ++nodeKey);
+            int rc = node->compareValueAt(recordBuffer, ++nodeKey);
             if (rc < 0)
             {
                 --nodeKey;
@@ -1666,7 +1821,7 @@ bool CKeyCursor::ltEqual(const char *src, KeyStatsCollector &stats)
             }
             if (nodeKey < numKeys-1)
             {
-                rc = node->compareValueAt(src, numKeys-1);
+                rc = node->compareValueAt(recordBuffer, numKeys-1);
                 if (rc < 0)
                     lwm = nodeKey;
             }
@@ -1679,18 +1834,8 @@ bool CKeyCursor::ltEqual(const char *src, KeyStatsCollector &stats)
     }
     for (;;)
     {
-        unsigned int a = lwm;
-        int b = node->getNumKeys();
         // Locate first record greater than src
-        while ((int)a<b)
-        {
-            int i = a+(b+1-a)/2;
-            int rc = node->compareValueAt(src, i-1);
-            if (rc>=0)
-                a = i;
-            else
-                b = i-1;
-        }
+        unsigned int a = node->locateGT(recordBuffer, lwm);
         if (node->isLeaf())
         {
             // record we want is the one before first record greater than src.
@@ -1699,7 +1844,7 @@ bool CKeyCursor::ltEqual(const char *src, KeyStatsCollector &stats)
             else
             {
                 offset_t prevPos = node->prevNodeFpos();
-                node.setown(key.getNode(prevPos, NodeLeaf, stats.ctx));
+                node.setown(key.getNode(prevPos, NodeLeaf, ctx));
                 if (node)
                     nodeKey = node->getNumKeys()-1;
             }
@@ -1718,7 +1863,7 @@ bool CKeyCursor::ltEqual(const char *src, KeyStatsCollector &stats)
             offset_t npos = node->getFPosAt(a);
             depth++;
             NodeType type = (depth < branchDepth) ? NodeBranch : NodeLeaf;
-            node.setown(key.getNode(npos, type, stats.ctx));
+            node.setown(key.getNode(npos, type, ctx));
             if (!node)
                 throw MakeStringException(0, "Invalid key %s: child node pointer should never be NULL", key.name.get());
         }
@@ -1746,7 +1891,7 @@ void CKeyCursor::serializeCursorPos(MemoryBuffer &mb)
     }
 }
 
-void CKeyCursor::deserializeCursorPos(MemoryBuffer &mb, KeyStatsCollector &stats)
+void CKeyCursor::deserializeCursorPos(MemoryBuffer &mb, IContextLogger *ctx)
 {
     mb.read(eof);
     node.clear();
@@ -1756,27 +1901,33 @@ void CKeyCursor::deserializeCursorPos(MemoryBuffer &mb, KeyStatsCollector &stats
         offset_t nodeAddress;
         mb.read(nodeAddress);
         mb.read(nodeKey);
+        fullBufferValid = false;
         if (nodeAddress)
         {
-            node.setown(key.getNode(nodeAddress, NodeLeaf, stats.ctx));
-            if (node && keyBuffer)
-                node->getValueAt(nodeKey, keyBuffer);
+            node.setown(key.getNode(nodeAddress, NodeLeaf, ctx));
+            if (node && recordBuffer)
+                node->getKeyAt(nodeKey, recordBuffer);
         }
     }
 }
 
-const byte *CKeyCursor::loadBlob(unsigned __int64 blobid, size32_t &blobsize)
+const byte *CKeyCursor::loadBlob(unsigned __int64 blobid, size32_t &blobsize, IContextLogger *ctx)
 {
-    return key.loadBlob(blobid, blobsize);
+    return key.loadBlob(blobid, blobsize, ctx);
 }
 
-bool CKeyCursor::lookup(bool exact, KeyStatsCollector &stats)
+bool CKeyCursor::lookup(bool exact, IContextLogger *ctx)
 {
-    return _lookup(exact, filter->lastRealSeg(), stats);
+    return _lookup(exact, filter->lastRealSeg(), filter->isUnfiltered(), ctx);
 }
 
-bool CKeyCursor::_lookup(bool exact, unsigned lastSeg, KeyStatsCollector &stats)
+bool CKeyCursor::_lookup(bool exact, unsigned lastSeg, bool unfiltered, IContextLogger *ctx)
 {
+    if (unfiltered && !matched)
+    {
+        //Special case reading a file with no filter - fall into the next processing.
+        matched = true;
+    }
     bool ret = false;
     unsigned lwildseeks = 0;
     unsigned lseeks = 0;
@@ -1785,20 +1936,22 @@ bool CKeyCursor::_lookup(bool exact, unsigned lastSeg, KeyStatsCollector &stats)
     {
         if (matched)
         {
-            if (!next(keyBuffer, stats))
+            if (!_next(ctx))
                 eof = true;
             lscans++;
         }
         else
         {
-            if (!gtEqual(keyBuffer, keyBuffer, stats))
+            if (!_gtEqual(ctx))
                 eof = true;
             lseeks++;
         }
         if (!eof)
         {
+            assertex(node);
+            verifyex(node->getKeyAt(nodeKey, recordBuffer));
             unsigned i = 0;
-            matched = filter->matchesBuffer(keyBuffer, lastSeg, i);
+            matched = filter->matchesBuffer(recordBuffer, lastSeg, i);
             if (matched)
             {
                 ret = true;
@@ -1808,66 +1961,78 @@ bool CKeyCursor::_lookup(bool exact, unsigned lastSeg, KeyStatsCollector &stats)
             if (linuxYield)
                 sched_yield();
 #endif
-            eof = !filter->incrementKey(i, keyBuffer);
+            eof = !filter->incrementKey(i, recordBuffer);
             if (!exact)
             {
                 ret = true;
                 break;
             }
+            if (eof)
+                break;
             lwildseeks++;
         }
         else
             eof = true;
     }
     if (logExcessiveSeeks && lwildseeks > 1000 && ret)
-        reportExcessiveSeeks(lwildseeks, lastSeg, getSize(), stats);
-    stats.noteSeeks(lseeks, lscans, lwildseeks);
+        reportExcessiveSeeks(lwildseeks, lastSeg, ctx);
+    noteSeeks(ctx, lseeks, lscans, lwildseeks);
     return ret;
 }
 
-bool CKeyCursor::lookupSkip(const void *seek, size32_t seekOffset, size32_t seeklen, KeyStatsCollector &stats)
+bool CKeyCursor::lookupSkip(const void *seek, size32_t seekOffset, size32_t seeklen, IContextLogger *ctx)
 {
     if (skipTo(seek, seekOffset, seeklen))
-        stats.noteSkips(1, 0);
+        noteSkips(ctx, 1, 0);
     else
-        stats.noteSkips(0, 1);
-    bool ret = lookup(true, stats);
+        noteSkips(ctx, 0, 1);
+    bool ret = lookup(true, ctx);
 #ifdef _DEBUG
-    if (traceSmartStepping)
+    if (doTrace(traceSmartStepping, TraceFlags::Max))
     {
         StringBuffer recstr;
         unsigned i;
         for (i = 0; i < key.keySize(); i++)
         {
-            unsigned char c = ((unsigned char *) keyBuffer)[i];
+            unsigned char c = ((unsigned char *) recordBuffer)[i];
             recstr.appendf("%c", isprint(c) ? c : '.');
         }
         recstr.append ("    ");
         for (i = 0; i < key.keySize(); i++)
         {
-            recstr.appendf("%02x ", ((unsigned char *) keyBuffer)[i]);
+            recstr.appendf("%02x ", ((unsigned char *) recordBuffer)[i]);
         }
-        DBGLOG("SKIP: Got skips=%02d seeks=%02d scans=%02d : %s", stats.skips, stats.seeks, stats.scans, recstr.str());
+        if (ctx)
+        {
+            const CRuntimeStatisticCollection &statsCollection = ctx->queryStats();
+            unsigned __int64 seeks = statsCollection.getStatisticValue(StNumIndexSeeks);
+            unsigned __int64 scans = statsCollection.getStatisticValue(StNumIndexScans);
+            unsigned __int64 skips = statsCollection.getStatisticValue(StNumIndexSkips);
+            DBGLOG("SKIP: Got skips=%" I64F "u seeks=%" I64F "u scans=%" I64F "u : %s", skips, seeks, scans, recstr.str());
+        }
+        else
+        {
+            DBGLOG("SKIP: (no ContextLogger - not tracking stats) : %s", recstr.str());
+        }
     }
 #endif
     return ret;
 }
 
 
-unsigned __int64 CKeyCursor::getCount(KeyStatsCollector &stats)
+unsigned __int64 CKeyCursor::getCount(IContextLogger *ctx)
 {
     reset();
     unsigned __int64 result = 0;
-    unsigned lseeks = 0;
     unsigned lastRealSeg = filter->lastRealSeg();
+    bool unfiltered = filter->isUnfiltered();
     for (;;)
     {
-        if (_lookup(true, lastRealSeg, stats))
+        if (_lookup(true, lastRealSeg, unfiltered, ctx))
         {
             unsigned __int64 locount = getSequence();
             endRange(lastRealSeg);
-            ltEqual(keyBuffer, stats);
-            lseeks++;
+            _ltEqual(ctx);
             result += getSequence()-locount+1;
             if (!incrementKey(lastRealSeg))
                 break;
@@ -1875,32 +2040,30 @@ unsigned __int64 CKeyCursor::getCount(KeyStatsCollector &stats)
         else
             break;
     }
-    stats.noteSeeks(lseeks, 0, 0);
     return result;
 }
 
-unsigned __int64 CKeyCursor::checkCount(unsigned __int64 max, KeyStatsCollector &stats)
+unsigned __int64 CKeyCursor::checkCount(unsigned __int64 max, IContextLogger *ctx)
 {
     reset();
     unsigned __int64 result = 0;
-    unsigned lseeks = 0;
     unsigned lastFullSeg = filter->lastFullSeg();
+    bool unfiltered = filter->isUnfiltered();
     if (lastFullSeg == (unsigned) -1)
     {
-        stats.noteSeeks(1, 0, 0);
-        if (last(nullptr, stats))
+        noteSeeks(ctx, 1, 0, 0);
+        if (_last(ctx))
             return getSequence()+1;
         else
             return 0;
     }
     for (;;)
     {
-        if (_lookup(true, lastFullSeg, stats))
+        if (_lookup(true, lastFullSeg, unfiltered, ctx))
         {
             unsigned __int64 locount = getSequence();
             endRange(lastFullSeg);
-            ltEqual(keyBuffer, stats);
-            lseeks++;
+            _ltEqual(ctx);
             result += getSequence()-locount+1;
             if (max && (result > max))
                 break;
@@ -1910,16 +2073,15 @@ unsigned __int64 CKeyCursor::checkCount(unsigned __int64 max, KeyStatsCollector 
         else
             break;
     }
-    stats.noteSeeks(lseeks, 0, 0);
     return result;
 }
 
-unsigned __int64 CKeyCursor::getCurrentRangeCount(unsigned groupSegCount, KeyStatsCollector &stats)
+unsigned __int64 CKeyCursor::getCurrentRangeCount(unsigned groupSegCount, IContextLogger *ctx)
 {
     unsigned __int64 locount = getSequence();
     endRange(groupSegCount);
-    ltEqual(keyBuffer, stats);
-    stats.noteSeeks(1, 0, 0);
+    _ltEqual(ctx);
+    noteSeeks(ctx, 1, 0, 0);
     return getSequence()-locount+1;
 }
 
@@ -1931,14 +2093,14 @@ bool CKeyCursor::nextRange(unsigned groupSegCount)
     return true;
 }
 
-void CKeyCursor::reportExcessiveSeeks(unsigned numSeeks, unsigned lastSeg, size32_t recSize, KeyStatsCollector &stats)
+void CKeyCursor::reportExcessiveSeeks(unsigned numSeeks, unsigned lastSeg, IContextLogger *ctx)
 {
     StringBuffer recstr;
     unsigned i;
     bool printHex = false;
-    for (i = 0; i < recSize; i++)
+    for (i = 0; i < key.keySize(); i++)
     {
-        unsigned char c = ((unsigned char *) keyBuffer)[i];
+        unsigned char c = ((unsigned char *) recordBuffer)[i];
         if (isprint(c))
             recstr.append(c);
         else
@@ -1950,15 +2112,15 @@ void CKeyCursor::reportExcessiveSeeks(unsigned numSeeks, unsigned lastSeg, size3
     if (printHex)
     {
         recstr.append ("\n");
-        for (i = 0; i < recSize; i++)
+        for (i = 0; i < key.keySize(); i++)
         {
-            recstr.appendf("%02x ", ((unsigned char *) keyBuffer)[i]);
+            recstr.appendf("%02x ", ((unsigned char *) recordBuffer)[i]);
         }
     }
     recstr.append ("\nusing filter:\n");
     filter->describe(recstr);
-    if (stats.ctx)
-        stats.ctx->CTXLOG("%d seeks to lookup record \n%s\n in key %s", numSeeks, recstr.str(), key.queryFileName());
+    if (ctx)
+        ctx->CTXLOG("%d seeks to lookup record \n%s\n in key %s", numSeeks, recstr.str(), key.queryFileName());
     else
         DBGLOG("%d seeks to lookup record \n%s\n in key %s", numSeeks, recstr.str(), key.queryFileName());
 }
@@ -1975,12 +2137,12 @@ bool CKeyCursor::skipTo(const void *_seek, size32_t seekOffset, size32_t seeklen
     const byte *seek = (const byte *) _seek;
     while (seeklen)
     {
-        int c = *seek - (byte) (keyBuffer[seekOffset]);
+        int c = *seek - (byte) (recordBuffer[seekOffset]);
         if (c < 0)
             return false;
         else if (c>0)
         {
-            memcpy(keyBuffer+seekOffset, seek, seeklen);
+            memcpy(recordBuffer+seekOffset, seek, seeklen);
             break;
         }
         seek++;
@@ -1990,7 +2152,7 @@ bool CKeyCursor::skipTo(const void *_seek, size32_t seekOffset, size32_t seeklen
     if (!seeklen) return false;
 
     unsigned j = setLowAfter(seekOffset + seeklen);
-    bool canmatch = filter->matchesBuffer(keyBuffer, filter->lastRealSeg(), j);
+    bool canmatch = filter->matchesBuffer(recordBuffer, filter->lastRealSeg(), j);
     if (!canmatch)
         eof = !incrementKey(j);
     matched = false;
@@ -2005,7 +2167,7 @@ IKeyCursor * CKeyCursor::fixSortSegs(unsigned sortFieldOffset)
 CPartialKeyCursor::CPartialKeyCursor(const CKeyCursor &from, unsigned sortFieldOffset)
 : CKeyCursor(from)
 {
-    filter = filter->fixSortSegs(keyBuffer, sortFieldOffset);
+    filter = filter->fixSortSegs( recordBuffer, sortFieldOffset);
 }
 
 CPartialKeyCursor::~CPartialKeyCursor()
@@ -2066,6 +2228,7 @@ void IndexRowFilter::append(FFoption option, const IFieldFilter * filter)
         lastReal = idx;
         if (option != FFopt || lastFull == idx-1)
             lastFull = idx;
+        unfiltered = false;
     }
     keyedSize += filter->queryType().getMinSize();
     addFilter(*filter);
@@ -2142,6 +2305,11 @@ void IndexRowFilter::endRange(unsigned field, void *keyBuffer) const
     }
 }
 
+bool IndexRowFilter::isUnfiltered() const
+{
+    return unfiltered;
+}
+
 unsigned IndexRowFilter::lastRealSeg() const
 {
     return lastReal;
@@ -2168,6 +2336,7 @@ void IndexRowFilter::reset()
     lastReal = 0;
     lastFull = -1;
     keyedSize = 0;
+    unfiltered = true;
 }
 
 void IndexRowFilter::checkSize(size32_t _keyedSize, char const * keyname) const
@@ -2278,7 +2447,7 @@ public:
     virtual size32_t keySize() { return checkOpen().keySize(); }
     virtual size32_t keyedSize() { return checkOpen().keyedSize(); }
     virtual bool hasPayload() { return checkOpen().hasPayload(); }
-    virtual bool isTopLevelKey() override { return checkOpen().isTopLevelKey(); }
+    virtual bool isTopLevelKey() const override { return checkOpen().isTopLevelKey(); }
     virtual bool isFullySorted() override { return checkOpen().isFullySorted(); }
     virtual __uint64 getPartitionFieldMask() { return checkOpen().getPartitionFieldMask(); }
     virtual unsigned numPartitions() { return checkOpen().numPartitions(); }
@@ -2288,7 +2457,7 @@ public:
     virtual IKeyIndex *queryPart(unsigned idx) { return idx ? NULL : this; }
     virtual unsigned queryScans() { return realKey ? realKey->queryScans() : 0; }
     virtual unsigned querySeeks() { return realKey ? realKey->querySeeks() : 0; }
-    virtual const char *queryFileName() { return keyfile.get(); }
+    virtual const char *queryFileName() const { return keyfile.get(); }
     virtual offset_t queryBlobHead() { return checkOpen().queryBlobHead(); }
     virtual void resetCounts() { if (realKey) realKey->resetCounts(); }
     virtual offset_t queryLatestGetNodeOffset() const { return realKey ? realKey->queryLatestGetNodeOffset() : 0; }
@@ -2299,7 +2468,15 @@ public:
     virtual bool hasSpecialFileposition() const { return checkOpen().hasSpecialFileposition(); }
     virtual bool needsRowBuffer() const { return checkOpen().needsRowBuffer(); }
     virtual bool prewarmPage(offset_t offset, NodeType type) { return checkOpen().prewarmPage(offset, type); }
-
+    virtual void mergeStats(CRuntimeStatisticCollection & stats) const override
+    {
+        {
+            CriticalBlock b(c);
+            if (!realKey) return;
+        }
+        realKey->mergeStats(stats);
+    }
+    virtual offset_t queryFirstBranchOffset() override { return checkOpen().queryFirstBranchOffset(); }
 };
 
 extern jhtree_decl IKeyIndex *createKeyIndex(const char *keyfile, unsigned crc, IFileIO &iFileIO, unsigned fileIdx, bool isTLK)
@@ -2357,9 +2534,21 @@ extern jhtree_decl size32_t setBlobCacheMem(size32_t cacheSize)
     return queryNodeCache()->setBlobCacheMem(cacheSize);
 }
 
-extern jhtree_decl void setLegacyNodeCache(bool _value)
+void setNodeFetchThresholdNs(__uint64 thresholdNs)
 {
-    return queryNodeCache()->setLegacyLocking(_value);
+    fetchThresholdCycles = nanosec_to_cycle(thresholdNs);
+}
+
+void setIndexWarningThresholds(IPropertyTree * options)
+{
+    if (options->hasProp("@traceCacheLockingFrequencyNs"))
+        traceCacheLockingFrequency = nanosec_to_cycle(options->getPropInt64("@traceCacheLockingFrequencyNs"));
+    if (options->hasProp("@traceNodeLoadFrequencyNs"))
+        traceNodeLoadFrequency = nanosec_to_cycle(options->getPropInt64("@traceNodeLoadFrequencyNs"));
+    if (options->hasProp("@traceCacheLockingThresholdNs"))
+        traceCacheLockingThreshold = nanosec_to_cycle(options->getPropInt64("@traceCacheLockingThresholdNs"));
+    if (options->hasProp("@traceNodeLoadThresholdNs"))
+        traceNodeLoadThreshold = nanosec_to_cycle(options->getPropInt64("@traceNodeLoadThresholdNs"));
 }
 
 extern jhtree_decl void getNodeCacheInfo(ICacheInfoRecorder &cacheInfo)
@@ -2381,18 +2570,15 @@ void CNodeCache::getCacheInfo(ICacheInfoRecorder &cacheInfo)
     }
 }
 
-constexpr StatisticKind addStatId[CacheMax] = { StNumNodeCacheAdds, StNumLeafCacheAdds, StNumBlobCacheAdds };
-constexpr StatisticKind hitStatId[CacheMax] = { StNumNodeCacheHits, StNumLeafCacheHits, StNumBlobCacheHits };
-constexpr RelaxedAtomic<unsigned> * hitMetric[CacheMax] = { &nodeCacheHits, &leafCacheHits, &blobCacheHits };
-constexpr RelaxedAtomic<unsigned> * addMetric[CacheMax] = { &nodeCacheAdds, &leafCacheAdds, &blobCacheAdds };
-constexpr RelaxedAtomic<unsigned> * dupMetric[CacheMax] = { &nodeCacheDups, &leafCacheDups, &blobCacheDups };
+//Use a critical section in each node to prevent multiple threads loading the same node at the same time.
+//Critical sections are 40bytes on linux so < 0.5% overhead for an 8K page and trivial overhead when constructed (<10ns)
+static std::atomic<cycle_t> lastLockingReportCycles{0};
+static std::atomic<cycle_t> lastLoadReportCycles{0};
+static std::atomic<unsigned> countExcessiveLock_x1{0};
+static std::atomic<unsigned> countExcessiveLock_x10{0};
+static std::atomic<unsigned> countExcessiveLock_x100{0};
 
-//Rather than using a critical section in each node (which can be large and expensive) have an array which is indexed by a function
-//of the key id/file position
-constexpr unsigned numLoadCritSects = 64;
-static CriticalSection loadCs[numLoadCritSects];
-
-CJHTreeNode *CNodeCache::getNode(INodeLoader *keyIndex, unsigned iD, offset_t pos, NodeType type, IContextLogger *ctx, bool isTLK)
+const CJHTreeNode *CNodeCache::getNode(const INodeLoader *keyIndex, unsigned iD, offset_t pos, NodeType type, IContextLogger *ctx, bool isTLK)
 {
     // MORE - could probably be improved - I think having the cache template separate is not helping us here
     // Also one cache per key would surely be faster, and could still use a global total
@@ -2401,119 +2587,170 @@ CJHTreeNode *CNodeCache::getNode(INodeLoader *keyIndex, unsigned iD, offset_t po
 
     // No benefit in caching the following, especially since they will evict useful pages
     if ((type == NodeMeta) || (type == NodeBloom))
-        return keyIndex->loadNode(pos);
+        return keyIndex->loadNode(nullptr, pos);
 
     //NOTE: TLK leaf nodes are currently cached along with branches, not with leaves.  It might be better if this was a separate cache.
     CacheType cacheType = isTLK ? CacheBranch : (CacheType)type;
 
     // check cacheEnabled[cacheType] avoid the critical section (and testing the flag within the critical section)
     if (unlikely(!cacheEnabled[cacheType]))
-        return keyIndex->loadNode(pos);
+        return keyIndex->loadNode(nullptr, pos);
 
-    //Legacy cache access:
+    //Previously, this was implemented as:
     //  Lock, unlock.  Load the page.  Lock, check if it has been added, otherwise add.
-    //New code:
+    //Now, it is coded as:
     //  Lock, add if missing, unlock.  Lock a page-dependent-cr load() release lock.
     //There will be the same number of critical section locks, but loading a page will contend on a different lock - so it should reduce contention.
-    //There will be a limit on the number of nodes concurrently being loaded from memory with the new code, where it was unlimited before, but
-    //nodes will only be loaded once.
     CKeyIdAndPos key(iD, pos);
+    CNodeMRUCache & curCache = cache[cacheType];
     CriticalSection & cacheLock = lock[cacheType];
-    if (legacyMode)
+    Owned<CNodeCacheEntry> ownedCacheEntry; // ensure node gets cleaned up if it fails to load
+    bool alreadyExists = true;
     {
-        CriticalBlock block(cacheLock);
-        CJHTreeNode *cacheNode = cache[cacheType].query(key);
-        if (likely(cacheNode))
-        {
-            cacheHits++;
-            if (ctx) ctx->noteStatistic(hitStatId[cacheType], 1);
-            (*hitMetric[cacheType])++;
-            return LINK(cacheNode);
-        }
+        CNodeCacheEntry * cacheEntry;
+        unsigned hashcode = curCache.getKeyHash(key);
 
-        CJHTreeNode *node;
+        CLeavableCriticalBlock block(cacheLock);
+        cacheEntry = curCache.query(hashcode, &key);
+        if (likely(cacheEntry))
         {
-            CriticalUnblock block(cacheLock);
-            node = keyIndex->loadNode(pos);  // NOTE - don't want cache locked while we load!
-            node->noteReady();
-        }
-
-        cacheAdds++;
-        cacheNode = cache[cacheType].query(key); // check if added to cache while we were reading
-        if (cacheNode)
-        {
-            ::Release(node);
-            cacheHits++;
-            if (ctx) ctx->noteStatistic(hitStatId[cacheType], 1);
-            (*hitMetric[cacheType])++;
-            (*dupMetric[cacheType])++;
-            return LINK(cacheNode);
-        }
-        if (ctx) ctx->noteStatistic(addStatId[cacheType], 1);
-        (*addMetric[cacheType])++;
-        cache[cacheType].add(key, *LINK(node));
-        return node;
-    }
-    else
-    {
-        CJHTreeNode * node;
-        bool alreadyExists = true;
-        {
-            CriticalBlock block(cacheLock);
-
-            node = cache[cacheType].query(key);
-            if (unlikely(!node))
+            const CJHTreeNode * fastPathMatch = cacheEntry->queryNode();
+            if (likely(fastPathMatch))
             {
-                node = keyIndex->createNode(type);
-                assertex(node->getMemSize() == 0);   // check the reported size is 0 so that the updated size is correct
-                cache[cacheType].add(key, *node);
-                alreadyExists = false;
+                //Avoid linking and releasing cacheEntry if the match is already loaded.  Link the node then leave
+                //the critical section asap
+                fastPathMatch->Link();
+                block.leave();
+
+                //Update any stats outside of the critical section.
+                (*hitMetric[cacheType])++;
+                if (ctx) ctx->noteStatistic(hitStatId[cacheType], 1);
+                return fastPathMatch;
             }
-            node->Link();
+        }
+        else
+        {
+            cacheEntry = new CNodeCacheEntry;
+            curCache.replace(key, *cacheEntry);
+            alreadyExists = false;
         }
 
+        //same as ownedcacheEntry.set(cacheEntry), but avoids a null check or two
+        cacheEntry->Link();
+        ownedCacheEntry.setown(cacheEntry);
+    }
+
+    //If an exception is thrown before the node is cleanly loaded we need to remove the partially constructed
+    //node from the cache otherwise it may never get loaded, and can prevent items being removed from the cache
+    //note: noteStatistic() can throw an exception if a worker has been aborted...
+    try
+    {
         //Move the atomic increments out of the critical section - they can be relatively expensive
         if (likely(alreadyExists))
         {
-            cacheHits++;
             if (ctx) ctx->noteStatistic(hitStatId[cacheType], 1);
             (*hitMetric[cacheType])++;
         }
         else
         {
-            cacheAdds++;
             if (ctx) ctx->noteStatistic(addStatId[cacheType], 1);
             (*addMetric[cacheType])++;
         }
 
         //The common case is that this flag has already been set (by a previous add).
-        if (likely(node->isReady()))
-            return node;
+        if (likely(ownedCacheEntry->isReady()))
+            return ownedCacheEntry->getNode();
 
         //Shame that the hash code is recalculated - it might be possible to remove this.
-        unsigned hashcode = hashc(reinterpret_cast<const byte *>(&key), sizeof(key), 0x811C9DC5);
-        unsigned whichCs = hashcode % numLoadCritSects;
-        Owned<CJHTreeNode> ownedNode(node); // ensure node gets cleaned up if it fails to load
+        cycle_t startCycles = get_cycles_now();
+        cycle_t fetchCycles = 0;
+        cycle_t startLoadCycles;
 
-        //Actually load the information outside the critical section
-        CriticalBlock loadBlock(loadCs[whichCs]);
-        if (!node->isReady())
+        //Protect loading the node contents with a critical section - so that the node will only be loaded by one thread.
+        //MORE: If this was called by high and low priority threads then there is an outside possibility that it could take a
+        //long time for the low priority thread to progress.  That might cause the cache to be temporarily unbounded.  Unlikely in practice.
         {
-            keyIndex->loadNode(node, pos);
+            CriticalBlock loadBlock(ownedCacheEntry->cs);
+            startLoadCycles = get_cycles_now();
+            if (!ownedCacheEntry->isReady())
+            {
+                const CJHTreeNode *node = keyIndex->loadNode(&fetchCycles, pos);
+                if (unlikely(type != node->getNodeType()))
+                {
+                    //This should never happen, but if it does, report as much information as possible to diagnose the issue.
+                    StringBuffer msg;
+                    msg.appendf("Node type mismatch for node %s@%llx (expected %s, got %s)", keyIndex->queryFileName(), pos, cacheTypeText[type], cacheTypeText[node->getNodeType()]);
+                    node->Release();
+                    throwUnexpectedX(msg);
+                }
 
-            //Update the associated size of the entry in the hash table before setting isReady (never evicted until isReady is set)
-            cache[cacheType].noteReady(*node);
-            node->noteReady();
+                //Update the associated size of the entry in the hash table before setting isReady (never evicted until isReady is set)
+                curCache.noteReady(*node);
+                ownedCacheEntry->noteReady(node);
+            }
+            else
+                (*dupMetric[cacheType])++;
         }
-        else
-            (*dupMetric[cacheType])++; // Would have previously loaded the page twice
+        cycle_t endLoadCycles = get_cycles_now();
+        cycle_t lockingCycles = startLoadCycles - startCycles;
+        if (lockingCycles > traceCacheLockingThreshold)
+        {
+            if (lockingCycles >= traceCacheLockingThreshold*100)
+                countExcessiveLock_x100++;
+            else if (lockingCycles >= traceCacheLockingThreshold*10)
+                countExcessiveLock_x10++;
+            else
+                countExcessiveLock_x1++;
 
-        return ownedNode.getClear();
+            if ((endLoadCycles - lastLockingReportCycles) >= traceCacheLockingFrequency)
+            {
+                lastLockingReportCycles = endLoadCycles;
+                WARNLOG("CNodeCache::getNode lock(%s) took %lluns  counts(>=%lluns, %u, %u, %u) (x1,x10,x100)", cacheTypeText[cacheType], cycle_to_nanosec(lockingCycles),
+                         cycle_to_nanosec(traceCacheLockingThreshold),
+                         countExcessiveLock_x1.load() + countExcessiveLock_x10.load() + countExcessiveLock_x100.load(),
+                         countExcessiveLock_x10.load() + countExcessiveLock_x100.load(),
+                         countExcessiveLock_x100.load());
+                countExcessiveLock_x1 = 0;
+                countExcessiveLock_x10 = 0;
+                countExcessiveLock_x100 = 0;
+            }
+        }
+        cycle_t actualLoadCycles = endLoadCycles - startLoadCycles;
+        if (actualLoadCycles > traceNodeLoadThreshold)
+        {
+            if ((endLoadCycles - lastLoadReportCycles) >= traceNodeLoadFrequency)
+            {
+                lastLoadReportCycles = endLoadCycles;
+                WARNLOG("CNodeCache::getNode load(%s %x:%llu) took %lluus size(%u)", cacheTypeText[cacheType], iD, pos, cycle_to_microsec(actualLoadCycles), ownedCacheEntry->queryNode()->getMemSize());
+            }
+        }
+
+        if (ctx)
+        {
+            ctx->noteStatistic(loadStatId[cacheType], endLoadCycles - startCycles);
+            ctx->noteStatistic(readStatId[cacheType], fetchCycles);
+            ctx->noteStatistic(StCycleIndexCacheBlockedCycles, lockingCycles);
+            if (fetchCycles >= fetchThresholdCycles)
+            {
+                ctx->noteStatistic(fetchStatId[cacheType], 1);
+                ctx->noteStatistic(fetchTimeId[cacheType], fetchCycles);
+            }
+        }
+        return ownedCacheEntry->getNode();
+    }
+    catch (...)
+    {
+        //Ensure any partially constructed nodes are removed from the cache
+        if (!ownedCacheEntry->isReady())
+        {
+            CriticalBlock block(cacheLock);
+            if (!ownedCacheEntry->isReady())
+                curCache.remove(key);
+        }
+        throw;
     }
 }
 
-RelaxedAtomic<unsigned> cacheAdds;
-RelaxedAtomic<unsigned> cacheHits;
 RelaxedAtomic<unsigned> nodesLoaded;
 RelaxedAtomic<unsigned> blobCacheHits;
 RelaxedAtomic<unsigned> blobCacheAdds;
@@ -2527,8 +2764,6 @@ RelaxedAtomic<unsigned> nodeCacheDups;
 
 void clearNodeStats()
 {
-    cacheAdds.store(0);
-    cacheHits.store(0);
     nodesLoaded.store(0);
     blobCacheHits.store(0);
     blobCacheAdds.store(0);
@@ -2560,8 +2795,8 @@ class CKeyMerger : public CKeyLevelManager
 
     inline int BuffCompare(unsigned a, unsigned b)
     {
-        const byte *c1 = cursors[mergeheap[a]]->queryKeyBuffer();
-        const byte *c2 = cursors[mergeheap[b]]->queryKeyBuffer();
+        const byte *c1 = cursors[mergeheap[a]]->queryKeyedBuffer();
+        const byte *c2 = cursors[mergeheap[b]]->queryKeyedBuffer();
 
         //Only compare the keyed portion, and if equal tie-break on lower input numbers having priority
         //In the future this should use the comparison functions from the type info
@@ -2656,7 +2891,7 @@ public:
             if (!activekeys)
                 return false;
 #ifdef _DEBUG
-            if (traceSmartStepping)
+            if (doTrace(traceSmartStepping, TraceFlags::Max))
                 DBGLOG("SKIP: init key = %d", mergeheap[0]);
 #endif
             return true;
@@ -2666,14 +2901,14 @@ public:
             if (!activekeys)
             {
 #ifdef _DEBUG
-                if (traceSmartStepping)
+                if (doTrace(traceSmartStepping, TraceFlags::Max))
                     DBGLOG("SKIP: merge done");
 #endif
                 return false;
             }
             unsigned key = mergeheap[0];
 #ifdef _DEBUG
-            if (traceSmartStepping)
+            if (doTrace(traceSmartStepping, TraceFlags::Max))
                 DBGLOG("SKIP: merging key = %d", key);
 #endif
             unsigned compares = 0;
@@ -2684,8 +2919,8 @@ public:
                     activekeys--;
                     if (!activekeys)
                     {
-                        if (stats.ctx)
-                            stats.ctx->noteStatistic(StNumIndexMergeCompares, compares);
+                        if (ctx)
+                            ctx->noteStatistic(StNumIndexMergeCompares, compares);
                         return false;
                     }
                     mergeheap[0] = mergeheap[activekeys];
@@ -2716,13 +2951,13 @@ public:
                     key = mergeheap[0];
                     keyCursor = cursors[key];
                 }
-                const byte *keyBuffer = keyCursor->queryKeyBuffer();
+                const byte *keyBuffer = keyCursor->queryKeyedBuffer();
                 if (memcmp(seek, keyBuffer+seekOffset, seeklen) <= 0)
                 {
 #ifdef _DEBUG
-                    if (traceSmartStepping)
+                    if (doTrace(traceSmartStepping, TraceFlags::Max))
                     {
-                        unsigned keySize = keyCursor->getSize();  // MORE - is this the current row size?
+                        unsigned keySize = keyCursor->getKeyedSize();
                         DBGLOG("SKIP: merged key = %d", key);
                         StringBuffer recstr;
                         unsigned i;
@@ -2736,19 +2971,30 @@ public:
                         {
                             recstr.appendf("%02x ", ((unsigned char *) keyBuffer)[i]);
                         }
-                        DBGLOG("SKIP: Out skips=%02d seeks=%02d scans=%02d : %s", stats.skips, stats.seeks, stats.scans, recstr.str());
+                        if (ctx)
+                        {
+                            const CRuntimeStatisticCollection &statsCollection = ctx->queryStats();
+                            unsigned __int64 seeks = statsCollection.getStatisticValue(StNumIndexSeeks);
+                            unsigned __int64 scans = statsCollection.getStatisticValue(StNumIndexScans);
+                            unsigned __int64 skips = statsCollection.getStatisticValue(StNumIndexSkips);
+                            DBGLOG("SKIP: Out skips=%" I64F "u seeks=%" I64F "u scans=%" I64F "u : %s", skips, seeks, scans, recstr.str());
+                        }
+                        else
+                        {
+                            DBGLOG("SKIP: (no ContextLogger - not tracking stats) : %s", recstr.str());
+                        }
                     }
 #endif
-                    if (stats.ctx)
-                        stats.ctx->noteStatistic(StNumIndexMergeCompares, compares);
+                    if (ctx)
+                        ctx->noteStatistic(StNumIndexMergeCompares, compares);
                     return true;
                 }
                 else
                 {
                     compares++;
-                    if (stats.ctx && (compares == 100))
+                    if (ctx && (compares == 100))
                     {
-                        stats.ctx->noteStatistic(StNumIndexMergeCompares, compares); // also checks for abort...
+                        ctx->noteStatistic(StNumIndexMergeCompares, compares); // also checks for abort...
                         compares = 0;
                     }
                 }
@@ -2806,11 +3052,11 @@ public:
                         else
                             lnullSkips++;
                     }
-                    found = cursor->lookup(true, stats);
-                    if (!found || !seek || memcmp(cursor->queryKeyBuffer() + seekOffset, seek, seeklen) >= 0)
+                    found = cursor->lookup(true, ctx);
+                    if (!found || !seek || memcmp(cursor->queryKeyedBuffer() + seekOffset, seek, seeklen) >= 0)
                         break;
                 }
-                stats.noteSkips(lskips, lnullSkips);
+                noteSkips(ctx, lskips, lnullSkips);
                 if (found)
                 {
                     IKeyCursor *mergeCursor;
@@ -2833,8 +3079,8 @@ public:
         }
         if (activekeys>0) 
         {
-            if (stats.ctx)
-                stats.ctx->noteStatistic(StNumIndexMerges, activekeys);
+            if (ctx)
+                ctx->noteStatistic(StNumIndexMerges, activekeys);
             cursors = cursorArray.getArray();
             mergeheap = mergeHeapArray.getArray();
             /* Permute mergeheap to establish the heap property
@@ -2905,7 +3151,7 @@ public:
             if (!activekeys)
                 return false;
             unsigned key = mergeheap[0];
-            if (!keyCursor->lookup(exact, stats))
+            if (!keyCursor->lookup(exact, ctx))
             {
                 activekeys--;
                 if (!activekeys)
@@ -2998,7 +3244,7 @@ public:
             mb.read(keyno);
             keyNoArray.append(keyno);
             keyCursor = keyset->queryPart(keyno)->getCursor(filter, logExcessiveSeeks);
-            keyCursor->deserializeCursorPos(mb, stats);
+            keyCursor->deserializeCursorPos(mb, ctx);
             cursorArray.append(*keyCursor);
             mergeHeapArray.append(i);
         }
@@ -3108,10 +3354,6 @@ extern jhtree_decl IIndexLookup *createIndexLookup(IKeyManager *keyManager)
             else
                 return nullptr;
         }
-        virtual unsigned querySeeks() const override { return keyManager->querySeeks(); }
-        virtual unsigned queryScans() const override { return keyManager->queryScans(); }
-        virtual unsigned querySkips() const override { return keyManager->querySkips(); }
-        virtual unsigned queryWildSeeks() const override { return keyManager->queryWildSeeks(); }
     };
     return new CIndexLookup(keyManager);
 }
@@ -3119,6 +3361,35 @@ extern jhtree_decl IIndexLookup *createIndexLookup(IKeyManager *keyManager)
 
 #ifdef _USE_CPPUNIT
 #include "unittests.hpp"
+
+class TestIndexWriteArg : public CThorIndexWriteArg
+{
+public:
+    TestIndexWriteArg(const char * _filename, const char * _compression, IOutputMetaData * _meta)
+     : filename(_filename), compression(_compression), meta(_meta)
+    {
+    }
+
+    virtual const char * getFileName() { return filename; }
+    virtual int getSequence() { return 0; }
+    virtual IOutputMetaData * queryDiskRecordSize() { return meta; }
+    virtual const char * queryRecordECL() { return nullptr; }
+    virtual unsigned getFlags() { return compression ? TIWcompressdefined : 0; }
+    virtual size32_t transform(ARowBuilder & rowBuilder, const void * src, IBlobCreator * blobs, unsigned __int64 & filepos)
+    {
+        UNIMPLEMENTED;
+    }
+    virtual unsigned getKeyedSize() { return 0; }
+    virtual unsigned getMaxKeySize() { return 0; }
+    virtual unsigned getFormatCrc() { return 0; }
+    virtual const char * queryCompression() { return compression; }
+
+public:
+    const char * filename = nullptr;
+    const char * compression = nullptr;
+    IOutputMetaData * meta = nullptr;
+};
+
 
 class IKeyManagerTest : public CppUnit::TestFixture  
 {
@@ -3129,7 +3400,7 @@ class IKeyManagerTest : public CppUnit::TestFixture
 
     void testStepping()
     {
-        buildTestKeys(false, true, false, false);
+        buildTestKeys(false, true, false, false, nullptr, nullptr);
         {
             // We are going to treat as a 7-byte field then a 3-byte field, and request the datasorted by the 3-byte...
             Owned <IKeyIndex> index1 = createKeyIndex("keyfile1.$$$", 0, false);
@@ -3237,14 +3508,18 @@ class IKeyManagerTest : public CppUnit::TestFixture
         removeTestKeys();
     }
 
-    void buildTestKeys(bool variable, bool useTrailingHeader, bool noSeek, bool quickCompressed)
+    void buildTestKeys(bool variable, bool useTrailingHeader, bool noSeek, bool quickCompressed, IOutputMetaData * meta, const char * compression)
     {
-        buildTestKey("keyfile1.$$$", false, variable, useTrailingHeader, noSeek, quickCompressed);
-        buildTestKey("keyfile2.$$$", true, variable, useTrailingHeader, noSeek, quickCompressed);
+        DBGLOG("buildTestKeys(variable=%d, useTrailingHeader=%d, noSeek=%d, quickCompressed=%d, compression=%s)",
+               variable, useTrailingHeader, noSeek, quickCompressed, compression ? compression : "");
+
+        buildTestKey("keyfile1.$$$", false, variable, useTrailingHeader, noSeek, quickCompressed, meta, compression);
+        buildTestKey("keyfile2.$$$", true, variable, useTrailingHeader, noSeek, quickCompressed, meta, compression);
     }
 
-    void buildTestKey(const char *filename, bool skip, bool variable, bool useTrailingHeader, bool noSeek, bool quickCompressed)
+    void buildTestKey(const char *filename, bool skip, bool variable, bool useTrailingHeader, bool noSeek, bool quickCompressed, IOutputMetaData * meta, const char * compression)
     {
+        TestIndexWriteArg helper(filename, compression, meta);
         OwnedIFile file = createIFile(filename);
         OwnedIFileIO io = file->openShared(IFOcreate, IFSHfull);
         Owned<IFileIOStream> out = createIOStream(io);
@@ -3256,11 +3531,13 @@ class IKeyManagerTest : public CppUnit::TestFixture
                 (quickCompressed ? HTREE_QUICK_COMPRESSED_KEY : 0) |
                 (variable ? HTREE_VARSIZE : 0) |
                 (useTrailingHeader ? USE_TRAILING_HEADER : 0) |
-                (noSeek ? TRAILING_HEADER_ONLY : 0),
-                maxRecSize, NODESIZE, keyedSize, 0, nullptr, true, false);
+                (noSeek ? TRAILING_HEADER_ONLY : 0) |
+                0,
+                maxRecSize, NODESIZE, keyedSize, 0, &helper, nullptr, true, false);
 
         char keybuf[18];
         memset(keybuf, '0', 18);
+        uint32_t maxRecordSizeSeen = 0;
         for (unsigned count = 0; count < 10000; count++)
         {
             unsigned datasize = 10;
@@ -3285,6 +3562,8 @@ class IKeyManagerTest : public CppUnit::TestFixture
                 if (count==48 || count==49)
                     builder->processKeyData(keybuf, count*10, datasize);
             }
+            if (datasize > maxRecordSizeSeen)
+                maxRecordSizeSeen = datasize;
             unsigned idx = 9;
             for (;;)
             {
@@ -3297,8 +3576,9 @@ class IKeyManagerTest : public CppUnit::TestFixture
                 }
             }
         }
-        builder->finish(nullptr, nullptr);
+        builder->finish(nullptr, nullptr, maxRecordSizeSeen);
         out->flush();
+        DBGLOG("Size %s=%llu", filename, file->size());
     }
 
     void removeTestKeys()
@@ -3313,7 +3593,7 @@ class IKeyManagerTest : public CppUnit::TestFixture
         memcpy(&blobid, key->queryKeyBuffer()+10, sizeof(blobid));
         ASSERT(blobid != 0);
         size32_t blobsize;
-        const byte *blob = key->loadBlob(blobid, blobsize);
+        const byte *blob = key->loadBlob(blobid, blobsize, nullptr);
         ASSERT(blob != NULL);
         ASSERT(blobsize == size);
         byte seed = size-100000;
@@ -3325,7 +3605,7 @@ class IKeyManagerTest : public CppUnit::TestFixture
         key->releaseBlobs();
     }
 protected:
-    void testKeys(bool variable, bool useTrailingHeader, bool noSeek, bool quickCompressed)
+    void testKeys(bool variable, bool useTrailingHeader, bool noSeek, bool quickCompressed, const char * compression)
     {
         const char *json = variable ?
                 "{ \"ty1\": { \"fieldType\": 4, \"length\": 10 }, "
@@ -3345,7 +3625,7 @@ protected:
                 "}";
         Owned<IOutputMetaData> meta = createTypeInfoOutputMetaData(json, false);
         const RtlRecord &recInfo = meta->queryRecordAccessor(true);
-        buildTestKeys(variable, useTrailingHeader, noSeek, quickCompressed);
+        buildTestKeys(variable, useTrailingHeader, noSeek, quickCompressed, meta, compression);
         {
             Owned <IKeyIndex> index1 = createKeyIndex("keyfile1.$$$", 0, false);
             Owned <IKeyManager> tlk1 = createLocalKeyManager(recInfo, index1, NULL, false, false);
@@ -3425,9 +3705,8 @@ protected:
             tlk2c->finishSegmentMonitors();
             tlk2c->reset();
 
-            ASSERT(tlk1->getCount() == 76);
-            ASSERT(tlk1->getCount() == 76);
-            ASSERT(tlk1a->getCount() == 30);
+            ASSERT_EQUAL(76U, (unsigned)tlk1->getCount());
+            ASSERT_EQUAL(30U, (unsigned)tlk1a->getCount());
             ASSERT(tlk2->getCount() == 26);
             ASSERT(tlk2a->getCount() == 2);
             ASSERT(tlk2b->getCount() == 2);
@@ -3515,7 +3794,8 @@ protected:
             for (bool trail : { false, true })
                 for (bool noseek : { false, true })
                     for (bool quick : { true, false })
-                        testKeys(var, trail, noseek, quick);
+                        for (const char * compression : { (const char *)nullptr, "POC", "inplace" })
+                            testKeys(var, trail, noseek, quick, compression);
     }
 };
 

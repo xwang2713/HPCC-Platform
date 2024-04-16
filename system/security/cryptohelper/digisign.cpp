@@ -16,6 +16,7 @@
 ############################################################################## */
 #include "jliball.hpp"
 #if defined(_USE_OPENSSL)
+#include <opensslcommon.hpp>
 #include <openssl/pem.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -206,7 +207,9 @@ public:
 
 
 static IDigitalSignatureManager * dsm = nullptr;
+#if defined(_USE_OPENSSL)
 static std::once_flag dsmInitFlag;
+#endif
 
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
@@ -217,7 +220,7 @@ MODULE_EXIT()
     ::Release(dsm);
 }
 
-#if defined(_USE_OPENSSL) && !defined(_WIN32)
+#if defined(_USE_OPENSSL)
 static void createDigitalSignatureManagerInstance(IDigitalSignatureManager * * ppDSM)
 {
     const char * pubKey = nullptr, *privKey = nullptr, *passPhrase = nullptr;
@@ -236,7 +239,7 @@ static void createDigitalSignatureManagerInstance(IDigitalSignatureManager * * p
 //Returns reference to singleton instance created from environment.conf key file settings
 IDigitalSignatureManager * queryDigitalSignatureManagerInstanceFromEnv()
 {
-#if defined(_USE_OPENSSL) && !defined(_WIN32)
+#if defined(_USE_OPENSSL)
     std::call_once(dsmInitFlag, createDigitalSignatureManagerInstance, &dsm);
     return dsm;
 #else
@@ -253,7 +256,7 @@ IDigitalSignatureManager * createDigitalSignatureManagerInstanceFromFiles(const 
 
 IDigitalSignatureManager * createDigitalSignatureManagerInstanceFromFiles(const char * pubKeyFileName, const char *privKeyFileName, size32_t lenPassphrase, const void * passPhrase)
 {
-#if defined(_USE_OPENSSL) && !defined(_WIN32)
+#if defined(_USE_OPENSSL)
     Owned<CLoadedKey> pubKey, privKey;
     Owned<IMultiException> exceptions;
     if (!isEmptyString(pubKeyFileName))
@@ -312,7 +315,7 @@ IDigitalSignatureManager * createDigitalSignatureManagerInstanceFromKeys(const c
 
 IDigitalSignatureManager * createDigitalSignatureManagerInstanceFromKeys(const char * pubKeyString, const char * privKeyString, size32_t lenPassphrase, const void * passPhrase)
 {
-#if defined(_USE_OPENSSL) && !defined(_WIN32)
+#if defined(_USE_OPENSSL)
     Owned<CLoadedKey> pubKey, privKey;
 
     Owned<IMultiException> exceptions;

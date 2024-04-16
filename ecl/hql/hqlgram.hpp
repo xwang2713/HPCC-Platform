@@ -445,8 +445,7 @@ public:
 
     void saveContext(HqlGramCtx & ctx, bool cloneScopes);
     IHqlScope * queryGlobalScope();
-    IHqlScope * queryMacroScope();
-    IAtom * queryGlobalScopeId();
+    IHqlScope * queryMacroScope(IEclPackage * & package);
 
     bool canFollowCurrentState(int tok, const short * yyps);
     int mapToken(int lexToken) const;
@@ -462,6 +461,7 @@ public:
     unsigned checkCompatible(ITypeInfo * a1, ITypeInfo * t2, const attribute &ea, bool complain=true);
     void checkMaxCompatible(IHqlExpression * sortOrder, IHqlExpression * values, attribute & errpos);
     void checkCompatibleTransforms(HqlExprArray & values, IHqlExpression * record, attribute & errpos);
+    ITypeInfo * checkCompatibleScopes(const attribute& left, const attribute& right);
     void checkBoolean(attribute &atr);
     void checkBooleanOrNumeric(attribute &atr);
     void checkDatarow(attribute &atr);
@@ -567,6 +567,7 @@ public:
     IHqlExpression * getTargetPlatformExpr();
     void normalizeExpression(attribute & expr);
     void normalizeExpression(attribute & expr, type_t expectedType, bool isConstant, bool callAllowed=true);
+    void checkRegex(const attribute & pattern);
 
     IHqlExpression * createListFromExprArray(const attribute & errpos, HqlExprArray & args);
     IHqlExpression * normalizeExprList(const attribute & errpos, const HqlExprArray & values);
@@ -765,6 +766,8 @@ public:
     void checkValidPipeRecord(const attribute & errpos, IHqlExpression * record, IHqlExpression * attrs, IHqlExpression * expr);
     void checkValidLookupFlag(IHqlExpression * dataset, IHqlExpression * filename, attribute & atr);
 
+    void setPluggableModeExpr(attribute & targetAttr, attribute & pluginAttr, attribute & options);
+
     void createAppendDictionaries(attribute & targetAttr, attribute & leftAttr, attribute & rightAttr, IAtom * kind);
     void createAppendFiles(attribute & targetAttr, attribute & leftAttr, attribute & rightAttr, IAtom * kind);
     IHqlExpression * createAppendFiles(attribute & filesAttr, IHqlExpression * _attrs);
@@ -798,6 +801,7 @@ protected:
     IHqlExpression * createAssert(attribute & cond, attribute * msg, attribute & flags);
 
     void defineImport(const attribute & errpos, IHqlExpression * imported, IIdAtom * newName);
+    IHqlExpression * doResolveImportModule(HqlLookupContext & importCtx, const attribute & errpos, IHqlExpression * expr);
     IHqlExpression * resolveImportModule(const attribute & errpos, IHqlExpression * expr);
 
     void setActiveAttrs(int activityToken, const TokenMap * attrs);
@@ -879,6 +883,8 @@ protected:
     bool requireLateBind(IHqlExpression* funcdef, const HqlExprArray & actuals);
     IHqlExpression* createDefJoinTransform(IHqlExpression* left,IHqlExpression* right,attribute& errpos, IHqlExpression * seq, IHqlExpression * flags);
     IHqlExpression * createRowAssignTransform(const attribute & srcAttr, const attribute & tgtAttr, const attribute & seqAttr);
+    IHqlExpression * createRowAssignTransform(const attribute & srcAttr, IHqlExpression * res_rec, const attribute & seqAttr);
+    IHqlExpression * createRowAssignTransform(const attribute & srcAttr, const attribute & tgtAttr, IHqlExpression * res_rec, const attribute & seqAttr);
     IHqlExpression * createClearTransform(IHqlExpression * record, const attribute & errpos);
     IHqlExpression * createDefaultAssignTransform(IHqlExpression * record, IHqlExpression * rowValue, const attribute & errpos);
     IHqlExpression * createDefaultProjectDataset(IHqlExpression * record, IHqlExpression * src, const attribute & errpos);
@@ -1155,7 +1161,7 @@ class HqlLex
         HqlLex* getParentLex() { return parentLex; }
         void setParentLex(HqlLex* pLex) { parentLex = pLex; }
         const char* getMacroName() { return (macroExpr) ? str(macroExpr->queryName()) : "<param>"; }
-        const char * queryMacroScopeName();
+        const char * queryMacroScopeName(IEclPackage * & package);
 
         IPropertyTree * getClearJavadoc();
         void doSlashSlashHash(attribute const & returnToken, const char * command);
@@ -1220,6 +1226,8 @@ class HqlLex
 
     private:
         static void doEnterEmbeddedMode(yyscan_t yyscanner);
+        void stripSlashNewline(attribute & returnToken, StringBuffer & target, size_t len, const char * data);
+
         void declareXmlSymbol(const attribute & errpos, const char *name);
         bool lookupXmlSymbol(const attribute & errpos, const char *name, StringBuffer &value);
         void setXmlSymbol(const attribute & errpos, const char *name, const char *value, bool append);
@@ -1229,6 +1237,7 @@ class HqlLex
 
         IHqlExpression *lookupSymbol(IIdAtom * name, const attribute& errpos);
         void reportError(const attribute & returnToken, int errNo, const char *format, ...) __attribute__((format(printf, 4, 5)));
+        void reportError(const ECLlocation & pos, int errNo, const char *format, ...) __attribute__((format(printf, 4, 5)));
         void reportWarning(WarnErrorCategory category, const attribute & returnToken, int warnNo, const char *format, ...) __attribute__((format(printf, 5, 6)));
 
         void beginNestedHash(unsigned kind) { hashendKinds.append(kind); hashendFlags.append(0); }
@@ -1253,10 +1262,10 @@ class HqlLex
         void pushMacro(IHqlExpression *expr);
         void pushText(IFileContents * text, int startLineNo, int startColumn);
         void pushText(const char *s, int startLineNo, int startColumn);
-        bool getParameter(StringBuffer &curParam, const char* for_what, int* startLine=NULL, int* startCol=NULL);
-        IValue *foldConstExpression(const attribute & errpos, IHqlExpression * expr, IXmlScope *xmlScope, int startLine, int startCol);
-        IValue *parseConstExpression(const attribute & errpos, StringBuffer &curParam, IXmlScope *xmlScope, int line, int col);
-        IValue *parseConstExpression(const attribute & errpos, IFileContents * contents, IXmlScope *xmlScope, int line, int col);
+        bool getParameter(StringBuffer &curParam, const char* directive, const ECLlocation & location);
+        IValue *foldConstExpression(const ECLlocation & errpos, IHqlExpression * expr, IXmlScope *xmlScope);
+        IValue *parseConstExpression(const ECLlocation & errpos, StringBuffer &curParam, IXmlScope *xmlScope);
+        IValue *parseConstExpression(const ECLlocation & errpos, IFileContents * contents, IXmlScope *xmlScope);
         IHqlExpression * parseECL(IFileContents * contents, IXmlScope *xmlScope, int startLine, int startCol);
         IHqlExpression * parseECL(const char * curParam, IXmlScope *xmlScope, int startLine, int startCol);
         void setMacroParam(const attribute & errpos, IHqlExpression* funcdef, StringBuffer& curParam, IIdAtom * argumentName, unsigned& parmno,IProperties *macroParms);
@@ -1285,15 +1294,15 @@ class HqlLex
         void doInModule(attribute & returnToken);
         void doMangle(attribute & returnToken, bool de);
         void doUniqueName(attribute & returnToken);
-        void doSkipUntilEnd(attribute & returnToken, const char * forwhat);
+        void doSkipUntilEnd(attribute & returnToken, const char* directive, const ECLlocation & location);
 
         void processEncrypted();
         void checkSignature(const attribute & dummyToken);
 
         void declareUniqueName(const char* name, const char * pattern);
-        void checkNextLoop(const attribute & errpos, bool first,int startLine,int startCol);
+        void checkNextLoop(bool first);
 
-        bool getDefinedParameter(StringBuffer &curParam, attribute & returnToken, const char* for_what, SharedHqlExpr & resolved);
+        bool getDefinedParameter(StringBuffer &curParam, attribute & returnToken, const char* directive, const ECLlocation & location, SharedHqlExpr & resolved);
 
         int processStringLiteral(attribute & returnToken, char *CUR_TOKEN_TEXT, unsigned CUR_TOKEN_LENGTH, int oldColumn, int oldPosition);
 
@@ -1311,10 +1320,11 @@ private:
         IIterator *forLoop;
         IXmlScope *xmlScope;
         IHqlExpression *macroExpr;
+        ECLlocation forLocation;
         Owned<IFileContents> forBody;
         Owned<IFileContents> forFilter;
         IAtom * hashDollar = nullptr;
-
+        IEclPackage * hashDollarPackage = nullptr;
 
         enum { HashStmtNone, HashStmtFor, HashStmtForAll, HashStmtLoop, HashStmtIf };
         int lastToken;

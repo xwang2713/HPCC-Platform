@@ -32,7 +32,7 @@ ESPStruct ActiveWorkunit
     string Owner;
     string Jobname;
     string Server;
-    strint Instance;
+    string Instance;
     string Priority;
     [min_ver("1.01")] string Extra;
     [min_ver("1.02")] string GraphName;
@@ -46,6 +46,7 @@ ESPStruct ActiveWorkunit
     [min_ver("1.15")] string ClusterType;
     [min_ver("1.15")] string ClusterQueueName;
     [min_ver("1.16")] string TargetClusterName;
+    [min_ver("1.25")] bool NoAccess(false);
 };
 
 ESPStruct TargetCluster
@@ -309,7 +310,8 @@ ESPresponse
 BrowseResourcesResponse
 {
     string PortalURL;
-    string NetAddress;
+    [depr_ver("1.27")] string NetAddress;
+    [min_ver("1.27")] string ESPInstance;
     int OS;
     [min_ver("1.13")] bool UseResource;
     ESParray<ESPstruct HPCCResourceRepository> HPCCResourceRepositories;
@@ -321,7 +323,10 @@ ESPenum RoxieControlCmdType : string
     DETACH("Detach"),
     STATE("State"),
     RELOAD("Reload"),
-    RELOAD_RETRY("ReloadRetry")
+    RELOAD_RETRY("ReloadRetry"),
+    MEMLOCK("MemLock"),
+    MEMUNLOCK("MemUnlock"),
+    GETMEMLOCKED("GetMemLocked")
 };
 
 ESPrequest RoxieControlCmdRequest
@@ -338,6 +343,7 @@ ESPStruct [nil_remove] RoxieControlEndpointInfo
     bool Attached;
     string StateHash;
     string Status;
+    [min_ver("1.26")] bool MemLocked;
 };
 
 ESPresponse
@@ -347,6 +353,23 @@ ESPresponse
 RoxieControlCmdResponse
 {
     ESParray<ESPstruct RoxieControlEndpointInfo, Endpoint> Endpoints;
+};
+
+ESPrequest RoxieXrefCmdRequest
+{
+    string RoxieCluster;
+    ESParray<string> QueryIds;
+    bool CheckAllNodes(false);
+    int Wait;
+};
+
+ESPresponse
+[
+    exceptions_inline, nil_remove
+]
+RoxieXrefCmdResponse
+{
+    string Result;
 };
 
 ESPrequest GetStatusServerInfoRequest
@@ -414,7 +437,7 @@ ESPresponse [exceptions_inline] GetBuildInfoResponse
     ESParray<ESPstruct NamedValue> BuildInfo;
 };
 
-ESPservice [auth_feature("DEFERRED"), noforms, version("1.24"), exceptions_inline("./smc_xslt/exceptions.xslt"), use_method_name] WsSMC
+ESPservice [auth_feature("DEFERRED"), noforms, version("1.27"), default_client_version("1.27"), exceptions_inline("./smc_xslt/exceptions.xslt"), use_method_name] WsSMC
 {
     ESPmethod Index(SMCIndexRequest, SMCIndexResponse);
     ESPmethod [resp_xsl_default("/esp/xslt/index.xslt")] Activity(ActivityRequest, ActivityResponse);
@@ -442,6 +465,8 @@ ESPservice [auth_feature("DEFERRED"), noforms, version("1.24"), exceptions_inlin
     ESPmethod [resp_xsl_default("/esp/xslt/hpccresourcelist.xslt")] BrowseResources(BrowseResourcesRequest, BrowseResourcesResponse);
 
     ESPmethod RoxieControlCmd(RoxieControlCmdRequest, RoxieControlCmdResponse);
+    ESPmethod RoxieXrefCmd(RoxieXrefCmdRequest, RoxieXrefCmdResponse);
+
 //this one doesn't seem to do any feature level check, Kevin/Tony?
     ESPmethod [auth_feature("NONE")] GetStatusServerInfo(GetStatusServerInfoRequest, GetStatusServerInfoResponse);
 //this one doesn't seem to do any feature level check, Kevin/Tony?

@@ -27,6 +27,12 @@
 #include "TpWrapper.hpp"
 #include <math.h>
 
+
+using std::string;
+using std::set;
+using std::map;
+using std::pair;
+
 static const int THREAD_POOL_SIZE = 40;
 static const int THREAD_POOL_STACK_SIZE = 64000;
 static const char* FEATURE_URL = "MachineInfoAccess";
@@ -192,7 +198,7 @@ void Cws_machineEx::init(IPropertyTree *cfg, const char *process, const char *se
     //Start thread pool
     Owned<IThreadFactory> pThreadFactory = new CWsMachineThreadFactory();
     m_threadPool.setown(createThreadPool("WsMachine Thread Pool", pThreadFactory,
-        NULL, m_threadPoolSize, 10000, m_threadPoolStackSize)); //10 sec timeout for available thread; use stack size of 2MB
+         false, nullptr, m_threadPoolSize, 10000, m_threadPoolStackSize)); //10 sec timeout for available thread; use stack size of 2MB
 
     setupLegacyFilters();
 
@@ -202,6 +208,7 @@ void Cws_machineEx::init(IPropertyTree *cfg, const char *process, const char *se
     unsigned machineUsageCacheForceRebuildMinutes = pServiceNode->getPropInt("MachineUsageCacheMinutes", machineUsageCacheMinutes);
     unsigned machineUsageCacheAutoRebuildMinutes = pServiceNode->getPropInt("MachineUsageCacheAutoRebuildMinutes", defaultMachineUsageCacheAutoBuildMinutes);
     usageCacheReader.setown(new CUsageCacheReader(this, "Usage Reader", machineUsageCacheAutoRebuildMinutes*60, machineUsageCacheForceRebuildMinutes*60));
+    usageCacheReader->init();
 }
 
 StringBuffer& Cws_machineEx::getAcceptLanguage(IEspContext& context, StringBuffer& acceptLanguage)
@@ -789,29 +796,26 @@ void Cws_machineEx::getThorProcesses(IConstEnvironment* constEnv, IPropertyTree*
             return;
         }
         nodeGroup.setown(getClusterProcessNodeGroup(processName, eqThorCluster));
+        if (!nodeGroup || (nodeGroup->ordinality() == 0))
+        {
+            OWARNLOG("Cannot find node group for %s", processName);
+            return;
+        }
     }
     else
     {
         getClusterSpareGroupName(*cluster, groupName);
-        if (groupName.length() < 1)
-        {
-            OWARNLOG("Cannot find group name for %s", processName);
-            return;
-        }
         nodeGroup.setown(queryNamedGroupStore().lookup(groupName.str()));
-    }
-    if (!nodeGroup || (nodeGroup->ordinality() == 0))
-    {
-        OWARNLOG("Cannot find node group for %s", processName);
-        return;
+        if (!nodeGroup || (nodeGroup->ordinality() == 0))
+            return; //The thor may not have spare node.
     }
 
-    int slavesPerNode = cluster->getPropInt("@slavesPerNode");
+    unsigned processNumber = 1;
     Owned<INodeIterator> gi = nodeGroup->getIterator();
     ForEach(*gi)
     {
         StringBuffer addressRead;
-        gi->query().endpoint().getIpText(addressRead);
+        gi->query().endpoint().getHostText(addressRead);
         if (addressRead.length() == 0)
         {
             OWARNLOG("Network address not found for a node in node group %s", groupName.str());
@@ -827,7 +831,7 @@ void Cws_machineEx::getThorProcesses(IConstEnvironment* constEnv, IPropertyTree*
         else
         {
             IpAddress ipaddr = queryHostIP();
-            ipaddr.getIpText(netAddress);
+            ipaddr.getHostText(netAddress);
         }
 
         if (netAddress.length() == 0)
@@ -843,10 +847,11 @@ void Cws_machineEx::getThorProcesses(IConstEnvironment* constEnv, IPropertyTree*
             continue;
         }
 
-        //Each thor slave is a process. The i is used to check whether the process is running or not.
-        for (unsigned i = 1; i <= slavesPerNode; i++)
-            setProcessRequest(machineInfoData, uniqueProcesses, netAddress.str(), addressRead.str(),
-                processType, processName, directory, i);
+        //Each thor slave is a process. Each process has a PID file.
+        //The PID file is used to get the information about the process.
+        //PID file name for thor slave: thorslave_{processName}_{processNumber}.pid
+        setProcessRequest(machineInfoData, uniqueProcesses, netAddress.str(), addressRead.str(),
+            processType, processName, directory, processNumber++);
     }
 
     return;
@@ -908,26 +913,12 @@ void Cws_machineEx::getProcesses(IConstEnvironment* constEnv, IPropertyTree* env
             SCMStringBuffer ep;
             pMachineInfo->getNetAddress(ep);
 
-            const char* ip = ep.str();
-            if (!ip)
+            if (ep.length() == 0)
             {
                 OWARNLOG("Network address not found for machine %s", name0);
                 continue;
             }
-
-            StringBuffer netAddress;
-            StringBuffer configNetAddress(ip);
-            if (!streq(ip, "."))
-            {
-                netAddress.set(ip);
-            }
-            else
-            {
-                IpAddress ipaddr = queryHostIP();
-                ipaddr.getIpText(netAddress);
-            }
-
-            setProcessRequest(machineInfoData, uniqueProcesses, netAddress.str(), configNetAddress.str(), processType, processName, directory0);
+            setProcessRequest(machineInfoData, uniqueProcesses, ep.str(), ep.str(), processType, processName, directory0);
         }
     }
 
@@ -1163,6 +1154,8 @@ void Cws_machineEx::doGetMachineInfo(IEspContext& context, CMachineInfoThreadPar
     }
     else
     {
+        ESPLOG(LogMax, "netAddress(%s), command(%s)", pParam->m_machineData.getNetworkAddress(), preflightCommand.str());
+
         error = runCommand(context, pParam->m_machineData.getNetworkAddress(), pParam->m_machineData.getNetworkAddressInEnvSetting(), pParam->m_machineData.getOS(), preflightCommand.str(), pParam->m_options.getUserName(), pParam->m_options.getPassword(), response);
         if ((error == 0) && (response.length() > 0))
             readPreflightResponse(context, pParam, response.str(), error);
@@ -1496,8 +1489,8 @@ bool CStorageData::read(const char* s)
         m_diskSpacePercentAvail = round((float)m_diskSpaceAvailable*100/m_diskSpaceTotal);
 
     //If a given path (ex. /var/lib/HPCCSystems/hpcc-mirror/thor) in the usage request does not exist,
-    //the data.item(2) is the path (ex. /var/lib/HPCCSystems/hpcc-mirror/) the usage script is used
-    //to read the DiskSpace.
+    //the data.item(2) is the path where the usage script is used to read the DiskSpace
+    //(ex. /var/lib/HPCCSystems/hpcc-mirror/).
     if (m_readPath && (data.length() > 2))
         m_path.set(data.item(2));
 
@@ -2682,7 +2675,7 @@ void Cws_machineEx::getMachineUsage(IEspContext& context, CGetMachineUsageThread
         command.appendf("%s", t.queryProp("@path"));
         pathCount++;
     }
-    ESPLOG(LogMax, "command(%s)", command.str());
+    ESPLOG(LogMax, "netAddress(%s), command(%s)", param->request->queryProp("@netAddress"), command.str());
 
     StringBuffer response;
     int error = runCommand(context, param->request->queryProp("@netAddress"), nullptr,
@@ -2885,7 +2878,7 @@ bool Cws_machineEx::onGetComponentUsage(IEspContext& context, IEspGetComponentUs
 StringArray& Cws_machineEx::listTargetClusterNames(IConstEnvironment* constEnv, StringArray& targetClusters)
 {
 #ifdef _CONTAINERIZED
-    Owned<IStringIterator> targets = getContainerTargetClusters(nullptr, nullptr);
+    Owned<IStringIterator> targets = config::getContainerTargets(nullptr, nullptr);
 #else
     Owned<IStringIterator> targets = getTargetClusters(nullptr, nullptr);
 #endif

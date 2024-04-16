@@ -80,6 +80,8 @@ public:
         resultChildTags.setValue("Warning", true);
         resultChildTags.setValue("Alert", true);
         resultChildTags.setValue("Info", true);
+        resultChildTags.setValue("StatsWorkUnit", true);
+        resultChildTags.setValue("SummaryStats", true);
     }
 
     void appendResults(IConstWorkUnit *wu, const char *username, const char *pw)
@@ -928,16 +930,17 @@ void WuWebView::addInputsFromXml(const char *xml)
 
 bool WuWebView::getEmbeddedArchive(StringBuffer &ret)
 {
+    if (cw->getDebugValueBool("obfuscateOutput", false))
+        return false;
     if (!loadDll())
         return false;
     if (getEmbeddedArchiveXML(dll, ret))
         return true;
-    // Try the old way, in case it's an older dll
-    StringBuffer dllXML;
-    if (!getEmbeddedWorkUnitXML(dll, dllXML))
+
+    Owned<ILocalWorkUnit> embeddedWU = createLocalWorkUnit(dll);
+    if (!embeddedWU)
         return false;
 
-    Owned<ILocalWorkUnit> embeddedWU = createLocalWorkUnit(dllXML.str());
     Owned<IConstWUQuery> embeddedQuery = embeddedWU->getQuery();
     if (!embeddedQuery)
         return false;

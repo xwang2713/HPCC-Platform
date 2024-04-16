@@ -52,7 +52,7 @@ if(REMBED)
         endif()
 
         HPCC_ADD_LIBRARY(Rembed SHARED ${SRCS})
-        SET_DEPENDENCIES(CPACK_DEBIAN_PACKAGE_DEPENDS R-base-core r-cran-rcpp r-cran-inline)
+        SET_DEPENDENCIES(CPACK_DEBIAN_PACKAGE_DEPENDS r-base-core r-cran-rcpp r-cran-inline)
         SET_DEPENDENCIES(CPACK_RPM_PACKAGE_REQUIRES R-Rcpp)
         target_link_libraries(
             Rembed
@@ -62,7 +62,8 @@ if(REMBED)
 
         install(
             TARGETS Rembed
-            DESTINATION plugins)
+            DESTINATION plugins
+            CALC_DEPS)
         install(
             FILES ${RINSIDE_LIBRARY}
             DESTINATION ${LIB_DIR}

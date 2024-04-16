@@ -159,7 +159,7 @@ public:
                 e->base = part.queryProperties().getPropInt64("@offset");
                 e->top = e->base + part.queryProperties().getPropInt64("@size");
                 e->index = f;
-                e->file = queryThor().queryFileCache().lookupIFileIO(owner, logicalFilename, part); // NB: freed by FPosTableEntryIFileIO dtor
+                e->file = queryThor().queryFileCache().lookupIFileIO(owner, logicalFilename, part, nullptr, diskReadPartStatistics); // NB: freed by FPosTableEntryIFileIO dtor
             }
         }
     }
@@ -262,6 +262,31 @@ public:
         }
         return NULL;
     }
+    virtual void getStats(CRuntimeStatisticCollection & stats) const override
+    {
+        for (unsigned f=0; f<files; f++)
+        {
+            IFileIO *file = fPosMultiPartTable[f].file;
+            mergeStats(stats, file);
+        }
+    }
+    virtual void getFileStats(std::vector<OwnedPtr<CRuntimeStatisticCollection>> & fileStats, unsigned fileTableStart) const override
+    {
+        if(!fileStats.empty())
+        {
+            ISuperFileDescriptor *super = parts.item(0).queryOwner().querySuperFileDescriptor();
+            for (unsigned f=0; f<files; f++)
+            {
+                IFileIO *file = fPosMultiPartTable[f].file;
+                IPartDescriptor &part = parts.item(f);
+                unsigned subfile, lnum;
+                if (super && super->mapSubPart(part.queryPartIndex(), subfile, lnum))
+                    mergeStats(*fileStats[fileTableStart+subfile], file);
+                else
+                    mergeStats(*fileStats[fileTableStart], file);
+            }
+        }
+    }
 };
 
 
@@ -281,14 +306,16 @@ class CFetchSlaveBase : public CSlaveActivity, implements IFetchHandler
     MemoryBuffer offsetMapBytes;
     Owned<IExpander> eexp;
     Owned<IEngineRowAllocator> keyRowAllocator;
+    unsigned fileTableStart = NotFound;
 
 protected:
     Owned<IThorRowInterfaces> fetchDiskRowIf;
-    IFetchStream *fetchStream = nullptr;
+    Owned<IFetchStream> fetchStream;
+    mutable CriticalSection fetchStreamCS;
     IHThorFetchBaseArg *fetchBaseHelper;
     unsigned files = 0;
     CPartDescriptorArray parts;
-    IRowStream *keyIn = nullptr;
+    Owned<IRowStream> keyIn;
     bool indexRowExtractNeeded = false;
     mptag_t mptag = TAG_NULL;
 
@@ -299,16 +326,11 @@ protected:
 public:
     IMPLEMENT_IINTERFACE_USING(CSlaveActivity);
 
-    CFetchSlaveBase(CGraphElementBase *_container) : CSlaveActivity(_container)
+    CFetchSlaveBase(CGraphElementBase *_container) : CSlaveActivity(_container, diskReadActivityStatistics)
     {
         fetchBaseHelper = (IHThorFetchBaseArg *)queryHelper();
         reInit = 0 != (fetchBaseHelper->getFetchFlags() & (FFvarfilename|FFdynamicfilename));
         appendOutputLinked(this);
-    }
-    ~CFetchSlaveBase()
-    {
-        ::Release(keyIn);
-        ::Release(fetchStream);
     }
 
     virtual void init(MemoryBuffer &data, MemoryBuffer &slaveData) override
@@ -341,6 +363,7 @@ public:
         if (!container.queryLocalOrGrouped())
             mptag = container.queryJobChannel().deserializeMPTag(data);
 
+        data.read(fileTableStart);
         files = parts.ordinality();
         if (files)
         {
@@ -359,6 +382,8 @@ public:
                     prefetchers.append(prefetcher.getClear());
                 }
             }
+            ISuperFileDescriptor *super = parts.item(0).queryOwner().querySuperFileDescriptor();
+            setupSpace4FileStats(fileTableStart, reInit, super!=nullptr, super?super->querySubFiles():0, diskReadRemoteStatistics);
         }
 
         unsigned encryptedKeyLen;
@@ -445,12 +470,12 @@ public:
 
             if (fetchBaseHelper->extractAllJoinFields())
             {
-                keyIn = LINK(inputStream);
+                keyIn.set(inputStream);
                 keyInMeta.set(input->queryFromActivity()->queryRowMetaData());
             }
             else
             {
-                keyIn = new CKeyFieldExtract(this, *inputStream, *fetchBaseHelper);
+                keyIn.setown(new CKeyFieldExtract(this, *inputStream, *fetchBaseHelper));
                 keyInMeta.set(QUERYINTERFACE(fetchBaseHelper->queryExtractedSize(), IOutputMetaData));
             }
             keyInIf.setown(createRowInterfaces(keyInMeta));
@@ -483,12 +508,15 @@ public:
             };
             Owned<IOutputMetaData> fmeta = createFixedSizeMetaData(sizeof(offset_t)); // should be provided by Gavin?
             keyInIf.setown(createRowInterfaces(fmeta));
-            keyIn = new CKeyFPosExtract(keyInIf, this, *inputStream, *fetchBaseHelper);
+            keyIn.setown(new CKeyFPosExtract(keyInIf, this, *inputStream, *fetchBaseHelper));
         }
 
         Owned<IThorRowInterfaces> rowIf = createRowInterfaces(queryRowMetaData());
         OwnedRoxieString fileName = fetchBaseHelper->getFileName();
-        fetchStream = createFetchStream(*this, keyInIf, rowIf, abortSoon, fileName, parts, offsetCount, offsetMapSz, offsetMapBytes.toByteArray(), this, mptag, eexp);
+        {
+            CriticalBlock b(fetchStreamCS);
+            fetchStream.setown(createFetchStream(*this, keyInIf, rowIf, abortSoon, fileName, parts, offsetCount, offsetMapSz, offsetMapBytes.toByteArray(), this, mptag, eexp));
+        }
         fetchStreamOut = fetchStream->queryOutput();
         fetchStream->start(keyIn);
         initializeFileParts();
@@ -540,6 +568,25 @@ public:
             memcpy(&fpos, key, sizeof(fpos));
             return fpos;
         }
+    }
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
+    {
+        PARENT::gatherActiveStats(activeStats);
+        CriticalBlock b(fetchStreamCS);
+        if (fetchStream)
+            fetchStream->getStats(activeStats);
+    }
+    virtual void serializeStats(MemoryBuffer &mb) override
+    {
+        {
+            CriticalBlock b(fetchStreamCS);
+            if (fetchStream)
+                fetchStream->getFileStats(fileStats, fileTableStart);
+        }
+        PARENT::serializeStats(mb);
+        mb.append((unsigned)fileStats.size());
+        for (auto &stats: fileStats)
+            stats->serialize(mb);
     }
     virtual void onLimitExceeded() = 0;
 };

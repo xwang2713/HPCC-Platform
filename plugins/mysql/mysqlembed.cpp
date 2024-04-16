@@ -245,7 +245,7 @@ public:
                     if (!connectionCloserThread)
                     {
                         connectionCloserThread = new MySQLConnectionCloserThread;
-                        connectionCloserThread->start();
+                        connectionCloserThread->start(false);
                     }
                 }
             }
@@ -600,6 +600,7 @@ public:
             default:
                 bindinfo[i].buffer_type = col->type;
                 bindinfo[i].buffer_length = col->length;
+                bindinfo[i].is_unsigned = col->flags&UNSIGNED_FLAG;
                 break;
             }
             bindinfo[i].buffer = rtlMalloc(bindinfo[i].buffer_length);
@@ -803,6 +804,9 @@ static bool isString(enum_field_types type)
     case MYSQL_TYPE_BLOB:
     case MYSQL_TYPE_STRING:
     case MYSQL_TYPE_VAR_STRING:
+#if MYSQL_VERSION_ID >= 50709
+    case MYSQL_TYPE_JSON:
+#endif
         return true;
     default:
         return false;

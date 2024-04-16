@@ -76,17 +76,37 @@ using namespace sxt;
 #define XPP_DEBUG false
 
 namespace xpp {
-  class XmlPullParser : implements XJXPullParser {
-    
-      
-  // public 
-  public:
+  interface IXmlPullParser : extends XJXPullParser
+  {
     enum {
       END_DOCUMENT = 1,
       START_TAG = 2,
       END_TAG = 3,
       CONTENT = 4
     };
+
+    using XJXPullParser::setInput;
+
+    virtual ~IXmlPullParser() {}
+    virtual void setInput(const SXT_CHAR* prefix, int prefixLength, const SXT_CHAR* body, int bodyLength, const SXT_CHAR* suffix, int suffixLength) = 0;
+    virtual void setMixedContent(bool enable) = 0;
+    virtual const SXT_CHAR* getQNameLocal(const SXT_CHAR* qName) const = 0;
+    virtual const SXT_CHAR* getQNameUri(const SXT_CHAR* qName) const = 0;
+    virtual int getNsCount() const = 0;
+    virtual std::map<string, const SXT_CHAR*>::const_iterator getNsBegin() const = 0;
+    virtual std::map<string, const SXT_CHAR*>::const_iterator getNsEnd() const = 0;
+    virtual void setSupportNamespaces(bool enable) = 0;
+    virtual void setRequestNamespaces(bool enable) = 0;
+    virtual bool skipSubTreeEx() = 0;
+    virtual int skipSubTree() = 0;
+    virtual const SXT_STRING getPosDesc() const = 0;
+    virtual int getLineNumber() const = 0;
+    virtual int getColumnNumber() const = 0;
+    virtual const bool whitespaceContent() const = 0;
+ };
+
+  class XmlPullParser : implements IXmlPullParser {
+  public:
 
     XmlPullParser() 
     {
@@ -107,26 +127,36 @@ namespace xpp {
       done();
     }
 
-    void setInput(const SXT_CHAR* buf, int bufSize) {
-      reset();      
-      if(nsBufSize - 1 < bufSize) {
-        int newSize = bufSize + 1;
-        SXT_CHAR* newNsBuf = new SXT_CHAR[newSize];
-        if(nsBuf != NULL) {
-          delete [] nsBuf;
-        }
-        nsBuf = newNsBuf;
-        nsBufSize = newSize;
-      }
-      tokenizer.setInput(buf, bufSize);
+    virtual void setInput(const SXT_CHAR* buf, int bufSize) override {
+      setInput(nullptr, 0, buf, bufSize, nullptr, 0);
     }
 
+    virtual void setInput(const SXT_CHAR* prefix, int prefixLength, const SXT_CHAR* body, int bodyLength, const SXT_CHAR* suffix, int suffixLength) override
+    {
+      if (-1 == prefixLength)
+        prefixLength = int(strlen(prefix));
+      if (-1 == bodyLength)
+        bodyLength = int(strlen(body));
+      if (-1 == suffixLength)
+        suffixLength = int(strlen(suffix));
+      int bufSize = prefixLength + bodyLength + suffixLength;
+      reset();
+      if (nsBufSize <= bufSize)
+      {
+        SXT_CHAR* newNsBuf = new SXT_CHAR[bufSize + 1];
+        if (nsBuf != NULL)
+          delete [] nsBuf;
+        nsBuf = newNsBuf;
+        nsBufSize = bufSize + 1;
+      }
+      tokenizer.setInput(prefix, prefixLength, body, bodyLength, suffix, suffixLength);
+    }
 
-    void setMixedContent(bool enable) { 
+    virtual void setMixedContent(bool enable) override {
       tokenizer.setMixedContent(enable);
     }
 
-    const SXT_CHAR* getQNameLocal(const SXT_CHAR* qName) const {
+    virtual const SXT_CHAR* getQNameLocal(const SXT_CHAR* qName) const override {
       int i = 0;
       while(qName[i] != _MYT('\0')) {
         if(qName[i] == _MYT(':'))
@@ -136,8 +166,7 @@ namespace xpp {
       return qName;
     }
 
-    const SXT_CHAR* getQNameUri(const SXT_CHAR* qName) 
-       
+    virtual const SXT_CHAR* getQNameUri(const SXT_CHAR* qName) const override
     {
       if(elStackDepth == 0) {
         throw XmlPullParserException(
@@ -152,20 +181,21 @@ namespace xpp {
       if(qName[i] == _MYT('\0'))   //current default namespace 
         return elStack[elStackDepth-1].defaultNs; 
       string prefix = string(qName, i);
-      if(prefix2Ns.find(prefix) != prefix2Ns.end())
-        return prefix2Ns[ prefix ];
+      std::map<string, const SXT_CHAR*>::const_iterator match = prefix2Ns.find(prefix);
+      if(match != prefix2Ns.end())
+        return match->second;
       else
         return NULL;
     }
 
-    int getNsCount(){return prefix2Ns.size();}
-    map< string, const SXT_CHAR* >::iterator getNsBegin(){return prefix2Ns.begin();}
-    map< string, const SXT_CHAR* >::iterator getNsEnd(){return prefix2Ns.end();}
+    virtual int getNsCount() const override {return prefix2Ns.size();}
+    virtual std::map< string, const SXT_CHAR* >::const_iterator getNsBegin() const override {return prefix2Ns.begin();}
+    virtual std::map< string, const SXT_CHAR* >::const_iterator getNsEnd() const override {return prefix2Ns.end();}
 
     /** 
      * Set support of namespaces. Enabled by default.
      */
-    void setSupportNamespaces(bool enable)  {
+    virtual void setSupportNamespaces(bool enable) override {
       if(elStackDepth > 0 || seenRootElement) {
         throw XmlPullParserException(string(
       "namespace support can only be set before parsing element markup"));
@@ -173,8 +203,16 @@ namespace xpp {
       supportNs = enable;
     }
 
+    virtual void setRequestNamespaces(bool enable) override {
+      if(elStackDepth > 0 || seenRootElement) {
+        throw XmlPullParserException(string(
+        "namespace requests can only be set before parsing element markup"));
+      }
+      requestNs = enable;
+    }
 
-    bool skipSubTreeEx()  {
+
+    virtual bool skipSubTreeEx() override {
       bool hasChildren = false;
       int level = 1;
       StartTag stag;
@@ -196,19 +234,19 @@ namespace xpp {
     }
 
     //backward compatability
-    int skipSubTree() {
+    virtual int skipSubTree() override {
       skipSubTreeEx();
       return XmlPullParser::END_TAG;
     }
 
-    const SXT_STRING getPosDesc() const {
+    virtual const SXT_STRING getPosDesc() const override {
       return tokenizer.getPosDesc();
     }
 
-    int getLineNumber() { return tokenizer.getLineNumber(); }
-    int getColumnNumber() { return tokenizer.getColumnNumber(); }
+    virtual int getLineNumber() const override { return tokenizer.getLineNumber(); }
+    virtual int getColumnNumber() const override { return tokenizer.getColumnNumber(); }
    
-    int next()  {
+    virtual int next() override {
      if(mustReadNamespaces) {
        throw XmlPullParserException(
          string("start tag must be read to declare namespaces")
@@ -307,8 +345,8 @@ namespace xpp {
                int prefixLen = tokenizer.posNsColon - tokenizer.posStart;
                el.prefix = nsBufAdd(
                  tokenizer.buf + tokenizer.posStart, prefixLen);               
-               if(XPP_DEBUG) cerr << "adding el.prefix=" << el.prefix
-                  << " el.qName=" << el.qName << endl;
+               if(XPP_DEBUG) std::cerr << "adding el.prefix=" << el.prefix
+                  << " el.qName=" << el.qName << std::endl;
                el.localName = tokenizer.buf + tokenizer.posNsColon + 1;
              } else {
                el.localName = s;
@@ -349,7 +387,7 @@ namespace xpp {
    }
 
 
-    const bool whitespaceContent()  {
+    virtual const bool whitespaceContent() const override {
       if(eventType != CONTENT) {
         throw XmlPullParserException("no content available to read");
       }
@@ -357,7 +395,7 @@ namespace xpp {
     }  
   
 
-    const SXT_CHAR* readContent()  {
+    virtual const SXT_CHAR* readContent() override {
       if(eventType != CONTENT) {
         throw XmlPullParserException("no content available to read");
       }
@@ -381,7 +419,7 @@ namespace xpp {
     }
   
   
-    void readEndTag(EndTag& etag)  {
+    virtual void readEndTag(EndTag& etag) override {
       if(eventType != END_TAG)
         throw XmlPullParserException("no end tag available to read");
       etag.qName = elStack[elStackDepth].qName;
@@ -393,7 +431,7 @@ namespace xpp {
       etag.localName = elStack[elStackDepth].localName;
     }
   
-    void readStartTag(StartTag& stag)  {
+    virtual void readStartTag(StartTag& stag) override {
       if(eventType != START_TAG)
         throw XmlPullParserException(string(
           "no start tag available to read"));
@@ -405,7 +443,7 @@ namespace xpp {
       stag.localName = el.localName;
       //cout << "stag.qName=" << stag.qName << endl;
       if(XPP_DEBUG && el.prefix != NULL)
-        cerr << "readStartTag  el.prefix=" << el.prefix << endl;
+        std::cerr << "readStartTag  el.prefix=" << el.prefix << std::endl;
       stag.attEnd = 0;
       try {      
         while(token != XmlTokenizer::STAG_END) {
@@ -473,13 +511,15 @@ namespace xpp {
                   }
                }
 
+                if (requestNs)
+                  ++stag.attEnd;
 
                 ++el.prefixesEnd;
                 //prefix2Ns[ att.localName ] = new string(att.value);
                 prefix2Ns[ att.localName ] = nsBufAdd(att.value);
-                if(XPP_DEBUG) cerr << "NS adding prefix="+att.localName 
+                if(XPP_DEBUG) std::cerr << "NS adding prefix="+att.localName
                   << " = " << prefix2Ns[ att.localName ]  
-                  << " el.prefixesEnd=" << el.prefixesEnd << endl;
+                  << " el.prefixesEnd=" << el.prefixesEnd << std::endl;
 
               } else if(att.qName == "xmlns") {
                 if(el.defaultNs != NULL)
@@ -487,6 +527,9 @@ namespace xpp {
               "default namespace was alredy declared by xmlns attribute")
                     +tokenizer.getPosDesc(), tokenizer.getLineNumber(), tokenizer.getColumnNumber());            
                 el.defaultNs = nsBufAdd(att.value);
+
+                if (requestNs)
+                  ++stag.attEnd;
                 //el.defaultNsValid =  true;
               } else {
                 ++stag.attEnd;
@@ -579,7 +622,9 @@ namespace xpp {
       }
       int n = stag.attEnd;
       for(int i = 0; i < n; ++i) {
-        if(stag.attArr[i].prefixValid) {
+        if(supportNs && requestNs && ("xmlns" == stag.attArr[i].prefix || "xmlns" == stag.attArr[i].localName)) {
+          stag.attArr[i].uri = stag.attArr[i].value;
+        } else if(stag.attArr[i].prefixValid) {
           SXT_STRING pfx = stag.attArr[i].prefix;
           //if(prefix2Ns[ pfx ]  == NULL)
           if(prefix2Ns.find( pfx ) == prefix2Ns.end())
@@ -645,6 +690,7 @@ namespace xpp {
       seenRootElement = false;
       //elContent = "";
       supportNs = true;
+      requestNs = false;
       reset();
     }
 
@@ -686,9 +732,9 @@ namespace xpp {
            // clean prefixes
            ElementContent& el = elStack[elStackDepth];
            if(XPP_DEBUG)
-                 cerr << "NS current el=" << el.qName 
+                 std::cerr << "NS current el=" << el.qName
                  << " el.prefixesEnd =" << el.prefixesEnd
-                 << endl; 
+                 << std::endl;
            if(supportNs && el.prefixesEnd > 0) { //el.prefixes != NULL) {
              for(int i = el.prefixesEnd - 1; i >= 0; --i) {
                //TODO check if memory leak
@@ -696,8 +742,8 @@ namespace xpp {
                //  ; //delete prefix2Ns[ el.prefixes[i] ]; 
                prefix2Ns[ el.prefixes[i] ] = el.prefixPrevNs[i];
                if(XPP_DEBUG && el.prefixPrevNs[i] != NULL)
-                 cerr << "NS restoring prefix=" << el.prefixes[i] 
-                 << " = " << el.prefixPrevNs[i] << endl;
+                 std::cerr << "NS restoring prefix=" << el.prefixes[i]
+                 << " = " << el.prefixPrevNs[i] << std::endl;
                assert(el.prefixPrevNs[i] <= nsBuf + el.prevNsBufPos);
                el.prefixPrevNs[i] = NULL;
              }
@@ -749,9 +795,9 @@ namespace xpp {
     }
 
     SXT_CHAR* nsBufAdd(const SXT_CHAR* s, int sLen) {
-      if(XPP_DEBUG) cerr << "nsBufAdd nsBufPos=" << nsBufPos 
+      if(XPP_DEBUG) std::cerr << "nsBufAdd nsBufPos=" << nsBufPos
           << " nsBufSize="<< nsBufSize 
-          << " s=" << s << " sLen=" << sLen << endl;
+          << " s=" << s << " sLen=" << sLen << std::endl;
       //ensureNsBufSpace(sLen);
       SXT_CHAR* result = nsBuf + nsBufPos;
       memcpy(result, s, sLen * sizeof(SXT_CHAR));
@@ -765,7 +811,7 @@ namespace xpp {
     }
       
     const SXT_STRING to_string(int i) const {
-      ostringstream os;
+      std::ostringstream os;
       os << i;
       return os.str();
     }
@@ -796,11 +842,12 @@ namespace xpp {
   
       // mapping namespace prefixes to uri
       bool supportNs;
+      bool requestNs;
       //map< SXT_STRING, SXT_STRING*, less<SXT_STRING> > prefix2Ns;
       SXT_CHAR* nsBuf;
       int nsBufPos;
       int nsBufSize;
-      map< string, const SXT_CHAR* > prefix2Ns;
+      std::map< string, const SXT_CHAR* > prefix2Ns;
 
       class ElementContent { 
         friend class XmlPullParser;
@@ -879,7 +926,7 @@ namespace xpp {
 
   };
 
-inline ostream& operator<<(ostream& output, 
+inline std::ostream& operator<<(std::ostream& output,
   const XmlPullParser& xpp) 
 {
     SXT_STRING ss = xpp.to_string(xpp.eventType);
@@ -893,7 +940,7 @@ inline ostream& operator<<(ostream& output,
       ss = "CONTENT";
     }   
     SXT_STRING s = "XmlPullParser: current evenType: "+ss;
-    output << s << endl;
+    output << s << std::endl;
     return output;
 }
 
@@ -901,7 +948,7 @@ inline bool isXppEndType(int type)
 {
     return (type==XmlPullParser::END_TAG || type==XmlPullParser::END_DOCUMENT);
 }
-inline void readFullContent(XmlPullParser &xppx, StringBuffer &content)
+inline void readFullContent(IXmlPullParser &xppx, StringBuffer &content)
 {
     StartTag stag;
     for(int type=xppx.next(); !isXppEndType(type); type=xppx.next())

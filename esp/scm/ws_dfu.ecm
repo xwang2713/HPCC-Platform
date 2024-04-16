@@ -97,6 +97,23 @@ ESPStruct DFUFileBloom
     string Probability;
 };
 
+ESPStruct DFUIndexInfo
+{
+    bool IsLeafCountEstimated;
+    int64 NumLeafNodes;
+    int64 NumBlobNodes;
+    int64 NumBranchNodes;
+    int64 SizeDiskLeaves;
+    int64 SizeDiskBlobs;
+    int64 SizeDiskBranches;
+    int64 SizeOriginalData;
+    int64 SizeOriginalBranches;
+    int64 SizeMemoryLeaves;
+    int64 SizeMemoryBranches;
+    double BranchCompressionPercent;
+    double DataCompressionPercent;
+};
+
 ESPStruct DFUPart
 {
     int Id;
@@ -191,7 +208,11 @@ ESPStruct [nil_remove] DFUFileDetail
     [min_ver("1.39")] ESParray<ESPstruct DFUFileBloom> Blooms;
     [min_ver("1.40")] int ExpireDays;
     [min_ver("1.41")] string KeyType;
-    [min_ver("1.59")] string Cost;
+    [min_ver("1.60"), max_ver("1.61")] double Cost;
+    [min_ver("1.62")] double AtRestCost;
+    [min_ver("1.62")] double AccessCost;
+    [min_ver("1.63")] string ExpirationDate;
+    [min_ver("1.65")] ESPstruct DFUIndexInfo ExtendedIndexInfo;
 };
 
 ESPStruct DFUSpaceItem
@@ -225,6 +246,7 @@ ESPrequest [nil_remove] DFUQueryRequest
     [depr_ver("1.26")] string ClusterName;
     [min_ver("1.26")] string NodeGroup;
     [min_ver("1.30")] string ContentType;
+    [min_ver("1.64")] bool InvertContent;
     string LogicalName;
     string Owner;
     string StartDate;
@@ -247,6 +269,10 @@ ESPrequest [nil_remove] DFUQueryRequest
     [min_ver("1.30")] bool IncludeSuperOwner;
     [min_ver("1.55")] string StartAccessedTime;
     [min_ver("1.55")] string EndAccessedTime;
+    [min_ver("1.63")] int64 MaxSkewFrom;
+    [min_ver("1.63")] int64 MaxSkewTo;
+    [min_ver("1.63")] int64 MinSkewFrom;
+    [min_ver("1.63")] int64 MinSkewTo;
 };
 
 ESPresponse
@@ -352,6 +378,7 @@ DFUInfoRequest
     [min_ver("1.37")] bool IncludeBinTypeInfo(false);
     [min_ver("1.39")] ESPenum DFUChangeProtection Protect(0);
     [min_ver("1.53")] ESPenum DFUChangeRestriction Restrict(0);
+    [min_ver("1.65")] bool ForceIndexInfo(false);
 };
 
 ESPresponse
@@ -968,8 +995,8 @@ ESPresponse [exceptions_inline, nil_remove] DFUFilePublishResponse
 //  ===========================================================================
 ESPservice [
     auth_feature("DEFERRED"),
-    version("1.59"),
-    default_client_version("1.59"),
+    version("1.65"),
+    default_client_version("1.65"),
     noforms,
     exceptions_inline("./smc_xslt/exceptions.xslt")] WsDfu
 {

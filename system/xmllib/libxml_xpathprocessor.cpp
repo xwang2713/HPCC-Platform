@@ -132,14 +132,17 @@ static xmlXPathObjectPtr variableLookupFunc(void *data, const xmlChar *name, con
 
 typedef std::map<std::string, xmlXPathObjectPtr> XPathObjectMap;
 
+
+
 class CLibXpathScope
 {
 public:
     StringAttr name; //in future allow named parent access?
     XPathObjectMap variables;
+    XpathVariableScopeType variableScopeType = XpathVariableScopeType::simple;
 
 public:
-    CLibXpathScope(const char *_name) : name(_name){}
+    CLibXpathScope(const char *_name, XpathVariableScopeType _variableScopeType) : name(_name), variableScopeType(_variableScopeType) {}
     ~CLibXpathScope()
     {
         for (XPathObjectMap::iterator it=variables.begin(); it!=variables.end(); ++it)
@@ -158,12 +161,15 @@ public:
         ret.first->second = obj;
         return true;
     }
-    xmlXPathObjectPtr getObject(const char *key)
+    xmlXPathObjectPtr getObject(const char *key, bool remove=false)
     {
         XPathObjectMap::iterator it = variables.find(key);
         if (it == variables.end())
             return nullptr;
-        return it->second;
+        xmlXPathObjectPtr obj = it->second;
+        if (remove)
+            variables.erase(it);
+        return obj;
     }
 };
 
@@ -262,8 +268,11 @@ public:
     }
     virtual void outputUnicode(unsigned len, const UChar *field, const char *fieldname) override
     {
-        StringBuffer out;
-        outputXmlUnicode(len, field, nullptr, out);
+        char * buff = 0;
+        unsigned bufflen = 0;
+        rtlUnicodeToCodepageX(bufflen, buff, len, field, "utf-8");
+        StringBuffer out(bufflen, buff);
+        rtlFree(buff);
         addNameValue(fieldname, out.str());
     }
     virtual void outputQString(unsigned len, const char *field, const char *fieldname) override
@@ -304,8 +313,8 @@ public:
     }
     virtual void outputUtf8(unsigned len, const char *field, const char *fieldname) override
     {
-        StringBuffer out;
-        outputXmlUtf8(len, field, nullptr, out);
+        unsigned bytes = rtlUtf8Size(len, field);
+        StringBuffer out(bytes, field);
         addNameValue(fieldname, out.str());
     }
     virtual void outputBeginArray(const char *fieldname){} //no op for libxml structure
@@ -347,7 +356,7 @@ public:
     CLibXpathContext(const char * xmldoc, bool _strictParameterDeclaration, bool removeDocNs) : strictParameterDeclaration(_strictParameterDeclaration), removeDocNamespaces(removeDocNs)
     {
         xmlKeepBlanksDefault(0);
-        beginScope("/");
+        beginScope("/", XpathVariableScopeType::simple);
         setXmlDoc(xmldoc);
         registerExslt();
     }
@@ -356,7 +365,7 @@ public:
     {
         xmlKeepBlanksDefault(0);
         primaryContext.set(_primary);
-        beginScope("/");
+        beginScope("/", XpathVariableScopeType::simple);
         setContextDocument(doc, node);
         registerExslt();
     }
@@ -408,10 +417,10 @@ public:
         saved.pop_back();
     }
 
-    void beginScope(const char *name) override
+    void beginScope(const char *name, XpathVariableScopeType variableScopeType) override
     {
         WriteLockBlock wblock(m_rwlock);
-        scopes.emplace_back(new CLibXpathScope(name));
+        scopes.emplace_back(new CLibXpathScope(name, variableScopeType));
     }
 
     void endScope() override
@@ -504,12 +513,38 @@ public:
             return scope->getObject(fullname);
 
         for (XPathScopeVector::const_reverse_iterator it=scopes.crbegin(); !obj && it!=scopes.crend(); ++it)
+        {
             obj = it->get()->getObject(fullname);
+            if (it->get()->variableScopeType==XpathVariableScopeType::isolated)  //An isolated scope can't use variables from higher level scopes
+                break;
+        }
 
         //check libxml2 level variables, shouldn't happen currently but we may want to wrap existing xpathcontexts in the future
         if (!obj)
             obj = (xmlXPathObjectPtr)xmlHashLookup2(m_xpathContext->varHash, (const xmlChar *)name, (const xmlChar *)ns_uri);
         return obj;
+    }
+
+    CLibXpathScope *queryParameterScope()
+    {
+        if (scopes.size()<2)
+            return nullptr;
+
+        CLibXpathScope *parameterScope = scopes[scopes.size() - 2].get();
+        if (!parameterScope || parameterScope->variableScopeType!=XpathVariableScopeType::parameter)
+            return nullptr;
+        return parameterScope;
+    }
+
+    bool processPassedParameter(CLibXpathScope *parameterScope, const char *name)
+    {
+        if (!parameterScope)
+            return false;
+        xmlXPathObjectPtr paramValueObj = parameterScope->getObject(name, true);
+        if (!paramValueObj)
+            return false;
+        addObjectVariable(name, paramValueObj, nullptr);
+        return true;
     }
 
     xmlXPathObjectPtr getVariableObject(const char *name, const char *ns_uri, CLibXpathScope *scope)
@@ -851,8 +886,13 @@ public:
         if (isEmptyString(xpath) || isEmptyString(name))
             return;
         xmlXPathObjectPtr obj = xmlXPathEval((const xmlChar*) xpath, m_xpathContext);
-        if (!obj || obj->type!=xmlXPathObjectType::XPATH_NODESET || obj->nodesetval->nodeNr==0)
+        if (!obj)
             return;
+        if (obj->type!=xmlXPathObjectType::XPATH_NODESET || obj->nodesetval->nodeNr==0)
+        {
+            xmlXPathFreeObject(obj);
+            return;
+        }
         if (obj->nodesetval->nodeNr>1 && !all)
         {
             xmlXPathFreeObject(obj);
@@ -869,8 +909,13 @@ public:
         if (isEmptyString(xpath))
             return;
         xmlXPathObjectPtr obj = xmlXPathEval((const xmlChar*) xpath, m_xpathContext);
-        if (!obj || obj->type!=xmlXPathObjectType::XPATH_NODESET || !obj->nodesetval || obj->nodesetval->nodeNr==0)
+        if (!obj)
             return;
+        if (obj->type!=xmlXPathObjectType::XPATH_NODESET || !obj->nodesetval || obj->nodesetval->nodeNr==0)
+        {
+            xmlXPathFreeObject(obj);
+            return;
+        }
         if (obj->nodesetval->nodeNr>1 && !all)
         {
             xmlXPathFreeObject(obj);
@@ -915,6 +960,78 @@ public:
         xmlXPathFreeObject(obj);
     }
 
+    StringBuffer &toXML(xmlNodePtr node, StringBuffer &xml)
+    {
+        if (!node)
+            return xml;
+
+        xmlOutputBufferPtr xmlOut = xmlAllocOutputBuffer(nullptr);
+        xmlNodeDumpOutput(xmlOut, node->doc, node, 0, 1, nullptr);
+        if (xmlOutputBufferFlush(xmlOut) >= 0)
+        {
+            xmlBufPtr buf = (xmlOut->conv != nullptr) ? xmlOut->conv : xmlOut->buffer;
+            if (xmlBufUse(buf))
+                xml.append(xmlBufUse(buf), (const char *)xmlBufContent(buf));
+        }
+        xmlOutputBufferClose(xmlOut);
+        return xml;
+    }
+
+    StringBuffer &toXMLNodeSet(xmlXPathObjectPtr obj, StringBuffer &xml)
+    {
+        if (!obj || obj->type!=XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr<1)
+            return xml;
+        xmlNodePtr *nodes = obj->nodesetval->nodeTab;
+        for (int i = 0; i < obj->nodesetval->nodeNr; i++)
+        {
+            xmlNodePtr node = obj->nodesetval->nodeTab[i];
+            toXML(node, xml);
+        }
+        return xml;
+    }
+
+    virtual bool selectText(ICompiledXpath* select, StringBuffer& content, bool& isValue)
+    {
+        xmlNodePtr current = m_xpathContext->node;
+        if (!current || !select)
+            return false;
+        CLibCompiledXpath * ccXpath = static_cast<CLibCompiledXpath *>(select);
+        xmlXPathObjectPtr obj = primaryContext->evaluate(ccXpath->getCompiledXPathExpression(), ccXpath->getXpath());
+        if (!obj)
+            throw makeStringExceptionV(XPATHERR_InvalidState, "XpathContext:selectText xpath syntax error '%s'", ccXpath->getXpath());
+        bool result = true;
+        switch (obj->type)
+        {
+            case XPATH_NODESET:
+                if (isValue)
+                {
+                    if (obj->nodesetval->nodeNr > 1)
+                    {
+                        isValue = false;
+                        result = false;
+                    }
+                    else
+                    {
+                        evaluateAsString(obj, content, ccXpath->getXpath());
+                        obj = nullptr; // freed above
+                    }
+                }
+                else
+                    toXMLNodeSet(obj, content);
+                break;
+            case XPATH_BOOLEAN:
+            case XPATH_NUMBER:
+            case XPATH_STRING:
+                append(content, obj);
+                isValue = true;
+                break;
+            default:
+                result = false;
+                break;
+        }
+        xmlXPathFreeObject(obj);
+        return result;
+    }
 
     virtual bool addObjectVariable(const char * name, xmlXPathObjectPtr obj, CLibXpathScope *scope)
     {
@@ -958,7 +1075,7 @@ public:
     bool addCompiledVariable(const char * name, ICompiledXpath * compiled, CLibXpathScope *scope)
     {
         if (!compiled)
-            addVariable(name, "");
+            return addVariable(name, "");
         if (m_xpathContext)
         {
             CLibCompiledXpath * ccXpath = static_cast<CLibCompiledXpath *>(compiled);
@@ -1003,13 +1120,20 @@ public:
 
     virtual bool declareCompiledParameter(const char * name, ICompiledXpath * compiled) override
     {
-        if (hasVariable(name, nullptr, getCurrentScope()))
+        CLibXpathScope *cur = getCurrentScope();
+        if (hasVariable(name, nullptr, cur))
             return false;
 
-        //use input value
-        ICompiledXpath *inputxp = findInput(name);
-        if (inputxp)
-            return addCompiledVariable(name, inputxp, getCurrentScope());
+        CLibXpathScope *parameterScope = queryParameterScope();
+        if (!parameterScope)
+        {
+            //use input value
+            ICompiledXpath *inputxp = findInput(name);
+            if (inputxp)
+                return addCompiledVariable(name, inputxp, getCurrentScope());
+        }
+        else if (processPassedParameter(parameterScope, name))
+            return true;
 
         //use default provided
         return addCompiledVariable(name, compiled, getCurrentScope());
@@ -1033,6 +1157,15 @@ public:
 
         //use default provided
         return addStringVariable(name, value, getCurrentScope());
+    }
+
+    virtual bool checkParameterName(const char * name) override
+    {
+        if (hasVariable(name, nullptr, getCurrentScope()))
+            return true;
+        if (findInput(name))
+            return true;
+        return false;
     }
 
     virtual bool addXpathVariable(const char * name, const char * xpath) override
@@ -1085,7 +1218,7 @@ public:
     virtual StringBuffer &toXml(const char *xpath, StringBuffer & xml) override
     {
         xmlXPathObjectPtr obj = evaluate(xpath);
-        if (!obj || !obj->type==XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr!=1)
+        if (!obj || obj->type!=XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr!=1)
             return xml;
         xmlNodePtr node = obj->nodesetval->nodeTab[0];
         if (!node)
@@ -1093,10 +1226,12 @@ public:
 
         xmlOutputBufferPtr xmlOut = xmlAllocOutputBuffer(nullptr);
         xmlNodeDumpOutput(xmlOut, node->doc, node, 0, 1, nullptr);
-        xmlOutputBufferFlush(xmlOut);
-        xmlBufPtr buf = (xmlOut->conv != nullptr) ? xmlOut->conv : xmlOut->buffer;
-        if (xmlBufUse(buf))
-            xml.append(xmlBufUse(buf), (const char *)xmlBufContent(buf));
+        if (xmlOutputBufferFlush(xmlOut) >= 0)
+        {
+            xmlBufPtr buf = (xmlOut->conv != nullptr) ? xmlOut->conv : xmlOut->buffer;
+            if (xmlBufUse(buf))
+                xml.append(xmlBufUse(buf), (const char *)xmlBufContent(buf));
+        }
         xmlOutputBufferClose(xmlOut);
         xmlXPathFreeObject(obj);
         return xml;
@@ -1513,41 +1648,37 @@ static const char *queryAttrValue(xmlNodePtr node, const char *name)
     return (const char *) att->children->content;
 }
 
-class CEsdlScriptContext : public CInterfaceOf<IEsdlScriptContext>
+class CSectionalXmlDocModel : public CInterfaceOf<ISectionalXmlDocModel>
 {
 private:
-    void *espCtx = nullptr;
+    void *userData = nullptr;
     xmlDocPtr doc = nullptr;
     xmlNodePtr root = nullptr;
     xmlXPathContextPtr xpathCtx = nullptr;
 
 public:
-    CEsdlScriptContext(void *ctx) : espCtx(ctx)
+    CSectionalXmlDocModel(void *_userData) : userData(_userData)
     {
         doc =   xmlParseDoc((const xmlChar *) "<esdl_script_context/>");
         xpathCtx = xmlXPathNewContext(doc);
         if(xpathCtx == nullptr)
-            throw MakeStringException(-1, "CEsdlScriptContext: Unable to create new xPath context");
+            throw MakeStringException(-1, "CSectionalXmlDocModel: Unable to create new xPath context");
 
         root = xmlDocGetRootElement(doc);
         xpathCtx->node = root;
     }
 
 private:
-    ~CEsdlScriptContext()
+    ~CSectionalXmlDocModel()
     {
         xmlXPathFreeContext(xpathCtx);
         xmlFreeDoc(doc);
     }
-    virtual void *queryEspContext() override
-    {
-        return espCtx;
-    }
     inline void sanityCheckSectionName(const char *name)
     {
         //sanity check the name, not a full validation
-        if (strpbrk(name, "/[]()*?"))
-            throw MakeStringException(-1, "CEsdlScriptContext:removeSection invalid section name %s", name);
+        if (isEmptyString(name) || strpbrk(name, "/[]()*?"))
+            throw MakeStringException(-1, "CSectionalXmlDocModel:removeSection invalid section name %s", name);
     }
     xmlNodePtr getSectionNode(const char *name, const char *xpath="*[1]")
     {
@@ -1713,14 +1844,14 @@ private:
 
         xmlParserCtxtPtr parserCtx = xmlCreateDocParserCtxt((const unsigned char *)xml);
         if (!parserCtx)
-            throw MakeStringException(-1, "CEsdlScriptContext:setContent: Unable to init parse of %s XML content", section);
+            throw MakeStringException(-1, "CSectionalXmlDocModel:setContent: Unable to init parse of %s XML content", section);
         parserCtx->node = sect;
         xmlParseDocument(parserCtx);
         int wellFormed = parserCtx->wellFormed;
         xmlFreeDoc(parserCtx->myDoc); //dummy document
         xmlFreeParserCtxt(parserCtx);
         if (!wellFormed)
-           throw MakeStringException(-1, "CEsdlScriptContext:setContent xml string: Unable to parse %s XML content", section);
+           throw MakeStringException(-1, "CSectionalXmlDocModel:setContent xml string: Unable to parse %s XML content", section);
     }
     virtual void appendContent(const char *section, const char *name, const char *xml) override
     {
@@ -1835,10 +1966,12 @@ private:
 
         xmlOutputBufferPtr xmlOut = xmlAllocOutputBuffer(nullptr);
         xmlNodeDumpOutput(xmlOut, sect->doc, sect, 0, 1, nullptr);
-        xmlOutputBufferFlush(xmlOut);
-        xmlBufPtr buf = (xmlOut->conv != nullptr) ? xmlOut->conv : xmlOut->buffer;
-        if (xmlBufUse(buf))
-            xml.append(xmlBufUse(buf), (const char *)xmlBufContent(buf));
+        if (xmlOutputBufferFlush(xmlOut) >= 0)
+        {
+            xmlBufPtr buf = (xmlOut->conv != nullptr) ? xmlOut->conv : xmlOut->buffer;
+            if (xmlBufUse(buf))
+                xml.append(xmlBufUse(buf), (const char *)xmlBufContent(buf));
+        }
         xmlOutputBufferClose(xmlOut);
     }
     virtual IPropertyTree *createPTreeFromSection(const char *section) override
@@ -1862,7 +1995,7 @@ private:
         {
             sect = getSectionNode(section);
             if (!sect)
-                throw MakeStringException(-1, "CEsdlScriptContext:createXpathContext: section not found %s", section);
+                throw MakeStringException(-1, "CSectionalXmlDocModel:createXpathContext: section not found %s", section);
         }
         CLibXpathContext *xpathContext = new CLibXpathContext(static_cast<CLibXpathContext *>(primaryContext), doc, sect, strictParameterDeclaration);
         StringBuffer val;
@@ -1882,18 +2015,89 @@ private:
         ensureCopiedSection(tgtSection, srcSection, false);
         return createXpathContext(primaryContext, tgtSection, strictParameterDeclaration);
     }
-    virtual void cleanupBetweenScripts() override
+    virtual void cleanupTemporaries() override
     {
         removeSection("temporaries");
     }
 };
 
-IEsdlScriptContext *createEsdlScriptContext(void * espCtx)
+ISectionalXmlDocModel *createSectionalXmlDocModel(void * userData)
 {
-    return new CEsdlScriptContext(espCtx);
+    return new CSectionalXmlDocModel(userData);
 }
 
 extern IXpathContext* getXpathContext(const char * xmldoc, bool strictParameterDeclaration, bool removeDocNamespaces)
 {
     return new CLibXpathContext(xmldoc, strictParameterDeclaration, removeDocNamespaces);
 }
+
+#ifdef _USE_CPPUNIT
+#include "unittests.hpp"
+
+class LibXml2XPathProcessorTests : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE( LibXml2XPathProcessorTests );
+        CPPUNIT_TEST(testWriteUTF8);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+    void testWriteUTF8()
+    {
+        bool failed = false;
+        if (!checkXmlWriterUtf8("testWriteUTF8", "an_element", R"!!!(contains "quoted" text)!!!"))
+            failed = true;
+        if (!checkXmlWriterUtf8("testWriteUTF8", "@an_attribute", R"!!!(contains "quoted" text)!!!"))
+            failed = true;
+        CPPUNIT_ASSERT(!failed);
+    }
+
+private:
+    ISectionalXmlDocModel* createScriptContext(const char* section, const char* content)
+    {
+        Owned<ISectionalXmlDocModel> ctx(createSectionalXmlDocModel(nullptr)); // context holds but does not use the usage parameter
+        ctx->setContent(section, content);
+        return ctx.getClear();
+    }
+    IXpathContext* createXPathContext(ISectionalXmlDocModel* scriptCtx, const char* section)
+    {
+        Owned<IXpathContext> xpathCtx;
+        try
+        {
+            xpathCtx.setown(scriptCtx->createXpathContext(nullptr, section, true));
+        }
+        catch (IException* e)
+        {
+            StringBuffer msg;
+            fprintf(stdout, "\nexception creating XPath context for section '%s' [%s]\n", section, e->errorMessage(msg).str());
+            throw;
+        }
+        catch (...)
+        {
+            fprintf(stdout, "\nunknown exception creating XPath context for section '%s'\n", section);
+            throw;
+        }
+        return xpathCtx.getClear();
+    }
+    bool checkXmlWriterUtf8(const char* test, const char* name, const char* value)
+    {
+        static constexpr const char* section = "writer";
+        Owned<ISectionalXmlDocModel>    scriptCtx(createScriptContext(section, "<this_node_is_required_to_satisfy_createXPathContext/>"));
+        Owned<IXpathContext>         xpathCtx(createXPathContext(scriptCtx, section));
+        Owned<IXmlWriter>            writer(xpathCtx->createXmlWriter());
+        StringBuffer                 stored;
+
+        writer->outputUtf8(rtlUtf8Length(unsigned(strlen(value)), value), value, name);
+        if (!xpathCtx->evaluateAsString(name, stored))
+            fprintf(stdout, "\n%s: evaluation of '%s' failed\n", test, name);
+        else if (!streq(stored, value))
+            fprintf(stdout, "\n%s: expected '%s' but got '%s'\n", test, value, stored.str());
+        else
+            return true;
+        return false;
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( LibXml2XPathProcessorTests );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( LibXml2XPathProcessorTests, "libxml2xpath" );
+
+#endif // _USE_CPPUNIT

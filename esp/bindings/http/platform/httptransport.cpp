@@ -341,6 +341,7 @@ CHttpMessage::~CHttpMessage()
         m_context.clear();
         m_queryparams.clear();
         m_content_stream.clear();
+        m_content_ptree.clear();
     }
     catch(...)
     {
@@ -392,6 +393,7 @@ int CHttpMessage::parseOneHeader(char* oneline)
                 if(port != NULL)
                 {
                     m_port = atoi(port);
+                    hasPortInHost = true;
                 }
             }
             m_host.set(value);
@@ -500,6 +502,23 @@ IProperties *CHttpMessage::queryParameters()
     return m_queryparams.get();
 }
 
+int CHttpMessage::getParameterInt(const char* name, int defaultValue)
+{
+    StringBuffer value;
+    getParameter(name, value);
+    if (value.isEmpty())
+        return defaultValue;
+
+    const char* finger = value.str();
+    while (*finger)
+    {
+        if (!isdigit(*finger)) 
+            return defaultValue;
+        ++finger;
+    }
+    return atoi(value.str());
+}
+
 IProperties *CHttpMessage::getParameters()
 {
     if (!m_queryparams)
@@ -571,7 +590,7 @@ int CHttpMessage::readContentTillSocketClosed()
 
             while (chunkSize > 0)
             {
-                const int len = min(chunkSize, buflen);
+                const int len = std::min(chunkSize, buflen);
                 readlen = m_bufferedsocket->read(buf, len);
                 if(readlen <= 0)
                     break;
@@ -693,6 +712,18 @@ void CHttpMessage::setContent(IFileIOStream* stream)
     }
 }
 
+void CHttpMessage::setContent(IPropertyTree* ptree, bool addXMLHeaderToContent, bool addXMLStylesheetToContent)
+{
+    if (ptree == nullptr)
+        return;
+
+    m_content_ptree.set(ptree);
+    m_content_length = 0;
+    m_addXMLHeaderToContent = addXMLHeaderToContent;
+    m_addXMLStylesheetToContent = addXMLStylesheetToContent;
+    m_content.clear();
+}
+
 /*
 void CHttpMessage::appendContent(const char* content)
 {
@@ -767,6 +798,49 @@ void CHttpMessage::logSOAPMessage(const char* message, const char* prefix)
     return;
 }
 
+static const char* POST_METHOD_STR = "POST ";
+static bool skipLogContent(const char* httpHeader)
+{
+    if (!startsWith(httpHeader, POST_METHOD_STR))
+        return false;
+
+    const char* servicePtr = httpHeader + 5;
+    if (servicePtr[0] != '/')
+        return false;
+
+    const char* methodPtr = strchr(++servicePtr, '/');
+    if (!methodPtr)
+        return false;
+
+    unsigned serviceType = 0;
+    if (startsWithIgnoreCase(servicePtr, "ws_access/"))
+        serviceType = 1;
+    else if (startsWithIgnoreCase(servicePtr, "ws_account/"))
+        serviceType = 2;
+    if (serviceType == 0)
+        return false;
+
+    StringBuffer espMethod;
+    const char* tail = strchr(++methodPtr, '.');
+    if (tail && (startsWithIgnoreCase(tail, ".xml") || startsWithIgnoreCase(tail, ".json")))
+        espMethod.append(tail - methodPtr, methodPtr);
+    else
+    {
+        tail = strchr(methodPtr, '?');
+        if (!tail)
+            tail = strchr(methodPtr, ' ');
+        if (tail)
+            espMethod.append(tail - methodPtr, methodPtr);
+        else
+            espMethod.append(methodPtr);
+    }
+
+    if (serviceType == 1)
+        return (strieq(espMethod, "AddUser") || strieq(espMethod, "UserResetPass"));
+
+    return strieq(espMethod, "UpdateUser");
+}
+
 void CHttpMessage::logMessage(MessageLogFlag messageLogFlag, const char *prefix)
 {
     logMessage(messageLogFlag, m_content, prefix);
@@ -781,8 +855,7 @@ void CHttpMessage::logMessage(MessageLogFlag messageLogFlag, StringBuffer& conte
 
         if (((messageLogFlag == LOGCONTENT) || (messageLogFlag == LOGALL)) && (content.length() > 0))
         {//log content
-            if ((m_header.length() > 0) && (startsWith(m_header.str(), "POST /ws_access/AddUser")
-                || startsWith(m_header.str(), "POST /ws_access/UserResetPass") || startsWith(m_header.str(), "POST /ws_account/UpdateUser")))
+            if (skipLogContent(m_header))
                 DBGLOG("%s<For security, ESP does not log the content of this request.>", prefix);
             else if (isSoapMessage())
                 logSOAPMessage(content.str(), prefix);
@@ -812,6 +885,59 @@ void CHttpMessage::logMessage(MessageLogFlag messageLogFlag, StringBuffer& conte
         e->Release();
     }
     return;
+}
+
+static const unsigned defaultHttpMessageFlushThreshold = 10000; 
+
+class CHttpMessageIOAdapter : public CInterfaceOf<IIOStream>
+{
+    StringBuffer out;
+    CHttpMessage* response = nullptr;
+    unsigned flushThreshold = defaultHttpMessageFlushThreshold;
+    void sendChunk();
+public:
+    CHttpMessageIOAdapter(CHttpMessage* _response, unsigned _flushThreshold, bool addXMLHeaderToContent, bool addXMLStylesheetToContent) : response(_response), flushThreshold(_flushThreshold)
+    {
+        if (addXMLHeaderToContent)
+            out.set("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        if (addXMLStylesheetToContent)
+            out.append("<?xml-stylesheet href=\"../esp/xslt/xmlformatter.xsl\" type=\"text/xsl\"?>");
+    }
+    ~CHttpMessageIOAdapter();
+
+    virtual void flush() override {};
+    virtual size32_t read(size32_t len, void * data) override { UNIMPLEMENTED; return 0; }
+    virtual size32_t write(size32_t len, const void * data) override;
+};
+
+CHttpMessageIOAdapter::~CHttpMessageIOAdapter()
+{
+    if (!out.isEmpty())
+    {
+        sendChunk();
+        out.clear();
+    }
+    sendChunk(); //send 0\r\n\r\n
+}
+
+size32_t CHttpMessageIOAdapter::write(size32_t len, const void * data)
+{
+    out.append(len, (const char *)data);
+    if (out.length() < flushThreshold)
+        return out.length();
+
+    sendChunk();
+    out.clear();
+    return 0;
+}
+
+void CHttpMessageIOAdapter::sendChunk()
+{
+    VStringBuffer sizeStr("%x\r\n", out.length());
+    response->sendChunk(sizeStr);
+
+    out.append("\r\n");
+    response->sendChunk(out);
 }
 
 int CHttpMessage::send()
@@ -863,14 +989,23 @@ int CHttpMessage::send()
     }
 
     // When m_content is empty but the stream was set, read content from the stream.
+    if (m_content.isEmpty() && m_content_ptree != nullptr)
+    {
+        CHttpMessageIOAdapter ioa(this, defaultHttpMessageFlushThreshold, m_addXMLHeaderToContent, m_addXMLStylesheetToContent);
+        toXML(m_content_ptree, ioa);
+        return retcode;
+    }
+
+    // When m_content is empty but the stream was set, read content from the stream.
     if((m_content_length > 0 && m_content.length() == 0) && m_content_stream.get() != NULL)
     {
-        //Read the file and send out 20K at a time.
+        //Read the file and send out a chunk at a time.
+        //This generally streams from a file.  It would be more efficient to stream data directly to the socket (avoiding an intermediate file), or use sendfile()
         __int64 content_length = m_content_length;
-        int buflen = 20*1024;
+        size_t buflen = DEFAULT_COPY_BLKSIZE;
         if(buflen > content_length)
-            buflen = (int) content_length;
-        char* buffer = new char[buflen + 1];
+            buflen = (size_t) content_length;
+        char* buffer = new char[buflen];
         __int64 sizesent = 0;
         while(sizesent < content_length)
         {
@@ -1231,22 +1366,8 @@ void CHttpRequest::parseQueryString(const char* querystr)
     if(!querystr || !*querystr)
         return;
 
-    bool useHeap = false;
-    int querystrlen = strlen(querystr);
-    if(querystrlen >= 0x80000)
-        useHeap = true;
-
-    char* querystrbuf = NULL;
-    if(useHeap)
-        querystrbuf = (char*)malloc(querystrlen + 1);
-    else
-        querystrbuf = (char*)alloca(querystrlen + 1);
-
-    strcpy(querystrbuf, querystr);
-
-    char* ptr = querystrbuf;
-    char* curname = ptr;
-    char* curvalue = NULL;
+    const char* ptr = querystr;
+    const char* curname = ptr;
     while(true)
     {
         while(*ptr != '\0' && *ptr != '=' && *ptr != '&')
@@ -1261,19 +1382,19 @@ void CHttpRequest::parseQueryString(const char* querystr)
         }
         else if(*ptr == '=')
         {
-            *ptr = '\0';
+            const char * endname = ptr;
             ptr++;
             if(*ptr == '\0')
             {
                 StringBuffer nameval;
-                Utils::url_decode(curname, nameval);
+                Utils::url_decode(endname-curname, curname, nameval);
                 addParameter(nameval.str(), "");
                 break;
             }
             else if(*ptr == '&')
             {
                 StringBuffer nameval;
-                Utils::url_decode(curname, nameval);
+                Utils::url_decode(endname-curname, curname, nameval);
                 addParameter(nameval.str(), "");
                 ptr++;
                 if(*ptr == '\0')
@@ -1283,42 +1404,33 @@ void CHttpRequest::parseQueryString(const char* querystr)
             }
             else
             {
-                curvalue = ptr;
+                const char* curvalue = ptr;
                 while(*ptr != '\0' && *ptr != '&')
                     ptr++;
-                if(*ptr == '\0')
-                {
-                    StringBuffer nameval;
-                    StringBuffer valueval;
-                    Utils::url_decode(curname, nameval);
-                    Utils::url_decode(curvalue, valueval);
-                    addParameter(nameval.str(), valueval.str());
+
+                StringBuffer nameval;
+                StringBuffer valueval;
+                Utils::url_decode(endname-curname, curname, nameval);
+                Utils::url_decode(ptr-curvalue, curvalue, valueval);
+                addParameter(nameval.str(), valueval.str());
+
+                if (*ptr == '\0')
                     break;
-                }
-                else //*ptr == '&'
-                {
-                    *ptr = '\0';
-                    ptr++;
 
-                    StringBuffer nameval;
-                    StringBuffer valueval;
-                    Utils::url_decode(curname, nameval);
-                    Utils::url_decode(curvalue, valueval);
-                    addParameter(nameval.str(), valueval.str());
+                //*ptr == '&'
+                ptr++;
+                if(*ptr == '\0')
+                    break;
 
-                    if(*ptr == '\0')
-                        break;
-                    else
-                        curname = ptr;
-                }
+                curname = ptr;
             }
         }
         else if(*ptr == '&')
         {
-            *ptr=0;
+            const char * endname = ptr;
 
             StringBuffer nameval;
-            Utils::url_decode(curname, nameval);
+            Utils::url_decode(endname-curname, curname, nameval);
             addParameter(nameval.str(), "");
 
             ptr++;
@@ -1328,10 +1440,6 @@ void CHttpRequest::parseQueryString(const char* querystr)
                 curname = ptr;
         }
     }
-
-    if(useHeap && querystrbuf != NULL)
-        delete querystrbuf;
-
 }
 
 int CHttpRequest::parseFirstLine(char* oneline)
@@ -1807,6 +1915,22 @@ int CHttpRequest::receive(IMultiException *me)
     return 0;
 }
 
+ISpan * CHttpRequest::createServerSpan(const char * serviceName, const char * methodName)
+{
+    //MORE: The previous code would be better off querying httpHeaders...
+    StringBuffer spanName;
+    spanName.append(serviceName);
+    if (!isEmptyString(methodName))
+        spanName.append("/").append(methodName);
+    spanName.toLowerCase();
+    Owned<IProperties> httpHeaders = getHeadersAsProperties(m_headers);
+    return queryTraceManager().createServerSpan(spanName, httpHeaders, SpanFlags::EnsureGlobalId);
+}
+
+void CHttpRequest::annotateSpan(const char * key, const char * value)
+{
+    m_context->queryActiveSpan()->setSpanAttribute(key, value);
+}
 
 void CHttpRequest::updateContext()
 {
@@ -1874,13 +1998,6 @@ void CHttpRequest::updateContext()
         m_context->setUseragent(useragent.str());
         getHeader("Accept-Language", acceptLanguage);
         m_context->setAcceptLanguage(acceptLanguage.str());
-        StringBuffer callerId, globalId;
-        getHeader(HTTP_HEADER_HPCC_GLOBAL_ID, globalId);
-        if(globalId.length())
-            m_context->setGlobalId(globalId);
-        getHeader(HTTP_HEADER_HPCC_CALLER_ID, callerId);
-        if(callerId.length())
-            m_context->setCallerId(callerId);
     }
 }
 
@@ -1995,8 +2112,9 @@ int CHttpRequest::processHeaders(IMultiException *me)
 
     if(m_content_length > 0 && m_MaxRequestEntityLength > 0 && m_content_length > m_MaxRequestEntityLength && (!isUpload(false)))
     {
-        UERRLOG("Bad request: Content-Length exceeded maxRequestEntityLength");
-        throw createEspHttpException(HTTP_STATUS_REQUEST_ENTITY_TOO_LARGE_CODE, "The request length was too long.", HTTP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+        VStringBuffer errorMessage("The request length (%lld) exceeded maxRequestEntityLength (%d).", m_content_length, m_MaxRequestEntityLength);
+        UERRLOG("%s", errorMessage.str());
+        throw createEspHttpException(HTTP_STATUS_REQUEST_ENTITY_TOO_LARGE_CODE, errorMessage.str(), HTTP_STATUS_REQUEST_ENTITY_TOO_LARGE);
     }
     setPersistentEligible(checkPersistentEligible());
 
@@ -2169,6 +2287,9 @@ int CHttpRequest::readContentToFiles(const char * netAddress, const char * path,
         if (writeError)
             break;
 
+        // if remote file is on Windows we must close it before renaming it
+        fileio->close();
+
         file->rename(fileNameWithPath);
 
         if (!foundAnotherFile)
@@ -2227,6 +2348,8 @@ StringBuffer& CHttpResponse::constructHeaderBuffer(StringBuffer& headerbuf, bool
 
     if(inclLen && m_content_length > 0)
         headerbuf.append("Content-Length: ").append(m_content_length).append("\r\n");
+    else if (m_content.isEmpty() && m_content_ptree != nullptr)
+        headerbuf.append("Transfer-Encoding: chunked\r\n"); //Streaming and no 'Content-Length' header
     else
         setPersistentEligible(false);
 
@@ -2869,4 +2992,34 @@ bool CHttpResponse::checkPersistentEligible()
         return false;
 
     return CHttpMessage::checkPersistentEligible();
+}
+
+void CHttpResponse::setErrorMessageContent(const char* message, ESPSerializationFormat format)
+{
+    StringBuffer resp;
+    switch (format)
+    {
+    case ESPSerializationJSON:
+        appendJSONStringValue(resp.append("{"), "Error", message, true);
+        resp.append("}");
+        break;
+    case ESPSerializationXML:
+        encodeXML(message, resp.append("<Error>"));
+        resp.append("</Error>");
+        break;
+    default:
+        resp.append("Error: ").append(message);
+        break;
+    }
+    setContent(resp);
+}
+
+void CHttpResponse::setLogAccessErrorMessageContent(const char* message, LogAccessLogFormat format)
+{
+    if (format == LOGACCESS_LOGFORMAT_json)
+        setErrorMessageContent(message, ESPSerializationJSON);
+    else if (format == LOGACCESS_LOGFORMAT_xml)
+        setErrorMessageContent(message, ESPSerializationXML);
+    else
+        setErrorMessageContent(message, ESPSerializationANY);
 }

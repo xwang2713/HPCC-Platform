@@ -201,7 +201,7 @@ public:
         ForEach(*it)
         {
             const char *name = it->getPropKey();
-            const char *val = props->queryProp(name);
+            const char *val = it->queryPropValue();
             xml.appendf(" %s=\"", name);
             encodeUtf8XML(val, xml);
             xml.append('\"');
@@ -1669,7 +1669,7 @@ unsigned EsdlDefinition::walkChildrenDepthFirst( AddedObjs& foundByName, EsdlDef
                 children->next();
             }
         } //else { DBGLOG("%s<%s> no Children", StringBuffer(level*2, " ").str(), esdlObj->queryName()); }
-    }  //else { DBGLOG("%s<%s> is not Struct",  StringBuffer(level*2, " ").str(), esdlObj->queryName()); }
+    }  //else { DBGLOG("%s<%s> is not Struct", StringBuffer(level*2, " ").str(), esdlObj->queryName()); }
 
     return stateOut;
 }

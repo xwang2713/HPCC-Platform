@@ -24,8 +24,12 @@
 #include "jio.hpp"
 #include "jstream.hpp"
 #include "jbuff.hpp"
+#include <string>
 
 // A Java compatible String and StringBuffer class - useful for dynamic strings.
+#ifdef _DEBUG
+#define CATCH_USE_AFTER_FREE
+#endif
 
 class String;
 interface IAtom;
@@ -41,7 +45,6 @@ public:
     explicit StringBuffer(StringBuffer && value);
     explicit StringBuffer(size_t len, const char *value);
     explicit StringBuffer(const StringBuffer & value);
-    explicit StringBuffer(bool useInternal);
     explicit StringBuffer(char value);
     ~StringBuffer();
 
@@ -153,12 +156,6 @@ protected:
         curLen = 0;
         maxLen = InternalBufferSize;
     }
-    void initNoInternal()
-    {
-        buffer = NULL;
-        curLen = 0;
-        maxLen = 0;
-    }
     void freeBuffer();
     void _insert(size_t offset, size_t insertLen);
     void _realloc(size_t newLen);
@@ -259,7 +256,13 @@ public:
     StringAttr(StringAttr && src);
     StringAttr& operator = (StringAttr && from);
     StringAttr& operator = (const StringAttr & from);
-    inline ~StringAttr(void) { free(text); }
+    inline ~StringAttr(void)
+    {
+        free(text);
+#ifdef CATCH_USE_AFTER_FREE
+        text = const_cast<char *>("<use-after-free>");
+#endif
+    }
     
     inline operator const char * () const       { return text; }
     inline void clear()                         { setown(NULL); }
@@ -276,7 +279,7 @@ public:
     void         setown(StringBuffer & source);
     void         toLowerCase();
     void         toUpperCase();
-    
+    void         swapWith(StringAttr & other);
 private:
     char *       text;
 };
@@ -381,8 +384,9 @@ interface IEntityHelper
     virtual bool find(const char *entity, StringBuffer &value) = 0;
 };
 
-void jlib_decl appendURL(StringBuffer *dest, const char *src, size32_t len = -1, char lower=FALSE);
+void jlib_decl appendURL(StringBuffer *dest, const char *src, size32_t len = -1, char lower=FALSE, bool keepUnderscore=false);
 extern jlib_decl StringBuffer &appendDecodedURL(StringBuffer &out, const char *url);
+extern jlib_decl StringBuffer &appendDecodedURL(StringBuffer &s, size_t len, const char *url);
 extern jlib_decl StringBuffer & appendStringAsCPP(StringBuffer &out, unsigned len, const char * src, bool addBreak);
 extern jlib_decl StringBuffer & appendStringAsQuotedCPP(StringBuffer &out, unsigned len, const char * src, bool addBreak);
 extern jlib_decl StringBuffer & appendDataAsHex(StringBuffer &out, unsigned len, const void * data);
@@ -413,7 +417,7 @@ interface IVariableSubstitutionHelper
 extern jlib_decl StringBuffer &replaceVariables(StringBuffer & result, const char *source, bool exceptions, IVariableSubstitutionHelper *helper, const char* delim = "${", const char* term = "}");
 extern jlib_decl StringBuffer &replaceEnvVariables(StringBuffer & result, const char *source, bool exceptions, const char* delim = "${env.", const char* term = "}");
 
-inline const char *encodeUtf8XML(const char *x, StringBuffer &ret, unsigned flags=false, unsigned len=(unsigned)-1)
+inline const char *encodeUtf8XML(const char *x, StringBuffer &ret, unsigned flags=0, unsigned len=(unsigned)-1)
 {
     return encodeXML(x, ret, flags, len, true);
 }
@@ -574,6 +578,8 @@ inline StringBuffer& operator << (StringBuffer& s, const TValue& value)
     return s.append(value);
 }
 
+extern jlib_decl void toLower(std::string & value);
+
 extern jlib_decl bool checkUnicodeLiteral(char const * str, unsigned length, unsigned & ep, StringBuffer & msg);
 extern jlib_decl void decodeCppEscapeSequence(StringBuffer & out, const char * in, bool errorIfInvalid);
 extern jlib_decl bool strToBool(const char * text);
@@ -596,6 +602,7 @@ inline bool streq(const char* s, const char* t) { return strcmp(s,t)==0; }
 inline bool strsame(const char* s, const char* t) { return (s == t) || (s && t && strcmp(s,t)==0); }  // also allow nulls
 inline bool strisame(const char* s, const char* t) { return (s == t) || (s && t && stricmp(s,t)==0); }  // also allow nulls
 inline bool isEmptyString(const char *text) { return !text||!*text; }
+inline const char * nullIfEmptyString(const char * text) { return isEmptyString(text) ? nullptr : text; }
 inline bool hasPrefix(const char * text, const char * prefix, bool caseSensitive)
 {
     if (caseSensitive)
@@ -612,5 +619,27 @@ extern jlib_decl int j_memicmp (const void *s1, const void *s2, size32_t len);
 extern jlib_decl size32_t memcount(size32_t len, const char * str, char search);
 
 extern jlib_decl const char * nullText(const char * text);
+extern jlib_decl bool loadBinaryFile(StringBuffer & contents, const char *filename, bool throwOnError);
+
+template <typename LineProcessor>
+void processLines(const StringBuffer & content, LineProcessor process)
+{
+    const char * cur = content;
+    while (*cur)
+    {
+        process(cur);
+        const char * next = strchr(cur, '\n');
+        if (!next)
+            break;
+        cur = next+1;
+    }
+}
+
+//General purpose function for processing option strings in the form option[=value],option[=value],...
+using optionCallback = std::function<void(const char * name, const char * value)>;
+extern jlib_decl void processOptionString(const char * options, optionCallback callback);
+
+extern jlib_decl const char * stristr(const char *haystack, const char *needle);
+extern jlib_decl void getSnakeCase(StringBuffer & out, const char * camelValue);
 
 #endif

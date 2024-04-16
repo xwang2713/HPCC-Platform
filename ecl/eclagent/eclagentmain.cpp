@@ -24,7 +24,7 @@
 #include <cppunit/ui/text/TestRunner.h>
 #endif
 
-extern int STARTQUERY_API eclagent_main(int argc, const char *argv[], StringBuffer * embeddedWU, bool standAlone);
+extern int STARTQUERY_API eclagent_main(int argc, const char *argv[]);
 
 int main(int argc, const char *argv[])
 {
@@ -58,7 +58,10 @@ int main(int argc, const char *argv[])
     int ret = 0;
     try
     {
-        ret = eclagent_main(argc, argv, NULL, false);
+        ret = eclagent_main(argc, argv);
+        //Do not return a non-zero error code in containerized mode - otherwise the system will think it failed to run
+        if (isContainerized())
+            ret = 0;
     }
     catch (IException *E)
     {

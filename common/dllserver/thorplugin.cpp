@@ -307,7 +307,7 @@ public:
     virtual const byte * getResource(unsigned id) const;
     virtual bool getResource(size32_t & len, const void * & data, const char * type, unsigned id, bool trace) const;
     virtual IPropertyTree &queryManifest() const override;
-    virtual const StringArray &queryManifestFiles(const char *type, const char *wuid) const override;
+    virtual const StringArray &queryManifestFiles(const char *type, const char *wuid, const char *tempRoot) const override;
     bool load(bool isGlobal, bool raiseOnError);
     bool loadCurrentExecutable();
     bool loadResources();
@@ -492,7 +492,7 @@ IPropertyTree &HelperDll::queryManifest() const
     return *querySingleton(manifest, manifestLock, [this]{ return getEmbeddedManifestPTree(this); });
 }
 
-const StringArray &HelperDll::queryManifestFiles(const char *type, const char *wuid) const
+const StringArray &HelperDll::queryManifestFiles(const char *type, const char *wuid, const char *tempRoot) const
 {
     CriticalBlock b(manifestLock);
     Linked<ManifestFileList> list = manifestFiles.find(type);
@@ -500,47 +500,69 @@ const StringArray &HelperDll::queryManifestFiles(const char *type, const char *w
     {
         // The temporary path we unpack to is based on so file's current location and workunit
         // MORE - this is good for deployed cases, may not be so good for standalone executables.
+        // Doesn't really work for cloud either - it needs to be in ephemeral there
         StringBuffer tempDir;
-        splitFilename(name, &tempDir, &tempDir, &tempDir, nullptr);
+        if (!isEmptyString(tempRoot))
+        {
+            tempDir.append(tempRoot);
+            addPathSepChar(tempDir);
+            splitFilename(name, nullptr, nullptr, &tempDir, nullptr);
+        }
+        else
+        {
+            splitFilename(name, &tempDir, &tempDir, &tempDir, nullptr);
+        }
         list.setown(new ManifestFileList(type, tempDir));
         tempDir.append(".tmp").append(PATHSEPCHAR).append(wuid);
         VStringBuffer xpath("Resource[@type='%s']", type);
         Owned<IPropertyTreeIterator> resourceFiles = queryManifest().getElements(xpath.str());
         ForEach(*resourceFiles)
         {
+            unsigned start = msTick();
             IPropertyTree &resourceFile = resourceFiles->query();
-            unsigned id = resourceFile.getPropInt("@id", 0);
-            size32_t len = 0;
-            const void *data = nullptr;
-            if (!getResource(len, data, type, id, false))
-                throwUnexpected();
-            MemoryBuffer decompressed;
-            if (resourceFile.getPropBool("@compressed"))
+            if (resourceFile.hasProp("@jfrogUser"))
             {
-                // MORE - would be better to try to spot files that are not worth recompressing (like jar files)?
-                decompressResource(len, data, decompressed);
-                data = decompressed.toByteArray();
-                len = decompressed.length();
+                StringBuffer localpath(tempDir.append(PATHSEPCHAR).append(resourceFile.queryProp("@filename")));
+                getResourceFromJfrog(localpath, resourceFile);
+                list->append(localpath);
             }
             else
             {
-                // Data is preceded by the resource header
-                // MORE - does this depend on whether @header is set? is that what @header means?
-                data = ((const byte *) data) + resourceHeaderLength;
-                len -= resourceHeaderLength;
+                unsigned id = resourceFile.getPropInt("@id", 0);
+                size32_t len = 0;
+                const void *data = nullptr;
+                if (!getResource(len, data, type, id, false))
+                    throwUnexpected();
+                MemoryBuffer decompressed;
+                if (resourceFile.getPropBool("@compressed"))
+                {
+                    // MORE - would be better to try to spot files that are not worth recompressing (like jar files)?
+                    decompressResource(len, data, decompressed);
+                    data = decompressed.toByteArray();
+                    len = decompressed.length();
+                }
+                else
+                {
+                    // Data is preceded by the resource header
+                    // MORE - does this depend on whether @header is set? is that what @header means?
+                    data = ((const byte *) data) + resourceHeaderLength;
+                    len -= resourceHeaderLength;
+                }
+                StringBuffer extractName(tempDir);
+                extractName.append(PATHSEPCHAR);
+                if (resourceFile.hasProp("@filename"))
+                    resourceFile.getProp("@filename", extractName);
+                else
+                    extractName.append(id).append('.').append(type);
+                recursiveCreateDirectoryForFile(extractName);
+                OwnedIFile f = createIFile(extractName);
+                OwnedIFileIO o = f->open(IFOcreate);
+                assertex(o.get() != nullptr);
+                o->write(0, len, data);
+                list->append(extractName);
+                if (doTrace(traceJava) && streq(type, "jar"))
+                    DBGLOG("Extracted jar resource %u size %u to %s in %u ms", id, len, extractName.str(), msTick() - start);
             }
-            StringBuffer extractName(tempDir);
-            extractName.append(PATHSEPCHAR);
-            if (resourceFile.hasProp("@filename"))
-                resourceFile.getProp("@filename", extractName);
-            else
-                extractName.append(id).append('.').append(type);
-            recursiveCreateDirectoryForFile(extractName);
-            OwnedIFile f = createIFile(extractName);
-            OwnedIFileIO o = f->open(IFOcreate);
-            assertex(o.get() != nullptr);
-            o->write(0, len, data);
-            list->append(extractName);
         }
         manifestFiles.replaceOwn(*list.getLink());
     }
@@ -666,10 +688,7 @@ extern DLLSERVER_API bool decompressResource(size32_t len, const void *data, Str
 extern DLLSERVER_API void appendResource(MemoryBuffer & mb, size32_t len, const void *data, bool compress)
 {
     mb.append((byte)0x80).append(resourceHeaderVersion);
-    if (compress)
-        compressToBuffer(mb, len, data);
-    else
-        appendToBuffer(mb, len, data);
+    compressToBuffer(mb, len, data, compress ? COMPRESS_METHOD_LZW : COMPRESS_METHOD_NONE);
 }
 
 extern DLLSERVER_API void compressResource(MemoryBuffer & compressed, size32_t len, const void *data)
@@ -681,9 +700,18 @@ extern DLLSERVER_API bool getEmbeddedWorkUnitXML(ILoadedDllEntry *dll, StringBuf
 {
     size32_t len = 0;
     const void * data = NULL;
-    if (!dll->getResource(len, data, "WORKUNIT", 1000))
+    if (!dll->getResource(len, data, "WORKUNIT", 1000, false))
         return false;
     return decompressResource(len, data, xml);
+}
+
+extern DLLSERVER_API bool getEmbeddedWorkUnitBinary(ILoadedDllEntry *dll, MemoryBuffer &result)
+{
+    size32_t len = 0;
+    const void * data = NULL;
+    if (!dll->getResource(len, data, "BINWORKUNIT", 1000, false))
+        return false;
+    return decompressResource(len, data, result);
 }
 
 extern DLLSERVER_API bool getEmbeddedManifestXML(const ILoadedDllEntry *dll, StringBuffer &xml)
@@ -710,11 +738,12 @@ extern DLLSERVER_API IPropertyTree *getEmbeddedManifestPTree(const ILoadedDllEnt
     return getEmbeddedManifestXML(dll, xml) ? createPTreeFromXMLString(xml.str()) : createPTree();
 }
 
-extern DLLSERVER_API bool checkEmbeddedWorkUnitXML(ILoadedDllEntry *dll)
+extern DLLSERVER_API bool containsEmbeddedWorkUnit(ILoadedDllEntry *dll)
 {
     size32_t len = 0;
     const void * data = NULL;
-    return dll->getResource(len, data, "WORKUNIT", 1000, false);
+    return dll->getResource(len, data, "BINWORKUNIT", 1000, false) ||
+           dll->getResource(len, data, "WORKUNIT", 1000, false);
 }
 
 extern DLLSERVER_API bool getResourceXMLFromFile(const char *filename, const char *type, unsigned id, StringBuffer &xml)
@@ -739,6 +768,15 @@ extern DLLSERVER_API bool getManifestXMLFromFile(const char *filename, StringBuf
 {
     return getResourceXMLFromFile(filename, "MANIFEST", 1000, xml);
 }
+
+extern DLLSERVER_API bool getWorkunitBinaryFromFile(const char *filename, MemoryBuffer &result)
+{
+    MemoryBuffer data;
+    if (!getResourceFromFile(filename, data, "BINWORKUNIT", 1000))
+        return false;
+    return decompressResource(data.length(), data.toByteArray(), result);
+}
+
 
 //-------------------------------------------------------------------------------------------------------------------
 
@@ -777,11 +815,32 @@ extern DLLSERVER_API void getAdditionalPluginsPath(StringBuffer &pluginsPath, co
 
 bool SafePluginMap::addPlugin(const char *path, const char *dllname)
 {
+    StringBuffer fullpath;
     if (!endsWithIgnoreCase(path, SharedObjectExtension))
     {
-        if (trace)
-            DBGLOG("Ecl plugin %s ignored", path);
-        return false;
+        //Check to see if the plugin name was the name of the plugin without the shared object extension
+        //If the tail of the path does not contain an extension then check if the corresponding plugin exists.
+        bool ok = false;
+        StringBuffer tail;
+        splitFilename(path, &fullpath, &fullpath, &tail, &tail);
+
+        if (!strchr(tail, '.'))
+        {
+            fullpath.appendf("%s%s%s", SharedObjectPrefix, tail.str(), SharedObjectExtension);
+            Owned<IFile> cur = createIFile(fullpath);
+            if (cur->isFile() == fileBool::foundYes)
+            {
+                path = fullpath;
+                ok = true;
+            }
+       }
+
+        if (!ok)
+        {
+            if (trace)
+                DBGLOG("Ecl plugin %s ignored", path);
+            return false;
+        }
     }
 
     try

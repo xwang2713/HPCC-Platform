@@ -25,69 +25,44 @@
 project(redis)
 
 if(REDIS)
-    add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/libhiredis.so.0.13
-        COMMAND make dynamic
-        COMMAND mv libhiredis.so ${PROJECT_BINARY_DIR}/libhiredis.so.0.13
-        COMMAND make clean
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/hiredis
-        COMMENT Building hiredis c library)
-    add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/libhiredis.so
-        COMMAND ln -sf libhiredis.so.0.13 libhiredis.so
-        DEPENDS ${PROJECT_BINARY_DIR}/libhiredis.so.0.13
-        WORKING_DIRECTORY ${PROJECT_BINARY_DIR})
-    add_custom_target(hiredis-build ALL
-        DEPENDS ${PROJECT_BINARY_DIR}/libhiredis.so)
+    ADD_PLUGIN(redis)
+    if(MAKE_REDIS)
+        find_package(hiredis CONFIG REQUIRED)    
 
-    install(CODE "set(ENV{LD_LIBRARY_PATH} \"\$ENV{LD_LIBRARY_PATH}:${PROJECT_BINARY_DIR}\")")
+        set(
+            SRCS
+            redis.hpp
+            redis.cpp)
 
-    add_library(hiredis SHARED IMPORTED)
-    set_property(TARGET hiredis PROPERTY IMPORTED_LOCATION ${PROJECT_BINARY_DIR}/libhiredis.so)
-    add_dependencies(hiredis hiredis-build)
+        include_directories(
+            ./../../system/include
+            ./../../rtl/eclrtl
+            ./../../rtl/include
+            ./../../common/deftype
+            ./../../system/jlib
+            )
 
-    install(FILES
-        ${PROJECT_BINARY_DIR}/libhiredis.so
-        ${PROJECT_BINARY_DIR}/libhiredis.so.0.13
-        DESTINATION ${LIB_DIR}
-        PERMISSIONS OWNER_WRITE OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-        COMPONENT Runtime)
+        add_definitions(-D_USRDLL -DECL_REDIS_EXPORTS)
 
-    install(FILES
-        ${PROJECT_SOURCE_DIR}/hiredis/COPYING
-        DESTINATION ${LIB_DIR}
-        COMPONENT Runtime
-        RENAME libhiredis.copywrite)
+        HPCC_ADD_LIBRARY(redis SHARED ${SRCS})
+        if(${CMAKE_VERSION} VERSION_LESS "2.8.9")
+            message(WARNING "Cannot set NO_SONAME. shlibdeps will give warnings when package is installed")
+        elseif(NOT APPLE)
+            set_target_properties(redis PROPERTIES NO_SONAME 1)
+        endif()
 
-    set(
-        SRCS
-        redis.hpp
-        redis.cpp)
+        install(
+            TARGETS redis
+            DESTINATION plugins
+            CALC_DEPS)
 
-    include_directories(
-        ./../../system/include
-        ./../../rtl/eclrtl
-        ./../../rtl/include
-        ./../../common/deftype
-        ./../../system/jlib
-        ./hiredis)
-
-    add_definitions(-D_USRDLL -DECL_REDIS_EXPORTS)
-
-    HPCC_ADD_LIBRARY(redis SHARED ${SRCS})
-    if(${CMAKE_VERSION} VERSION_LESS "2.8.9")
-        message(WARNING "Cannot set NO_SONAME. shlibdeps will give warnings when package is installed")
-    elseif(NOT APPLE)
-        set_target_properties(redis PROPERTIES NO_SONAME 1)
+        target_link_libraries(
+            redis
+            eclrtl
+            jlib
+            hiredis::hiredis
+            )
     endif()
-
-    install(
-        TARGETS redis
-        DESTINATION plugins)
-
-    target_link_libraries(
-        redis
-        eclrtl
-        jlib
-        hiredis)
 endif()
 
 if(PLATFORM OR CLIENTTOOLS_ONLY)

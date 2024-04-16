@@ -27,6 +27,10 @@
 #define WorkflowScopePrefix "w"
 #define ChildGraphScopePrefix "c"
 #define FileScopePrefix "p"
+#define ChannelScopePrefix "x"
+#define DFUWorkunitScopePrefix "D"
+#define SectionScopePrefix "n"
+#define OperationScopePrefix ">"
 
 #define MATCHES_CONST_PREFIX(search, prefix) (strncmp(search, prefix, strlen(prefix)) == 0)
 
@@ -64,13 +68,14 @@ enum StatisticScopeType
     SSTactivity,
     SSTallocator,                       // identifies an allocator
     SSTsection,                         // A section within the query - not a great differentiator
-    SSTcompilestage,                    // a stage within the compilation process
+    SSToperation,                       // an operation or stage in processing
     SSTdfuworkunit,                     // a reference to an executing dfu workunit
     SSTedge,
     SSTfunction,                        // a function call
     SSTworkflow,
     SSTchildgraph,
     SSTfile,
+    SSTchannel,                         // a Roxie channel
     SSTunknown,
     SSTmax
 };
@@ -235,6 +240,68 @@ enum StatisticKind
     StTimeBlocked,
     StCycleBlockedCycles,
     StCostExecute,
+    StSizeAgentReply,
+    StTimeAgentWait,
+    StCycleAgentWaitCycles,
+    StCostFileAccess,
+    StNumPods,
+    StCostCompile,
+    StTimeNodeLoad,
+    StCycleNodeLoadCycles,
+    StTimeLeafLoad,
+    StCycleLeafLoadCycles,
+    StTimeBlobLoad,
+    StCycleBlobLoadCycles,
+    StTimeDependencies,
+    StCycleDependenciesCycles,
+    StTimeStart,
+    StCycleStartCycles,
+    StEnumActivityCharacteristics,
+    StTimeNodeRead,
+    StCycleNodeReadCycles,
+    StTimeLeafRead,
+    StCycleLeafReadCycles,
+    StTimeBlobRead,
+    StCycleBlobReadCycles,
+    StNumNodeDiskFetches,
+    StNumLeafDiskFetches,
+    StNumBlobDiskFetches,
+    StTimeNodeFetch,
+    StCycleNodeFetchCycles,
+    StTimeLeafFetch,
+    StCycleLeafFetchCycles,
+    StTimeBlobFetch,
+    StCycleBlobFetchCycles,
+    StSizeGraphSpill,
+    StTimeAgentQueue,
+    StCycleAgentQueueCycles,
+    StTimeIBYTIDelay,
+    StCycleIBYTIDelayCycles,
+    StWhenQueued,
+    StWhenDequeued,
+    StWhenK8sLaunched,
+    StWhenK8sStarted,
+    StWhenK8sReady,
+    StNumSocketWrites,
+    StSizeSocketWrite,
+    StTimeSocketWriteIO,
+    StCycleSocketWriteIOCycles,
+    StNumSocketReads,
+    StSizeSocketRead,
+    StTimeSocketReadIO,
+    StCycleSocketReadIOCycles,
+    StSizeMemory,   // StSizePeakMemory above
+    StSizeRowMemory,
+    StSizePeakRowMemory,
+    StSizeAgentSend,
+    StTimeIndexCacheBlocked,
+    StCycleIndexCacheBlockedCycles,
+    StTimeAgentProcess,
+    StCycleAgentProcessCycles,
+    StNumAckRetries,
+    StSizeContinuationData,
+    StNumContinuationRequests,
+    StNumFailures,
     StMax,
 
     //For any quantity there is potentially the following variants.

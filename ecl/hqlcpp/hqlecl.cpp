@@ -93,7 +93,7 @@ $?$/* Template for generating thor/hthor/roxie output */
 $?multiFile$#include "$headerName$"
 $?$@literal@
 @declare@
-@helper@
+@meta@@helper@
 
 @go@
 
@@ -134,7 +134,7 @@ $?$/* Template for generating a child module for query */
 
 #include "$headerName$"
 
-@helper@
+@meta@@helper@
 @userFunction@
 )!!";
 
@@ -175,18 +175,18 @@ public:
     }
     IMPLEMENT_IINTERFACE
 
-    virtual void addLibrary(const char * name);
-    virtual bool processQuery(OwnedHqlExpr & parsedQuery, EclGenerateTarget _generateTarget);
-    virtual bool generateDll(ICppCompiler * compiler);
-    virtual bool generateExe(ICppCompiler * compiler);
-    virtual bool generatePackage(const char * packageName);
-    virtual void setMaxCompileThreads(unsigned value) { defaultMaxCompileThreads = value; }
-    virtual void addManifest(const char *filename) { code->addManifest(filename, ctxCallback); }
-    virtual void addManifestsFromArchive(IPropertyTree *archive) { code->addManifestsFromArchive(archive, ctxCallback); }
-    virtual void addWebServiceInfo(IPropertyTree *wsinfo){ code->addWebServiceInfo(wsinfo); }
+    virtual void addLibrary(const char * name) override;
+    virtual bool processQuery(OwnedHqlExpr & parsedQuery, EclGenerateTarget _generateTarget) override;
+    virtual bool generateDll(ICppCompiler * compiler) override;
+    virtual bool generateExe(ICppCompiler * compiler) override;
+    virtual bool generatePackage(const char * packageName) override;
+    virtual void setMaxCompileThreads(unsigned value) override { defaultMaxCompileThreads = value; }
+    virtual void addManifest(const char *filename) override { code->addManifest(filename, ctxCallback); }
+    virtual void addManifestsFromArchive(IPropertyTree *archive) override { code->addManifestsFromArchive(archive, ctxCallback); }
+    virtual void addWebServiceInfo(IPropertyTree *wsinfo) override { code->addWebServiceInfo(wsinfo); }
+    virtual void setSaveGeneratedFiles(bool value) override { deleteGenerated = !value; }
 
-    virtual double getECLcomplexity(IHqlExpression * exprs);
-    virtual void setSaveGeneratedFiles(bool value) { deleteGenerated = !value; }
+    double getECLcomplexity(IHqlExpression * exprs);
 
 protected:
     void addCppName(const char * filename, unsigned minActivity, unsigned maxActivity);
@@ -512,7 +512,7 @@ bool HqlDllGenerator::generateCode(HqlQueryContext & query)
     noOutput = true;
     {
         // ensure warnings/errors are available before we do the processing...
-        addTimeStamp(wu, SSTcompilestage, "compile:generate", StWhenStarted);
+        addTimeStamp(wu, SSToperation, ">compile:>generate", StWhenStarted);
         wu->commit();
 
         cycle_t startCycles = get_cycles_now();
@@ -583,14 +583,13 @@ bool HqlDllGenerator::generateCode(HqlQueryContext & query)
 
         doExpand(translator);
         unsigned __int64 elapsed = cycle_to_nanosec(get_cycles_now() - startCycles);
-        updateWorkunitStat(wu, SSTcompilestage, "compile:generate", StTimeElapsed, NULL, elapsed);
+        updateWorkunitStat(wu, SSToperation, ">compile:>generate", StTimeElapsed, NULL, elapsed);
 
         if (wu->getDebugValueBool("addMemoryToWorkunit", true))
         {
-            memsize_t peakVm, peakResident;
-            getPeakMemUsage(peakVm, peakResident);
-            if (peakResident)
-                wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTcompilestage, "compile", StSizePeakMemory, NULL, peakResident, 1, 0, StatsMergeReplace);
+            ProcessInfo info(ReadMemoryInfo);
+            if (info.getPeakResidentMemory())
+                wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSToperation, ">compile", StSizePeakMemory, NULL, info.getPeakResidentMemory(), 1, 0, StatsMergeReplace);
         }
 
 
@@ -603,9 +602,19 @@ bool HqlDllGenerator::generateCode(HqlQueryContext & query)
 
 void HqlDllGenerator::addWorkUnitAsResource()
 {
-    StringBuffer wuXML;
-    exportWorkUnitToXML(wu, wuXML, false, false, false);
-    code->addCompressResource("WORKUNIT", wuXML.length(), wuXML.str(), NULL, 1000);
+    bool defaultBinaryWorkunit = true;
+    if (wu->getDebugValueInt("saveBinaryWorkunit", defaultBinaryWorkunit))
+    {
+        MemoryBuffer wuBinary;
+        exportWorkUnitToBinary(wu, wuBinary);
+        code->addCompressResource("BINWORKUNIT", wuBinary.length(), wuBinary.bytes(), NULL, 1000);
+    }
+    else
+    {
+        StringBuffer wuXML;
+        exportWorkUnitToXML(wu, wuXML, false, false, false);
+        code->addCompressResource("WORKUNIT", wuXML.length(), wuXML.str(), NULL, 1000);
+    }
 }
 
 void HqlDllGenerator::addArchiveAsResource(StringBuffer &buf)
@@ -624,7 +633,7 @@ void HqlDllGenerator::insertStandAloneCode()
 void HqlDllGenerator::doExpand(HqlCppTranslator & translator)
 {
     CCycleTimer elapsedTimer;
-    addTimeStamp(wu, SSTcompilestage, "compile:generate:write c++", StWhenStarted);
+    addTimeStamp(wu, SSToperation, ">compile:>generate:>write c++", StWhenStarted);
 
     bool isMultiFile = translator.spanMultipleCppFiles();
     CompilerType targetCompiler = translator.queryOptions().targetCompiler;
@@ -646,7 +655,7 @@ void HqlDllGenerator::doExpand(HqlCppTranslator & translator)
         }
     }
 
-    updateWorkunitStat(wu, SSTcompilestage, "compile:generate:write c++", StTimeElapsed, NULL, elapsedTimer.elapsedNs());
+    updateWorkunitStat(wu, SSToperation, ">compile:>generate:>write c++", StTimeElapsed, NULL, elapsedTimer.elapsedNs());
 }
 
 bool HqlDllGenerator::abortRequested()
@@ -657,7 +666,7 @@ bool HqlDllGenerator::abortRequested()
 bool HqlDllGenerator::doCompile(ICppCompiler * compiler)
 {
     cycle_t startCycles = get_cycles_now();
-    addTimeStamp(wu, SSTcompilestage, "compile:compile c++", StWhenStarted);
+    addTimeStamp(wu, SSToperation, ">compile:>compile c++", StWhenStarted);
     ForEachItemIn(i, sourceFiles)
         compiler->addSourceFile(sourceFiles.item(i), sourceFlags.item(i));
 
@@ -692,6 +701,9 @@ bool HqlDllGenerator::doCompile(ICppCompiler * compiler)
     StringBufferAdaptor linkOptionAdaptor(options);
     wu->getDebugValue("linkOptions", linkOptionAdaptor);
     compiler->addLinkOption(options.str());
+    if (wu->getDebugValueBool("stripHelperSymbols", !debug))
+        compiler->setStripSymbols(true);
+
     options.clear();
     StringBufferAdaptor optionAdaptor(options);
     wu->getDebugValue("compileOptions", optionAdaptor);
@@ -723,7 +735,7 @@ bool HqlDllGenerator::doCompile(ICppCompiler * compiler)
         }
 
         unsigned __int64 elapsed = cycle_to_nanosec(get_cycles_now() - startCycles);
-        updateWorkunitStat(wu, SSTcompilestage, "compile:compile c++", StTimeElapsed, NULL, elapsed);
+        updateWorkunitStat(wu, SSToperation, ">compile:>compile c++", StTimeElapsed, NULL, elapsed);
     }
     //Keep the files if there was a compile error.
     if (ok && deleteGenerated)
@@ -832,7 +844,7 @@ static void processMetaCommands(HqlCppTranslator & translator, IWorkUnit * wu, H
 {
     NewThorStoredReplacer transformer(translator, wu, ctxCallback);
 
-    translator.traceExpression("before process meta commands", query.expr);
+    translator.traceExpression("beforeStoredReplacer", query.expr);
 
     transformer.analyse(query.expr);
     if (transformer.needToTransform())
@@ -888,4 +900,20 @@ void recordQueueFilePrefixes(IWorkUnit * wu, IPropertyTree * configuration)
             prefix = "";
         wu->setApplicationValue("prefix", name, prefix, true);
     }
+}
+
+CompilerType queryCompilerType(IConstWorkUnit * wu, CompilerType defaultCompiler)
+{
+    CompilerType targetCompiler = defaultCompiler;
+    if (wu->hasDebugValue("targetGcc"))
+        targetCompiler = wu->getDebugValueBool("targetGcc", false) ? GccCppCompiler : Vs6CppCompiler;
+
+    SCMStringBuffer compilerText;
+    wu->getDebugValue("targetCompiler", compilerText);
+    for (CompilerType iComp = (CompilerType)0; iComp < MaxCompiler; iComp = (CompilerType)(iComp+1))
+    {
+        if (stricmp(compilerText.s.str(), compilerTypeText[iComp]) == 0)
+            targetCompiler = iComp;
+    }
+    return targetCompiler;
 }

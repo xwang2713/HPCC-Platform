@@ -1,13 +1,12 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
-import { AlphaNumSortMemory } from "src/Memory";
-import * as Observable from "dojo/store/Observable";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link, ScrollablePane, Sticky } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
-import { useWorkunitResources } from "../hooks/Workunit";
-import { HolyGrail } from "../layouts/HolyGrail";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid, selector } from "./DojoGrid";
+import { QuerySortItem } from "src/store/Store";
+import { useWorkunitResources } from "../hooks/workunit";
+import { updateParam } from "../util/history";
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
+import { ShortVerticalDivider } from "./Common";
+import { IFrame } from "./IFrame";
 
 const defaultUIState = {
     hasSelection: false
@@ -15,77 +14,74 @@ const defaultUIState = {
 
 interface ResourcesProps {
     wuid: string;
+    sort?: QuerySortItem;
+    preview?: boolean;
+}
+
+const defaultSort = { attribute: "Wuid", descending: true };
+
+function formatUrl(wuid: string, url: string) {
+    return `#/workunits/${wuid}/resources/content?url=/WsWorkunits/${url}`;
 }
 
 export const Resources: React.FunctionComponent<ResourcesProps> = ({
-    wuid
+    wuid,
+    sort = defaultSort,
+    preview = true
 }) => {
-
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [selection, setSelection] = React.useState([]);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
-    const [resources] = useWorkunitResources(wuid);
+    const [resources, , , refreshData] = useWorkunitResources(wuid);
+    const [data, setData] = React.useState<any[]>([]);
+    const [webUrl, setWebUrl] = React.useState("");
+    const {
+        selection, setSelection,
+        setTotal,
+        refreshTable } = useFluentStoreState({});
 
     //  Grid ---
-    const gridStore = useConst(new Observable(new AlphaNumSortMemory("DisplayPath", { Name: true, Value: true })));
-    const gridQuery = useConst({});
-    const gridSort = useConst([{ attribute: "Wuid", "descending": true }]);
-    const gridColumns = useConst({
-        col1: selector({
-            width: 27,
-            selectorType: "checkbox"
-        }),
-        DisplayPath: {
-            label: nlsHPCC.Name, sortable: true,
-            formatter: function (url, row) {
-                return `<a href='#/iframe?src=${encodeURIComponent(`WsWorkunits/${row.URL}`)}' class='dgrid-row-url'>${url}</a>`;
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            col1: {
+                width: 27,
+                selectorType: "checkbox"
+            },
+            DisplayPath: {
+                label: nlsHPCC.Name, sortable: true,
+                formatter: (url, row) => {
+                    return <Link href={formatUrl(wuid, row.URL)}>{url}</Link>;
+                }
             }
-        }
-    });
-
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", gridQuery);
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [grid, gridQuery]);
+        };
+    }, [wuid]);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
             key: "open", text: nlsHPCC.Open, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
             onClick: () => {
                 if (selection.length === 1) {
-                    window.location.href = `#/iframe?src=${encodeURIComponent(`WsWorkunits/${selection[0].URL}`)}`;
+                    window.location.href = formatUrl(wuid, selection[0].URL);
                 } else {
                     for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open(`#/iframe?src=${encodeURIComponent(`WsWorkunits/${selection[i].URL}`)}`, "_blank");
+                        window.open(formatUrl(wuid, selection[i].URL), "_blank");
                     }
                 }
             }
         },
         {
-            key: "content", text: nlsHPCC.Content, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
+            key: "preview", text: nlsHPCC.Preview, canCheck: true, checked: preview, iconProps: { iconName: "FileHTML" },
             onClick: () => {
-                if (selection.length === 1) {
-                    window.location.href = `#/text?src=${encodeURIComponent(`WsWorkunits/${selection[0].URL}`)}`;
-                } else {
-                    for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open(`#/text?src=${encodeURIComponent(`WsWorkunits/${selection[i].URL}`)}`, "_blank");
-                    }
-                }
+                updateParam("preview", !preview);
             }
         },
-    ], [refreshTable, selection, uiState.hasSelection]);
+    ], [refreshData, selection, uiState.hasSelection, wuid, preview]);
 
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "roxiequeries.csv")
-    ], [grid, selection]);
+    const copyButtons = useCopyButtons(columns, selection, "resources");
 
     //  Selection  ---
     React.useEffect(() => {
@@ -99,19 +95,34 @@ export const Resources: React.FunctionComponent<ResourcesProps> = ({
     }, [selection]);
 
     React.useEffect(() => {
-        gridStore.setData(resources.filter((row, idx) => idx > 0).map(row => {
+        setData(resources.map(row => {
+            if (row.endsWith("/index.html")) {
+                setWebUrl(`/WsWorkunits/${row}`);
+            }
             return {
                 URL: row,
-                DisplayPath: row.substring(`res/${wuid}/`.length)
+                DisplayPath: row.indexOf(`res/${wuid}/`) === 0 ?
+                    row.substring(`res/${wuid}/`.length) :
+                    row
             };
         }));
-        refreshTable();
-    }, [gridStore, refreshTable, resources, wuid]);
+    }, [resources, wuid]);
 
-    return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
-        main={
-            <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
-        }
-    />;
+    return <ScrollablePane>
+        <Sticky>
+            <CommandBar items={buttons} farItems={copyButtons} />
+        </Sticky>
+        {preview && webUrl ?
+            <IFrame src={webUrl} /> :
+            <FluentGrid
+                data={data}
+                primaryID={"DisplayPath"}
+                alphaNumColumns={{ Name: true, Value: true }}
+                sort={sort}
+                columns={columns}
+                setSelection={setSelection}
+                setTotal={setTotal}
+                refresh={refreshTable}
+            ></FluentGrid>}
+    </ScrollablePane>;
 };

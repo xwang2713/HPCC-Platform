@@ -24,10 +24,10 @@ option(BUILD_TESTS "Configure CMake to build tests (or not)" ON) # Copy from jwt
 set(BUILD_TESTS OFF)
 option(BUILD_EXAMPLES "Configure CMake to build examples (or not)" ON) # Copy from jwt-cpp/CMakeLists.txt
 set(BUILD_EXAMPLES OFF)
-add_subdirectory(jwt-cpp EXCLUDE_FROM_ALL)
 
 # Required installed libraries
 find_package(CURL REQUIRED)
+find_path(JWT_CPP_INCLUDE_DIRS "jwt-cpp/base.h" HINTS "${VCPKG_INSTALLED_DIR}")
 
 set(SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/jwtSecurity.cpp"
@@ -35,26 +35,28 @@ set(SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/jwtEndpoint.cpp"
     "${HPCC_SOURCE_DIR}/system/security/shared/authmap.cpp"
     "${HPCC_SOURCE_DIR}/esp/services/ws_store/espstorelib/daliKVStore.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include/jwt-cpp/jwt.h")
+    "${JWT_CPP_INCLUDE_DIRS}/jwt-cpp/jwt.h")
 
 add_definitions(-DJWTSECURITY_EXPORTS -D_USRDLL)
 
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include"
+include_directories("${JWT_CPP_INCLUDE_DIRS}"
                     "${HPCC_SOURCE_DIR}/dali/base"
                     "${HPCC_SOURCE_DIR}/dali/server"
                     "${HPCC_SOURCE_DIR}/esp/services/ws_store/espstorelib"
+                    "${HPCC_SOURCE_DIR}/esp/smc/SMCLib"
                     "${HPCC_SOURCE_DIR}/system/include"
                     "${HPCC_SOURCE_DIR}/system/mp"
                     "${HPCC_SOURCE_DIR}/system/security/shared"
                     "${HPCC_SOURCE_DIR}/system/jlib"
-                    "${CURL_INCLUDE_DIR}")
+                    "${CURL_INCLUDE_DIRS}")
 
 HPCC_ADD_LIBRARY(jwtSecurity SHARED ${SRCS})
 
 install(TARGETS jwtSecurity
         RUNTIME DESTINATION "${EXEC_DIR}"
-        LIBRARY DESTINATION "${LIB_DIR}")
+        LIBRARY DESTINATION "${LIB_DIR}"
+        CALC_DEPS)
 
 target_link_libraries(jwtSecurity
                       PRIVATE jlib dalibase
-                      PRIVATE ${CURL_LIBRARIES})
+                      PRIVATE CURL::libcurl)

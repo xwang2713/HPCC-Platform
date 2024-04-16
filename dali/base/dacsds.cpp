@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#define da_decl DECL_EXPORT
 #include "platform.h"
 #include <typeinfo>
 #include "jlib.hpp"
@@ -860,9 +859,9 @@ void CClientRemoteTree::removingElement(IPropertyTree *tree, unsigned pos)
     PARENT::removingElement(tree, pos);
 }
 
-void CClientRemoteTree::setAttribute(const char *attr, const char *val)
+void CClientRemoteTree::setAttribute(const char *attr, const char *val, bool encoded)
 {
-    PARENT::setAttribute(attr, val);
+    PARENT::setAttribute(attr, val, encoded);
     mergeState(CPS_AttrChanges);
     registerAttrChange(attr);
 }
@@ -876,6 +875,12 @@ bool CClientRemoteTree::removeAttribute(const char *attr)
     }
     else
         return false;
+}
+
+void CClientRemoteTree::serializeSelf(MemoryBuffer &tgt)
+{
+    checkExt();
+    PARENT::serializeSelf(tgt);
 }
 
 void CClientRemoteTree::registerRenamed(const char *newName, const char *oldName, unsigned pos, __int64 id)
@@ -946,6 +951,18 @@ void CClientRemoteTree::setPropInt64(const char *xpath, __int64 val)
 {
     CConnectionLock b(connection);
     CRemoteTreeBase::setPropInt64(xpath, val);
+}
+
+void CClientRemoteTree::addPropReal(const char *xpath, double val)
+{
+    CConnectionLock b(connection);
+    CRemoteTreeBase::addPropReal(xpath, val);
+}
+
+void CClientRemoteTree::setPropReal(const char *xpath, double val)
+{
+    CConnectionLock b(connection);
+    CRemoteTreeBase::setPropReal(xpath, val);
 }
 
 void CClientRemoteTree::setPropBin(const char *xpath, size32_t size, const void *data)

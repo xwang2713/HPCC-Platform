@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <unordered_map>
 #include "jmetrics.hpp"
 #include "jptree.hpp"
 #include "jstring.hpp"
@@ -38,4 +39,9 @@ protected:
     virtual void collectingHasStopped() override {}
     virtual void doCollection() override;
     void writeLogEntry(const std::shared_ptr<IMetric> &pMetric);
+    void writeHistogramLogEntry(const std::shared_ptr<IMetric> &pMetric);
+
+protected:
+    std::unordered_map<std::string, __uint64> alreadySeen;
+    bool ignoreZeroMetrics;
 };

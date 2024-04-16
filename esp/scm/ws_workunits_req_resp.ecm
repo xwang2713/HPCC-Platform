@@ -20,6 +20,7 @@
 
 EspInclude(common);
 EspInclude(ws_workunits_struct);
+EspInclude(ws_logaccess);
 
 ESPrequest [nil_remove] WUCreateRequest
 {
@@ -80,6 +81,7 @@ ESPrequest [nil_remove] WUQueryRequest
     [min_ver("1.03")] int64 PageStartFrom(0);
     [min_ver("1.03")] int64 PageEndAt;
     [min_ver("1.26"), depr_ver("1.72")] int LastNDays;
+    [min_ver("1.89")] ESPenum WUProtectFilter Protected("All");
 
     string Sortby;
     bool Descending(false);
@@ -355,6 +357,7 @@ ESPrequest WUInfoRequest
     [min_ver("1.66")] bool IncludeAllowedClusters(true);
     [min_ver("1.73")] bool IncludeTotalClusterTime(true);
     [min_ver("1.78")] bool IncludeServiceNames(false);
+    [min_ver("1.98")] bool IncludeProcesses(false);
     [min_ver("1.16")] bool SuppressResultSchemas(false);
     [min_ver("1.25")] string ThorSlaveIP;
 };
@@ -402,6 +405,12 @@ ESPrequest WULogFileRequest
     [min_ver("1.55")] int64 SizeLimit(0);
     [min_ver("1.77")] ESPenum ErrorMessageFormat ErrorMessageFormat;
     string PlainText;
+    [min_ver("1.90"), depr_ver("1.92")] ESPStruct WUFileOption FileOptions;
+    [min_ver("1.92"), nil_remove] unsigned MaxLogRecords;
+    [min_ver("1.92"), nil_remove] ESPenum LogSelectColumnMode LogSelectColumnMode(1);
+    [min_ver("1.92"), nil_remove] ESPenum LogAccessLogFormat LogFormat(0);
+    [min_ver("1.92"), nil_remove] unsigned LogSearchTimeBuffSecs;
+    [min_ver("1.92"), nil_remove] ESParray<string> LogColumns;
 };
 
 ESPresponse [exceptions_inline] WULogFileResponse
@@ -739,7 +748,7 @@ ESPrequest WUSyntaxCheckRequest
     string Cluster;
     string Snapshot;
     int    TimeToWait(60000);
-
+    [min_ver("1.88")] bool PersistWorkunit(false);
     [min_ver("1.04")] ESParray<ESPstruct DebugValue>       DebugValues;
 };
 
@@ -889,19 +898,25 @@ ESPrequest [nil_remove] WUGetZAPInfoRequest
 ESPresponse [exceptions_inline] WUGetZAPInfoResponse
 {
     string WUID;
-    string ESPIPAddress;
-    string ThorIPAddress;
+    [depr_ver("1.95")] string ESPIPAddress;
+    [min_ver("1.95")] string ESPApplication;
+    [depr_ver("1.95")] string ThorIPAddress;
+    [min_ver("1.95")] string ThorProcesses;
     string BuildVersion;
     string Archive;
     [min_ver("1.73")] string EmailTo;
     [min_ver("1.73")] string EmailFrom;
+    [min_ver("1.96")] string Message;
+    [min_ver("2.00")] bool IsContainerized(false);
 };
 
 ESPrequest [nil_remove] WUCreateZAPInfoRequest
 {
     string Wuid;
-    string ESPIPAddress;
-    string ThorIPAddress;
+    [depr_ver("1.95")] string ESPIPAddress;
+    [min_ver("1.95")] string ESPApplication;
+    [depr_ver("1.95")] string ThorIPAddress;
+    [min_ver("1.95")] string ThorProcesses;
     string BuildVersion;
     string ProblemDescription;
     string WhatChanged;
@@ -915,6 +930,9 @@ ESPrequest [nil_remove] WUCreateZAPInfoRequest
     [min_ver("1.73")] string EmailFrom;
     [min_ver("1.73")] string EmailSubject;
     [min_ver("1.73")] string EmailBody;
+    [min_ver("1.97")] ESPStruct LogAccessFilter LogFilter;
+    [min_ver("2.00")] bool IncludeRelatedLogs(true);
+    [min_ver("2.00")] bool IncludePerComponentLogs(false);
 };
 
 ESPresponse [exceptions_inline] WUCreateZAPInfoResponse
@@ -925,6 +943,7 @@ ESPresponse [exceptions_inline] WUCreateZAPInfoResponse
 
 ESPrequest [nil_remove] WUCheckFeaturesRequest
 {
+    boolean IncludeFullVersion(false);
 };
 
 ESPresponse [exceptions_inline] WUCheckFeaturesResponse
@@ -934,6 +953,12 @@ ESPresponse [exceptions_inline] WUCheckFeaturesResponse
     int BuildVersionPoint;
     unsigned maxRequestEntityLength;
     ESPStruct DeploymentFeatures Deployment;
+    //The following fields are only generated if IncludeFullVersion is set.  Normally the fields would be versioned,
+    //but this change is applied to a much earlier version and the version number has been incremented several times,
+    //so that approach cannot be used.
+    string BuildVersion;
+    string BuildMaturity;
+    string BuildTagTimestamp;
 };
 
 ESPrequest [nil_remove] WUGetStatsRequest
@@ -1012,12 +1037,12 @@ ESPresponse [exceptions_inline, nil_remove] WUGetNumFileToCopyResponse
 ESPRequest WUDetailsRequest
 {
     string WUID;
-    [optional] ESPstruct WUScopeFilter ScopeFilter;               // which scopes are matched
-    [optional] ESPstruct WUNestedFilter NestedFilter;             // what nested scopes are returned
-    [optional] ESPstruct WUPropertiesToReturn PropertiesToReturn; // List of properties to return
-    [optional] string    Filter;                                  // Filter as a string text
-    [optional] ESPstruct WUScopeOptions ScopeOptions;             // Which scope details are returned
-    [optional] ESPstruct WUPropertyOptions PropertyOptions;       // Which attribute details are returned
+    ESPstruct WUScopeFilter ScopeFilter;               // which scopes are matched
+    ESPstruct WUNestedFilter NestedFilter;             // what nested scopes are returned
+    ESPstruct WUPropertiesToReturn PropertiesToReturn; // List of properties to return
+    string    Filter;                                  // Filter as a string text
+    ESPstruct WUScopeOptions ScopeOptions;             // Which scope details are returned
+    ESPstruct WUPropertyOptions PropertyOptions;       // Which attribute details are returned
 };
 
 ESPResponse [exceptions_inline] WUDetailsResponse
@@ -1038,6 +1063,8 @@ ESPResponse [exceptions_inline] WUDetailsMetaResponse
     ESParray<string, Measure> Measures;
     ESParray<ESPStruct WUDetailsActivityInfo, Activity> Activities;
 };
+
+// ----------------------------------------------------------------------------------
 
 ESPrequest [nil_remove] WUEclDefinitionActionRequest
 {
@@ -1063,12 +1090,23 @@ ESPrequest [nil_remove] WUEclDefinitionActionRequest
     int MsToWait(-1);
     int TimeLimit(-1); //Publish
     int WarnTimeLimit(-1); //Publish
+    bool DfuCopyFiles(false);
+    bool DfuOverwrite(false);
+    string DfuQueue;
+    bool OnlyCopyFiles(false); //Copies the files needed for the command but doesn't actually complete the command
+    bool StopIfFilesCopied(false); //Command only completes if no files need copying.  User can run again after DFU Publisher Workunit completes.
+    [min_ver("1.95")] string DfuPublisherWuid; //Wuid can be preallocated and then passed in here to use.  Will be created if empty
+    [min_ver("1.97")] string RemoteStorage;
 };
 
 ESPresponse [exceptions_inline] WUEclDefinitionActionResponse
 {
     ESParray<ESPstruct WUEclDefinitionActionResult> ActionResults;
+    [min_ver("1.89")] string DfuPublisherWuid;
+    [min_ver("1.89")] string DfuPublisherState;
 };
+
+// ----------------------------------------------------------------------------------
 
 ESPrequest [nil_remove] WUGetPluginsRequest
 {
@@ -1078,4 +1116,27 @@ ESPresponse [exceptions_inline] WUGetPluginsResponse
 {
     ESParray<ESPstruct WUEclPluginsInFolder> Plugins;
 };
+
+// ----------------------------------------------------------------------------------
+
+ESPrequest [nil_remove] WUAnalyseHotspotRequest
+{
+    string Wuid;
+    string RootScope;
+    bool OptOnlyActive(false);
+    bool OnlyCriticalPath(false);
+    bool IncludeProperties(true);
+    bool IncludeStatistics(true);
+    double ThresholdPercent(1.0);
+    ESPstruct WUPropertyOptions PropertyOptions;       // Which attribute details are returned
+};
+
+ESPresponse [exceptions_inline] WUAnalyseHotspotResponse
+{
+    string RootScope;
+    int64 RootTime;
+    ESParray<ESPstruct WUResponseScope, Activity> Activities;
+    ESParray<ESPstruct WUResponseScope, Dependency> Dependencies;
+};
+
 // ----------------------------------------------------------------------------------

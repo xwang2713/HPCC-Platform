@@ -25,7 +25,7 @@ pushd $SCRIPT_DIR 2>&1 > /dev/null
 
 set -e
 
-. ${SCRIPT_DIR}/../cmake_modules/parse_cmake.sh
+. ${SCRIPT_DIR}/../cmake_modules/parse_cmake.sh ${SCRIPT_DIR}/../version.cmake
 parse_cmake
 set_tag $HPCC_PROJECT
 
@@ -36,8 +36,19 @@ if [[ -n ${INPUT_USERNAME} ]] ; then
   PUSH=1
 fi
 
+if [[ -n ${INPUT_LN_USERNAME} ]] ; then
+  echo ${INPUT_LN_PASSWORD} | docker login -u ${INPUT_LN_USERNAME} --password-stdin ${INPUT_LN_REGISTRY}
+  PUSH_LN=1
+fi
+
 BUILD_ML=    # all or ml,gnn,gnn-gpu
 [[ -n ${INPUT_BUILD_ML} ]] && BUILD_ML=${INPUT_BUILD_ML}
+
+BUILD_LN=
+[[ -n ${INPUT_BUILD_LN} ]] && BUILD_LN=${INPUT_BUILD_LN}
+
+LNB_TOKEN=
+[[ -n ${INPUT_LNB_TOKEN} ]] && LNB_TOKEN=${INPUT_LNB_TOKEN}
 
 set -e
 
@@ -83,16 +94,30 @@ build_ml_images() {
   done
 }
 
-if [[ -z "$BUILD_ML" ]]; then
-  build_image platform-build-base ${BASE_VER}
+if [[ -n "$BUILD_LN" ]]; then
+  set_tag "internal"
+  GITHUB_TOKEN=${LNB_TOKEN}
+  lnBuildTag=${BUILD_TAG/community_/internal_}
+  build_image platform-build-ln ${BUILD_LABEL} ${lnBuildTag}
+  build_image platform-core-ln ${BUILD_LABEL} ${lnBuildTag} --build-arg BUILD_TAG_OVERRIDE=${HPCC_LONG_TAG}
+elif [[ -z "$BUILD_ML" ]]; then
   build_image platform-build
   build_image platform-core
 else
-  build_image platform-core # NB: if building ML images and core has already been built, this will only pull it
+  docker pull ${DOCKER_REPO}/platform-core:${BUILD_LABEL}
   build_ml_images
 fi
 
 if [[ -n ${INPUT_PASSWORD} ]] ; then
   echo "::set-output name=${BUILD_LABEL}"
   docker logout
+fi
+
+#cleanup any github secrets stored for BuildKit mounting
+if [[ -n {INPUT_SIGNING_SECRET} ]] ; then
+  rm -rf private.key
+fi
+
+if [[ -n {INPUT_SIGNING_PASSPHRASE} ]] ; then
+  rm -rf passphrase.txt
 fi

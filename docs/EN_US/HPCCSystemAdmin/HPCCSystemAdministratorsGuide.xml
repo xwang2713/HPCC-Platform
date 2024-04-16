@@ -1136,8 +1136,7 @@
     using any xml or text editor however the file structure must remain
     valid.</para>
 
-    <para>
-      <figure>
+    <para><figure>
         <title>Sample Production Configuration</title>
 
         <mediaobject>
@@ -1145,8 +1144,7 @@
             <imagedata fileref="images/SA008.jpg" />
           </imageobject>
         </mediaobject>
-      </figure>
-    </para>
+      </figure></para>
 
     <!--/*Including special SysAdmin Config Module -paras- */-->
 
@@ -1179,10 +1177,16 @@
     <sect1 id="SysAdm_Env.conf">
       <title>Environment.conf</title>
 
-      <para>Another component of HPCC Systems configuration is the
+      <para>A component of HPCC Systems on bare-metal configuration is the
       environment.conf file. Environment.conf contains some global definitions
       that the configuration manager uses to configure the HPCC Systems. In
       most cases, the defaults are sufficient.</para>
+
+      <para>The environment.conf file only works for bare-metal deployments.
+      For container or cloud deployments the environment.conf is not valid,
+      instead there are environment settings which can be configured by
+      setting values in the Helm charts. See the Containerized HPCC Systems
+      documentation for containerized or cloud deployments.</para>
 
       <para><informaltable colsep="1" frame="all" rowsep="1">
           <tgroup cols="2">
@@ -1192,9 +1196,7 @@
 
             <tbody>
               <row>
-                <entry>
-                  <inlinegraphic fileref="images/caution.png" />
-                </entry>
+                <entry><inlinegraphic fileref="images/caution.png" /></entry>
 
                 <entry><emphasis role="bold">WARNING</emphasis>: These
                 settings are essential to proper system operation. Only expert
@@ -1225,31 +1227,30 @@
 
       <para>The default envrionment.conf:</para>
 
-      <para>
-        <programlisting>## Default environment configuration file for OpenHPCC
+      <para><programlisting>## Default environment configuration file for OpenHPCC
 
 [DEFAULT]
-configs=/etc/HPCCSystems
-path=/opt/HPCCSystems
-classpath=/opt/HPCCSystems/classes
-runtime=/var/lib/HPCCSystems
-lock=/var/lock/HPCCSystems
-# Supported logging fields: 
-#   AUD,CLS,DET,MID,TIM,DAT,PID,TID,NOD,JOB,USE,SES,COD,MLT,MCT,NNT,COM,QUO,PFX,ALL,STD
-logfields=TIM+DAT+MLT+MID+PID+TID+COD+QUO+PFX
-pid=/var/run/HPCCSystems
-log=/var/log/HPCCSystems
-user=hpcc
-group=hpcc
+configs=${CONFIG_DIR}
+path=${INSTALL_DIR}
+classpath=${INSTALL_DIR}/classes
+runtime=${RUNTIME_PATH}
+lock=${LOCK_PATH}
+# Supported logging fields: AUD,CLS,DET,MID,TIM,DAT,PID,TID,NOD,JOB,USE,SES,COD,MLT,MCT,NNT,COM,QUO,PFX,ALL,STD
+logfields=TIM+DAT+MLT+MID+PID+TID+COD+QUO+PFX+AUD
+pid=${PID_PATH}
+log=${LOG_PATH}
+user=${RUNTIME_USER}
+group=${RUNTIME_GROUP}
 #umask=022
 #nice=0
-home=/home
-environment=environment.xml
-sourcedir=/etc/HPCCSystems/source
-blockname=HPCCSystems
+home=${HOME_DIR}
+environment=${ENV_XML_FILE}
+sourcedir=${CONFIG_SOURCE_PATH}
+blockname=${DIR_NAME}
 interface=*
 # enable epoll method for notification events (true/false)
 use_epoll=true
+#epoll_hdlperthrd=10
 # allow kernel pagecache flushing where enabled (true/false)
 allow_pgcache_flush=true
 # report UDP network stats
@@ -1258,35 +1259,29 @@ mpStart=7101
 mpEnd=7500
 mpSoMaxConn=128
 mpTraceLevel=0
-# enable SSL for dafilesrv remote file access 
-#     (SSLNone/false | SSLOnly/true | SSLFirst | UnsecureFirst)
+# enable SSL for dafilesrv remote file access (SSLNone/false | SSLOnly/true | SSLFirst | UnsecureFirst | UnsecureAndSSL)
 # Enabling requires setting the HPCCPassPhrase, HPCCCertFile, and HPCCPrivateKeyFile values
 #dfsUseSSL=SSLNone
 
 #Specify location of HPCC PKI public/private key files
 # note: if HPCCPassPhrase specified it must be encrypted
 #HPCCPassPhrase=
-#HPCCCertificateFile=/home/hpcc/.ssh/cert.cer
-#HPCCPublicKeyFile=/home/hpcc/.ssh/id_rsa.pub
-#HPCCPrivateKeyFile=/home/hpcc/.ssh/id_rsa
+#HPCCCertificateFile=${HOME_DIR}/${RUNTIME_USER}/certificate/certificate.pem
+#HPCCPublicKeyFile=${HOME_DIR}/${RUNTIME_USER}/certificate/public.key.pem
+#HPCCPrivateKeyFile=${HOME_DIR}/${RUNTIME_USER}/certificate/key.pem
 
 jvmoptions=-XX:-UsePerfData
 #Options to enable remote debugging of Java service or application
 #jvmoptions=-XX:-UsePerfData -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=2000
 #JNI_PATH=/absolute/path/to/alternative/libjvm.so
 
-# Although HPCC platform includes plugins for both Python2 and Python3, 
-# only one may be safely enabled at a time
-# as the Python libraries export the same symbols for both versions. 
-# Enabling both may lead to unpredicatable results
-# including segfaults or undefined symbol errors.
-#
-# If you would prefer to use python 2 and disable python3, change the line below to read
-#  additionalPlugins=python2
-#
+# Python plugins can call python cleanup code on exit, but this seems to cause lockups in some Tensorflow examples
+# In most cases, skipping the cleanup is harmless and avoids these lockups
+skipPythonCleanup=true 
+
 # Multiple paths can be specified (separate with :, or ; on Windows).
-# Relative paths are assumed to be relative to /opt/HPCCSystems/versioned
-additionalPlugins=python3
+# Relative paths are assumed to be relative to ${INSTALL_DIR}/versioned
+additionalPlugins=python3 
 
 # To en-/disable Drop Zone restriction.
 # Default is enabled (true).
@@ -1299,13 +1294,11 @@ useDropZoneRestriction=true
 #dafsConnectRetries=2
 #dafsMaxReceiveTimeSeconds=0
 
-# Dafilesrv: set to change number of seconds before retrying an unresponsive dafilesrv connection 
-#   (default 10 seconds)
+# Dafilesrv: set to change number of seconds before retrying an unresponsive dafilesrv connection (default 10 seconds)
 # NB: for now this only applies to the last cached server 
 #dafsConnectFailRetrySeconds=10
 
-</programlisting>
-      </para>
+</programlisting></para>
 
       <para>The default environment.conf file includes several comments and
       explanations for many of the values defined in it.</para>
@@ -1476,8 +1469,7 @@ lock=/var/lock/HPCCSystems</programlisting>
           <para>The following are logfield macros which provide a bundled
           group of columns:</para>
 
-          <para>
-            <informaltable>
+          <para><informaltable>
               <tgroup cols="2">
                 <tbody>
                   <row>
@@ -1494,8 +1486,7 @@ lock=/var/lock/HPCCSystems</programlisting>
                   </row>
                 </tbody>
               </tgroup>
-            </informaltable>
-          </para>
+            </informaltable></para>
         </sect3>
       </sect2>
 
@@ -1520,6 +1511,18 @@ lock=/var/lock/HPCCSystems</programlisting>
 
         <para>Some other items used by or referred to in
         environment.conf.<variablelist>
+            <varlistentry>
+              <term>deploymentName</term>
+
+              <listitem>
+                <para>Creates an environment variable in a bare-metal
+                deployment that can be retrieved using the ECL built-in
+                function--GETENV().</para>
+
+                <programlisting>deploymentName: myenv1</programlisting>
+              </listitem>
+            </varlistentry>
+
             <varlistentry>
               <term>Use_epoll</term>
 
@@ -1557,6 +1560,45 @@ lock=/var/lock/HPCCSystems</programlisting>
           </variablelist></para>
       </sect2>
 
+      <sect2 id="SysAdm_Java_env.conf">
+        <title>Environment.conf and Java Settings</title>
+
+        <para>Specify the JNI_PATH setting if HPCC cannot find the adequate
+        JNI library (libjvm) or if you want an alternate libjvm. For
+        example:</para>
+
+        <para><programlisting>JNI_PATH=/absolute/path/to/alternative/libjvm.so
+</programlisting></para>
+
+        <para><informaltable colsep="1" frame="all" rowsep="1">
+            <?dbfo keep-together="always"?>
+
+            <tgroup cols="2">
+              <colspec colwidth="49.50pt" />
+
+              <colspec />
+
+              <tbody>
+                <row>
+                  <entry><inlinegraphic fileref="images/OSSgr3.png" /></entry>
+
+                  <entry><para>When targeting custom classes, all dependencies
+                  must be accessible by declaring their location on the
+                  classpath, or including in the host jar file.</para>
+                  <para>Custom java classes should be built using compatible
+                  Java versions. To check the Java version used to build a
+                  given class use:</para> <para> <programlisting>javap: javap -verbose MyClass | grep "major" </programlisting>
+                  </para> <para>When targeting a given method, ensure the
+                  signature declared in the embedded Java section matches the
+                  actual method signature. To get the signature, use:</para>
+                  <para> <programlisting>javap: javap –s MyClass</programlisting>
+                  </para></entry>
+                </row>
+              </tbody>
+            </tgroup>
+          </informaltable></para>
+      </sect2>
+
       <sect2 id="ConfiguringRemoteAccessOverTLS">
         <title>Remote Access over TLS</title>
 
@@ -1570,21 +1612,53 @@ lock=/var/lock/HPCCSystems</programlisting>
         Then set the values as appropriate for your system.</para>
 
         <para><programlisting>#enable SSL for dafilesrv remote file access
-dfsUseSSL=true
-dfsSSLCertFile=/certfilepath/certfile
-dfsSSLPrivateKeyFile=/keyfilepath/keyfile</programlisting>Set the <emphasis
-        role="blue">dfsUseSSL=true</emphasis> and set the value for the paths
-        to point to the certificate and key file paths on your system. Then
-        deploy the <emphasis>environment.conf</emphasis> file (and cert/key
-        files) to all nodes as appropriate.</para>
+#HPCCPassPhrase=true
+HPCCCertFile=/certfilepath/certfile
+HPCCPrivateKeyFile=/keyfilepath/keyfile
+</programlisting>Set the <emphasis role="blue">dfsUseSSL=true</emphasis> and
+        set the value for the paths to point to the certificate and key file
+        paths on your system. Then deploy the
+        <emphasis>environment.conf</emphasis> file (and cert/key files) to all
+        nodes as appropriate.</para>
+
+        <variablelist>
+          <varlistentry>
+            <term>Note:</term>
+
+            <listitem>
+              <para>HPCCPassPhrase should be left commented out unless a
+              passphrase was used to create the keys.</para>
+            </listitem>
+          </varlistentry>
+        </variablelist>
 
         <para>When dafilesrv is enabled for TLS (port 7600), it can still
         connect over a non-TLS connection (port 7100) to allow legacy clients
         to work.</para>
+
+        <sect3>
+          <title id="SA-KeyFileAddlInfo">Key file Additional
+          Information</title>
+
+          <para>The Private and public keys need to be generated in PEM
+          format. The same key file pairs should be installed across the
+          cluster. These keys <emphasis role="bold">must</emphasis> be the
+          same on every node in the cluster.</para>
+
+          <para>The HPCCCertFile and HPCCPublicKeyFile values must exist and
+          be uncommented in environment.conf file as indicated above. The
+          HPCCPassPhrase is only used when a passphrase was used in creation
+          of the keys.</para>
+
+          <para>A good way to ensure the appropriate implementation of the
+          secure key files is, as documented in the <emphasis>Installing &amp;
+          Running the HPCC Systems Platform</emphasis> book, to use the
+          <emphasis>install-cluster.sh</emphasis> script.</para>
+        </sect3>
       </sect2>
     </sect1>
 
-    <!--Inclusions-As-Sect1-->
+    <!-- Inclusions-As-Sect1-->
 
     <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/hpcc_ldap.xml"
                 xpointer="element(/1)"
@@ -1744,14 +1818,6 @@ dfsSSLPrivateKeyFile=/keyfilepath/keyfile</programlisting>Set the <emphasis
             </varlistentry>
 
             <varlistentry>
-              <term>sudoersBasedn</term>
-
-              <listitem>
-                <para>Deprecated.</para>
-              </listitem>
-            </varlistentry>
-
-            <varlistentry>
               <term>workunitsBasedn</term>
 
               <listitem>
@@ -1762,13 +1828,75 @@ dfsSSLPrivateKeyFile=/keyfilepath/keyfile</programlisting>Set the <emphasis
       </sect2>
     </sect1>
 
-    <xi:include href="HPCCSystemAdmin/SA-Mods/CassandraWUServer.xml"
-                xpointer="xpointer(//*[@id='CassandraWUStorage'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+    <sect1 id="SA-ControlsANDTools">
+      <title>System Tools and Controls</title>
 
-    <xi:include href="HPCCSystemAdmin/SA-Mods/WUTool.xml"
-                xpointer="xpointer(//*[@id='wutool'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+      <sect2 id="SA-RoxieControlCmds">
+        <title>Control Commands</title>
+
+        <para>There are control commands which can be run through the
+        <emphasis>ecl</emphasis> CLI which goes through ESP to forward the
+        control commands to components on the backend.</para>
+
+        <sect3 id="CT-CheckMemIndivNodes">
+          <title>Roxie Memlock Status on Individual Nodes</title>
+
+          <para>The <emphasis>ecl roxie getmemlocked</emphasis> ecl CLI
+          command is one way to check if the Roxie memory is locked. If you
+          wanted to check for locks on individual Roxie nodes, and if you can
+          access those nodes. Use the command:</para>
+
+          <programlisting>$ cat /proc/`pidof roxie`/status | grep VmLck</programlisting>
+
+          <para>Which returns something like:</para>
+
+          <programlisting>VmLck:   5242880 kB</programlisting>
+
+          <para>If the VmLck value is 0 then memory is not locked.</para>
+
+          <para>The VmLck value should match the memsize=roxie log
+          line:</para>
+
+          <para><programlisting>00000015 PRG 2022-07-07 12:10:35.754 77841 77841 "RoxieMemMgr: 20480 Pages successfully allocated  
+         - <emphasis role="strong">memsize=5368709120</emphasis> base=0x7f904fe00000 alignment=262144 bitmapSize=640</programlisting></para>
+
+          <para>Which is found in the environment.xml's RoxieCluster setting
+          or in the Helm chart -- values.yaml Roxie section for <emphasis
+          role="strong">totalMemoryLimit</emphasis>:</para>
+
+          <programlisting>    totalMemoryLimit="5368709120"</programlisting>
+        </sect3>
+
+        <sect3 id="CT-resource-limits">
+          <title>Resource Limits</title>
+
+          <para>There is also a resource limit set by default at install time
+          that increases the amount of memory allowed to be locked:</para>
+
+          <programlisting>hpcc soft memlock unlimited</programlisting>
+
+          <para>and</para>
+
+          <programlisting>hpcc hard memlock unlimited</programlisting>
+
+          <para>Without this the limit will not be large enough to lock the
+          memory sizes used by a typical Roxie.</para>
+
+          <para>You can also check this limit with a shell command:</para>
+
+          <programlisting>ulimit -l</programlisting>
+
+          <para>Be sure to run this command as the <emphasis>hpcc</emphasis>
+          user.</para>
+        </sect3>
+
+        <!--ADD-ecl-Roxie-Control-CMD-HERE-IF-->
+      </sect2>
+
+      <xi:include href="HPCCSystemAdmin/SA-Mods/WUTool.xml"
+                  xpointer="xpointer(//*[@id='wutool'])"
+                  xmlns:xi="http://www.w3.org/2001/XInclude" />
+    </sect1>
 
     <sect1 id="Redefining_Thor_Nodes">
       <title>Redefining nodes in a Thor Cluster</title>
@@ -2209,23 +2337,35 @@ dfsSSLPrivateKeyFile=/keyfilepath/keyfile</programlisting>Set the <emphasis
         number of cores divided by two is the maximum number of Thor clusters
         to use.</para>
 
-        <sect3>
-          <title>Multiple Nodes</title>
+        <sect3 id="SepClusterNodes">
+          <title>Separate Worker Nodes</title>
 
-          <para>Try to keep resources running on their own nodes, if possible
-          for either one or multiple Thor clusters. If running some kind of
-          active/passive high availability, don't keep your active and passive
-          master on the same node. Try to keep Dali and ESP on separate nodes.
-          Even if you don't have the luxury of very many nodes, you want the
-          Thor master and the Dali (at minimum) to be on separate nodes. The
-          best practice is to keep as many components as possible on their own
+          <para>In a bare-metal deployment, try as much as possible to keep
+          system target cluster resources running on their own physical nodes
+          or partitions. The idea being to avoid putting essential system
+          components on the same partitions as resource intensive and
+          highly-variable cluster data. Another similar type condition could
+          occur, if you are running some kind of active/passive high
+          availability. In this case don't keep your active and passive
+          managers on the same node. Try to keep Dali and ESP on separate
+          nodes. Even if you don't have the luxury of very many physical
+          nodes, you would still want to separate the Thor workers and the
+          Dali (at a minimum) to be on separate disks or partitions of the
+          physical nodes. Thor can have varying and expansive data sizes and
+          is not uncommon to have that data take up most of the available
+          capacity on that partition, or even all of it. If the Dali metadata
+          store is sharing the same disk partition as that cluster's Thor data
+          and insufficient disk space condition such as "out of disk space"
+          occurs, the Dali's metadata could become corrupted. The best
+          practice is to keep as many components as possible on their own
           nodes.</para>
 
-          <para>Another consideration for a multiple node system is to avoid
-          putting any of the components on nodes with slaves. This is not a
-          best practice and leads to an unbalanced cluster, resulting in those
-          slaves with less memory/cpu taking longer than the rest and dragging
-          the whole performance of the cluster down as a result.</para>
+          <para>Along those same lines be wary of the Thor worker nodes and
+          try to avoid putting any other system components on nodes with the
+          workers. That would not be optimal and leads to an unbalanced
+          cluster. Resulting in those workers sharing resources with less
+          available memory/cpu taking longer than the others and dragging the
+          whole performance of the cluster down as a result.</para>
         </sect3>
 
         <sect3 id="Thor_TimesOut">

@@ -110,6 +110,7 @@ public:
     StringBuffer m_ip;
     int          m_port;
     struct sockaddr_in* m_addr;
+    StringBuffer m_fqdn;
 
     CAddress(const char* host, int port)
     {
@@ -121,11 +122,16 @@ public:
         m_addr->sin_port = htons(port);
 
         IpAddress ip(host);
-        ip.getIpText(m_ip);
+        ip.getHostText(m_ip);
         m_port = port;
+        m_fqdn.set(host);
 
     #ifndef _WIN32
-        inet_pton(AF_INET, m_ip.str(), &(m_addr->sin_addr));
+        int ret = inet_pton(AF_INET, m_ip.str(), &(m_addr->sin_addr));
+        if (ret == 0)
+            printf("CAddress: invalid network address %s.\n", m_ip.str());
+        else if (ret == -1)
+            printf("CAddress: invalid address family: AF_INET.\n");
     #else
         m_addr->sin_addr.s_addr = inet_addr(m_ip.str());
     #endif
@@ -151,7 +157,7 @@ private:
     Owned<CAddress> m_serveraddr;
     StringBuffer m_protocol;
     StringBuffer m_host;
-    int          m_port;
+    int          m_port = 0;
     StringBuffer m_path;
     StringBuffer m_user;
     StringBuffer m_password;
@@ -175,7 +181,7 @@ private:
     IArrayOf<CRequest> m_stressrequests;
     bool         m_stopstress;
 
-    IProperties* m_globals;
+    Owned<IProperties> m_globals;
 
     StringBuffer& insertSoapHeaders(StringBuffer &request);
     int validate(StringBuffer& xml);
@@ -271,12 +277,12 @@ public:
 class HttpProxy
 {
 private:
-    int          m_localport;
+    int          m_localport = 0;
     StringBuffer m_host;
     StringBuffer m_url_prefix;
-    int          m_port;
-    FILE*        m_ofile;
-    bool         m_use_ssl;
+    int          m_port = 0;
+    FILE*        m_ofile = nullptr;
+    bool         m_use_ssl = false;
     Owned<ISecureSocketContext> m_ssctx;
 
 public:

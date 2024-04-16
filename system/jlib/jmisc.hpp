@@ -22,6 +22,8 @@
 
 #include "platform.h"
 #include <stdio.h>
+#include <string>
+#include <utility>
 #include "jiface.hpp"
 #include "jcrc.hpp"
 #include "jlog.hpp"
@@ -76,13 +78,9 @@ jlib_decl StringBuffer& queryCcLogName(const char* wuid, StringBuffer& logname);
 jlib_decl char* readarg(char*& curptr);
 jlib_decl bool invoke_program(const char *command_line, DWORD &runcode, bool wait=true, const char *outfile=NULL, HANDLE *rethandle=NULL, bool throwException = false, bool newProcessGroup = false);
 jlib_decl bool wait_program(HANDLE handle,DWORD &runcode,bool block=true);
+jlib_decl bool wait_program_timeout(HANDLE handle,DWORD &runcode,unsigned timeoutMs);
 jlib_decl bool interrupt_program(HANDLE handle, bool killChildren, int signum=0); // no signum means use default
 jlib_decl bool getHomeDir(StringBuffer & homepath);
-
-#ifndef _WIN32
-jlib_decl bool CopyFile(const char *file, const char *newfile, bool fail);
-#endif
-
 
 //Endian support
 
@@ -333,4 +331,7 @@ extern jlib_decl char *mkdtemp(char *_template);
 #endif
 
 extern jlib_decl char **getSystemEnv();
+
+extern jlib_decl char *getHPCCEnvVal(const char *name, const char *defaultValue);
+
 #endif

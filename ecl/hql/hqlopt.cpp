@@ -271,7 +271,15 @@ IHqlExpression * CTreeOptimizer::removeChildNode(IHqlExpression * expr)
     IHqlExpression * child = expr->queryChild(0);
     DBGLOG("Optimizer: Node %s remove child: %s", queryNode0Text(expr), queryNode1Text(child));
     noteUnused(child);
-    return replaceChild(expr, child->queryChild(0));
+
+    //If removing an operator that also has the side-effect of removing grouping (e.g. distribute), make sure the dataset is still ungrouped
+    LinkedHqlExpr newChild = child->queryChild(0);
+    if (!isGrouped(child) && isGrouped(newChild))
+    {
+        newChild.setown(createDataset(no_group, newChild.getClear()));
+        incUsage(newChild);
+    }
+    return replaceChild(expr, newChild);
 }
 
 IHqlExpression * CTreeOptimizer::removeParentNode(IHqlExpression * expr)
@@ -620,6 +628,8 @@ IHqlExpression * CTreeOptimizer::optimizeAggregateDataset(IHqlExpression * trans
             //efficient.  Delete the following lines once we have a count-diskread activity
             if (!isScalarAggregate && !(options & (HOOcompoundproject|HOOinsidecompound)) && !ds->hasAttribute(_countProject_Atom) )
                 break;
+
+            //NOTE, isPureActivity() will prevent aggregates being merged over PROJECTs that contain skips.
             if (isPureActivity(ds) && !isAggregateDataset(ds))
             {
                 OwnedMapper mapper = getMapper(ds);
@@ -3396,7 +3406,6 @@ IHqlExpression * CTreeOptimizer::doCreateTransformed(IHqlExpression * transforme
                 break;
             }
             break;
-
         }
     case no_stepped:
         {
@@ -3902,7 +3911,7 @@ IHqlExpression * CTreeOptimizer::doCreateTransformed(IHqlExpression * transforme
             case no_distribute:
             case no_keyeddistribute:
                 if (!isLocalActivity(transformed))
-                    return removeChildNode(transformed);        // no transform()
+                    return removeChildNode(transformed);
                 break;
             }
             break;

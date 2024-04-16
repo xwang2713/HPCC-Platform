@@ -33,6 +33,7 @@
 #include "tsortm.hpp"
 #include "tsortmp.hpp"
 #include "thbuf.hpp"
+#include "thbufdef.hpp"
 #include "thgraph.hpp"
 
 #ifdef _DEBUG
@@ -79,6 +80,7 @@ class CWriteIntercept : public CSimpleInterface
     offset_t overflowsize;
     size32_t fixedsize;
     offset_t lastofs;
+    bool compressedOverflowFile = false;
 
     // JCSMORE - writeidxofs is a NOP for fixed size records by the looks of it (at least if serializer writes fixed sizes)
     // bit weird if always true, would look a lot clearer if explictly tested for var length case.
@@ -97,14 +99,14 @@ class CWriteIntercept : public CSimpleInterface
             {
                 // right create idx
                 StringBuffer tempname;
-                GetTempName(tempname.clear(),"srtidx",false);
+                GetTempFilePath(tempname.clear(),"srtidx");
                 idxFile.setown(createIFile(tempname.str()));
                 idxFileIO.setown(idxFile->open(IFOcreaterw));
                 if (!idxFileIO.get())
                 {
                     StringBuffer err;
                     err.append("Cannot create ").append(idxFile->queryFilename());
-                    LOG(MCerror, thorJob, "%s", err.str());
+                    LOG(MCerror, "%s", err.str());
                     throw MakeActivityException(&activity, -1, "%s", err.str());
                 }
                 idxFileStream.setown(createBufferedIOStream(idxFileIO,0x100000));
@@ -157,11 +159,19 @@ class CWriteIntercept : public CSimpleInterface
         IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
         CFileOwningStream(CWriteIntercept *_parent, offset_t _startOffset, rowcount_t _max) : parent(_parent), startOffset(_startOffset), max(_max)
         {
-            stream.setown(createRowStreamEx(parent->dataFile, parent->rowIf, startOffset, (offset_t)-1, max));
+            if (parent->compressedOverflowFile)
+            {
+                Owned<ICompressedFileIO> iFileIO = createCompressedFileReader(parent->dataFile);
+                assertex(iFileIO);
+                stream.setown(createRowStreamEx(iFileIO, parent->rowIf, startOffset, (offset_t)-1, max));
+            }
+            else
+                stream.setown(createRowStreamEx(parent->dataFile, parent->rowIf, startOffset, (offset_t)-1, max));
         }
         virtual const void *nextRow() { return stream->nextRow(); }
         virtual void stop() { stream->stop(); }
     };
+
 public:
     IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
 
@@ -185,9 +195,28 @@ public:
     offset_t write(IRowStream *input)
     {
         StringBuffer tempname;
-        GetTempName(tempname,"srtmrg",false);
+        GetTempFilePath(tempname,"srtmrg");
         dataFile.setown(createIFile(tempname.str()));
-        Owned<IExtRowWriter> output = createRowWriter(dataFile, rowIf);
+
+        unsigned rwFlags = DEFAULT_RWFLAGS;
+        size32_t compBlkSz = 0;
+        if (activity.getOptBool(THOROPT_COMPRESS_SPILLS, true) && activity.getOptBool(THOROPT_COMPRESS_SORTOVERFLOW, true))
+        {
+            StringBuffer compType;
+            activity.getOpt(THOROPT_COMPRESS_SPILL_TYPE, compType);
+            unsigned spillCompInfo = 0x0;
+            setCompFlag(compType, spillCompInfo);
+            if (spillCompInfo)
+            {
+                rwFlags |= rw_compress;
+                rwFlags |= spillCompInfo;
+                compressedOverflowFile = true;
+                compBlkSz = activity.getOptUInt(THOROPT_SORT_COMPBLKSZ, DEFAULT_SORT_COMPBLKSZ);
+                ActPrintLog(&activity, "Creating compressed merged overflow file (block size = %u)", compBlkSz);
+            }
+        }
+
+        Owned<IExtRowWriter> output = createRowWriter(dataFile, rowIf, rwFlags, nullptr, compBlkSz);
 
         bool overflowed = false;
         ActPrintLog(&activity, "Local Overflow Merge start");
@@ -262,6 +291,11 @@ public:
         if (!dataFileIO)
         {
             dataFileIO.setown(dataFile->open(IFOread));
+            if (compressedOverflowFile)
+            {
+                dataFileIO.setown(createCompressedFileReader(dataFileIO));
+                assertex(dataFileIO);
+            }
             dataFileStream.setown(createFileSerialStream(dataFileIO));
             dataFileDeserializerSource.setStream(dataFileStream);
         }
@@ -775,7 +809,7 @@ class CThorSorter : public CSimpleInterface, implements IThorSorter, implements 
 public:
     IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
 
-    CThorSorter(CActivityBase *_activity, SocketEndpoint &ep, IDiskUsage *_iDiskUsage, ICommunicator *_clusterComm, mptag_t _mpTagRPC)
+    CThorSorter(CActivityBase *_activity, SocketEndpoint &ep, ICommunicator *_clusterComm, mptag_t _mpTagRPC)
         : activity(_activity), myendpoint(ep), clusterComm(_clusterComm), mpTagRPC(_mpTagRPC),
           rowArray(*_activity, _activity), threaded("CThorSorter", this), spillStats(spillStatistics)
     {
@@ -814,7 +848,7 @@ public:
             }
         }
 #endif
-        threaded.start();
+        threaded.start(true);
     }
     ~CThorSorter()
     {
@@ -1121,10 +1155,10 @@ public:
         startmergesem.signal();
         ActPrintLog(activity, "StartMiniSort output started");
         traceWait("finishedmergesem(2)",finishedmergesem);
-        LOG(MCthorDetailedDebugInfo, thorJob, "StartMiniSort output done");
+        LOG(MCthorDetailedDebugInfo, "StartMiniSort output done");
         merger.clear();
         intercept.clear();
-        LOG(MCthorDetailedDebugInfo, thorJob, "StartMiniSort exit");
+        LOG(MCthorDetailedDebugInfo, "StartMiniSort exit");
     }
     virtual void Close()
     {
@@ -1352,7 +1386,7 @@ public:
     {
         return useTLS;
     }
-    virtual bool queryTraceLevel() const override
+    virtual unsigned queryTraceLevel() const override
     {
         return traceLevel;
     }
@@ -1363,8 +1397,8 @@ public:
 
 //==============================================================================
 
-THORSORT_API IThorSorter *CreateThorSorter(CActivityBase *activity, SocketEndpoint &ep,IDiskUsage *iDiskUsage,ICommunicator *clusterComm, mptag_t _mpTagRPC)
+THORSORT_API IThorSorter *CreateThorSorter(CActivityBase *activity, SocketEndpoint &ep, ICommunicator *clusterComm, mptag_t _mpTagRPC)
 {
-    return new CThorSorter(activity, ep, iDiskUsage, clusterComm, _mpTagRPC);
+    return new CThorSorter(activity, ep, clusterComm, _mpTagRPC);
 }
 

@@ -56,12 +56,12 @@ public:
         queryThorFileManager().addScope(container.queryJob(), outputHelperName, expandedFileName.clear(), false);
         outputName.set(expandedFileName);
 
-        originalIndexFile.setown(queryThorFileManager().lookup(container.queryJob(), originalHelperName,false, false, false, container.activityIsCodeSigned()));
+        originalIndexFile.setown(lookupReadFile(originalHelperName, AccessMode::readRandom, false, false, false));
+        newIndexFile.setown(lookupReadFile(updatedHelperName, AccessMode::readRandom, false, false, false));
         if (!isFileKey(originalIndexFile))
-            throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read flat file as an index: %s", originalHelperName.get());
-        newIndexFile.setown(queryThorFileManager().lookup(container.queryJob(), updatedHelperName, false, false, false, container.activityIsCodeSigned()));
+            throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read flat file as an index: %s", originalHelperName.get());
         if (!isFileKey(newIndexFile))
-            throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read flat file as an index: %s", updatedHelperName.get());
+            throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read flat file as an index: %s", updatedHelperName.get());
         if (originalIndexFile->numParts() != newIndexFile->numParts())
             throw MakeActivityException(this, TE_KeyDiffIndexSizeMismatch, "Index %s and %s differ in width", originalName.get(), updatedName.get());
         if (originalIndexFile->querySuperFile() || newIndexFile->querySuperFile())
@@ -80,12 +80,13 @@ public:
         if (width > container.queryJob().querySlaves())
             throw MakeActivityException(this, 0, "Unsupported: keydiff(%s, %s) - Cannot diff a key that's wider(%d) than the target cluster size(%d)", originalIndexFile->queryLogicalName(), newIndexFile->queryLogicalName(), width, container.queryJob().querySlaves());
 
+        StringBuffer defaultCluster;
+        if (getDefaultIndexBuildStoragePlane(defaultCluster))
+            clusters.append(defaultCluster);
         IArrayOf<IGroup> groups;
         fillClusterArray(container.queryJob(), outputName, clusters, groups);
         patchDesc.setown(queryThorFileManager().create(container.queryJob(), outputName, clusters, groups, 0 != (KDPoverwrite & helper->getFlags()), 0, !local, width));
         patchDesc->queryProperties().setProp("@kind", "keydiff");
-        addReadFile(originalIndexFile);
-        addReadFile(newIndexFile);
     }
     virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave)
     {
@@ -216,7 +217,7 @@ public:
         {
             if (KDPvaroutputname & helper->getFlags()) return;
             OwnedRoxieString outputHelperName(helper->getOutputName());
-            Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), outputHelperName, false, true, false, container.activityIsCodeSigned());
+            Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), outputHelperName, AccessMode::readMeta, false, true, false, container.activityIsCodeSigned());
             if (file)
                 throw MakeActivityException(this, TE_OverwriteNotSpecified, "Cannot write %s, file already exists (missing OVERWRITE attribute?)", file->queryLogicalName());
         }

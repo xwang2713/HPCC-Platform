@@ -82,6 +82,12 @@ ldap:
          -  path: EclDirectAccess
             resource: EclDirectAccess
             description: Access to ECL direct service
+         -  path: SashaAccess
+            resource: SashaAccess
+            description: Access to WS Sasha service
+         -  path: PackageMapAccess
+            resource: PackageMapAccess
+            description: Access to packagemaps
       WsWorkunits:
          Feature:
          -  path: OwnWorkunitsAccess
@@ -136,6 +142,11 @@ ldap:
          -  path: FileIOAccess
             resource: FileIOAccess
             description: Access to files in dropzone
+      WsCloud:
+         Feature:
+         -  path: CloudAccess
+            resource: CloudAccess
+            description: Access to cloud environment
       ws_config:
          Feature:
          -  path: ConfigAccess
@@ -146,10 +157,24 @@ ldap:
          -  path: ResourceQueryAccess
             resource: ResourceQueryAccess
             description: Access to resources
-      WsPackageProcess: []
+      WsPackageProcess:
+         Feature:
+         -  path: PackageMapAccess
+            resource: PackageMapAccess
+            description: Access to packagemaps
       ws_account: []
       ws_access: []
       ws_esdlconfig: []
       ws_elk: []
       ws_store: []
       WSDali: []
+      ws_logaccess:
+         Feature:
+         -  path: WsLogAccess
+            resource: WsLogAccess
+            description: Access to HPCC component log
+      WSSasha:
+         Feature:
+         -  path: SashaAccess
+            resource: SashaAccess
+            description: Access to HPCC Archive

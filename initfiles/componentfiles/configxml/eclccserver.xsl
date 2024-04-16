@@ -71,8 +71,28 @@
 
       <xsl:apply-templates select="@*[string(.) != '']"/>
       
-     
       <xsl:apply-templates select="Option[string(@name) != '']" mode="copy"/>
+
+      <xsl:copy-of select="/Environment/Software/vaults"/>
+
+      <xsl:choose>
+            <xsl:when test="tracing">
+               <xsl:copy-of select="./tracing"/>
+            </xsl:when>
+            <xsl:otherwise>
+               <xsl:copy-of select="/Environment/Software/tracing"/>
+            </xsl:otherwise>
+      </xsl:choose>
+      <!--
+      # Generated for configuration info. accessed by getGlobalConfig()
+      -->
+      <global>
+        <expert>
+          <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+        </expert>
+        <xsl:copy-of select="/Environment/Hardware/cost"/>
+      </global>
+
    </EclCCserver>
 </xsl:template>
 

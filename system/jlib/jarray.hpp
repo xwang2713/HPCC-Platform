@@ -66,6 +66,10 @@ typedef int (* StdCompare)(const void *_e1, const void *_e2);
 class jlib_decl Allocator
 {
 public:
+    Allocator() = default;
+    Allocator(const Allocator & ) = delete;
+    Allocator & operator = (const Allocator & ) = delete;
+
     void  kill();
     inline bool isItem(aindex_t pos = 0) const    { return pos < used; }      /* Is there an item at pos */
     inline aindex_t length() const                 { return used; } /* Return number of items  */
@@ -149,7 +153,7 @@ protected:
     typedef int (*CompareFunc)(const MEMBER *, const MEMBER *);   // Should really be const, as should the original array functions
 
 public:
-    ~ArrayOf<MEMBER,PARAM,MAPPER>() { kill(); }
+    ~ArrayOf() { kill(); }
 
     MEMBER & operator[](size_t pos) { return element((aindex_t)pos); }
     const MEMBER & operator[](size_t pos) const { return element((aindex_t)pos); }
@@ -237,11 +241,7 @@ public:
     {
         SELF::doSwapWith(other);
     }
-    void clear()
-    {
-        SELF::used = 0;
-    }
-    void kill(bool nodestruct = false)
+    void clear(bool nodestruct = false)
     {
         aindex_t count = SELF::used;
         SELF::used = 0;
@@ -250,6 +250,10 @@ public:
             for (aindex_t i=0; i<count; i++)
                  SELF::destruct(i);
         }
+    }
+    void kill(bool nodestruct = false)
+    {
+        clear(nodestruct);
         PARENT::kill();
     }
     MEMBER & element(aindex_t pos)

@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#define da_decl DECL_EXPORT
 #include "platform.h"
 #include "jlib.hpp"
 #include "jmisc.hpp"
@@ -92,7 +91,7 @@ public:
                 // Kludge to avoid locking SDS on blocked client
                 hasaborted = true;
                 StringBuffer tmp;
-                throw MakeStringException(-1,"Subscription notification to %s timed out",dst->endpoint().getUrlStr(tmp).str());
+                throw MakeStringException(-1,"Subscription notification to %s timed out",dst->endpoint().getEndpointHostText(tmp).str());
                 return;
             }
 
@@ -124,7 +123,7 @@ public:
     StringBuffer &getDetails(StringBuffer &buf)
     {
         StringBuffer ep;
-        return buf.appendf("%16" I64F "X: %s %s",sid,dst->endpoint().getUrlStr(ep).str(),hasaborted?"aborted":"");
+        return buf.appendf("%16" I64F "X: %s %s",sid,dst->endpoint().getEndpointHostText(ep).str(),hasaborted?"aborted":"");
     }
 };
 
@@ -147,7 +146,7 @@ class CDaliPublisherServer: public IDaliServer, public Thread, public CDaliPubli
     CheckedCriticalSection stubsect;
     ReadWriteLock processlock;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CDaliPublisherServer()
         : Thread("CDaliPublisherServer")
@@ -163,7 +162,7 @@ public:
     void start()
     {
         running = true;
-        Thread::start();
+        Thread::start(false);
     }
     void ready()
     {
@@ -276,7 +275,7 @@ public:
                     serializeException(exception, mb);
                 while (!coven.reply(mb,60000)) {
                         StringBuffer eps;
-                        DBGLOG("MSR_ADD_SUBSCRIPTION_PRIMARY reply timed out to %s try %d",mb.getSender().getUrlStr(eps).str(),retry+1);
+                        DBGLOG("MSR_ADD_SUBSCRIPTION_PRIMARY reply timed out to %s try %d",mb.getSender().getEndpointHostText(eps).str(),retry+1);
                         if (retry++==3)
                             return;
                 }
@@ -553,7 +552,7 @@ public:
         :   Thread("CDaliPublisherClient")
     {
         running = true;
-        start();
+        start(false);
     }
 
     ~CDaliPublisherClient()

@@ -34,17 +34,10 @@
 #endif
 #include <math.h>
 #include <atomic>
-
-unsigned udpOutQsPriority = 0;
-unsigned udpMaxRetryTimedoutReqs = 0; // 0 means off (keep retrying forever)
-unsigned udpRequestToSendTimeout = 0; // value in milliseconds - 0 means calculate from query timeouts
-unsigned udpRequestToSendAckTimeout = 10; // value in milliseconds
-
-#ifdef _DEBUG
-//#define TEST_DROPPED_PACKETS
-#endif
+#include <algorithm>
 
 using roxiemem::DataBuffer;
+
 /*
  *
  * There are 3 threads running to manage the data transfer from agent back to server:
@@ -81,20 +74,27 @@ using roxiemem::DataBuffer;
  */
 
 // UdpResentList keeps a copy of up to TRACKER_BITS previously sent packets so we can send them again
+RelaxedAtomic<unsigned> okToSendTimeouts;
 RelaxedAtomic<unsigned> packetsResent;
 RelaxedAtomic<unsigned> flowRequestsSent;
 RelaxedAtomic<unsigned> flowPermitsReceived;
 RelaxedAtomic<unsigned> dataPacketsSent;
 
-unsigned udpResendTimeout;  // in millseconds
-bool udpResendLostPackets;
-bool udpAssumeSequential;
-
 static unsigned lastResentReport = 0;
+static unsigned lastOkToSendTimeouts = 0;
 static unsigned lastPacketsResent = 0;
 static unsigned lastFlowRequestsSent = 0;
 static unsigned lastFlowPermitsReceived = 0;
 static unsigned lastDataPacketsSent = 0;
+
+unsigned getMaxRequestDeadTimeout()
+{
+    if (udpRequestDeadTimeout == 0)
+        return 0;
+    assertex(udpFlowAckTimeout != 0);
+    unsigned maxLost = udpRequestDeadTimeout / udpFlowAckTimeout;
+    return std::max(maxLost, 2U);
+}
 
 class UdpResendList
 {
@@ -133,11 +133,13 @@ public:
     {
         if (!count)
             return;
+        //A permit of 0 means send any missing packets.  I suspect udpResendAllMissingPackets should be true anyway, but just to be sure...
+        bool sendAllMissingPackets = (space == 0)  || udpResendAllMissingPackets;
         unsigned now = msTick();
         sequence_t seq = first;
         unsigned checked = 0;
         bool released = false;
-        while (checked < count && space)
+        while ((checked < count) && (space || sendAllMissingPackets))
         {
             unsigned idx = seq % TRACKER_BITS;
             if (entries[idx])
@@ -154,10 +156,10 @@ public:
                 else
                 {
                     // The current table entry is not marked as seen by receiver. Should we resend it?
-                    if (now-timeSent[idx] >= udpResendTimeout ||    // Note that this will block us from sending newer packets, if we have reached limit of tracking.
+                    if (now-timeSent[idx] >= udpResendDelay ||    // Note that this will block us from sending newer packets, if we have reached limit of tracking.
                         (udpAssumeSequential && (int)(seq - seen.lastSeen()) < 0))  // so we (optionally) assume any packet not received that is EARLIER than one that HAS been received is lost.
                     {
-                        if (udpTraceLevel > 1)
+                        if (udpTraceTimeouts)
                             DBGLOG("Resending %" SEQF "u last sent %u ms ago", seq, now-timeSent[idx]);
                         timeSent[idx] = now;
                         packetsResent++;
@@ -198,6 +200,7 @@ class UdpReceiverEntry : public IUdpReceiverEntry
 private:
     queue_t *output_queue = nullptr;
     bool    initialized = false;
+    bool hadAcknowledgement = false;    // only used in tracing to aid spotting missing ack v missing permit
     const bool isLocal = false;
     const bool encrypted = false;
     ISocket *send_flow_socket = nullptr;
@@ -206,17 +209,31 @@ private:
     int     current_q = 0;
     int     currentQNumPkts = 0;         // Current Queue Number of Consecutive Processed Packets.
     int     *maxPktsPerQ = nullptr;      // to minimise power function re-calc for every packet
+    const unsigned maxRequestDeadTimeouts;
 
-    void sendRequest(UdpRequestToSendMsg &msg)
+    void sendRequest(UdpRequestToSendMsg &msg, bool sendWithData)
     {
         try
         {
-            if (udpTraceLevel > 3 || udpTraceFlow)
+            if (udpTraceFlow)
             {
-                StringBuffer s;
-                DBGLOG("UdpSender: sending flowType::%s msg %" SEQF "u flowSeq %" SEQF "u to node=%s", flowType::name(msg.cmd), msg.sendSeq, msg.flowSeq, ip.getIpText(s).str());
+                StringBuffer s, s2;
+                DBGLOG("UdpSender[%s]: sending flowType::%s msg %" SEQF "u flowSeq %" SEQF "u size=%u to node=%s %s",
+                       msg.sourceNode.getTraceText(s2).str(), flowType::name(msg.cmd), msg.sendSeq, msg.flowSeq, msg.packets, ip.getHostText(s).str(), sendWithData ? "<data>" : "<flow>");
             }
-            send_flow_socket->write(&msg, sizeof(UdpRequestToSendMsg));
+#ifdef TEST_DROPPED_PACKETS
+            flowPacketsSent[msg.cmd]++;
+            if (udpDropFlowPackets[msg.cmd] && flowPacketsSent[msg.cmd]%udpDropFlowPackets[msg.cmd] == 0)
+            {
+                StringBuffer s, s2;
+                DBGLOG("UdpSender[%s]: deliberately dropping flowType::%s msg %" SEQF "u flowSeq %" SEQF "u to node=%s", msg.sourceNode.getTraceText(s2).str(), flowType::name(msg.cmd), msg.sendSeq, msg.flowSeq, ip.getHostText(s).str());
+            }
+            else
+#endif
+            if (sendWithData)
+                data_socket->write(&msg, sizeof(UdpRequestToSendMsg));
+            else
+                send_flow_socket->write(&msg, sizeof(UdpRequestToSendMsg));
             flowRequestsSent++;
         }
         catch(IException *e)
@@ -235,9 +252,8 @@ private:
     UdpResendList *resendList = nullptr;
 public:
     const IpAddress ip;
-    unsigned timeouts = 0;      // Number of consecutive timeouts
-    std::atomic<unsigned> requestExpiryTime = { 0 };  // Updated by send_flow thread, read by send_resend thread and send_data thread
-
+    std::atomic<unsigned> timeouts{0};    // Number of consecutive timeouts
+    std::atomic<unsigned> requestExpiryTime{0};  // Updated by send_flow thread, read by send_resend thread and send_data thread
     static bool comparePacket(const void *pkData, const void *key)
     {
         UdpPacketHeader *dataHdr = (UdpPacketHeader*) ((DataBuffer*)pkData)->data;
@@ -245,10 +261,46 @@ public:
         return ( (dataHdr->ruid == keyHdr->ruid) && (dataHdr->msgId == keyHdr->msgId) );
     }
 
-    std::atomic<unsigned> packetsQueued = { 0 };
-    std::atomic<sequence_t> nextSendSequence = {0};
-    std::atomic<sequence_t> activeFlowSequence = {0};
+    std::atomic<unsigned> packetsQueued{0};
+    std::atomic<sequence_t> nextSendSequence{0};
+    std::atomic<sequence_t> activeFlowSequence{0};
+    std::atomic<sequence_t> activePermitSeq{0};      // Used to prevent a request to send once a permit has been received
     CriticalSection activeCrit;
+
+    unsigned nextFlowSequence()
+    {
+        //This function is only called within a critical section, so use a non-atomic increment
+        //Also ensure that a flowSeq of 0 is never returned so it can be used as a null value in the receiver
+        unsigned seq = activeFlowSequence+1;
+        if (seq == 0)
+            seq++;
+        activeFlowSequence = seq;
+        return seq;
+    }
+
+    bool hasDataToSend() const
+    {
+        return (packetsQueued.load(std::memory_order_relaxed) || (resendList && resendList->numActive()));
+    }
+
+    void setRequestExpiryTime(unsigned newExpiryTime)
+    {
+        //requestExpiryTime 0 should only be used if there is no data to send.  Ensure it is non zero otherwise.
+        if (newExpiryTime == 0)
+            newExpiryTime = 1;
+        requestExpiryTime.store(newExpiryTime);
+    }
+
+    void sendStart(unsigned packets)
+    {
+        UdpRequestToSendMsg msg;
+        msg.packets = packets;                 // Note this is how many we are actually going to send
+        msg.sendSeq = nextSendSequence;
+        msg.sourceNode = sourceIP;
+        msg.flowSeq = activeFlowSequence;
+        msg.cmd = flowType::send_start;
+        sendRequest(msg, false);
+    }
 
     void sendDone(unsigned packets)
     {
@@ -256,7 +308,9 @@ public:
         //packetsQueued must be checked within the critical section to ensure that requestToSend hasn't been called
         //between retrieving the count and entering the critical section, otherwise this function will set
         //requestExpiryTime to 0 (and indicate the operation is done)even though there packetsQueued is non-zero.
-        CriticalBlock b(activeCrit);
+
+        hadAcknowledgement = false;
+        CLeavableCriticalBlock block(activeCrit);
         bool dataRemaining;
         if (resendList)
             dataRemaining = (packetsQueued.load(std::memory_order_relaxed) && resendList->canRecord(nextSendSequence)) || resendList->numActive();
@@ -268,26 +322,51 @@ public:
         msg.packets = packets;                      // Note this is how many we sent
         msg.sendSeq = nextSendSequence;
         msg.sourceNode = sourceIP;
-        if (dataRemaining && requestExpiryTime)  // requestExpiryTime will be non-zero UNLESS someone called abort() just before I got here
+        msg.flowSeq = activeFlowSequence;
+        // requestExpiryTime will be non-zero UNLESS someone called abort() just before I got here, or a previous send_complete was lost, and a permit was resent
+        if (dataRemaining && requestExpiryTime)
         {
-            msg.flowSeq = activeFlowSequence++;
-            msg.cmd = flowType::request_to_send_more;
-            requestExpiryTime = msTick() + udpRequestToSendAckTimeout;
+            if (udpAllowAsyncPermits)
+            {
+                // send_complete is always sent to the data socket
+                msg.cmd = flowType::send_completed;
+                sendRequest(msg, true);
+
+                //But the request to send more is sent to the flow socket => timeout is the ack timeout
+                msg.cmd = flowType::request_to_send;
+                msg.packets = 0;
+                msg.flowSeq = nextFlowSequence();
+                setRequestExpiryTime(msTick() + udpFlowAckTimeout);
+                block.leave();
+                sendRequest(msg, false);
+            }
+            else
+            {
+                //Send a compound command - rather than (completed, request_to_send)
+                msg.cmd = flowType::request_to_send_more;
+                msg.flowSeq = activeFlowSequence;
+                nextFlowSequence();   // Increment activeFlowSequence and avoid a 0 flowSeq
+
+                //The flow event is sent on the data socket, so it needs to wait for all the data to be sent before being received
+                //therefore use the updDataSendTimeout instead of udpFlowAckTimeout
+                setRequestExpiryTime(msTick() + updDataSendTimeout);
+                block.leave();
+                sendRequest(msg, true);
+            }
         }
         else
         {
-            msg.flowSeq = activeFlowSequence;
             msg.cmd = flowType::send_completed;
             requestExpiryTime = 0;
+            block.leave();
+            sendRequest(msg, true);
         }
-        sendRequest(msg);
-        timeouts = 0;
     }
 
     void requestToSendNew()
     {
         //See comment in sendDone() on a potential race condition.
-        CriticalBlock b(activeCrit);
+        CLeavableCriticalBlock block(activeCrit);
         // This is called from data thread when new data added to a previously-empty list
         if (!requestExpiryTime)
         {
@@ -296,27 +375,41 @@ public:
             msg.cmd = flowType::request_to_send;
             msg.packets = 0;
             msg.sendSeq = nextSendSequence;
-            msg.flowSeq = ++activeFlowSequence;
+            msg.flowSeq = nextFlowSequence();
             msg.sourceNode = sourceIP;
-            requestExpiryTime = msTick() + udpRequestToSendAckTimeout;
-            sendRequest(msg);
+            setRequestExpiryTime(msTick() + udpFlowAckTimeout);
+            block.leave();
+            sendRequest(msg, false);
         }
     }
 
     void resendRequestToSend()
     {
-        // This is called from timeout thread when a previously-send request has had no response
+        // This is called from the timeout thread when a previously-send request has had no response
+        okToSendTimeouts.fastInc();
         timeouts++;
         if (udpTraceLevel || udpTraceFlow || udpTraceTimeouts)
         {
-            StringBuffer s;
-            EXCLOG(MCoperatorError,"ERROR: UdpSender: timed out %i times (max=%i) waiting ok_to_send msg from node=%s",
-                   timeouts, udpMaxRetryTimedoutReqs, ip.getIpText(s).str());
+            //Avoid tracing too many times - otherwise might get large number 5000+ messages
+            if (maxRequestDeadTimeouts < 10 || (timeouts % (maxRequestDeadTimeouts / 10) == 0))
+            {
+                int timeExpired = msTick()-requestExpiryTime;
+                StringBuffer s;
+                EXCLOG(MCoperatorError,"ERROR: UdpSender: timed out %i times (flow=%u, max=%i, timeout=%u, expiryTime=%u[%u] ack(%u)) waiting ok_to_send msg from node=%s",
+                    timeouts.load(), activeFlowSequence.load(), maxRequestDeadTimeouts, udpFlowAckTimeout, requestExpiryTime.load(), timeExpired, (int)hadAcknowledgement, ip.getHostText(s).str());
+            }
         }
-        // 0 (zero) value of udpMaxRetryTimedoutReqs means NO limit on retries
-        CriticalBlock b(activeCrit);
-        if (udpMaxRetryTimedoutReqs && (timeouts >= udpMaxRetryTimedoutReqs))
+
+        hadAcknowledgement = false;
+        // 0 (zero) value of maxRequestDeadTimeouts means NO limit on retries.  Not likely to be a good idea....
+        CLeavableCriticalBlock block(activeCrit);
+        if (maxRequestDeadTimeouts && (timeouts >= maxRequestDeadTimeouts))
         {
+            int timeExpired = msTick()-requestExpiryTime;
+            StringBuffer s;
+            EXCLOG(MCoperatorError,"ERROR: UdpSender: too many timeouts - aborting sends. Timed out %i times (flow=%u, max=%i, timeout=%u, expiryTime=%u[%u] ack(%u)) waiting ok_to_send for %u packets from node=%s",
+                    timeouts.load(), activeFlowSequence.load(), maxRequestDeadTimeouts, udpFlowAckTimeout, requestExpiryTime.load(), timeExpired, (int)hadAcknowledgement, packetsQueued.load(), ip.getIpText(s).str());
+
             abort();
             return;
         }
@@ -328,38 +421,71 @@ public:
             msg.sendSeq = nextSendSequence;
             msg.flowSeq = activeFlowSequence;
             msg.sourceNode = sourceIP;
-            requestExpiryTime = msTick() + udpRequestToSendAckTimeout;
-            sendRequest(msg);
+            setRequestExpiryTime(msTick() + udpFlowAckTimeout);
+            block.leave();
+            sendRequest(msg, false);
+        }
+    }
+
+    void notePermitReceived(unsigned permitFlowSeq)
+    {
+        //Disregard old permits (in case they arrive out of order)
+        if (activePermitSeq == activeFlowSequence)
+        {
+            activePermitSeq = permitFlowSeq; // used to prevent resending a request to send if the permit has already been received
+            timeouts = 0;
+
+            //NOTE:  If all data has been received (and acknowledged), but the last send_done message is lost, the sender may resend another ok_to_send
+            //The sender could then request to send, incrementing activeFlowSequence. and then send data for next the permit id - even though it hasn't been granted
         }
     }
 
     void requestAcknowledged()
     {
+        timeouts = 0;
+        hadAcknowledgement = true;
         CriticalBlock b(activeCrit);
         if (requestExpiryTime)
-            requestExpiryTime = msTick() + udpRequestToSendTimeout;
+            setRequestExpiryTime(msTick() + udpRequestTimeout);   // set a timeout in case an ok_to_send message goes missing
     }
 
-    unsigned sendData(const UdpPermitToSendMsg &permit, TokenBucket *bucket)
+#ifdef TEST_DROPPED_PACKETS
+    bool dropUdpPacket(unsigned pktSeq) const
     {
+        if (pktSeq & UDP_PACKET_RESENT)
+            return false;
+        unsigned seq = pktSeq & UDP_PACKET_SEQUENCE_MASK;
+        if (udpDropDataPacketsPercent == 0)
+            return ((seq==0 || seq==10 || ((pktSeq&UDP_PACKET_COMPLETE) != 0)));
+        return (seq % 100) < udpDropDataPacketsPercent;
+    }
+#endif
+
+    void sendData(const UdpPermitToSendMsg &permit, TokenBucket *bucket)
+    {
+        //NOTE: If a send_complete happens to be lost, it is possible for a permit to come in for a previous flowId
+        //but this function sends the data as if it comes from the current requested flow-id.  That should not cause
+        //any problems on the sender, and avoids some if the flowId is lower than the last requested.
 #ifdef _DEBUG
         // Consistency check
         if (permit.destNode.getIpAddress().ipcompare(ip) != 0)
         {
             StringBuffer p, s;
-            DBGLOG("UdpFlow: permit ip %s does not match receiver table ip %s", permit.destNode.getTraceText(p).str(), ip.getIpText(s).str());
+            DBGLOG("UdpFlow: permit ip %s does not match receiver table ip %s", permit.destNode.getTraceText(p).str(), ip.getHostText(s).str());
             printStackReport();
         }
 #endif
         if (permit.flowSeq != activeFlowSequence)
         {
-            if (udpTraceLevel>1 || udpTraceFlow)
+            if (udpTraceFlow)
             {
                 StringBuffer s;
                 DBGLOG("UdpFlow: ignoring out-of-date permit_to_send seq %" SEQF "u (expected %" SEQF "u) to node %s", permit.flowSeq, activeFlowSequence+0, permit.destNode.getTraceText(s).str());
             }
-            return 0;
+            return;
         }
+
+        CCycleTimer sendTimer;
         unsigned maxPackets = permit.max_data;
         std::vector<DataBuffer *> toSend;
         unsigned totalSent = 0;
@@ -368,7 +494,11 @@ public:
         {
             resendList->noteRead(permit.seen, toSend, maxPackets, nextSendSequence.load(std::memory_order_relaxed));
             resending = toSend.size();
-            maxPackets -= resending;
+            if (resending <= maxPackets)
+                maxPackets -= resending;
+            else
+                maxPackets = 0;
+
             // Don't send any packet that would end up overwriting an active packet in our resend list
             if (resendList->numActive())
             {
@@ -377,14 +507,14 @@ public:
                 if (maxPackets > TRACKER_BITS-inflight)
                 {
                     maxPackets = TRACKER_BITS-inflight;
-                    if (udpTraceLevel>2 || maxPackets == 0)
+                    if (maxPackets == 0)
                         DBGLOG("Can't send more than %d new packets or we will overwrite unreceived packets (%u in flight, %u active %u resending now)", maxPackets, inflight, resendList->numActive(), resending);
                     // Note that this may mean we can't send any packets, despite having asked for permission to do so
                     // We will keep on asking.
                 }
             }
         }
-        if (udpTraceLevel>2)
+        if (udpTraceFlow)
             DBGLOG("Resending %u packets", (unsigned) toSend.size());
         while (maxPackets && packetsQueued.load(std::memory_order_relaxed))
         {
@@ -401,64 +531,95 @@ public:
                 break;
 #endif
         }
-        MemoryBuffer encryptBuffer;
-        for (DataBuffer *buffer: toSend)
+        if (udpTraceFlow)
+            DBGLOG("Sending %u packets [..%u] from max of %u [resend %u queued %u]",
+                   (unsigned)toSend.size(), nextSendSequence.load(), permit.max_data, resendList ? resendList->numActive() : 0, packetsQueued.load(std::memory_order_relaxed));
+
+        unsigned gatherElapsed = sendTimer.elapsedMs();
+        if (udpTraceFlow || gatherElapsed > udpSendTraceThresholdMs)
         {
-            UdpPacketHeader *header = (UdpPacketHeader*) buffer->data;
-            unsigned length = header->length;
-            if (bucket)
+            StringBuffer s;
+            DBGLOG("UdpSender: gatherSendBlocks() %u blocks to node=%s under permit %" SEQF "u in %ums", (unsigned)toSend.size(), permit.destNode.getTraceText(s).str(), permit.flowSeq, gatherElapsed);
+        }
+
+        //Avoid sending a start flow message if not sending any data - the completed message is sufficient
+        if (toSend.size())
+        {
+            sendStart(toSend.size());
+            for (DataBuffer *buffer: toSend)
             {
-                MTIME_SECTION(queryActiveTimer(), "bucket_wait");
-                bucket->wait((length / 1024)+1);
-            }
-            try
-            {
-#ifdef TEST_DROPPED_PACKETS
-                if (((header->pktSeq & UDP_PACKET_RESENT)==0) && (header->pktSeq==0 || header->pktSeq==10 || ((header->pktSeq&UDP_PACKET_COMPLETE) != 0)))
-                    DBGLOG("Deliberately dropping packet %" SEQF "u", header->sendSeq);
-                else
-#endif
-                if (encrypted)
+                UdpPacketHeader *header = (UdpPacketHeader*) buffer->data;
+                unsigned length = header->length;
+                if (bucket)
                 {
-                    encryptBuffer.clear();
-                    encryptBuffer.append(sizeof(UdpPacketHeader), header);    // We don't encrypt the header
-                    length -= sizeof(UdpPacketHeader);
-                    const char *data = buffer->data + sizeof(UdpPacketHeader);
-                    const MemoryAttr &udpkey = getSecretUdpKey(true);
-                    aesEncrypt(udpkey.get(), udpkey.length(), data, length, encryptBuffer);
-                    header->length = encryptBuffer.length();
-                    encryptBuffer.writeDirect(0, sizeof(UdpPacketHeader), header);   // Only really need length updating
-                    assert(length <= DATA_PAYLOAD);
-                    if (udpTraceLevel > 5)
-                        DBGLOG("ENCRYPT: Writing %u bytes to data socket", encryptBuffer.length());
-                    data_socket->write(encryptBuffer.toByteArray(), encryptBuffer.length());
+                    MTIME_SECTION(queryActiveTimer(), "bucket_wait");
+                    bucket->wait((length / 1024)+1);
+                }
+                try
+                {
+                    if (encrypted && !resending && udpEncryptOnSendThread)
+                    {
+                        length -= sizeof(UdpPacketHeader);
+                        const MemoryAttr &udpkey = getSecretUdpKey(true);
+                        size_t encryptedLength = aesEncryptInPlace(udpkey.get(), udpkey.length(), buffer->data + sizeof(UdpPacketHeader), length, DATA_PAYLOAD - sizeof(UdpPacketHeader));
+                        length = encryptedLength + sizeof(UdpPacketHeader);
+                        header->length = length;
+                        assertex(length <= DATA_PAYLOAD);
+                    }
+#ifdef TEST_DROPPED_PACKETS
+                    if (udpDropDataPackets && dropUdpPacket(header->pktSeq))
+                    {
+                        if (udpTraceTimeouts)
+                            DBGLOG("Deliberately dropping packet %" SEQF "u [%" SEQF "x]", header->sendSeq, header->pktSeq);
+                    }
+                    else
+#endif
+                    data_socket->write(buffer->data, length);
+                    dataPacketsSent++;
+                }
+                catch(IException *e)
+                {
+                    StringBuffer s;
+                    DBGLOG("UdpSender: write exception - write(%p, %u) - %s", buffer->data, length, e->errorMessage(s).str());
+                    e->Release();
+                }
+                catch(...)
+                {
+                    DBGLOG("UdpSender: write exception - unknown exception");
+                }
+                if (resendList)
+                {
+                    if (resending)
+                        resending--;   //Don't add the ones I am resending back onto list - they are still there!
+                    else
+                        resendList->append(buffer);
                 }
                 else
-                    data_socket->write(buffer->data, length);
-                dataPacketsSent++;
+                    ::Release(buffer);
             }
-            catch(IException *e)
-            {
-                StringBuffer s;
-                DBGLOG("UdpSender: write exception - write(%p, %u) - %s", buffer->data, length, e->errorMessage(s).str());
-                e->Release();
-            } 
-            catch(...)
-            {
-                DBGLOG("UdpSender: write exception - unknown exception");
-            }
-            if (resendList)
-            {
-                if (resending)
-                    resending--;   //Don't add the ones I am resending back onto list - they are still there!
-                else
-                    resendList->append(buffer);
-            }
-            else
-                ::Release(buffer);
         }
+        activePermitSeq = 0;
+        unsigned socketElapsed = sendTimer.elapsedMs();
+        if ((socketElapsed - gatherElapsed) > udpSendTraceThresholdMs)
+        {
+            StringBuffer s;
+            DBGLOG("UdpSender: socket->write() %u blocks, %u bytes to node=%s under permit %" SEQF "u in %ums", (unsigned)toSend.size(), totalSent, permit.destNode.getTraceText(s).str(), permit.flowSeq, (socketElapsed - gatherElapsed));
+        }
+
         sendDone(toSend.size());
-        return totalSent;
+
+        unsigned doneElapsed = sendTimer.elapsedMs();
+        if ((doneElapsed - socketElapsed) > udpSendTraceThresholdMs)
+        {
+            StringBuffer s;
+            DBGLOG("UdpSender: sendDone() %u blocks, %u bytes to node=%s under permit %" SEQF "u in %ums", (unsigned)toSend.size(), totalSent, permit.destNode.getTraceText(s).str(), permit.flowSeq, doneElapsed - socketElapsed);
+        }
+
+        if (doneElapsed > udpSendTraceThresholdMs)
+        {
+            StringBuffer s;
+            DBGLOG("UdpSender: sendData() %u bytes to node=%s under permit %" SEQF "u in %ums", totalSent, permit.destNode.getTraceText(s).str(), permit.flowSeq, doneElapsed);
+        }
     }
 
     bool dataQueued(const UdpPacketHeader &key)
@@ -496,20 +657,22 @@ public:
     {
         // Called if too many timeouts on a request to send
 
-        if (udpTraceLevel > 3)
+        if (udpTraceFlow)
         {
             StringBuffer s;
-            DBGLOG("UdpSender: abort sending queued data to node=%s", ip.getIpText(s).str());
+            DBGLOG("UdpSender: abort sending queued data to node=%s", ip.getHostText(s).str());
         }
         timeouts = 0;
-        requestExpiryTime = 0;
         removeData(nullptr, nullptr);
+
+        CriticalBlock block(activeCrit);
+        if (packetsQueued == 0)
+            requestExpiryTime = 0;
     }
 
     inline void pushData(unsigned queue, DataBuffer *buffer)
     {
-        output_queue[queue].free_slots();     // block until at least one free space
-        output_queue[queue].pushOwn(buffer);
+        output_queue[queue].pushOwnWait(buffer);  // block until there is some space on the queue
         if (!packetsQueued++)
             requestToSendNew();
     }
@@ -524,16 +687,12 @@ public:
                 buffer = output_queue[current_q].pop(false);
                 if (!buffer)
                 {
-                    if (udpTraceLevel >= 5)
-                        DBGLOG("UdpSender: ---------- Empty Q %d", current_q);
                     currentQNumPkts = 0;
                     current_q = (current_q + 1) % numQueues;
                 }
                 else
                 {
                     currentQNumPkts++;
-                    if (udpTraceLevel >= 5)
-                        DBGLOG("UdpSender: ---------- Packet from Q %d", current_q);
                     if (currentQNumPkts >= maxPktsPerQ[current_q])
                     {
                         currentQNumPkts = 0;
@@ -560,8 +719,8 @@ public:
         return nullptr;
     }
 
-    UdpReceiverEntry(const IpAddress _ip, unsigned _numQueues, unsigned _queueSize, unsigned _sendFlowPort, unsigned _dataPort, bool _encrypted)
-    : ip (_ip), sourceIP(myNode.getIpAddress()), numQueues(_numQueues), isLocal(_ip.isLocal()), encrypted(_encrypted)
+    UdpReceiverEntry(const IpAddress _ip, const IpAddress _myIP, unsigned _numQueues, unsigned _queueSize, unsigned _sendFlowPort, unsigned _dataPort, bool _encrypted)
+    : ip (_ip), sourceIP(_myIP), numQueues(_numQueues), isLocal(_ip.isLocal()), encrypted(_encrypted), maxRequestDeadTimeouts(getMaxRequestDeadTimeout())
     {
         assert(!initialized);
         assert(numQueues > 0);
@@ -571,8 +730,26 @@ public:
             {
                 SocketEndpoint sendFlowEp(_sendFlowPort, ip);
                 SocketEndpoint dataEp(_dataPort, ip);
-                send_flow_socket = ISocket::udp_connect(sendFlowEp);
-                data_socket = ISocket::udp_connect(dataEp);
+#ifdef SOCKET_SIMULATION
+                if (isUdpTestMode)
+                {
+                    if (udpTestUseUdpSockets)
+                    {
+                        send_flow_socket = CSimulatedUdpWriteSocket::udp_connect(sendFlowEp);
+                        data_socket = CSimulatedUdpWriteSocket::udp_connect(dataEp);
+                    }
+                    else
+                    {
+                        send_flow_socket = CSimulatedQueueWriteSocket::udp_connect(sendFlowEp);
+                        data_socket = CSimulatedQueueWriteSocket::udp_connect(dataEp);
+                    }
+                }
+                else
+#endif
+                {
+                    send_flow_socket = ISocket::udp_connect(sendFlowEp);
+                    data_socket = ISocket::udp_connect(dataEp);
+                }
                 if (isLocal)
                 {
                     data_socket->set_send_buffer_size(udpLocalWriteSocketSize);
@@ -583,18 +760,20 @@ public:
             catch(IException *e) 
             {
                 StringBuffer error, ipstr;
-                DBGLOG("UdpSender: udp_connect failed %s %s", ip.getIpText(ipstr).str(), e->errorMessage(error).str());
+                DBGLOG("UdpSender: udp_connect failed %s %s", ip.getHostText(ipstr).str(), e->errorMessage(error).str());
                 throw;
             }
             catch(...) 
             {
                 StringBuffer ipstr;
-                DBGLOG("UdpSender: udp_connect failed %s %s", ip.getIpText(ipstr).str(), "Unknown error");
+                DBGLOG("UdpSender: udp_connect failed %s %s", ip.getHostText(ipstr).str(), "Unknown error");
                 throw;
             }
             output_queue = new queue_t[numQueues];
             maxPktsPerQ = new int[numQueues];
-            for (unsigned j = 0; j < numQueues; j++) 
+            maxPktsPerQ[0] = INT_MAX;   // Always send out-of-band first
+            output_queue[0].set_queue_size(_queueSize);
+            for (unsigned j = 1; j < numQueues; j++) 
             {
                 output_queue[j].set_queue_size(_queueSize);
                 maxPktsPerQ[j] = (int) pow((double)udpOutQsPriority, (double)numQueues - j - 1);
@@ -602,8 +781,8 @@ public:
             initialized = true;
             if (udpTraceLevel > 0)
             {
-                StringBuffer ipStr;
-                DBGLOG("UdpSender: added entry for ip=%s to receivers table - send_flow_port=%d", ip.getIpText(ipStr).str(), _sendFlowPort);
+                StringBuffer ipStr, myIpStr;
+                DBGLOG("UdpSender[%s]: added entry for ip=%s to receivers table - send_flow_port=%d", _myIP.getHostText(myIpStr).str(), ip.getHostText(ipStr).str(), _sendFlowPort);
             }
         }
         if (udpResendLostPackets)
@@ -638,7 +817,7 @@ class CSendManager : implements ISendManager, public CInterface
             return doRun();
         }
     protected:
-        bool running;
+        std::atomic<bool> running;
     public:
         StartedThread(const char *name) : Thread(name)
         {
@@ -647,14 +826,17 @@ class CSendManager : implements ISendManager, public CInterface
 
         ~StartedThread()
         {
-            running = false;
-            join();
+            if (running)
+            {
+                running = false;
+                join();
+            }
         }
 
-        virtual void start()
+        virtual void start(bool inheritThreadContext) override
         {
             running = true;
-            Thread::start();
+            Thread::start(inheritThreadContext);
             started.wait();
         }
 
@@ -670,15 +852,15 @@ class CSendManager : implements ISendManager, public CInterface
         virtual int doRun() override
         {
             if (udpTraceLevel > 0)
-                DBGLOG("UdpSender: send_resend_flow started");
-            unsigned timeout = udpRequestToSendTimeout;
+                DBGLOG("UdpSender[%s]: send_resend_flow started", parent.myId);
+            unsigned timeout = udpRequestTimeout;
             while (running)
             {
                 if (terminated.wait(timeout) || !running)
                     break;
 
                 unsigned now = msTick();
-                timeout = udpRequestToSendTimeout;
+                timeout = udpRequestTimeout;
                 for (auto&& dest: parent.receiversTable)
                 {
 #ifdef _DEBUG
@@ -687,45 +869,61 @@ class CSendManager : implements ISendManager, public CInterface
                     if (&receiverInfo != &dest)
                     {
                         StringBuffer s;
-                        DBGLOG("UdpSender: table entry %s does not find itself", dest.ip.getIpText(s).str());
+                        DBGLOG("UdpSender[%s]: table entry %s does not find itself", parent.myId, dest.ip.getHostText(s).str());
                         printStackReport();
 
                     }
 #endif
                     unsigned expireTime = dest.requestExpiryTime;
+                    unsigned curPermitSeq = dest.activePermitSeq.load();
                     if (expireTime)
                     {
                         int timeToGo = expireTime-now;
-                        if (timeToGo <= 0)
-                            dest.resendRequestToSend();
-                        else if ((unsigned) timeToGo < timeout)
-                            timeout = timeToGo;
+                        //Avoid resending a request to send if we have already received a permit
+                        if (!curPermitSeq || (curPermitSeq != dest.activeFlowSequence))
+                        {
+                            if (timeToGo <= 0)
+                                dest.resendRequestToSend();
+                            else if ((unsigned) timeToGo < timeout)
+                                timeout = timeToGo;
+                        }
+                        else if (udpTraceFlow && (timeToGo < 0))
+                        {
+                            StringBuffer s;
+                            DBGLOG("UdpSender[%s]: entry %s timeout waiting to send with active permit", parent.myId, dest.ip.getHostText(s).str());
+                        }
                     }
                 }
                 if (udpStatsReportInterval && (now-lastResentReport > udpStatsReportInterval))
                 {
                     // MORE - some of these should really be tracked per destination
-                    lastResentReport = now;
+                    if (okToSendTimeouts > lastOkToSendTimeouts)
+                    {
+                        EXCLOG(MCoperatorError,"ERROR: UdpSender: timed out %u more times waiting for ok_to_send msg in last %u seconds",
+                            okToSendTimeouts - lastOkToSendTimeouts, (now-lastResentReport)/1000);
+                        lastOkToSendTimeouts = okToSendTimeouts;
+                    }
                     if (packetsResent > lastPacketsResent)
                     {
-                        DBGLOG("%u more packets resent by this agent (%u total)", packetsResent-lastPacketsResent, packetsResent-0);
+                        DBGLOG("Sender: %u more packets resent by this agent (%u total)", packetsResent-lastPacketsResent, packetsResent-0);
                         lastPacketsResent = packetsResent;
                     }
                     if (flowRequestsSent > lastFlowRequestsSent)
                     {
-                        DBGLOG("%u more flow request packets sent by this agent (%u total)", flowRequestsSent - lastFlowRequestsSent, flowRequestsSent-0);
+                        DBGLOG("Sender: %u more flow request packets sent by this agent (%u total)", flowRequestsSent - lastFlowRequestsSent, flowRequestsSent-0);
                         lastFlowRequestsSent = flowRequestsSent;
                     }
                     if (flowPermitsReceived > lastFlowPermitsReceived)
                     {
-                        DBGLOG("%u more flow control packets recived by this agent (%u total)", flowPermitsReceived - lastFlowPermitsReceived, flowPermitsReceived-0);
+                        DBGLOG("Sender: %u more flow control packets received by this agent (%u total)", flowPermitsReceived - lastFlowPermitsReceived, flowPermitsReceived-0);
                         lastFlowPermitsReceived = flowPermitsReceived;
                     }
                     if (dataPacketsSent > lastDataPacketsSent)
                     {
-                        DBGLOG("%u more data packets sent by this agent (%u total)", dataPacketsSent - lastDataPacketsSent, dataPacketsSent-0);
+                        DBGLOG("Sender: %u more data packets sent by this agent (%u total)", dataPacketsSent - lastDataPacketsSent, dataPacketsSent-0);
                         lastDataPacketsSent = dataPacketsSent;
                     }
+                    lastResentReport = now;
                 }
             }
             return 0;
@@ -735,7 +933,7 @@ class CSendManager : implements ISendManager, public CInterface
         send_resend_flow(CSendManager &_parent)
             : StartedThread("UdpLib::send_resend_flow"), parent(_parent)
         {
-            start();
+            start(false);
         }
 
         ~send_resend_flow()
@@ -752,32 +950,40 @@ class CSendManager : implements ISendManager, public CInterface
         CSendManager &parent;
         int      receive_port;
         Owned<ISocket> flow_socket;
-        
     public:
         send_receive_flow(CSendManager &_parent, int r_port) : StartedThread("UdpLib::send_receive_flow"), parent(_parent)
         {
             receive_port = r_port;
             if (check_max_socket_read_buffer(udpFlowSocketsSize) < 0) 
                 throw MakeStringException(ROXIE_UDP_ERROR, "System Socket max read buffer is less than %i", udpFlowSocketsSize);
-            flow_socket.setown(ISocket::udp_create(receive_port));
+#ifdef SOCKET_SIMULATION
+            if (isUdpTestMode)
+            {
+                if (udpTestUseUdpSockets)
+                    flow_socket.setown(CSimulatedUdpReadSocket::udp_create(SocketEndpoint(receive_port, parent.myIP)));
+                else
+                    flow_socket.setown(CSimulatedQueueReadSocket::udp_create(SocketEndpoint(receive_port, parent.myIP)));
+            }
+            else
+#endif
+                flow_socket.setown(ISocket::udp_create(receive_port));
             flow_socket->set_receive_buffer_size(udpFlowSocketsSize);
             size32_t actualSize = flow_socket->get_receive_buffer_size();
-            DBGLOG("UdpSender: rcv_flow_socket created port=%d sockbuffsize=%d actualsize=%d", receive_port, udpFlowSocketsSize, actualSize);
-            start();
+            DBGLOG("UdpSender[%s]: rcv_flow_socket created port=%d sockbuffsize=%d actualsize=%d", parent.myId, receive_port, udpFlowSocketsSize, actualSize);
+            start(false);
         }
         
         ~send_receive_flow() 
         {
             running = false;
-            if (flow_socket) 
-                flow_socket->close();
+            shutdownAndCloseNoThrow(flow_socket);
             join();
         }
         
         virtual int doRun() 
         {
             if (udpTraceLevel > 0)
-                DBGLOG("UdpSender: send_receive_flow started");
+                DBGLOG("UdpSender[%s]: send_receive_flow started", parent.myId);
 #ifdef __linux__
             setLinuxThreadPriority(2);
 #endif
@@ -790,31 +996,32 @@ class CSendManager : implements ISendManager, public CInterface
                     try 
                     {
                         unsigned int res;
-                        flow_socket->read(&f, readsize, readsize, res, 5);
+                        flow_socket->readtms(&f, readsize, readsize, res, 5000);
                         flowPermitsReceived++;
                         assert(res==readsize);
                         switch (f.cmd)
                         {
                         case flowType::ok_to_send:
-                            if (udpTraceLevel > 2 || udpTraceFlow)
+                            if (udpTraceFlow)
                             {
                                 StringBuffer s;
-                                DBGLOG("UdpSender: received ok_to_send msg max %d packets from node=%s seq %" SEQF "u", f.max_data, f.destNode.getTraceText(s).str(), f.flowSeq);
+                                DBGLOG("UdpSender[%s]: received ok_to_send msg max %d packets from node=%s seq %" SEQF "u", parent.myId, f.max_data, f.destNode.getTraceText(s).str(), f.flowSeq);
                             }
-                            parent.data->ok_to_send(f);
+                            if (parent.data->pushPermit(f))
+                                parent.receiversTable[f.destNode].notePermitReceived(f.flowSeq);
                             break;
 
                         case flowType::request_received:
-                            if (udpTraceLevel > 2 || udpTraceFlow)
+                            if (udpTraceFlow)
                             {
                                 StringBuffer s;
-                                DBGLOG("UdpSender: received request_received msg from node=%s seq %" SEQF "u", f.destNode.getTraceText(s).str(), f.flowSeq);
+                                DBGLOG("UdpSender[%s]: received request_received msg from node=%s seq %" SEQF "u", parent.myId, f.destNode.getTraceText(s).str(), f.flowSeq);
                             }
                             parent.receiversTable[f.destNode].requestAcknowledged();
                             break;
 
                         default: 
-                            DBGLOG("UdpSender: received unknown flow message type=%d", f.cmd);
+                            DBGLOG("UdpSender[%s]: received unknown flow message type=%d", parent.myId, f.cmd);
                         }
                     }
                     catch (IException *e) 
@@ -822,14 +1029,14 @@ class CSendManager : implements ISendManager, public CInterface
                         if (running && e->errorCode() != JSOCKERR_timeout_expired)
                         {
                             StringBuffer s;
-                            DBGLOG("UdpSender: send_receive_flow::read failed port=%i %s", receive_port, e->errorMessage(s).str());
+                            DBGLOG("UdpSender[%s]: send_receive_flow::read failed port=%i %s", parent.myId, receive_port, e->errorMessage(s).str());
                         }
                         e->Release();
                     }
                     catch (...) 
                     {
                         if (running)   
-                            DBGLOG("UdpSender: send_receive_flow::unknown exception");
+                            DBGLOG("UdpSender[%s]: send_receive_flow::unknown exception", parent.myId);
                         MilliSleep(0);
                     }
                 }
@@ -850,7 +1057,7 @@ class CSendManager : implements ISendManager, public CInterface
         {
             if (check_max_socket_write_buffer(udpLocalWriteSocketSize) < 0) 
                 throw MakeStringException(ROXIE_UDP_ERROR, "System Socket max write buffer is less than %i", udpLocalWriteSocketSize);
-            start();
+            start(false);
         }
         
         ~send_data()
@@ -861,22 +1068,58 @@ class CSendManager : implements ISendManager, public CInterface
             join();
         }   
 
-        bool ok_to_send(const UdpPermitToSendMsg &msg) 
+        bool pushPermit(const UdpPermitToSendMsg &msg)
         {
-            if (send_queue.push(msg, 15)) 
-                return true;
-            else 
+            const unsigned pushTimeoutMs = 15;
+            if (udpRemoveDuplicatePermits)
             {
-                StringBuffer s;
-                DBGLOG("UdpSender: push() failed - ignored ok_to_send msg - node=%s, maxData=%u", msg.destNode.getTraceText(s).str(), msg.max_data);
-                return false;
+                bool wasDuplicate = false;
+                auto updateTrackingIfMatches = [&msg,&wasDuplicate](UdpPermitToSendMsg &m)
+                {
+                    if (!m.isSamePermit(msg))
+                        return false;
+
+                    //Check for a newer flowSeq, being careful about overflow (likely to only differ by 1)
+                    int flowDiff = (int)(msg.flowSeq - m.flowSeq);
+
+                    //An earlier flowSeq might be received if the udp packets are reordered - if so ignore it.
+                    if (flowDiff >= 0)
+                    {
+                        //Later flowSequences always take precedence - either no change, or update with later value
+                        m.flowSeq = msg.flowSeq;
+                        //Assume that later packets are more up to date.
+                        m.seen = msg.seen; // Update the queue entry with the most recent tracking information
+                        m.max_data = msg.max_data;
+                    }
+                    wasDuplicate = true;
+                    return true;
+                };
+
+                if (send_queue.pushOrModify(msg, updateTrackingIfMatches, pushTimeoutMs))
+                {
+                    if (wasDuplicate && udpTraceFlow)
+                    {
+                        StringBuffer s;
+                        DBGLOG("UdpSender[%s]: duplicate permit ignored node=%s, maxData=%u", parent.myId, msg.destNode.getTraceText(s).str(), msg.max_data);
+                    }
+                    return true; // permit has been processed, but didn't need to add it to the queue.
+                }
             }
+            else
+            {
+                if (send_queue.push(msg, pushTimeoutMs))
+                    return true;
+            }
+
+            StringBuffer s;
+            DBGLOG("UdpSender[%s]: push() failed - ignored ok_to_send msg - node=%s, maxData=%u", parent.myId, msg.destNode.getTraceText(s).str(), msg.max_data);
+            return false;
         }
 
         virtual int doRun() 
         {
             if (udpTraceLevel > 0)
-                DBGLOG("UdpSender: send_data started");
+                DBGLOG("UdpSender[%s]: send_data started", parent.myId);
         #ifdef __linux__
             setLinuxThreadPriority(1); // MORE - windows? Is this even a good idea? Must not send faster than receiver can pull off the socket
         #endif
@@ -888,16 +1131,10 @@ class CSendManager : implements ISendManager, public CInterface
                     return 0;
 
                 UdpReceiverEntry &receiverInfo = parent.receiversTable[permit.destNode];
-                unsigned payload = receiverInfo.sendData(permit, bucket);
-                
-                if (udpTraceLevel > 2)
-                {
-                    StringBuffer s;
-                    DBGLOG("UdpSender: sent %u bytes to node=%s under permit %" SEQF "u", payload, permit.destNode.getTraceText(s).str(), permit.flowSeq);
-                }
+                receiverInfo.sendData(permit, bucket);
             }
             if (udpTraceLevel > 0)
-                DBGLOG("UdpSender: send_data stopped");
+                DBGLOG("UdpSender[%s]: send_data stopped", parent.myId);
             return 0;
         }
     };
@@ -909,6 +1146,8 @@ class CSendManager : implements ISendManager, public CInterface
     unsigned numQueues;
 
     IpAddress myIP;
+    StringBuffer myIdStr;
+    const char *myId;
     IpMapOf<UdpReceiverEntry> receiversTable;
     send_resend_flow  *resend_flow;
     send_receive_flow *receive_flow;
@@ -934,11 +1173,13 @@ public:
     CSendManager(int server_flow_port, int data_port, int client_flow_port, int q_size, int _numQueues, const IpAddress &_myIP, TokenBucket *_bucket, bool _encrypted)
         : bucket(_bucket),
           myIP(_myIP),
-          receiversTable([_numQueues, q_size, server_flow_port, data_port, _encrypted](const ServerIdentifier ip) { return new UdpReceiverEntry(ip.getIpAddress(), _numQueues, q_size, server_flow_port, data_port, _encrypted);}),
+          receiversTable([_numQueues, q_size, server_flow_port, data_port, _encrypted, this](const ServerIdentifier ip) { return new UdpReceiverEntry(ip.getIpAddress(), myIP, _numQueues, q_size, server_flow_port, data_port, _encrypted);}),
           encrypted(_encrypted)
     {
+        myId = myIP.getHostText(myIdStr).str();
 #ifndef _WIN32
-        setpriority(PRIO_PROCESS, 0, -3);
+        if (udpAdjustThreadPriorities)
+            setpriority(PRIO_PROCESS, 0, -3);
 #endif
         numQueues = _numQueues;
         data = new send_data(*this, bucket);
@@ -956,11 +1197,21 @@ public:
 
     // Interface ISendManager
 
-    virtual void writeOwn(IUdpReceiverEntry &receiver, DataBuffer *buffer, unsigned len, unsigned queue) override
+    virtual void writeOwn(IUdpReceiverEntry &receiver, DataBuffer *buffer, unsigned length, unsigned queue) override
     {
         // NOTE: takes ownership of the DataBuffer
         assert(queue < numQueues);
         assert(buffer);
+        if (encrypted && !udpEncryptOnSendThread)
+        {
+            UdpPacketHeader *header = (UdpPacketHeader*) buffer->data;
+            length -= sizeof(UdpPacketHeader);
+            const MemoryAttr &udpkey = getSecretUdpKey(true);
+            size_t encryptedLength = aesEncryptInPlace(udpkey.get(), udpkey.length(), buffer->data + sizeof(UdpPacketHeader), length, DATA_PAYLOAD - sizeof(UdpPacketHeader));
+            length = encryptedLength + sizeof(UdpPacketHeader);
+            header->length = length;
+            assertex(length <= DATA_PAYLOAD);
+        }
         static_cast<UdpReceiverEntry &>(receiver).pushData(queue, buffer);
     }
 
@@ -995,7 +1246,7 @@ public:
         // Used for some timing tests only
         for (auto&& dest: receiversTable)
         {
-            if (dest.packetsQueued.load(std::memory_order_relaxed))
+            if (dest.hasDataToSend())
                 return false;
         }
         return true;
@@ -1003,10 +1254,10 @@ public:
 
 };
 
-ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int queue_size_pr_server, int queues_pr_server, TokenBucket *rateLimiter, bool encryptionInTransit)
+ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int queue_size_pr_server, int queues_pr_server, const IpAddress &_myIP, TokenBucket *rateLimiter, bool encryptionInTransit)
 {
-    assertex(!myNode.getIpAddress().isNull());
-    return new CSendManager(server_flow_port, data_port, client_flow_port, queue_size_pr_server, queues_pr_server, myNode.getIpAddress(), rateLimiter, encryptionInTransit);
+    assertex(!_myIP.isNull());
+    return new CSendManager(server_flow_port, data_port, client_flow_port, queue_size_pr_server, queues_pr_server, _myIP, rateLimiter, encryptionInTransit);
 }
 
 class CMessagePacker : implements IMessagePacker, public CInterface
@@ -1112,6 +1363,11 @@ public:
         }
         else
         {
+            //Edge case - ensure that the length of a variable length record does not span a packet
+            //this can occur when large rows > data_buffer_size are being appended to the buffer.
+            if (variable && ((data_buffer_size - data_used) < sizeof(RecordLengthType)))
+                flush(false);
+
             while (len)
             {
                 if (!part_buffer)

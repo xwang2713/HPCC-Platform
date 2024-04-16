@@ -229,7 +229,9 @@ struct ReplicateFileItem: extends CInterface
     {
         CriticalBlock block(sect);
         stopping = false;
-        thread.start();
+        //MORE: This seems inefficient to create a thread for each item being replicated
+        //rather than using a thread pool.  Should possibly pass true to start() to link to the dfuwu.
+        thread.start(false);
     }
 
     void stop()
@@ -258,7 +260,7 @@ struct ReplicateFileItem: extends CInterface
             OERRLOG(LOGPFX "Cannot replicate foreign file %s",lfn);
             return;
         }
-        Owned<IDistributedFile> dfile = queryDistributedFileDirectory().lookup(dlfn,userdesc,false,false,false,nullptr,defaultPrivilegedUser);
+        Owned<IDistributedFile> dfile = queryDistributedFileDirectory().lookup(dlfn,userdesc,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
         if (!dfile) {
             UWARNLOG(LOGPFX "Cannot find file %s, perhaps deleted",lfn);
             return;
@@ -301,7 +303,7 @@ struct ReplicateFileItem: extends CInterface
         IPropertyTree &root = *conn->queryRoot();
         root.setProp("@name",lfn);
         StringBuffer node;
-        queryMyNode()->endpoint().getIpText(node);
+        queryMyNode()->endpoint().getHostText(node);
         root.setProp("@node",node.str());
         root.setPropInt("@mpport",queryMyNode()->endpoint().port);
         dt.setNow();
@@ -332,7 +334,7 @@ struct ReplicateFileItem: extends CInterface
         }
         bool abort = true;
         try {
-            dfile.setown(queryDistributedFileDirectory().lookup(dlfn,userdesc,false,false,false,nullptr,defaultPrivilegedUser));
+            dfile.setown(queryDistributedFileDirectory().lookup(dlfn,userdesc,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser));
             if (dfile) {
                 CDateTime newfiledt;
                 dfile->getModificationTime(newfiledt);
@@ -471,7 +473,7 @@ public:
     {
         stopping = false;
         thread.setown(new CThreaded("ReplicateServerThread"));
-        thread->init(this);
+        thread->init(this, false);
     }
 
     virtual void threadmain() override

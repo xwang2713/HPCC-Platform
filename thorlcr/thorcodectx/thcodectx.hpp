@@ -47,10 +47,15 @@ protected:
 public:
     CThorCodeContextBase(CJobChannel &jobChannel, ILoadedDllEntry &_querySo, IUserDescriptor &_userDesc);
     IMPLEMENT_IINTERFACE_USING(CSimpleInterfaceOf<ICodeContextExt>) // This is strangely required by visual studio to ensure Release() is resolved
+    virtual void gatherStats(CRuntimeStatisticCollection &mergedStats) const override { throwUnexpected(); }
 
 // ICodeContext
     virtual const char *loadResource(unsigned id) override;
     virtual char *getWuid() override;
+    virtual unsigned getWorkflowId() const override
+    {
+        return jobChannel.queryJob().getWfid();
+    }
 
     virtual char *getExpandLogicalName(const char * logicalName) override;
     virtual IUserDescriptor *queryUserDescriptor() override { return userDesc; }
@@ -66,13 +71,19 @@ public:
     virtual char *getPlatform() override { return strdup("thor"); };
     virtual char *getEnv(const char *name, const char *defaultValue) const override
     {
-        const char *val = getenv(name);
-        if (val)
-            return strdup(val);
-        else if (defaultValue)
-            return strdup(defaultValue);
+        char *hpccEnvVal = getHPCCEnvVal(name, defaultValue);
+        if (hpccEnvVal)
+            return hpccEnvVal;
         else
-            return strdup("");
+        {
+            const char *val = getenv(name);
+            if (val)
+                return strdup(val);
+            else if (defaultValue)
+                return strdup(defaultValue);
+            else
+                return strdup("");
+        }
     }
     virtual char *getOS() override
     {
@@ -117,6 +128,7 @@ public:
     virtual char *getDaliServers() override;
     virtual IWorkUnit *updateWorkUnit() const override { throwUnexpected(); }
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) override;
+    virtual unsigned getElapsedMs() const override {UNIMPLEMENTED;} //Implementing for roxie first, not sure what this means from a thor perspective.  ECL plugin implies elapsed time of entire query
 };
 
 #endif

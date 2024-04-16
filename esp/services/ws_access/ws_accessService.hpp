@@ -70,25 +70,31 @@ class Cws_accessEx : public Cws_access
     Owned<IPropertyTree> m_servicecfg;
     IArrayOf<IEspDnStruct> m_basedns;
     IArrayOf<IEspDnStruct> m_rawbasedns;
+    CriticalSection basednsCrit;
     SecResourceType str2type(const char* rtstr);
 
     void setBasedns(IEspContext &context);
     void getBasednReq(IEspContext &context, const char* name, const char* basedn,
         const char* rType, const char* rTitle, IEspDnStruct* dn);
-    bool permissionAddInputOnResource(IEspContext &context, IEspPermissionAddRequest &req, IEspPermissionAddResponse &resp);
-    bool permissionAddInputOnAccount(IEspContext &context, const char* accountName, IEspPermissionAddRequest &req, IEspPermissionAddResponse &resp);
-    bool getNewFileScopePermissions(ISecManager* secmgr, const char* name, IEspDnStruct* req, StringBuffer& existingResource, StringArray& newResources);
-    bool setNewFileScopePermissions(ISecManager* secmgr, IEspDnStruct* req, StringBuffer& existingResource, StringArray& newResources);
+    bool permissionAddInputOnResource(IEspContext &context, CLdapSecManager *secmgr, IEspPermissionAddRequest &req, IEspPermissionAddResponse &resp);
+    bool permissionAddInputOnAccount(IEspContext &context, CLdapSecManager *secmgr, const char* accountName, IEspPermissionAddRequest &req, IEspPermissionAddResponse &resp);
+    bool getNewFileScopeNames(CLdapSecManager* secmgr, const char* name, IEspDnStruct* req, StringBuffer& existingResource, StringArray& newResources);
+    bool setNewFileScopePermissions(CLdapSecManager* secmgr, IEspDnStruct* req, StringBuffer& existingResource, StringArray& newResources);
     bool permissionsReset(CLdapSecManager* ldapsecmgr, const char* basedn, const char* rtype, const char* prefix,
         const char* resourceName, ACT_TYPE accountType, const char* accountName,
         bool allow_access, bool allow_read, bool allow_write, bool allow_full,
         bool deny_access, bool deny_read, bool deny_write, bool deny_full);
     void getBaseDNsForAddingPermssionToAccount(CLdapSecManager* secmgr, const char* prefix, const char* accountName, 
         int accountType, StringArray& basednNames);
-    int enableDisableScopeScans(IEspContext &context, bool doEnable, StringBuffer &retMsg);
-    CLdapSecManager* queryLDAPSecurityManager(IEspContext &context);
+    int enableDisableScopeScans(IEspContext &context, CLdapSecManager *secmgr, bool doEnable, StringBuffer &retMsg);
+    CLdapSecManager* queryLDAPSecurityManager(IEspContext &context, bool excpt);
     void addResourcePermission(const char *name, int type, int allows, int denies, IArrayOf<IEspResourcePermission> &permissions);
     const char* getPasswordExpiration(ISecUser *usr, StringBuffer &passwordExpiration);
+    void checkUser(IEspContext &context, CLdapSecManager *ldapSecMgr, const char *rtype = nullptr, const char *rtitle = nullptr, unsigned int SecAccessFlags = SecAccess_Full);
+    CLdapSecManager* queryLDAPSecurityManagerAndCheckUser(IEspContext &context, const char *rtype = nullptr, const char *rtitle = nullptr, unsigned int SecAccessFlags = SecAccess_Full);
+    void createResourceArrayForResources(const char *baseDN, SecResourceType rType, IArrayOf<ISecResource> &resources, IArrayOf<IEspResource> &resourceArray);
+    void readFileScopesFromString(const char* str, StringArray& scopes, bool append);
+    void addAFileScope(const char* scope, StringBuffer& newFileScope, StringArray& fileScopes, bool append);
 
 public:
     IMPLEMENT_IINTERFACE;
@@ -141,6 +147,7 @@ public:
     virtual bool onUserSudoersInput(IEspContext &context, IEspUserSudoersInputRequest &req, IEspUserSudoersInputResponse &resp);
     virtual bool onUserSudoers(IEspContext &context, IEspUserSudoersRequest &req, IEspUserSudoersResponse &resp);
     virtual bool onAccountPermissions(IEspContext &context, IEspAccountPermissionsRequest &req, IEspAccountPermissionsResponse &resp);
+    virtual bool onAccountPermissionsV2(IEspContext &context, IEspAccountPermissionsV2Request &req, IEspAccountPermissionsV2Response &resp);
     virtual bool onFilePermission(IEspContext &context, IEspFilePermissionRequest &req, IEspFilePermissionResponse &resp);
     virtual bool onPermissionsResetInput(IEspContext &context, IEspPermissionsResetInputRequest &req, IEspPermissionsResetInputResponse &resp);
     virtual bool onPermissionsReset(IEspContext &context, IEspPermissionsResetRequest &req, IEspPermissionsResetResponse &resp);

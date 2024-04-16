@@ -1,62 +1,75 @@
 import * as React from "react";
-import { useConst } from "@fluentui/react-hooks";
-import * as Observable from "dojo/store/Observable";
-import { Memory } from "src/Memory";
+import { CommandBar, ICommandBarItemProps } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
-import { useFile } from "../hooks/File";
+import { QuerySortItem } from "src/store/Store";
+import { useFile } from "../hooks/file";
 import { HolyGrail } from "../layouts/HolyGrail";
-import { DojoGrid } from "./DojoGrid";
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 
 interface FileBloomsProps {
     cluster?: string;
     logicalFile: string;
+    sort?: QuerySortItem;
 }
+
+const defaultSort = { attribute: "FieldNames", descending: false };
 
 export const FileBlooms: React.FunctionComponent<FileBloomsProps> = ({
     cluster,
-    logicalFile
+    logicalFile,
+    sort = defaultSort
 }) => {
 
-    const [file, , _refresh] = useFile(cluster, logicalFile);
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [, setSelection] = React.useState([]);
+    const [file, , , refreshData] = useFile(cluster, logicalFile);
+    const [data, setData] = React.useState<any[]>([]);
+    const {
+        selection, setSelection,
+        setTotal,
+        refreshTable } = useFluentStoreState({});
 
     //  Grid ---
-    const gridStore = useConst(new Observable(new Memory("FieldNames")));
-    const gridSort = useConst([{ attribute: "FieldNames", "descending": false }]);
-    const gridQuery = useConst({});
-    const gridColumns = useConst({
-        FieldNames: { label: nlsHPCC.FieldNames, sortable: true, },
-        Limit: { label: nlsHPCC.Limit, sortable: true, },
-        Probability: { label: nlsHPCC.Probability, sortable: true, },
-    });
-
-    const refreshTable = (clearSelection = false) => {
-        grid?.set("query", gridQuery);
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    };
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            FieldNames: { label: nlsHPCC.FieldNames, sortable: true, width: 320 },
+            Limit: { label: nlsHPCC.Limit, sortable: true, width: 180 },
+            Probability: { label: nlsHPCC.Probability, sortable: true, width: 180 },
+        };
+    }, []);
 
     React.useEffect(() => {
-        if (file?.Blooms) {
-            const fileBlooms = file?.Blooms?.DFUFileBloom;
-            if (fileBlooms) {
-                gridStore.setData(fileBlooms.map(bloom => {
-                    return {
-                        ...bloom,
-                        FieldNames: bloom?.FieldNames?.Item[0] || "",
-                    };
-                }));
-                refreshTable();
-            }
+        const fileBlooms = file?.Blooms?.DFUFileBloom;
+        if (fileBlooms) {
+            setData(fileBlooms.map(bloom => {
+                return {
+                    ...bloom,
+                    FieldNames: bloom?.FieldNames?.Item[0] || "",
+                };
+            }));
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [gridStore, file?.Blooms]);
+    }, [file?.Blooms?.DFUFileBloom]);
+
+    //  Command Bar  ---
+    const buttons = React.useMemo((): ICommandBarItemProps[] => [
+        {
+            key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
+            onClick: () => refreshData()
+        },
+    ], [refreshData]);
+
+    const copyButtons = useCopyButtons(columns, selection, "fileBlooms");
 
     return <HolyGrail
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
-            <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
+            <FluentGrid
+                data={data}
+                primaryID={"FieldNames"}
+                sort={sort}
+                columns={columns}
+                setSelection={setSelection}
+                setTotal={setTotal}
+                refresh={refreshTable}
+            ></FluentGrid>
         }
     />;
 };

@@ -63,7 +63,9 @@ set (    SRCS
          rtlrecord.hpp
          rtlsize.hpp
          rtltype.hpp
-         rtlbcdtest.cpp 
+         rtlbcdtest.cpp
+         wfcontext.cpp
+         wfcontext.hpp
     )
 
 include_directories ( 
@@ -74,14 +76,9 @@ include_directories (
          ./../../system/jlib 
          ./../../roxie/roxiemem
          ./../../testing/unittests
-         ${BOOST_REGEX_INCLUDE_DIR}
     )
 
 ADD_DEFINITIONS( -D_USRDLL -DECLRTL_EXPORTS )
-
-if ((USE_BOOST_REGEX) AND (NOT WIN32))
-  ADD_DEFINITIONS( -DBOOST_DYN_LINK )
-endif ()
 
 if ((CMAKE_COMPILER_IS_GNUCXX AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 8.0.0))
   set_source_files_properties(eclrtl.cpp PROPERTIES COMPILE_FLAGS -fno-tree-vectorize)
@@ -89,12 +86,8 @@ endif ()
 
 HPCC_ADD_LIBRARY( eclrtl SHARED ${SRCS} )
 
-if(CENTOS_6_BOOST)
-  add_dependencies(eclrtl boost-regex)
-  target_link_libraries( eclrtl boost-regex)
-else()
-  target_link_libraries( eclrtl ${BOOST_REGEX_LIBRARIES} )
-endif()
+find_package(pcre2 CONFIG REQUIRED)
+target_link_libraries( eclrtl PCRE2::8BIT PCRE2::16BIT )
 
 target_link_libraries ( eclrtl 
       jlib
@@ -118,7 +111,7 @@ endif()
 
 
 if (NOT PLUGIN)
-  install ( TARGETS eclrtl RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} ARCHIVE DESTINATION componentfiles/cl/lib )
+  install ( TARGETS eclrtl RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} ARCHIVE DESTINATION componentfiles/cl/lib CALC_DEPS)
   FOREACH( iFILES
     ${CMAKE_CURRENT_SOURCE_DIR}/eclinclude4.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/eclrtl.hpp

@@ -206,6 +206,14 @@
                 </row>
 
                 <row>
+                  <entry><emphasis><emphasis>nocommon</emphasis></emphasis></entry>
+
+                  <entry>Optional. A boolean flag (0 | 1, default=1). Set to 0
+                  to enable "commoning up" of pull or push processes on same
+                  host.</entry>
+                </row>
+
+                <row>
                   <entry><emphasis><emphasis>throttle</emphasis></emphasis></entry>
 
                   <entry>Optional. The transfer speed (in Mbits/second) to
@@ -344,7 +352,17 @@ replicate=1</programlisting>
 
                     <entry>Optional. The IP address of the source machine. If
                     omitted, the information must be supplied by the
-                    <emphasis>srcxml</emphasis> parameter.</entry>
+                    <emphasis>srcxml</emphasis> or
+                    <emphasis>srcplane</emphasis> parameter.</entry>
+                  </row>
+
+                  <row>
+                    <entry>srcplane</entry>
+
+                    <entry>Optional. The source storage plane containing the
+                    source file. Note: <emphasis>srcplane</emphasis> should
+                    not be used at the same time as
+                    <emphasis>srcip</emphasis>.</entry>
                   </row>
 
                   <row>
@@ -584,7 +602,14 @@ dfuplus action=spray srcip=10.150.51.26
 imageRecord := RECORD
 STRING filename;
 DATA image; //first 4 bytes contain the length of the image data
-END;</programlisting>
+END;
+// using srcplane
+dfuplus action=spray srcplane=lzstorageplane 
+        srcfile=/var/lib/HPCCSystems/dropzone/largedata1 
+        dstname=mytest::test:spraytest 
+        dstcluster=mydatastorageplane recordsize=58 overwrite=1 server=127.0.0.1:8010
+
+</programlisting>
         </sect3>
 
         <sect3 id="CLI_DFU_DeSprayOperations">
@@ -618,7 +643,19 @@ END;</programlisting>
 
                   <entry>Optional. The IP address of the destination machine.
                   If omitted, the information must be supplied by the
-                  <emphasis>dstxml</emphasis> parameter.</entry>
+                  <emphasis>dstxml</emphasis> or <emphasis>dstplane</emphasis>
+                  parameter. Deprecated, you should use
+                  <emphasis>dstplane</emphasis> instead.</entry>
+                </row>
+
+                <row>
+                  <entry><emphasis>dstplane</emphasis></entry>
+
+                  <entry>Optional. The destination storage plane. Note:
+                  <emphasis>dstplane</emphasis> should not be used at the same
+                  time as <emphasis>dstip</emphasis>. In a containerized
+                  deployment, <emphasis>dstplane</emphasis> is required if you
+                  have more than one Landing Zone.</entry>
                 </row>
 
                 <row>
@@ -737,6 +774,12 @@ DATA image; //first 4 bytes contain the length of the image data
 dfuplus action=dspray srcname=le::imagedb
           dstip=10.150.51.26 dstfile=/var/lib/HPCCSystems/mydropzone/
           splitprefix=FILENAME,FILESIZE
+
+// using dstplane
+dfuplus action=despray srcname=mytest::test:spraytest 
+        dstplane=lzstorageplane 
+        dstfile=mydespraytest server=127.0.0.1:8010
+
 </programlisting>
         </sect3>
 
@@ -824,6 +867,13 @@ dfuplus action=dspray srcname=le::imagedb
                   <entry>Optional. A boolean flag (0 | 1) indicating whether
                   to preserve the compression of the source file. If omitted,
                   the default is 1.</entry>
+                </row>
+
+                <row>
+                  <entry><emphasis>ensure</emphasis></entry>
+
+                  <entry>Optional. Copies logical file, but does not copy file
+                  parts if they already exist. Default is FALSE.</entry>
                 </row>
               </tbody>
             </tgroup>
@@ -1261,11 +1311,21 @@ dfuplus action=add srcxml=exportedMysuper.xml dstname=Mysuper
 
                     <entry>The workunit identifier of the workunit.</entry>
                   </row>
+
+                  <row>
+                    <entry><emphasis><emphasis><emphasis>limit</emphasis></emphasis></emphasis></entry>
+
+                    <entry>For publisher workunits, this limits the number of
+                    child workunits to list. If set to 0, then only the parent
+                    status is returned. Default is 1000.</entry>
+                  </row>
                 </tbody>
               </tgroup>
-            </informaltable>Example:</para>
+            </informaltable>Examples:</para>
 
-          <programlisting>dfuplus action=status wuid=W20050309-093020</programlisting>
+          <programlisting>dfuplus action=status wuid=D20220816-135243
+dfuplus action=status limit=300 wuid=P20230301-123456
+dfuplus action=status limit=0 wuid=P20230301-987654</programlisting>
 
           <para></para>
         </sect3>

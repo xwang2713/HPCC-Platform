@@ -6,7 +6,7 @@ import * as all from "dojo/promise/all";
 import * as Observable from "dojo/store/Observable";
 import * as topic from "dojo/topic";
 
-import { Workunit as HPCCWorkunit, WUUpdate } from "@hpcc-js/comms";
+import { Workunit as HPCCWorkunit, WorkunitsService, WUQuery, WUUpdate } from "@hpcc-js/comms";
 import { IEvent } from "@hpcc-js/util";
 
 import * as ESPRequest from "./ESPRequest";
@@ -16,6 +16,8 @@ import nlsHPCC from "./nlsHPCC";
 import * as Utility from "./Utility";
 import * as WsTopology from "./WsTopology";
 import * as WsWorkunits from "./WsWorkunits";
+import { Paged } from "./store/Paged";
+import { BaseStore } from "./store/Store";
 
 declare const dojo;
 
@@ -566,7 +568,7 @@ const Workunit = declare([ESPUtil.Singleton], {  // jshint ignore:line
         return this._action("Restore");
     },
 
-    publish(jobName, remoteDali, sourceProcess, priority, comment, allowForeign, updateSupers) {
+    publish(jobName, remoteDali, remoteStorage, sourceProcess, priority, comment, allowForeign, updateSupers) {
         this._assertHasWuid();
         const context = this;
         WsWorkunits.WUPublishWorkunit({
@@ -574,6 +576,7 @@ const Workunit = declare([ESPUtil.Singleton], {  // jshint ignore:line
                 Wuid: this.Wuid,
                 JobName: jobName,
                 RemoteDali: remoteDali,
+                RemoteStorage: remoteStorage,
                 SourceProcess: sourceProcess,
                 Priority: priority,
                 Comment: comment,
@@ -1033,8 +1036,32 @@ export function Get(wuid, data?) {
     return retVal;
 }
 
-export function CreateWUQueryStore(options) {
+export function CreateWUQueryStoreLegacy(options) {
     const store = new Store(options);
+    return new Observable(store);
+}
+
+const service = new WorkunitsService({ baseUrl: "" });
+
+export type WUQueryStore = BaseStore<WUQuery.Request, typeof Workunit>;
+
+export function CreateWUQueryStore(): BaseStore<WUQuery.Request, typeof Workunit> {
+    const store = new Paged<WUQuery.Request, typeof Workunit>({
+        start: "PageStartFrom",
+        count: "PageSize",
+        sortBy: "Sortby",
+        descending: "Descending"
+    }, "Wuid", request => {
+        if (request.Sortby && request.Sortby === "TotalClusterTime") {
+            request.Sortby = "ClusterTime";
+        }
+        return service.WUQuery(request).then(response => {
+            return {
+                data: response.Workunits.ECLWorkunit.map(wu => Get(wu.Wuid, wu)),
+                total: response.NumWUs
+            };
+        });
+    });
     return new Observable(store);
 }
 

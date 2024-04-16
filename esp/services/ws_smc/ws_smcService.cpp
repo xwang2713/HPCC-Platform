@@ -17,6 +17,7 @@
 
 #pragma warning (disable : 4786)
 
+#include "jcontainerized.hpp"
 
 #ifdef _USE_OPENLDAP
 #include "ldapsecurity.ipp"
@@ -127,6 +128,7 @@ void CWsSMCEx::init(IPropertyTree *cfg, const char *process, const char *service
         throw MakeStringException(-1, "No Dali Connection Active. Please Specify a Dali to connect to in you configuration file");
     }
 
+    espInstance.set(process);
     m_BannerAction = 0;
     m_EnableChatURL = false;
     m_BannerSize = "4";
@@ -152,6 +154,7 @@ void CWsSMCEx::init(IPropertyTree *cfg, const char *process, const char *service
     xpath.setf("Software/EspProcess[@name=\"%s\"]/EspService[@name=\"%s\"]/ActivityInfoCacheAutoRebuildSeconds", process, service);
     unsigned activityInfoCacheAutoRebuildSeconds = cfg->getPropInt(xpath.str(), defaultActivityInfoCacheAutoRebuildSecond);
     activityInfoCacheReader.setown(new CActivityInfoCacheReader("Activity Reader", activityInfoCacheAutoRebuildSeconds, activityInfoCacheSeconds));
+    activityInfoCacheReader->init();
 }
 
 struct CActiveWorkunitWrapper: public CActiveWorkunit
@@ -282,6 +285,9 @@ void CActivityInfo::readTargetClusterInfo(CConstWUClusterInfoArray& clusters, IP
     ForEachItemIn(c, clusters)
     {
         IConstWUClusterInfo &cluster = clusters.item(c);
+        if (cluster.onlyPublishedQueries()) //"publish-only" roxie not in SDS /JobQueues.
+            continue;
+
         Owned<CWsSMCTargetCluster> targetCluster = new CWsSMCTargetCluster();
         readTargetClusterInfo(cluster, serverStatusRoot, targetCluster);
         if (cluster.getPlatform() == ThorLCRCluster)
@@ -1258,6 +1264,7 @@ void CWsSMCEx::addWUsToResponse(IEspContext &context, const IArrayOf<IEspActiveW
                 cw->setInstance(instanceName); // JCSMORE In thor case at least, if queued it is unknown which instance it will run on..
             if (targetClusterName && *targetClusterName)
                 cw->setTargetClusterName(targetClusterName);
+            cw->setNoAccess(true);
             awsReturned.append(*cw.getClear());
 
             e->Release();
@@ -1920,11 +1927,16 @@ bool CWsSMCEx::onBrowseResources(IEspContext &context, IEspBrowseResourcesReques
         double version = context.getClientVersion();
 
         //The resource files will be downloaded from the same box of ESP (not dali)
-        StringBuffer ipStr;
-        IpAddress ipaddr = queryHostIP();
-        ipaddr.getIpText(ipStr);
-        if (ipStr.length() > 0)
-            resp.setNetAddress(ipStr.str());
+        if (version >= 1.27)
+            resp.setESPInstance(espInstance);
+        else
+        {
+            StringBuffer ipStr;
+            IpAddress ipaddr = queryHostIP();
+            ipaddr.getHostText(ipStr);
+            if (!ipStr.isEmpty())
+                resp.setNetAddress(ipStr.str());
+        }
 #ifdef _WIN32
         resp.setOS(MachineOsW2K);
 #else
@@ -2194,10 +2206,92 @@ inline const char *controlCmdMessage(int cmd)
         return "<control:reload forceRetry='1' />";
     case CRoxieControlCmdType_STATE:
         return "<control:state/>";
+    case CRoxieControlCmdType_MEMLOCK:
+        return "<control:memlock/>";
+    case CRoxieControlCmdType_MEMUNLOCK:
+        return "<control:memunlock/>";
+    case CRoxieControlCmdType_GETMEMLOCKED:
+        return "<control:getmemlocked/>";
     default:
         throw MakeStringException(ECLWATCH_MISSING_PARAMS, "Unknown Roxie Control Command.");
     }
     return NULL;
+}
+
+bool CWsSMCEx::onRoxieXrefCmd(IEspContext &context, IEspRoxieXrefCmdRequest &req, IEspRoxieXrefCmdResponse &resp)
+{
+    context.ensureFeatureAccess(ROXIE_CONTROL_URL, SecAccess_Full, ECLWATCH_SMC_ACCESS_DENIED, SMC_ACCESS_DENIED);
+
+    StringBuffer controlReq;
+    if (0==req.getQueryIds().length())
+        controlReq.append("<control:getQueryXrefInfo/>");
+    else
+    {
+        controlReq.append("<control:getQueryXrefInfo>");
+        ForEachItemIn(i, req.getQueryIds())
+        {
+            const char *id = req.getQueryIds().item(i);
+            if (!isEmptyString(id))
+                controlReq.appendf("<Query id='%s'/>", id);
+        }
+        controlReq.append("</control:getQueryXrefInfo>");
+    }
+
+#ifndef _CONTAINERIZED
+    const char *process = req.getRoxieCluster();
+    if (isEmptyString(process))
+        throw makeStringException(ECLWATCH_MISSING_PARAMS, "Process cluster not specified.");
+
+    SocketEndpointArray addrs;
+    getRoxieProcessServers(process, addrs);
+    if (!addrs.length())
+        throw makeStringException(ECLWATCH_CANNOT_GET_ENV_INFO, "Process cluster not found.");
+    Owned<IPropertyTree> controlResp;
+    if (req.getCheckAllNodes())
+        controlResp.setown(sendRoxieControlAllNodes(addrs.item(0), controlReq, true, req.getWait()));
+    else
+        controlResp.setown(sendRoxieControlQuery(addrs.item(0), controlReq, req.getWait()));
+#else
+    const char *target = req.getRoxieCluster();
+    if (isEmptyString(target))
+        throw makeStringException(ECLWATCH_MISSING_PARAMS, "Target cluster not specified.");
+
+    ISmartSocketFactory *conn = roxieConnMap.getValue(target);
+    if (!conn)
+        throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "roxie target cluster not mapped: %s", target);
+    if (!k8s::isActiveService(target))
+        throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "roxie target cluster has no active servers: %s", target);
+    Owned<IPropertyTree> controlResp;
+    if (req.getCheckAllNodes())
+        controlResp.setown(sendRoxieControlAllNodes(conn->nextEndpoint(), controlReq, true, req.getWait()));
+    else
+        controlResp.setown(sendRoxieControlQuery(conn->nextEndpoint(), controlReq, req.getWait()));
+#endif
+
+    if (!controlResp)
+        throw MakeStringException(ECLWATCH_INTERNAL_ERROR, "Failed to get control:getQueryXrefInfo response from roxie.");
+
+    //can only rename a ptree in context.  It prevents inconsistencies but in some cases is inconvenient
+    Owned<IPropertyTree> parent = createPTree();
+    const IPropertyTree *resultTree = parent->setPropTree("QueryXrefInfo", controlResp.getLink());
+
+    StringBuffer result;
+    switch (context.getResponseFormat())
+    {
+        case ESPSerializationANY:
+        case ESPSerializationXML:
+            toXML(resultTree, result);
+            break;
+        case ESPSerializationJSON:
+            toJSON(resultTree, result);
+            break;
+        default:
+            throw MakeStringException(ECLWATCH_INTERNAL_ERROR, "Unsupported RoxieXref output format requested.");
+            break;
+    }
+    resp.setResult(result);
+
+    return false;
 }
 
 bool CWsSMCEx::onRoxieControlCmd(IEspContext &context, IEspRoxieControlCmdRequest &req, IEspRoxieControlCmdResponse &resp)
@@ -2226,8 +2320,10 @@ bool CWsSMCEx::onRoxieControlCmd(IEspContext &context, IEspRoxieControlCmdReques
     ISmartSocketFactory *conn = roxieConnMap.getValue(target);
     if (!conn)
         throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "roxie target cluster not mapped: %s", target);
+    if (!k8s::isActiveService(target))
+        throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "roxie target cluster has no active servers: %s", target);
 
-    Owned<IPropertyTree> controlResp = sendRoxieControlAllNodes(conn->nextEndpoint(), controlReq, true, req.getWait());
+    Owned<IPropertyTree> controlResp = sendRoxieControlAllNodes(conn, controlReq, true, req.getWait(), ROXIECONNECTIONTIMEOUT);
 #endif
     if (!controlResp)
         throw MakeStringException(ECLWATCH_INTERNAL_ERROR, "Failed to get control response from roxie.");
@@ -2244,6 +2340,8 @@ bool CWsSMCEx::onRoxieControlCmd(IEspContext &context, IEspRoxieControlCmdReques
             respEndpoint->setAttached(roxieEndpoint.getPropBool("Dali/@connected"));
         if (roxieEndpoint.hasProp("State/@hash"))
             respEndpoint->setStateHash(roxieEndpoint.queryProp("State/@hash"));
+        if (roxieEndpoint.hasProp("heapLockMemory/@locked"))
+            respEndpoint->setMemLocked(roxieEndpoint.getPropBool("heapLockMemory/@locked"));
         respEndpoints.append(*respEndpoint.getClear());
     }
     resp.setEndpoints(respEndpoints);
@@ -2442,7 +2540,7 @@ void CWsSMCEx::setActiveWUs(IEspContext &context, IEspActiveWorkunit& wu, IEspAc
             wuToSet->setInstance(instanceName); // JCSMORE In thor case at least, if queued it is unknown which instance it will run on..
         if (targetClusterName && *targetClusterName)
             wuToSet->setTargetClusterName(targetClusterName);
-
+        wuToSet->setNoAccess(true);
         e->Release();
     }
 }
@@ -2641,6 +2739,15 @@ bool CWsSMCEx::onGetBuildInfo(IEspContext &context, IEspGetBuildInfoRequest &req
             Owned<IEspNamedValue> namedValue = createNamedValue();
             namedValue->setName("CONTAINERIZED");
             namedValue->setValue("ON");
+            buildInfo.append(*namedValue.getClear());
+        }
+        Owned<IPropertyTree> costPT = getGlobalConfigSP()->getPropTree("cost");
+        if (costPT)
+        {
+            Owned<IEspNamedValue> namedValue = createNamedValue();
+            namedValue->setName("currencyCode");
+            const char * currencyCode = costPT->queryProp("@currencyCode");
+            namedValue->setValue(isEmptyString(currencyCode)?"USD":currencyCode);
             buildInfo.append(*namedValue.getClear());
         }
         resp.setBuildInfo(buildInfo);

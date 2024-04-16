@@ -18,6 +18,8 @@
 #ifndef _THGRAPHMASTER_IPP
 #define _THGRAPHMASTER_IPP
 
+#include <unordered_map>
+
 #include "jmisc.hpp"
 #include "jsuperhash.hpp"
 #include "workunit.hpp"
@@ -91,14 +93,12 @@ class graphmaster_decl CMasterGraph : public CGraphBase
     CriticalSection exceptCrit;
     bool sentGlobalInit = false;
     CThorStatsCollection graphStats;
-
-
     CReplyCancelHandler activityInitMsgHandler, bcastMsgHandler, executeReplyMsgHandler;
 
     void sendQuery();
     void jobDone();
     void sendGraph();
-    void getFinalProgress();
+    void getFinalProgress(bool aborting=false);
     void configure();
     void sendActivityInitData();
     void recvSlaveInitResp();
@@ -116,6 +116,7 @@ public:
     void readActivityInitData(MemoryBuffer &mb, unsigned slave);
     bool deserializeStats(unsigned node, MemoryBuffer &mb);
     void getStats(IStatisticGatherer &stats);
+    virtual cost_type getDiskAccessCost() override;
     virtual void setComplete(bool tf=true);
     virtual bool prepare(size32_t parentExtractSz, const byte *parentExtract, bool checkDependencies, bool shortCircuit, bool async) override;
     virtual void execute(size32_t _parentExtractSz, const byte *parentExtract, bool checkDependencies, bool async) override;
@@ -156,8 +157,6 @@ class graphmaster_decl CJobMaster : public CJobBase
     Linked<IConstWorkUnit> workunit;
     Owned<IFatalHandler> fatalHandler;
     bool querySent, sendSo, spillsSaved;
-    Int64Array nodeDiskUsage;
-    bool nodeDiskUsageCached;
     StringArray createdFiles;
     Owned<CSlaveMessageHandler> slaveMsgHandler;
     SocketEndpoint agentEp;
@@ -174,7 +173,7 @@ public:
     void registerFile(const char *logicalName, StringArray &clusters, unsigned usageCount=0, WUFileKind fileKind=WUFileStandard, bool temp=false);
     void deregisterFile(const char *logicalName, bool kept=false);
     const SocketEndpoint &queryAgentEp() const { return agentEp; }
-    void broadcast(ICommunicator &comm, CMessageBuffer &msg, mptag_t mptag, unsigned timeout, const char *errorMsg, CReplyCancelHandler *msgHandler=NULL, bool sendOnly=false);
+    void broadcast(ICommunicator &comm, CMessageBuffer &msg, mptag_t mptag, unsigned timeout, const char *errorMsg, CReplyCancelHandler *msgHandler=NULL, bool sendOnly=false, bool aborting=false);
     IPropertyTree *prepareWorkUnitInfo();
     void sendQuery();
     void jobDone();
@@ -197,7 +196,6 @@ public:
         CriticalBlock b(wuDirty);
         dirty = true;
     }
-    
 // CJobBase impls.
     virtual mptag_t allocateMPTag();
     virtual void freeMPTag(mptag_t tag);
@@ -206,18 +204,17 @@ public:
     CGraphTableCopy executed;
     CriticalSection exceptCrit;
 
-    virtual __int64 getWorkUnitValueInt(const char *prop, __int64 defVal) const;
-    virtual StringBuffer &getWorkUnitValue(const char *prop, StringBuffer &str) const;
-    virtual bool getWorkUnitValueBool(const char *prop, bool defVal) const;
+    virtual __int64 getWorkUnitValueInt(const char *prop, __int64 defVal) const override;
+    virtual StringBuffer &getWorkUnitValue(const char *prop, StringBuffer &str) const override;
+    virtual bool getWorkUnitValueBool(const char *prop, bool defVal) const override;
+    virtual double getWorkUnitValueReal(const char *prop, double defVal) const override;
+
 
 // IExceptionHandler
     virtual bool fireException(IException *e);
 
     virtual void addCreatedFile(const char *file);
-    virtual __int64 addNodeDiskUsage(unsigned node, __int64 sz);
 
-    __int64 queryNodeDiskUsage(unsigned node);
-    void setNodeDiskUsage(unsigned node, __int64 sz);
     bool queryCreatedFile(const char *file);
 
     virtual IFatalHandler *clearFatalHandler();
@@ -242,15 +239,21 @@ class graphmaster_decl CMasterActivity : public CActivityBase, implements IThrea
     bool asyncStart;
     MemoryBuffer *data;
     CriticalSection progressCrit;
-    IArrayOf<IDistributedFile> readFiles;
-
+    std::vector<Owned<IDistributedFile>> readFiles;
+    std::unordered_map<std::string, unsigned> readFilesMap; // NB: IDistributedFile pointers are owned by readFiles
+    std::vector<unsigned> fileStatsTable;
 protected:
     std::vector<OwnedPtr<CThorEdgeCollection>> edgeStatsVector;
     CThorStatsCollection statsCollection;
     IBitSet *notedWarnings;
+    cost_type diskAccessCost = 0;
+    std::vector<OwnedPtr<CThorStatsCollection>> fileStats;
 
-    void addReadFile(IDistributedFile *file, bool temp=false);
     IDistributedFile *queryReadFile(unsigned f);
+    unsigned queryReadFileId(const char *lfnName);
+    IDistributedFile *findReadFile(const char *lfnName);
+    IDistributedFile *lookupReadFile(const char *lfnName, AccessMode mode, bool jobTemp, bool temp, bool opt, bool statsForMultipleFiles=false, const StatisticsMapping &statsMapping=diskReadRemoteStatistics, unsigned * fileStatsStartEntry=nullptr);
+    cost_type calcFileReadCostStats(bool updateFileProps);
     virtual void process() { }
 public:
     IMPLEMENT_IINTERFACE_USING(CActivityBase)
@@ -271,11 +274,11 @@ public:
     virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave) { }
     virtual void slaveDone(size32_t slaveIdx, MemoryBuffer &mb) { }
 
-    virtual void preStart(size32_t parentExtractSz, const byte *parentExtract);
     virtual void startProcess(bool async=true);
     virtual bool wait(unsigned timeout);
     virtual void done();
     virtual void kill();
+    virtual cost_type getDiskAccessCost() const { return diskAccessCost; }
 
 // IExceptionHandler
     virtual bool fireException(IException *e);

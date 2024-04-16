@@ -143,6 +143,7 @@ class WORKUNIT_API CLocalWorkUnit : implements IWorkUnit , implements IExtendedW
 {
     friend StringBuffer &exportWorkUnitToXML(const IConstWorkUnit *wu, StringBuffer &str, bool decodeGraphs, bool includeProgress, bool hidePasswords);
     friend void exportWorkUnitToXMLFile(const IConstWorkUnit *wu, const char * filename, unsigned extraXmlFlags, bool decodeGraphs, bool includeProgress, bool hidePasswords, bool regressionTest);
+    friend class CLocalWUGraph;
 
 protected:
     Owned<IPropertyTree> p;
@@ -150,6 +151,7 @@ protected:
     mutable Owned<IWUQuery> query;
     mutable Owned<IWUWebServicesInfo> webServicesInfo;
     mutable Owned<IWorkflowItemIterator> workflowIterator;
+    mutable Owned<IPropertyTree> indirectTree;
     mutable bool workflowIteratorCached;
     mutable bool resultsCached;
     mutable unsigned char graphsCached;  // 0 means uncached, 1 means light, 2 means heavy
@@ -185,6 +187,7 @@ public:
     void beforeDispose();
     
     IPropertyTree *getUnpackedTree(bool includeProgress) const;
+    IPropertyTree *queryMergedTree() const;
 
     ISecManager *querySecMgr() { return secMgr.get(); }
     ISecUser *querySecUser() { return secUser.get(); }
@@ -229,7 +232,7 @@ public:
     virtual void setGraphState(const char *graphName, unsigned wfid, WUGraphState state) const;
     virtual void setNodeState(const char *graphName, WUGraphIDType nodeId, WUGraphState state) const;
     virtual WUGraphState queryNodeState(const char *graphName, WUGraphIDType nodeId) const;
-    virtual IWUGraphStats *updateStats(const char *graphName, StatisticCreatorType creatorType, const char * creator, unsigned _wfid, unsigned subgraph) const override;
+    virtual IWUGraphStats *updateStats(const char *graphName, StatisticCreatorType creatorType, const char * creator, unsigned _wfid, unsigned subgraph, bool merge) const override;
     void clearGraphProgress() const;
     virtual void import(IPropertyTree *wuTree, IPropertyTree *graphProgressTree) {}; //No GraphProgressTree in CLocalWorkUnit.
 
@@ -238,6 +241,7 @@ public:
     virtual IConstWUPluginIterator & getPlugins() const;
     virtual IConstWULibraryIterator & getLibraries() const;
     virtual WUPriorityClass getPriority() const;
+    virtual double getCost() const;
     virtual const char *queryPriorityDesc() const;
     virtual int getPriorityLevel() const;
     virtual int getPriorityValue() const;
@@ -264,6 +268,7 @@ public:
     virtual const IPropertyTree *getXmlParams() const;
     virtual unsigned __int64 getHash() const;
     virtual IStringIterator *getLogs(const char *type, const char *component) const;
+    virtual IPropertyTreeIterator *getProcessTypes() const;
     virtual IStringIterator *getProcesses(const char *type) const;
     virtual IPropertyTreeIterator* getProcesses(const char *type, const char *instance) const;
     virtual IStringVal & getSnapshot(IStringVal & str) const;
@@ -278,6 +283,7 @@ public:
     virtual bool isProtected() const;
     virtual bool isPausing() const;
     virtual IWorkUnit& lock();
+    virtual IConstWorkUnit *unlock();
     virtual void requestAbort();
     virtual unsigned calculateHash(unsigned prevHash);
     virtual void copyWorkUnit(IConstWorkUnit *cached, bool copyStats, bool all);
@@ -291,7 +297,6 @@ public:
     virtual unsigned getCodeVersion() const;
     virtual unsigned getWuidVersion() const;
     virtual void getBuildVersion(IStringVal & buildVersion, IStringVal & eclVersion) const;
-    virtual IPropertyTree * getDiskUsageStats();
     virtual IPropertyTreeIterator & getFileIterator() const;
     virtual bool archiveWorkUnit(const char *base,bool del,bool ignoredllerrors,bool deleteOwned,bool exportAssociatedFiles);
     virtual IJlibDateTime & getTimeScheduled(IJlibDateTime &val) const;
@@ -303,11 +308,14 @@ public:
     virtual unsigned getTotalThorTime() const;
     virtual IStringVal & getAbortBy(IStringVal & str) const;
     virtual unsigned __int64 getAbortTimeStamp() const;
-
+    virtual cost_type getExecuteCost() const;
+    virtual cost_type getFileAccessCost() const;
+    virtual cost_type getCompileCost() const;
     void clearExceptions(const char *source=nullptr);
     void commit();
     IWUException *createException();
     void addProcess(const char *type, const char *instance, unsigned pid, unsigned max, const char *pattern, bool singleLog, const char *log);
+    bool setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *sequence);
     void setAction(WUAction action);
     void setApplicationValue(const char * application, const char * propname, const char * value, bool overwrite);
     void setApplicationValueInt(const char * application, const char * propname, int value, bool overwrite);
@@ -321,6 +329,7 @@ public:
     void setDebugValueInt(const char * propname, int value, bool overwrite);
     void setJobName(const char * value);
     void setPriority(WUPriorityClass cls);
+    void setCost(double cost);
     void setPriorityLevel(int level);
     void setRescheduleFlag(bool value);
     void setResultLimit(unsigned value);
@@ -367,7 +376,6 @@ public:
     void resetBeforeGeneration();
     void deleteTempFiles(const char *graph, bool deleteOwned, bool deleteJobOwned);
     void deleteTemporaries();
-    void addDiskUsageStats(__int64 avgNodeUsage, unsigned minNode, __int64 minNodeUsage, unsigned maxNode, __int64 maxNodeUsage, __int64 graphId);
     void setTimeScheduled(const IJlibDateTime &val);
     virtual void subscribe(WUSubscribeOptions options) {};
 
@@ -379,7 +387,7 @@ public:
     IWorkUnit &lockRemote(bool commit);
     void unlockRemote();
     void abort();
-    bool switchThorQueue(const char *cluster, IQueueSwitcher *qs);
+    bool switchThorQueue(const char *cluster, IQueueSwitcher *qs, const char *item);
     void setAllowedClusters(const char *value);
     IStringVal & getAllowedClusters(IStringVal & str) const;
     void remoteCheckAccess(IUserDescriptor *user, bool writeaccess) const;
@@ -629,20 +637,20 @@ class WORKUNIT_API CLocalWUGraph : implements IConstWUGraph, public CInterface
     mutable Owned<IPropertyTree> graph; // cached copy of graph xgmml
     unsigned wuidVersion;
 
-    void mergeProgress(IPropertyTree &tree, IPropertyTree &progressTree, const unsigned &progressV) const;
+    void mergeProgress(IPropertyTree &tree, const IPropertyTree &progressTree, const unsigned progressV) const;
 
 public:
     IMPLEMENT_IINTERFACE;
     CLocalWUGraph(const CLocalWorkUnit &owner, IPropertyTree *p);
 
-    virtual IStringVal & getXGMML(IStringVal & ret, bool mergeProgress) const override;
+    virtual IStringVal & getXGMML(IStringVal & ret, bool mergeProgress, bool doFormatStats) const override;
     virtual IStringVal & getName(IStringVal & ret) const override;
     virtual IStringVal & getLabel(IStringVal & ret) const override;
     virtual IStringVal & getTypeName(IStringVal & ret) const override;
     virtual WUGraphType getType() const override;
     virtual WUGraphState getState() const override;
     virtual unsigned getWfid() const override;
-    virtual IPropertyTree * getXGMMLTree(bool mergeProgress) const override;
+    virtual IPropertyTree * getXGMMLTree(bool mergeProgress, bool doFormatStats) const override;
     virtual IPropertyTree * getXGMMLTreeRaw() const override;
 
     void setName(const char *str);
@@ -656,15 +664,16 @@ public:
 class WORKUNIT_API CWuGraphStats : public CInterfaceOf<IWUGraphStats>
 {
 public:
-    CWuGraphStats(IPropertyTree *_progress, StatisticCreatorType _creatorType, const char * _creator, unsigned wfid, const char * _rootScope, unsigned _id);
+    CWuGraphStats(StatisticCreatorType _creatorType, const char * _creator, unsigned wfid, const char * _rootScope, unsigned _id, bool _merge);
     virtual void beforeDispose();
     virtual IStatisticGatherer & queryStatsBuilder();
 protected:
-    Owned<IPropertyTree> progress;
+    virtual IPropertyTree &queryProgressTree() = 0;
     Owned<IStatisticGatherer> collector;
     StringAttr creator;
     StatisticCreatorType creatorType;
     unsigned id;
+    bool merge;
 };
 
 class WORKUNIT_API CWorkUnitWatcher : public CInterface, implements IWorkUnitWatcher, implements ISDSSubscription

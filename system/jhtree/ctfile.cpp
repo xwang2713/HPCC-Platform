@@ -28,6 +28,7 @@
 
 #include "ctfile.hpp"
 #include "jstats.h"
+#include "zcrypt.hpp"
 
 void SwapBigEndian(KeyHdr &hdr)
 {
@@ -82,6 +83,7 @@ void SwapBigEndian(KeyHdr &hdr)
     _WINREV(hdr.metadataHead);
     _WINREV(hdr.bloomHead);
     _WINREV(hdr.partitionFieldMask);
+    _WINREV(hdr.firstLeaf);
 }
 
 inline void SwapBigEndian(NodeHdr &hdr)
@@ -91,8 +93,8 @@ inline void SwapBigEndian(NodeHdr &hdr)
     _WINREV(hdr.numKeys);
     _WINREV(hdr.keyBytes);
     _WINREV(hdr.crc32);
-//   _WINREV(hdr.memNumber);
-//   _WINREV(hdr.leafFlag);
+//   _WINREV(hdr.compressionType);
+//   _WINREV(hdr.nodeType);
 }
 
 extern bool isCompressedIndex(const char *filename)
@@ -108,7 +110,12 @@ extern bool isCompressedIndex(const char *filename)
             SwapBigEndian(hdr);
             if (hdr.nodeSize && size % hdr.nodeSize == 0 && hdr.ktype & (HTREE_COMPRESSED_KEY|HTREE_QUICK_COMPRESSED_KEY))
             {
+#ifdef _DEBUG
+                //In debug mode always use the trailing header if it is available to ensure that code path is tested
                 if (hdr.ktype & USE_TRAILING_HEADER)
+#else
+                if (hdr.ktype & TRAILING_HEADER_ONLY)
+#endif
                 {
                     if (io->read(size-hdr.nodeSize, sizeof(hdr), &hdr) != sizeof(hdr))
                         return false;
@@ -145,7 +152,12 @@ extern jhtree_decl bool isIndexFile(IFile *file)
         SwapBigEndian(hdr);
         if (hdr.nodeSize && (size % hdr.nodeSize == 0))
         {
+#ifdef _DEBUG
+            //In debug mode always use the trailing header if it is available to ensure that code path is tested
             if (hdr.ktype & USE_TRAILING_HEADER)
+#else
+            if (hdr.ktype & TRAILING_HEADER_ONLY)
+#endif
             {
                 if (io->read(size-hdr.nodeSize, sizeof(hdr), &hdr) != sizeof(hdr))
                     return false;
@@ -188,7 +200,17 @@ void CKeyHdr::load(KeyHdr &_hdr)
         throw MakeKeyException(KeyExcpt_IncompatVersion, "This build is compatible with key versions <= %u. Key is version %u", KEYBUILD_VERSION, (unsigned) hdr.version);
 }
 
-void CKeyHdr::write(IFileIOStream *out, CRC32 *crc)
+unsigned int CKeyHdr::getMaxKeyLength() const
+{
+    return hdr.length; 
+}
+
+bool CKeyHdr::isVariable() const
+{
+    return (hdr.ktype & HTREE_VARSIZE) == HTREE_VARSIZE; 
+}
+
+void CWriteKeyHdr::write(IFileIOStream *out, CRC32 *crc)
 {
     unsigned nodeSize = hdr.nodeSize;
     MemoryAttr ma;
@@ -201,51 +223,45 @@ void CKeyHdr::write(IFileIOStream *out, CRC32 *crc)
         crc->tally(nodeSize, buf);
 }
 
-unsigned int CKeyHdr::getMaxKeyLength() 
-{
-    return hdr.length; 
-}
-
-bool CKeyHdr::isVariable() 
-{
-    return (hdr.ktype & HTREE_VARSIZE) == HTREE_VARSIZE; 
-}
-
 //=========================================================================================================
 
 CNodeBase::CNodeBase()
 {
     keyHdr = NULL;
     fpos = 0;
-    keyLen = 0;
-    keyType = 0;
-    keyCompareLen = 0;
-    isVariable = false;
 }
 
-void CNodeBase::load(CKeyHdr *_keyHdr, offset_t _fpos)
+void CNodeBase::init(CKeyHdr *_keyHdr, offset_t _fpos)
 {
     _keyHdr->Link();
     keyHdr = _keyHdr;
-    keyLen = keyHdr->getMaxKeyLength();
-    keyCompareLen = keyHdr->getNodeKeyLength();
-    keyType = keyHdr->getKeyType();
     memset(&hdr, 0, sizeof(hdr));
     fpos = _fpos;
-    isVariable = keyHdr->isVariable();
 }
 
 CNodeBase::~CNodeBase()
 {
-    keyHdr->Release();
+    ::Release(keyHdr);
 }
 
+const char *CNodeBase::getNodeTypeName() const
+{
+    switch (hdr.nodeType)
+    {
+    case NodeBranch: return "NodeBranch";
+    case NodeLeaf: return "NodeLeaf";
+    case NodeBlob: return "NodeBlob";
+    case NodeMeta: return "NodeMeta";
+    case NodeBloom: return "NodeBloom";
+    default: return "Unknown";
+    }
+}
 
 //=========================================================================================================
 
 CWriteNodeBase::CWriteNodeBase(offset_t _fpos, CKeyHdr *_keyHdr) 
 {
-    CNodeBase::load(_keyHdr, _fpos);
+    CNodeBase::init(_keyHdr, _fpos);
     unsigned nodeSize = keyHdr->getNodeSize();
     nodeBuf = (char *) malloc(nodeSize);
     memset(nodeBuf, 0, nodeSize);
@@ -267,8 +283,6 @@ void CWriteNodeBase::writeHdr()
 
 void CWriteNodeBase::write(IFileIOStream *out, CRC32 *crc)
 {
-    if (isLeaf() && (keyType & HTREE_COMPRESSED_KEY))
-        lzwcomp.close();
     assertex(hdr.keyBytes<=maxBytes);
     writeHdr();
     out->seek(getFpos(), IFSbegin);
@@ -279,10 +293,86 @@ void CWriteNodeBase::write(IFileIOStream *out, CRC32 *crc)
 
 //=========================================================================================================
 
-CWriteNode::CWriteNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeaf) : CWriteNodeBase(_fpos, _keyHdr)
+CWriteNode::CWriteNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeafNode) : CWriteNodeBase(_fpos, _keyHdr)
 {
-    hdr.leafFlag = isLeaf ? NodeLeaf : NodeBranch;
-    if (!isLeaf)
+    hdr.nodeType = isLeafNode ? NodeLeaf : NodeBranch;
+}
+
+//=========================================================================================================
+
+CPOCWriteNode::CPOCWriteNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeafNode) : CWriteNode(_fpos, _keyHdr, isLeafNode)
+{
+    assert(isLeafNode);   // This POC format is just for leaf nodes
+    keyedLen = keyHdr->getNodeKeyLength();
+    hdr.compressionType = SplitPayload;
+    // Initialize keyBytes to reflect our additional header info, plus the final entry in the offsets table (added later)
+    keyPtr += sizeof(SplitNodeHdr);
+    hdr.keyBytes = sizeof(SplitNodeHdr) + sizeof(unsigned short);
+}
+
+CPOCWriteNode::~CPOCWriteNode()
+{
+}
+
+bool CPOCWriteNode::add(offset_t pos, const void *data, size32_t size, unsigned __int64 sequence)
+{
+    if (!hdr.numKeys)
+        firstSequence = sequence;
+    if (0xffff == hdr.numKeys)
+        return false;
+    unsigned prevLength = payloadBuffer.length();
+    // Note: zlib_deflate does not support appending - could probably recode it to do so, if we wanted...
+    MemoryBuffer tmp;
+    tmp.append(size, data);
+    _WINREV(pos);
+    tmp.append(sizeof(pos), &pos);
+    MemoryBuffer thisRowBuffer;
+    zlib_deflate(thisRowBuffer, tmp.toByteArray(), tmp.length(), GZ_DEFAULT_COMPRESSION, ZlibCompressionType::ZLIB_DEFLATE);
+    size32_t deflateLen = thisRowBuffer.length();
+    // This row will require keyedLen bytes for the key, deflateLen for the payload, and a short for the offset
+    if (hdr.keyBytes + keyedLen + deflateLen + sizeof(unsigned short) > maxBytes)
+        return false;
+    payloadBuffer.append(deflateLen, thisRowBuffer.toByteArray());
+    offsets.append(prevLength);
+    hdr.keyBytes += keyedLen + deflateLen + sizeof(unsigned short);
+    memcpy(keyPtr, data, keyedLen);
+    keyPtr += keyedLen;
+    hdr.numKeys++;
+    return true;
+}
+
+void CPOCWriteNode::write(IFileIOStream *out, CRC32 *crc)
+{
+    // Construct nodebuf...
+    assert(offsets.length()==hdr.numKeys);
+    offsets.append(payloadBuffer.length());
+    // Recalculate offsets to be based on node start
+    unsigned firstRowOffset = sizeof(NodeHdr) + sizeof(SplitNodeHdr) + hdr.numKeys*keyedLen + offsets.length()*sizeof(unsigned short);
+    ForEachItemIn(idx, offsets)
+    {
+        *(short *) keyPtr = offsets.item(idx) + firstRowOffset;
+        keyPtr += sizeof(unsigned short);
+    }
+    memcpy(keyPtr, payloadBuffer.toByteArray(), payloadBuffer.length());
+    keyPtr += payloadBuffer.length();
+    assert(keyPtr - nodeBuf == hdr.keyBytes + sizeof(NodeHdr));
+    SplitNodeHdr *splitHdr = (SplitNodeHdr *) (nodeBuf + sizeof(NodeHdr));
+    splitHdr->firstSequence = firstSequence; 
+    CWriteNode::write(out, crc);
+}
+
+const void *CPOCWriteNode::getLastKeyValue() const
+{
+    assertex(hdr.numKeys);
+    return keyPtr - keyedLen;
+}
+
+//=========================================================================================================
+
+CLegacyWriteNode::CLegacyWriteNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeafNode) : CWriteNode(_fpos, _keyHdr, isLeafNode)
+{
+    keyLen = keyHdr->getMaxKeyLength();
+    if (!isLeafNode)
     {
         keyLen = keyHdr->getNodeKeyLength();
     }
@@ -290,13 +380,14 @@ CWriteNode::CWriteNode(offset_t _fpos, CKeyHdr *_keyHdr, bool isLeaf) : CWriteNo
     lastSequence = 0;
 }
 
-CWriteNode::~CWriteNode()
+CLegacyWriteNode::~CLegacyWriteNode()
 {
     free(lastKeyValue);
 }
 
-bool CWriteNode::add(offset_t pos, const void *indata, size32_t insize, unsigned __int64 sequence)
+bool CLegacyWriteNode::add(offset_t pos, const void *indata, size32_t insize, unsigned __int64 sequence)
 {
+    char keyType = keyHdr->getKeyType();
     if (isLeaf() && !hdr.numKeys)
     {
         unsigned __int64 rsequence = sequence;
@@ -308,7 +399,7 @@ bool CWriteNode::add(offset_t pos, const void *indata, size32_t insize, unsigned
     if (isLeaf() && (keyType & HTREE_COMPRESSED_KEY))
     {
         if (0 == hdr.numKeys)
-            lzwcomp.open(keyPtr, maxBytes-hdr.keyBytes, isVariable, (keyType&HTREE_QUICK_COMPRESSED_KEY)==HTREE_QUICK_COMPRESSED_KEY);
+            lzwcomp.open(keyPtr, maxBytes-hdr.keyBytes, keyHdr->isVariable(), (keyType&HTREE_QUICK_COMPRESSED_KEY)==HTREE_QUICK_COMPRESSED_KEY);
         if (0xffff == hdr.numKeys || 0 == lzwcomp.writekey(pos, (const char *)indata, insize, sequence))
         {
             lzwcomp.close();
@@ -321,35 +412,22 @@ bool CWriteNode::add(offset_t pos, const void *indata, size32_t insize, unsigned
         if (0xffff == hdr.numKeys)
             return false;
         bool lastnode = false;
-        if (!indata)
-        {
-            lastnode = true;
-            indata = alloca(insize);
-            memset((void *) indata, 0xff, insize);
-        }
+        assertex (indata);
         //assertex(insize==keyLen);
         const void *data;
         int size;
 
-        if (keyType & COL_PREFIX)
-        {
-            char *result = (char *) alloca(insize+1);  // Gets bigger if no leading common!
-            size = compressValue((const char *) indata, insize, result);
-            data = result;
-        }
-        else
-        {
-            size = insize;
-            data = indata;
-        }
+        char *result = (char *) alloca(insize+1);  // Gets bigger if no leading common!
+        size = compressValue((const char *) indata, insize, result);
+        data = result;
 
         int bytes = sizeof(pos) + size;
-        if (isVariable)
+        if (keyHdr->isVariable())
             bytes += sizeof(KEYRECSIZE_T);
         if (hdr.keyBytes + bytes >= maxBytes)    // probably could be '>' (loses byte)
             return false;
 
-        if (isVariable && isLeaf())
+        if (keyHdr->isVariable() && isLeaf())
         {
             KEYRECSIZE_T _insize = insize;
             _WINREV(_insize);
@@ -372,7 +450,14 @@ bool CWriteNode::add(offset_t pos, const void *indata, size32_t insize, unsigned
     return true;
 }
 
-size32_t CWriteNode::compressValue(const char *keyData, size32_t size, char *result)
+void CLegacyWriteNode::write(IFileIOStream *out, CRC32 *crc)
+{
+    if (isLeaf() && (keyHdr->getKeyType() & HTREE_COMPRESSED_KEY))
+        lzwcomp.close();
+    CWriteNode::write(out, crc);
+}
+
+size32_t CLegacyWriteNode::compressValue(const char *keyData, size32_t size, char *result)
 {
     unsigned int pack = 0;
     if (hdr.numKeys)
@@ -393,7 +478,7 @@ size32_t CWriteNode::compressValue(const char *keyData, size32_t size, char *res
 
 CBlobWriteNode::CBlobWriteNode(offset_t _fpos, CKeyHdr *_keyHdr) : CWriteNodeBase(_fpos, _keyHdr)
 {
-    hdr.leafFlag = NodeBlob;
+    hdr.nodeType = NodeBlob;
     lzwcomp.openBlob(keyPtr, maxBytes);
 }
 
@@ -407,6 +492,12 @@ unsigned __int64 CBlobWriteNode::makeBlobId(offset_t nodepos, unsigned offset)
     assertex((nodepos & I64C(0xffff000000000000)) == 0);
     assertex((offset & 0xf) == 0);
     return (((unsigned __int64) offset) << 44) | nodepos;
+}
+
+void CBlobWriteNode::write(IFileIOStream *out, CRC32 *crc)
+{
+    lzwcomp.close();
+    CWriteNodeBase::write(out, crc);
 }
 
 unsigned __int64 CBlobWriteNode::add(const char * &data, size32_t &size)
@@ -427,7 +518,7 @@ unsigned __int64 CBlobWriteNode::add(const char * &data, size32_t &size)
 
 CMetadataWriteNode::CMetadataWriteNode(offset_t _fpos, CKeyHdr *_keyHdr) : CWriteNodeBase(_fpos, _keyHdr)
 {
-    hdr.leafFlag = NodeMeta;
+    hdr.nodeType = NodeMeta;
 }
 
 size32_t CMetadataWriteNode::set(const char * &data, size32_t &size)
@@ -444,7 +535,7 @@ size32_t CMetadataWriteNode::set(const char * &data, size32_t &size)
 
 CBloomFilterWriteNode::CBloomFilterWriteNode(offset_t _fpos, CKeyHdr *_keyHdr) : CWriteNodeBase(_fpos, _keyHdr)
 {
-    hdr.leafFlag = NodeBloom;
+    hdr.nodeType = NodeBloom;
 }
 
 size32_t CBloomFilterWriteNode::set(const byte * &data, size32_t &size)
@@ -487,18 +578,37 @@ void CBloomFilterWriteNode::put8(__int64 val)
 
 //=========================================================================================================
 
-CJHTreeNode::CJHTreeNode()
-{
-    keyBuf = NULL;
-    keyRecLen = 0;
-    firstSequence = 0;
-    expandedSize = 0;
-}
-
 void CJHTreeNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos, bool needCopy)
 {
-    CNodeBase::load(_keyHdr, _fpos);
-    unpack(rawData, needCopy);
+    CNodeBase::init(_keyHdr, _fpos);
+    assertex(!keyBuf && (expandedSize == 0));
+    memcpy(&hdr, rawData, sizeof(hdr));
+    SwapBigEndian(hdr);
+    __int64 maxsib = keyHdr->getHdrStruct()->phyrec;
+    if (!hdr.isValid(keyHdr->getNodeSize()))
+    {
+        PROGLOG("hdr.nodeType=%d",(int)hdr.nodeType);
+        PROGLOG("hdr.rightSib=%" I64F "d",hdr.rightSib);
+        PROGLOG("hdr.leftSib=%" I64F "d",hdr.leftSib);
+        PROGLOG("maxsib=%" I64F "d",maxsib);
+        PROGLOG("nodeSize=%d", keyHdr->getNodeSize());
+        PROGLOG("keyBytes=%d",(int)hdr.keyBytes);
+        PrintStackReport();
+        throw MakeStringException(0, "Htree: Corrupt key node detected");
+    }
+    const char *data = ((const char *) rawData) + sizeof(hdr);
+    if (hdr.crc32)
+    {
+        unsigned crc = crc32(data, hdr.keyBytes, 0);
+        if (hdr.crc32 != crc)
+            throw MakeStringException(0, "CRC error on key node");
+    }
+}
+
+void CJHTreeNode::dump(FILE *out, int length, unsigned rowCount, bool raw) const
+{
+    if (!raw)
+        fprintf(out, "Node dump: fpos(%" I64F "d) type %s\n", getFpos(), getNodeTypeName());
 }
 
 CJHTreeNode::~CJHTreeNode()
@@ -529,7 +639,7 @@ void *CJHTreeNode::allocMem(size32_t len)
     return ret;
 }
 
-char *CJHTreeNode::expandKeys(void *src,size32_t &retsize)
+char *CJHTreeNode::expandData(const void *src,size32_t &retsize)
 {
     Owned<IExpander> exp = createLZWExpander(true);
     int len=exp->init(src);
@@ -544,173 +654,333 @@ char *CJHTreeNode::expandKeys(void *src,size32_t &retsize)
     return outkeys;
 }
 
-size32_t CJHTreeNode::getNodeSize() const
+//------------------------------
+
+// A SplitSearchNode is a POC node type where the key fields are stored raw uncompressed, and the payload fields are decompressed only when retrieving a row
+
+CJHSplitSearchNode::~CJHSplitSearchNode()
 {
-    return keyHdr->getNodeSize();
+    if (ownedData)
+        free((void *) nodeData);
 }
 
-void CJHTreeNode::unpack(const void *node, bool needCopy)
+bool CJHSplitSearchNode::getKeyAt(unsigned int index, char *dst) const
 {
-    memcpy(&hdr, node, sizeof(hdr));
-    SwapBigEndian(hdr);
-    __int64 maxsib = keyHdr->getHdrStruct()->phyrec;
-    if (!hdr.isValid(keyHdr->getNodeSize()))
+    if (index >= hdr.numKeys) return false;
+    if (dst)
     {
-        PROGLOG("hdr.leafFlag=%d",(int)hdr.leafFlag);
-        PROGLOG("hdr.rightSib=%" I64F "d",hdr.rightSib);
-        PROGLOG("hdr.leftSib=%" I64F "d",hdr.leftSib);
-        PROGLOG("maxsib=%" I64F "d",maxsib);
-        PROGLOG("nodeSize=%d", keyHdr->getNodeSize());
-        PROGLOG("keyBytes=%d",(int)hdr.keyBytes);
-        PrintStackReport();
-        throw MakeStringException(0, "Htree: Corrupt key node detected");
+        const byte * p = keyRows + index*keyRecLen;
+        memcpy(dst, p, keyRecLen);
     }
-    if (hdr.leafFlag == NodeBranch)
+    return true;
+}
+
+unsigned CJHSplitSearchNode::expandPayload(unsigned int index, StringBuffer &tmp) const
+{
+    assert(index < hdr.numKeys);
+    const byte * compressedRow = nodeData + payloadOffsets[index];
+    size32_t compressedLength = payloadOffsets[index+1] - payloadOffsets[index];
+    zlib_inflate(compressedRow, compressedLength, tmp, ZlibCompressionType::ZLIB_DEFLATE, true);
+    return tmp.length();
+}
+
+bool CJHSplitSearchNode::fetchPayload(unsigned int index, char *dst) const
+{
+    if (index >= hdr.numKeys) return false;
+    if (dst)
+    {
+        // As this is just a POC, the fact that we are decompressing to a buffer then copying is acceptable
+        StringBuffer tmp;  // Should be a MemoryBuffer really
+        size32_t expandedSize = expandPayload(index, tmp);
+        memcpy(dst, tmp.str(), expandedSize);
+    }
+    return true;
+}
+size32_t CJHSplitSearchNode::getSizeAt(unsigned int index) const
+{
+    if (index >= hdr.numKeys) return 0;
+    StringBuffer tmp;  // Should be a MemoryBuffer really
+    return expandPayload(index, tmp);
+}
+offset_t CJHSplitSearchNode::getFPosAt(unsigned int index) const
+{
+    // NOTE - getFPosAt is only used for branch nodes, so no need to implement here, but if we did, it would look something like this:
+    if (index >= hdr.numKeys) return 0;
+    StringBuffer tmp;  // Should be a MemoryBuffer really
+    size32_t expandedSize = expandPayload(index, tmp);
+    offset_t pos;
+    memcpy(&pos, tmp.str()+expandedSize-sizeof(offset_t), sizeof(offset_t));
+    _WINREV(pos);
+    return pos;
+}
+
+unsigned __int64 CJHSplitSearchNode::getSequence(unsigned int index) const
+{
+    if (index >= hdr.numKeys) return 0;
+    return firstSequence + index;
+}
+
+int CJHSplitSearchNode::compareValueAt(const char *src, unsigned int index) const
+{
+    return memcmp(src, keyRows + index*keyRecLen, keyRecLen);
+}
+
+int CJHSplitSearchNode::locateGE(const char * search, unsigned minIndex) const
+{
+#ifdef TIME_NODE_SEARCH
+    CCycleTimer timer;
+#endif
+    unsigned int a = minIndex;
+    int b = getNumKeys();
+    // first search for first GTE entry (result in b(<),a(>=))
+    while ((int)a<b)
+    {
+        int i = a+(b-a)/2;
+        int rc = compareValueAt(search, i);
+        if (rc>0)
+            a = i+1;
+        else
+            b = i;
+    }
+
+#ifdef TIME_NODE_SEARCH
+    unsigned __int64 elapsed = timer.elapsedCycles();
+    if (isBranch())
+        branchSearchCycles += elapsed;
+    else
+        leafSearchCycles += elapsed;
+#endif
+    return a;
+}
+
+int CJHSplitSearchNode::locateGT(const char * search, unsigned minIndex) const
+{
+    unsigned int a = minIndex;
+    int b = getNumKeys();
+    // Locate first record greater than src
+    while ((int)a<b)
+    {
+        //MORE: Note sure why the index is subtly different to the GTE version
+        //I suspect no good reason, and may mess up cache locality.
+        int i = a+(b+1-a)/2;
+        int rc = compareValueAt(search, i-1);
+        if (rc>=0)
+            a = i;
+        else
+            b = i-1;
+    }
+    return a;
+}
+
+// Loading etc
+
+void CJHSplitSearchNode::load(CKeyHdr *keyHdr, const void *rawData, offset_t fpos, bool needCopy)
+{
+    CJHSearchNode::load(keyHdr, rawData, fpos, needCopy);
+    if (needCopy)
+    {
+        nodeData = (const byte *) malloc(hdr.keyBytes + sizeof(hdr));
+        memcpy((byte *) nodeData, rawData, hdr.keyBytes + sizeof(hdr));
+        ownedData = true;
+    }
+    else
+    {
+        nodeData = (const byte *) rawData;
+        ownedData = false;
+    }
+    const SplitNodeHdr *splitHdr = (const SplitNodeHdr *) (nodeData + sizeof(NodeHdr));
+    firstSequence = splitHdr->firstSequence;
+    keyRecLen = keyHdr->getNodeKeyLength();
+    keyRows = nodeData + sizeof(NodeHdr) + sizeof(SplitNodeHdr);
+    payloadOffsets = (const short *) (keyRows + keyRecLen*getNumKeys());
+}
+
+void CJHSplitSearchNode::dump(FILE *out, int length, unsigned rowCount, bool raw) const
+{
+    CJHSearchNode::dump(out, length, rowCount, raw);
+    // MORE - could put something here...
+}
+
+//------------------------------
+
+int CJHLegacySearchNode::locateGE(const char * search, unsigned minIndex) const
+{
+#ifdef TIME_NODE_SEARCH
+    CCycleTimer timer;
+#endif
+    unsigned int a = minIndex;
+    int b = getNumKeys();
+    // first search for first GTE entry (result in b(<),a(>=))
+    while ((int)a<b)
+    {
+        int i = a+(b-a)/2;
+        int rc = compareValueAt(search, i);
+        if (rc>0)
+            a = i+1;
+        else
+            b = i;
+    }
+
+#ifdef TIME_NODE_SEARCH
+    unsigned __int64 elapsed = timer.elapsedCycles();
+    if (isBranch())
+        branchSearchCycles += elapsed;
+    else
+        leafSearchCycles += elapsed;
+#endif
+    return a;
+}
+
+
+int CJHLegacySearchNode::locateGT(const char * search, unsigned minIndex) const
+{
+    unsigned int a = minIndex;
+    int b = getNumKeys();
+    // Locate first record greater than src
+    while ((int)a<b)
+    {
+        //MORE: Note sure why the index is subtly different to the GTE version
+        //I suspect no good reason, and may mess up cache locality.
+        int i = a+(b+1-a)/2;
+        int rc = compareValueAt(search, i-1);
+        if (rc>=0)
+            a = i;
+        else
+            b = i-1;
+    }
+    return a;
+}
+
+void CJHLegacySearchNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos, bool needCopy)
+{
+    CJHSearchNode::load(_keyHdr, rawData, _fpos, needCopy);
+    keyLen = _keyHdr->getMaxKeyLength();
+    keyCompareLen = _keyHdr->getNodeKeyLength();
+    if (hdr.nodeType == NodeBranch)
         keyLen = keyHdr->getNodeKeyLength();
     keyRecLen = keyLen + sizeof(offset_t);
-    char *keys = ((char *) node) + sizeof(hdr);
-    if (hdr.crc32)
-    {
-        unsigned crc = crc32(keys, hdr.keyBytes, 0);
-        if (hdr.crc32 != crc)
-            throw MakeStringException(0, "CRC error on key node");
-    }
-    if (hdr.leafFlag==NodeLeaf)
+    char keyType = keyHdr->getKeyType();
+    const char *keys = ((const char *) rawData) + sizeof(hdr);
+    if (hdr.nodeType==NodeLeaf)
     {
         firstSequence = *(unsigned __int64 *) keys;
         keys += sizeof(unsigned __int64);
         _WINREV(firstSequence);
     }
-    if(isMetadata() || isBloom())
+    if (hdr.nodeType==NodeLeaf && (keyType & HTREE_COMPRESSED_KEY))
     {
-        unsigned short len = *reinterpret_cast<unsigned short *>(keys);
-        _WINREV(len);
-        expandedSize = len;
-        keyBuf = (char *) allocMem(len);
-        memcpy(keyBuf, keys+sizeof(unsigned short), len);
-    }
-    else if (isLeaf() && (keyType & HTREE_COMPRESSED_KEY))
-    {
-        {
-            MTIME_SECTION(queryActiveTimer(), "Compressed node expand");
-            expandedSize = keyHdr->getNodeSize();
-            bool quick = !isBlob() && (keyType&(HTREE_QUICK_COMPRESSED_KEY|HTREE_VARSIZE))==HTREE_QUICK_COMPRESSED_KEY;
-            keyBuf = NULL;
-            if (!quick)
-                keyBuf = expandKeys(keys,expandedSize);
-        }
+        expandedSize = keyHdr->getNodeSize();
+        if ((keyType & (HTREE_QUICK_COMPRESSED_KEY|HTREE_VARSIZE))==HTREE_QUICK_COMPRESSED_KEY)
+            keyBuf = nullptr;
+        else
+            keyBuf = expandData(keys, expandedSize);
     }
     else
     {
-        int i;
-        if (keyType & COL_PREFIX)
+        if (hdr.numKeys) 
         {
-            MTIME_SECTION(queryActiveTimer(), "COL_PREFIX expand");
-            
-            if (hdr.numKeys) {
-                bool handleVariable = isVariable && isLeaf();
-                KEYRECSIZE_T workRecLen;
-                MemoryBuffer keyBufMb;
-                const char *source = keys;
-                char *target;
-                // do first row
+            bool handleVariable = keyHdr->isVariable() && isLeaf();
+            KEYRECSIZE_T workRecLen;
+            MemoryBuffer keyBufMb;
+            const char *source = keys;
+            char *target;
+            // do first row
+            if (handleVariable) {
+                memcpy(&workRecLen, source, sizeof(workRecLen));
+                _WINREV(workRecLen);
+                size32_t tmpSz = sizeof(workRecLen) + sizeof(offset_t);
+                target = (char *)keyBufMb.reserve(tmpSz+workRecLen);
+                memcpy(target, source, tmpSz);
+                source += tmpSz;
+                target += tmpSz;
+            }
+            else {
+                target = (char *)keyBufMb.reserveTruncate(hdr.numKeys * keyRecLen);
+                workRecLen = keyRecLen - sizeof(offset_t);
+                memcpy(target, source, sizeof(offset_t));
+                source += sizeof(offset_t);
+                target += sizeof(offset_t);
+            }
+
+            // this is where next row gets data from
+            const char *prev, *next = NULL;
+            unsigned prevOffset = 0;
+            if (handleVariable)
+                prevOffset = target-((char *)keyBufMb.bufferBase());
+            else
+                next = target;
+
+            unsigned char pack1 = *source++;
+            assert(0==pack1); // 1st time will be always be 0
+            KEYRECSIZE_T left = workRecLen;
+            while (left--) {
+                *target = *source;
+                source++;
+                target++;
+            }
+            // do subsequent rows
+            for (int i = 1; i < hdr.numKeys; i++) {
                 if (handleVariable) {
                     memcpy(&workRecLen, source, sizeof(workRecLen));
                     _WINREV(workRecLen);
-                    size32_t tmpSz = sizeof(workRecLen) + sizeof(offset_t);
-                    target = (char *)keyBufMb.reserve(tmpSz+workRecLen);
+                    target = (char *)keyBufMb.reserve(sizeof(workRecLen)+sizeof(offset_t)+workRecLen);
+                    size32_t tmpSz = sizeof(workRecLen)+sizeof(offset_t);
                     memcpy(target, source, tmpSz);
-                    source += tmpSz;
                     target += tmpSz;
+                    source += tmpSz;
                 }
-                else {
-                    target = (char *)keyBufMb.reserveTruncate(hdr.numKeys * keyRecLen);
-                    workRecLen = keyRecLen - sizeof(offset_t);
+                else
+                {
                     memcpy(target, source, sizeof(offset_t));
                     source += sizeof(offset_t);
                     target += sizeof(offset_t);
                 }
-
-                // this is where next row gets data from
-                const char *prev, *next = NULL;
-                unsigned prevOffset = 0;
-                if (handleVariable)
+                pack1 = *source++;
+                assert(pack1<=workRecLen);            
+                if (handleVariable) {
+                    prev = ((char *)keyBufMb.bufferBase())+prevOffset;
+                    // for next
                     prevOffset = target-((char *)keyBufMb.bufferBase());
-                else
+                }
+                else {
+                    prev = next;
                     next = target;
-
-                unsigned char pack1 = *source++;
-#ifdef _DEBUG
-                assertex(0==pack1); // 1st time will be always be 0
-#endif
-                KEYRECSIZE_T left = workRecLen;
+                }
+                left = workRecLen - pack1;
+                while (pack1--) {
+                    *target = *prev;
+                    prev++;
+                    target++;
+                }
                 while (left--) {
                     *target = *source;
                     source++;
                     target++;
                 }
-                // do subsequent rows
-                for (i = 1; i < hdr.numKeys; i++) {
-                    if (handleVariable) {
-                        memcpy(&workRecLen, source, sizeof(workRecLen));
-                        _WINREV(workRecLen);
-                        target = (char *)keyBufMb.reserve(sizeof(workRecLen)+sizeof(offset_t)+workRecLen);
-                        size32_t tmpSz = sizeof(workRecLen)+sizeof(offset_t);
-                        memcpy(target, source, tmpSz);
-                        target += tmpSz;
-                        source += tmpSz;
-                    }
-                    else
-                    {
-                        memcpy(target, source, sizeof(offset_t));
-                        source += sizeof(offset_t);
-                        target += sizeof(offset_t);
-                    }
-                    pack1 = *source++;
-#ifdef _DEBUG
-                    assertex(pack1<=workRecLen);            
-#endif
-                    if (handleVariable) {
-                        prev = ((char *)keyBufMb.bufferBase())+prevOffset;
-                        // for next
-                        prevOffset = target-((char *)keyBufMb.bufferBase());
-                    }
-                    else {
-                        prev = next;
-                        next = target;
-                    }
-                    left = workRecLen - pack1;
-                    while (pack1--) {
-                        *target = *prev;
-                        prev++;
-                        target++;
-                    }
-                    while (left--) {
-                        *target = *source;
-                        source++;
-                        target++;
-                    }
-                }
-                expandedSize = keyBufMb.length();
-                keyBuf = (char *)keyBufMb.detach();
-                assertex(keyBuf);
             }
-            else {
-                keyBuf = NULL;
-                expandedSize = 0;
-            }
+            expandedSize = keyBufMb.length();
+            keyBuf = (char *)keyBufMb.detach();
+            assertex(keyBuf);
         }
-        else
-        {
-            MTIME_SECTION(queryActiveTimer(), "NO compression copy");
-            expandedSize = hdr.keyBytes + sizeof( __int64 );  // MORE - why is the +sizeof() there?
-            keyBuf = (char *) allocMem(expandedSize);
-            memcpy(keyBuf, keys, hdr.keyBytes + sizeof( __int64 ));
+        else {
+            keyBuf = NULL;
+            expandedSize = 0;
+            if (hdr.nodeType == NodeBranch)
+            {
+                if ((hdr.leftSib == 0) && (hdr.rightSib == 0))
+                {
+                    //Sanity check to catch error where a section of the file has unexpectedly been zeroed.
+                    //which is otherwise tricky to track down.
+                    //This can only legally happen if there is an index with 0 entries
+                    if (keyHdr->getNumRecords() != 0)
+                        throw MakeStringException(0, "Zeroed index node detected at offset %llu", getFpos());
+                }
+            }
         }
     }
 }
 
-offset_t CJHTreeNode::prevNodeFpos() const
+offset_t CJHSearchNode::prevNodeFpos() const
 {
     offset_t ll;
 
@@ -721,7 +991,7 @@ offset_t CJHTreeNode::prevNodeFpos() const
     return ll;
 }
 
-offset_t CJHTreeNode::nextNodeFpos() const
+offset_t CJHSearchNode::nextNodeFpos() const
 {
     offset_t ll;
 
@@ -732,35 +1002,47 @@ offset_t CJHTreeNode::nextNodeFpos() const
     return ll;
 }
 
-int CJHTreeNode::compareValueAt(const char *src, unsigned int index) const
+int CJHLegacySearchNode::compareValueAt(const char *src, unsigned int index) const
 {
     return memcmp(src, keyBuf + index*keyRecLen + (keyHdr->hasSpecialFileposition() ? sizeof(offset_t) : 0), keyCompareLen);
 }
 
-bool CJHTreeNode::getValueAt(unsigned int index, char *dst) const
+bool CJHLegacySearchNode::fetchPayload(unsigned int index, char *dst) const
 {
     if (index >= hdr.numKeys) return false;
     if (dst)
     {
+        const char * p = keyBuf + index*keyRecLen;
         if (keyHdr->hasSpecialFileposition())
         {
             //It would make sense to have the fileposition at the start of the row from the perspective of the
             //internal representation, but that would complicate everything else which assumes the keyed
             //fields start at the beginning of the row.
-            const char * p = keyBuf + index*keyRecLen;
-            memcpy(dst, p + sizeof(offset_t), keyLen);
+            memcpy(dst+keyCompareLen, p+keyCompareLen+sizeof(offset_t), keyLen-keyCompareLen);
             memcpy(dst+keyLen, p, sizeof(offset_t));
         }
         else
         {
-            const char * p = keyBuf + index*keyRecLen;
-            memcpy(dst, p, keyLen);
+            memcpy(dst+keyCompareLen, p+keyCompareLen, keyLen-keyCompareLen);
         }
     }
     return true;
 }
 
-size32_t CJHTreeNode::getSizeAt(unsigned int index) const
+bool CJHLegacySearchNode::getKeyAt(unsigned int index, char *dst) const
+{
+    if (index >= hdr.numKeys) return false;
+    if (dst)
+    {
+        const char * p = keyBuf + index*keyRecLen;
+        if (keyHdr->hasSpecialFileposition())
+            p += sizeof(offset_t);
+        memcpy(dst, p, keyCompareLen);
+    }
+    return true;
+}
+
+size32_t CJHLegacySearchNode::getSizeAt(unsigned int index) const
 {
     if (keyHdr->hasSpecialFileposition())
         return keyLen + sizeof(offset_t);
@@ -768,7 +1050,7 @@ size32_t CJHTreeNode::getSizeAt(unsigned int index) const
         return keyLen;
 }
 
-offset_t CJHTreeNode::getFPosAt(unsigned int index) const
+offset_t CJHLegacySearchNode::getFPosAt(unsigned int index) const
 {
     if (index >= hdr.numKeys) return 0;
 
@@ -779,90 +1061,36 @@ offset_t CJHTreeNode::getFPosAt(unsigned int index) const
     return pos;
 }
 
-unsigned __int64 CJHTreeNode::getSequence(unsigned int index) const
+unsigned __int64 CJHLegacySearchNode::getSequence(unsigned int index) const
 {
     if (index >= hdr.numKeys) return 0;
     return firstSequence + index;
 }
 
-bool CJHTreeNode::contains(const char *src) const
-{ // returns true if node contains key
-
-    if (compareValueAt(src, 0)<0)
-        return false;
-    if (compareValueAt(src, hdr.numKeys-1)>0)
-        return false;
-    return true;
-}
-
-extern jhtree_decl void validateKeyFile(const char *filename, offset_t nodePos)
+void CJHLegacySearchNode::dump(FILE *out, int length, unsigned rowCount, bool raw) const
 {
-    OwnedIFile file = createIFile(filename);
-    OwnedIFileIO io = file->open(IFOread);
-    if (!io)
-        throw MakeStringException(1, "Invalid key %s: cannot open file", filename);
-    unsigned __int64 size = file->size();
-    if (!size)
-        throw MakeStringException(2, "Invalid key %s: zero size", filename);
-    KeyHdr hdr;
-    if (io->read(0, sizeof(hdr), &hdr) != sizeof(hdr))
-        throw MakeStringException(4, "Invalid key %s: failed to read key header", filename);
-    CKeyHdr keyHdr;
-    keyHdr.load(hdr);
-    if (keyHdr.getKeyType() & USE_TRAILING_HEADER)
+    CJHSearchNode::dump(out, length, rowCount, raw);
+    if (rowCount==0 || rowCount > getNumKeys())
+        rowCount = getNumKeys();
+    char *dst = (char *) alloca(keyHdr->getMaxKeyLength() + sizeof(offset_t));
+    for (unsigned int i=0; i<rowCount; i++)
     {
-        if (io->read(size - keyHdr.getNodeSize(), sizeof(hdr), &hdr) != sizeof(hdr))
-            throw MakeStringException(4, "Invalid key %s: failed to read trailing key header", filename);
-        keyHdr.load(hdr);
-    }
-
-    _WINREV(hdr.phyrec);
-    _WINREV(hdr.root);
-    _WINREV(hdr.nodeSize);
-    if (hdr.phyrec != size-1)
-        throw MakeStringException(5, "Invalid key %s: phyrec was %" I64F "d, expected %" I64F "d", filename, hdr.phyrec, size-1);
-    if (!hdr.nodeSize || size % hdr.nodeSize)
-        throw MakeStringException(3, "Invalid key %s: size %" I64F "d is not a multiple of key node size (%d)", filename, size, hdr.nodeSize);
-    if (!hdr.root || hdr.root % hdr.nodeSize !=0)
-        throw MakeStringException(6, "Invalid key %s: invalid root pointer %" I64F "x", filename, hdr.root);
-    NodeHdr root;
-    if (io->read(hdr.root, sizeof(root), &root) != sizeof(root))
-        throw MakeStringException(7, "Invalid key %s: failed to read root node", filename);
-    _WINREV(root.rightSib);
-    _WINREV(root.leftSib);
-    if (root.leftSib || root.rightSib)
-        throw MakeStringException(8, "Invalid key %s: invalid root node sibling pointers 0x%" I64F "x, 0x%" I64F "x (expected 0,0)", filename, root.leftSib, root.rightSib);
-
-    for (offset_t nodeOffset = (nodePos ? nodePos : hdr.nodeSize); nodeOffset < (nodePos ? nodePos+1 : size); nodeOffset += hdr.nodeSize)
-    {
-        MemoryAttr ma;
-        char *buffer = (char *) ma.allocate(hdr.nodeSize);
+        getKeyAt(i, dst);
+        fetchPayload(i, dst);
+        if (raw)
         {
-            MTIME_SECTION(queryActiveTimer(), "JHTREE read index node");
-            io->read(nodeOffset, hdr.nodeSize, buffer);
-        }
-        CJHTreeNode theNode;
-        {
-            MTIME_SECTION(queryActiveTimer(), "JHTREE load index node");
-            theNode.load(&keyHdr, buffer, nodeOffset, true);
-        }
-        NodeHdr *nodeHdr = (NodeHdr *) buffer;
-        SwapBigEndian(*nodeHdr);
-        if (!nodeHdr->isValid(hdr.nodeSize))
-            throw MakeStringException(9, "Invalid key %s: invalid node header at position 0x%" I64F "x", filename, nodeOffset);
-        if (nodeHdr->leftSib >= size || nodeHdr->rightSib >= size)
-            throw MakeStringException(9, "Invalid key %s: out of range sibling pointers 0x%" I64F "x, 0x%" I64F "x at position 0x%" I64F "x", filename, nodeHdr->leftSib, nodeHdr->rightSib, nodeOffset);
-        if (nodeHdr->crc32)
-        {
-            unsigned crc = crc32(buffer + sizeof(NodeHdr), nodeHdr->keyBytes, 0);
-            if (crc != nodeHdr->crc32)
-                throw MakeStringException(9, "Invalid key %s: crc mismatch at position 0x%" I64F "x", filename, nodeOffset);
+            fwrite(dst, 1, length, out);
         }
         else
         {
-            // MORE - if we felt so inclined, we could decode the node and check records were in ascending order
+            offset_t pos = getFPosAt(i);
+            StringBuffer s;
+            appendURL(&s, dst, length, true);
+            fprintf(out, "keyVal %d [%" I64F "d] = %s\n", i, pos, s.str());
         }
     }
+    if (!raw)
+        fprintf(out, "==========\n");
 }
 
 //=========================================================================================================
@@ -874,7 +1102,7 @@ CJHVarTreeNode::CJHVarTreeNode()
 
 void CJHVarTreeNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos, bool needCopy)
 {
-    CJHTreeNode::load(_keyHdr, rawData, _fpos, needCopy);
+    CJHLegacySearchNode::load(_keyHdr, rawData, _fpos, needCopy);
     unsigned n = getNumKeys();
     recArray = new const char * [n];
     const char *finger = keyBuf;
@@ -897,7 +1125,7 @@ int CJHVarTreeNode::compareValueAt(const char *src, unsigned int index) const
     return memcmp(src, recArray[index] + (keyHdr->hasSpecialFileposition() ? sizeof(offset_t) : 0), keyCompareLen);
 }
 
-bool CJHVarTreeNode::getValueAt(unsigned int num, char *dst) const
+bool CJHVarTreeNode::fetchPayload(unsigned int num, char *dst) const
 {
     if (num >= hdr.numKeys) return false;
 
@@ -908,11 +1136,29 @@ bool CJHVarTreeNode::getValueAt(unsigned int num, char *dst) const
         _WINREV(reclen);
         if (keyHdr->hasSpecialFileposition())
         {
-            memcpy(dst, p + sizeof(offset_t), reclen);
+            memcpy(dst+keyCompareLen, p+keyCompareLen+sizeof(offset_t), reclen-keyCompareLen);
             memcpy(dst+reclen, p, sizeof(offset_t));
         }
         else
-            memcpy(dst, p, reclen);
+            memcpy(dst+keyCompareLen, p+keyCompareLen, reclen-keyCompareLen);
+    }
+    return true;
+}
+
+bool CJHVarTreeNode::getKeyAt(unsigned int num, char *dst) const
+{
+    if (num >= hdr.numKeys) return false;
+
+    if (NULL != dst)
+    {
+        const char * p = recArray[num];
+        KEYRECSIZE_T reclen = ((KEYRECSIZE_T *) p)[-1];
+        _WINREV(reclen);
+        assertex(reclen >= keyCompareLen);
+        if (keyHdr->hasSpecialFileposition())
+            memcpy(dst, p + sizeof(offset_t), keyCompareLen);
+        else
+            memcpy(dst, p, keyCompareLen);
     }
     return true;
 }
@@ -943,8 +1189,8 @@ offset_t CJHVarTreeNode::getFPosAt(unsigned int num) const
 
 void CJHRowCompressedNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos, bool needCopy)
 {
-    CJHTreeNode::load(_keyHdr, rawData, _fpos, needCopy);
-    assertex(hdr.leafFlag==NodeLeaf);
+    CJHLegacySearchNode::load(_keyHdr, rawData, _fpos, needCopy);
+    assertex(hdr.nodeType==NodeLeaf);
     char *keys = ((char *) rawData) + sizeof(hdr)+sizeof(firstSequence);
     assertex(IRandRowExpander::isRand(keys));
     rowexp.setown(createRandRDiffExpander());
@@ -956,18 +1202,33 @@ int CJHRowCompressedNode::compareValueAt(const char *src, unsigned int index) co
     return rowexp->cmpRow(src,index,keyHdr->hasSpecialFileposition() ? sizeof(offset_t) : 0,keyCompareLen);
 }
 
-bool CJHRowCompressedNode::getValueAt(unsigned int num, char *dst) const
+bool CJHRowCompressedNode::fetchPayload(unsigned int num, char *dst) const
 {
     if (num >= hdr.numKeys) return false;
     if (dst)
     {
         if (keyHdr->hasSpecialFileposition())
         {
-            rowexp->expandRow(dst,num,sizeof(offset_t),keyLen);
+            rowexp->expandRow(dst+keyCompareLen,num,keyCompareLen+sizeof(offset_t),keyLen-keyCompareLen);
             rowexp->expandRow(dst+keyLen,num,0,sizeof(offset_t));
         }
         else
-            rowexp->expandRow(dst,num,0,keyLen);
+            rowexp->expandRow(dst+keyCompareLen,num,keyCompareLen,keyLen-keyCompareLen);
+    }
+    return true;
+}
+
+bool CJHRowCompressedNode::getKeyAt(unsigned int num, char *dst) const
+{
+    if (num >= hdr.numKeys) return false;
+    if (dst)
+    {
+        if (keyHdr->hasSpecialFileposition())
+        {
+            rowexp->expandRow(dst,num,sizeof(offset_t),keyCompareLen);
+        }
+        else
+            rowexp->expandRow(dst,num,0,keyCompareLen);
     }
     return true;
 }
@@ -995,7 +1256,16 @@ CJHTreeBlobNode::~CJHTreeBlobNode()
 {
 }
 
-size32_t CJHTreeBlobNode::getTotalBlobSize(unsigned offset)
+void CJHTreeBlobNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos, bool needCopy)
+{
+    CJHTreeNode::load(_keyHdr, rawData, _fpos, needCopy);
+    const byte *data = ((const byte *) rawData) + sizeof(hdr);
+    char keyType = keyHdr->getKeyType();
+    expandedSize = keyHdr->getNodeSize();
+    keyBuf = expandData(data, expandedSize);
+}
+
+size32_t CJHTreeBlobNode::getTotalBlobSize(unsigned offset) const
 {
     assertex(offset < expandedSize);
     unsigned datalen;
@@ -1004,7 +1274,7 @@ size32_t CJHTreeBlobNode::getTotalBlobSize(unsigned offset)
     return datalen;
 }
 
-size32_t CJHTreeBlobNode::getBlobData(unsigned offset, void *dst)
+size32_t CJHTreeBlobNode::getBlobData(unsigned offset, void *dst) const
 {
     unsigned sizeHere = getTotalBlobSize(offset);
     offset += sizeof(unsigned);
@@ -1014,12 +1284,24 @@ size32_t CJHTreeBlobNode::getBlobData(unsigned offset, void *dst)
     return sizeHere;
 }
 
-void CJHTreeMetadataNode::get(StringBuffer & out)
+void CJHTreeRawDataNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos, bool needCopy)
+{
+    CJHTreeNode::load(_keyHdr, rawData, _fpos, needCopy);
+    // MORE - what about needCopy flag?
+    const byte *data = ((const byte *) rawData) + sizeof(hdr);
+    unsigned short len = *reinterpret_cast<const unsigned short *>(data);
+    _WINREV(len);
+    expandedSize = len;
+    keyBuf = (char *) allocMem(len);
+    memcpy(keyBuf, data+sizeof(unsigned short), len);
+}
+
+void CJHTreeMetadataNode::get(StringBuffer & out) const
 {
     out.append(expandedSize, keyBuf);
 }
 
-void CJHTreeBloomTableNode::get(MemoryBuffer & out)
+void CJHTreeBloomTableNode::get(MemoryBuffer & out) const
 {
     out.append(expandedSize-read, keyBuf + read);
 }

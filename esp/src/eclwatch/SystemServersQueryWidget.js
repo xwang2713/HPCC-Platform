@@ -41,7 +41,6 @@ define([
                 return;
 
             this._refreshActionState();
-            this.refreshGrid();
 
             this.machineFilter.disable(true);
 
@@ -144,7 +143,7 @@ define([
 
         createGrid: function (domID) {
             var context = this;
-            var retVal = new declare([ESPUtil.Grid(true, true, false, true, false)])({
+            var retVal = new declare([ESPUtil.Grid(true, true, undefined, true)])({
                 store: ESPPreflight.CreateSystemServersStore(),
                 columns: {
                     col1: selector({
@@ -158,59 +157,6 @@ define([
                             }
                         },
                     }),
-                    Configuration: {
-                        label: this.i18n.Configuration,
-                        renderHeaderCell: function (node) {
-                            domClass.add(node, "centerInCell");
-                            node.innerHTML = Utility.getImageHTML("configuration.png", context.i18n.Configuration);
-                        },
-                        width: 10,
-                        sortable: false,
-                        renderCell: function (object, value, node, options) {
-                            if (object.Directory && object.Type && object.Type !== "FTSlaveProcess") {
-                                domClass.add(node, "centerInCell");
-                                node.innerHTML = "<a href='#' onClick='return false;' class='gridClick'/>" + Utility.getImageHTML("configuration.png", context.i18n.Configuration) + "</a>";
-                            }
-                        },
-                    },
-                    Informational: {
-                        label: this.i18n.Informational,
-                        width: 60,
-                        renderCell: function (object, value, node, options) {
-                            if (object.Informational) {
-                                domClass.add(node, "centerInCell");
-                                node.innerHTML = "<a href='#' onClick='return false;' class='additionalSystemServersDialog' />" + Utility.getImageHTML("information.png", context.i18n.Informational) + "</a>";
-                            }
-                        }
-                    },
-                    Logs: {
-                        label: this.i18n.Logs,
-                        width: 90,
-                        children: [
-                            {
-                                label: this.i18n.AuditLogs,
-                                width: 40,
-                                id: "AuditLogs",
-                                renderCell: function (object, value, node, options) {
-                                    if (object.AuditLog) {
-                                        domClass.add(node, "centerInCell");
-                                        node.innerHTML = "<a href='#' onClick='return false;' class='gridClick'/>" + Utility.getImageHTML("base.gif", context.i18n.AuditLogs) + "</a>";
-                                    }
-                                },
-                            },
-                            {
-                                label: this.i18n.ComponentLogs,
-                                width: 60,
-                                id: "Logs",
-                                renderCell: function (object, value, node, options) {
-                                    if (object.Log) {
-                                        domClass.add(node, "centerInCell");
-                                        node.innerHTML = "<a href='#' onClick='return false;' class='gridClick'/>" + Utility.getImageHTML("base.gif", context.i18n.ComponentLogs) + "</a>";
-                                    }
-                                }
-                            }
-                        ]
-                    },
                     Name: tree({
                         formatter: function (_name, row) {
                             var img = "";
@@ -226,6 +172,63 @@ define([
                         sortable: true,
                         width: 150
                     }),
+                    Configuration: {
+                        label: this.i18n.Configuration,
+                        renderHeaderCell: function (node) {
+                            domClass.add(node, "centerInCell");
+                            node.innerHTML = Utility.getImageHTML("configuration.png", context.i18n.Configuration);
+                        },
+                        width: 30,
+                        sortable: false,
+                        renderCell: function (object, value, node, options) {
+                            if (object.Directory && object.Type && object.Type !== "FTSlaveProcess") {
+                                domClass.add(node, "centerInCell");
+                                node.innerHTML = "<a href='#' onClick='return false;' class='gridClick'/>" + Utility.getImageHTML("configuration.png", context.i18n.Configuration) + "</a>";
+                            }
+                        },
+                    },
+                    Informational: {
+                        label: this.i18n.Informational,
+                        renderHeaderCell: function (node) {
+                            domClass.add(node, "centerInCell");
+                            node.innerHTML = Utility.getImageHTML("information.png", context.i18n.Informational);
+                        },
+                        width: 30,
+                        renderCell: function (object, value, node, options) {
+                            if (object.Informational) {
+                                domClass.add(node, "centerInCell");
+                                node.innerHTML = "<a href='#' onClick='return false;' class='additionalSystemServersDialog' />" + Utility.getImageHTML("information.png", context.i18n.Informational) + "</a>";
+                            }
+                        }
+                    },
+                    Logs: {
+                        label: this.i18n.Logs,
+                        width: 130,
+                        children: [
+                            {
+                                label: this.i18n.Audit,
+                                width: 50,
+                                id: "AuditLogs",
+                                renderCell: function (object, value, node, options) {
+                                    if (object.AuditLog) {
+                                        domClass.add(node, "centerInCell");
+                                        node.innerHTML = "<a href='#' onClick='return false;' class='gridClick'/>" + Utility.getImageHTML("base.gif", context.i18n.AuditLogs) + "</a>";
+                                    }
+                                },
+                            },
+                            {
+                                label: this.i18n.Component,
+                                width: 80,
+                                id: "Logs",
+                                renderCell: function (object, value, node, options) {
+                                    if (object.Log) {
+                                        domClass.add(node, "centerInCell");
+                                        node.innerHTML = "<a href='#' onClick='return false;' class='gridClick'/>" + Utility.getImageHTML("base.gif", context.i18n.ComponentLogs) + "</a>";
+                                    }
+                                }
+                            }
+                        ]
+                    },
                     ChildQueue: {
                         label: this.i18n.Queue,
                         sortable: false,
@@ -283,7 +286,7 @@ define([
             retVal.on(".dgrid-cell .gridClick:click", function (evt) {
                 var item = retVal.row(evt).data;
                 if (evt.target.title === "Audit Log" || evt.target.title === "Component Log") {
-                    context._onOpenLog(item);
+                    context._onOpenLog(item, evt.target.title);
                 } else {
                     context._onOpenConfiguration(item);
                 }
@@ -354,11 +357,12 @@ define([
             });
         },
 
-        _onOpenLog: function (item) {
-            var nodeTab = this.ensureLogsPane(item.Name + ": " + item.Parent.LogDirectory, {
+        _onOpenLog: function (item, type) {
+            var LogDirectory = type === "Audit Log" ? item.Parent.AuditLogDirectory : item.Parent.LogDirectory;
+            var nodeTab = this.ensureLogsPane(item.Name + ": " + LogDirectory, {
                 params: item,
                 ParentName: item.Parent.Name,
-                LogDirectory: item.Parent.LogDirectory,
+                LogDirectory,
                 NetAddress: item.Netaddress,
                 OS: item.OS,
                 newPreflight: true

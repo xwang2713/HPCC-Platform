@@ -109,7 +109,7 @@ public:
         item->setProp("@wuid",qi->queryWUID());
         item->setProp("@owner",qi->queryOwner());
         StringBuffer eps;
-        qi->queryEndpoint().getUrlStr(eps);
+        getRemoteAccessibleHostText(eps, qi->queryEndpoint());
         item->setProp("@node",eps.str());
         StringBuffer dts;
         qi->queryEnqueuedTime().getString(dts);
@@ -1092,7 +1092,7 @@ public:
             ret = qd.root->addPropTree("Client");
             ret->setPropInt64("@session",sessionid);
             StringBuffer eps;
-            ret->setProp("@node",queryMyNode()->endpoint().getUrlStr(eps).str());
+            ret->setProp("@node",queryMyNode()->endpoint().getEndpointHostText(eps).str());
         }
         return ret;
     }
@@ -1404,20 +1404,31 @@ public:
 
     IJobQueueItem *dotake(sQueueData &qd,const char *wuid,bool saveitem,bool hasminprio=false,int minprio=0)
     {
+        // will match and remove 1st item with priority >= minprio
         StringBuffer path;
-        IPropertyTree *item = qd.root->queryPropTree(getItemPath(path,wuid).str());
-        if (!item)
-            return NULL;
-        if (item->getPropInt("@num",0)<=0)
-            return NULL;    // don't want (old) cached value
-        if (hasminprio&&(item->getPropInt("@priority")<minprio))
-            return NULL;
-        IJobQueueItem *ret = new CJobQueueItem(item);
-        removeItem(qd,item,saveitem);
-        unsigned count = qd.root->getPropInt("@count");
-        assertex(count);
-        qd.root->setPropInt("@count",count-1);
-        return ret;
+        Owned<IPropertyTreeIterator> iter = qd.root->getElements(getItemPath(path,wuid).str());
+        if (iter->first())
+        {
+            while (true)
+            {
+                IPropertyTree *item = &iter->query();
+                if ((item->getPropInt("@num",0) > 0)) // don't want (old) cached value
+                {
+                    if (!hasminprio || (item->getPropInt("@priority") >= minprio))
+                    {
+                        IJobQueueItem *ret = new CJobQueueItem(item);
+                        removeItem(qd,item,saveitem);
+                        unsigned count = qd.root->getPropInt("@count");
+                        assertex(count);
+                        qd.root->setPropInt("@count",count-1);
+                        return ret;
+                    }
+                }
+                if (!iter->next())
+                    break;
+            }
+        }
+        return nullptr;
     }
 
     IJobQueueItem *take(sQueueData &qd,const char *wuid)
@@ -2140,10 +2151,55 @@ extern bool WORKUNIT_API runWorkUnit(const char *wuid, const char *queueName)
     if (!queue.get()) 
         throw MakeStringException(-1, "Could not create workunit queue");
 
+    {
+        Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
+        Owned<IWorkUnit> wu = factory->updateWorkUnit(wuid);
+        addTimeStamp(wu, SSTglobal, "", StWhenQueued, 0);
+    }
+
     IJobQueueItem *item = createJobQueueItem(wuid);
     queue->enqueue(item);
     PROGLOG("Agent request '%s' enqueued on '%s'", wuid,  agentQueue.str());
     return true;
+}
+
+extern bool WORKUNIT_API queueJobIfQueueWaiting(IJobQueue *queue, IJobQueueItem *item, unsigned maxTimeMs, unsigned intervalMs)
+{
+    bool consumed = false;
+    if (queue->waiting())
+    {
+        StringAttr job = item->queryWUID();
+        queue->enqueue(LINK(item));
+        CTimeMon tm(maxTimeMs);
+        while (true)
+        {
+            unsigned remainingMs;
+            if (tm.timedout(&remainingMs))
+                break;
+
+            unsigned pauseMs = remainingMs > intervalMs ? intervalMs : remainingMs;
+            MilliSleep(pauseMs);
+
+            if (!queue->find(job))
+            {
+                consumed = true;
+                break;
+            }
+        }
+        if (!consumed)
+        {
+            // if now not there to be removed, implies dequeue
+            if (!queue->remove(job))
+                consumed = true;
+        }
+        if (!consumed)
+        {
+            // thought some were waiting, but still on queue, validate queue client sessions
+            queue->connect(true);
+            queue->disconnect();
+        }
+    }
+    return consumed;
 }
 
 extern bool WORKUNIT_API runWorkUnit(const char *wuid)
@@ -2201,7 +2257,7 @@ extern bool WORKUNIT_API switchWorkUnitQueue(IWorkUnit* wu, const char *cluster)
             Owned<IJobQueue> q = createJobQueue(qname);
             return q->take(wuid);
         }
-        void putQ(const char * qname, const char * wuid, void * qitem)
+        void putQ(const char * qname, void * qitem)
         {
             Owned<IJobQueue> q = createJobQueue(qname);
             q->enqueue((IJobQueueItem *)qitem);
@@ -2212,5 +2268,5 @@ extern bool WORKUNIT_API switchWorkUnitQueue(IWorkUnit* wu, const char *cluster)
         }
     } switcher;
 
-    return wu->switchThorQueue(cluster, &switcher);
+    return wu->switchThorQueue(cluster, &switcher, nullptr);
 }

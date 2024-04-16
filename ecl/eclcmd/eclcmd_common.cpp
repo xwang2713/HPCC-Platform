@@ -23,8 +23,9 @@
 #include "workunit.hpp"
 #include "eclwatch_errorlist.hpp"
 
-
 #include "eclcmd_common.hpp"
+
+#include "ws_fs.hpp"
 
 static StringBuffer eclccpath;
 
@@ -173,6 +174,8 @@ EclObjectParameter::EclObjectParameter(unsigned _accept) : type(eclObjTypeUnknow
 
 bool EclObjectParameter::isElfContent()
 {
+    if (mb.length() < 4)
+        return false;
     const char *s = mb.toByteArray();
     return (s[0]==0x7F && s[1]=='E' && s[2]=='L' && s[3]=='F');
 }
@@ -352,7 +355,23 @@ eclCmdOptionMatchIndicator EclCmdCommon::matchCommandLineOption(ArgvIterator &it
     if (iter.matchFlag(optVerbose, ECLOPT_VERBOSE) || iter.matchFlag(optVerbose, ECLOPT_VERBOSE_S))
         return EclCmdOptionMatch;
     if (iter.matchFlag(optSSL, ECLOPT_SSL) || iter.matchFlag(optSSL, ECLOPT_SSL_S))
+    {
+        sslOptProvided = true;
         return EclCmdOptionMatch;
+    }
+
+    if (iter.matchOption(optClientCert, ECLOPT_CLIENT_CERT))
+        return EclCmdOptionMatch;
+    if (iter.matchOption(optClientPrivateKey, ECLOPT_CLIENT_PRIVATE_KEY))
+        return EclCmdOptionMatch;
+    if (iter.matchOption(optCACert, ECLOPT_CA_CERT))
+        return EclCmdOptionMatch;
+
+    if (iter.matchFlag(optAcceptSelfSigned, ECLOPT_ACCEPT_SELFSIGNED))
+    {
+        selfsignedOptProvided = true;
+        return EclCmdOptionMatch;
+    }
 
     StringAttr tempArg;
     if (iter.matchOption(tempArg, "-brk"))
@@ -376,8 +395,18 @@ bool EclCmdCommon::finalizeOptions(IProperties *globals)
     extractEclCmdOption(optServer, globals, ECLOPT_SERVER_ENV, ECLOPT_SERVER_INI, ECLOPT_SERVER_DEFAULT, NULL);
     extractEclCmdOption(optPort, globals, ECLOPT_PORT_ENV, ECLOPT_PORT_INI, ECLOPT_PORT_DEFAULT, NULL);
     extractEclCmdOption(optUsername, globals, ECLOPT_USERNAME_ENV, ECLOPT_USERNAME_INI, NULL, NULL);
-    extractEclCmdOption(optPassword, globals, ECLOPT_PASSWORD_ENV, ECLOPT_PASSWORD_INI, NULL, NULL);
+    extractEclCmdOption(optClientCert, globals, ECLOPT_CLIENT_CERT_ENV, ECLOPT_CLIENT_CERT_INI, NULL, NULL);
+    extractEclCmdOption(optClientPrivateKey, globals, ECLOPT_CLIENT_PRIVATE_KEY_ENV, ECLOPT_CLIENT_PRIVATE_KEY_INI, NULL, NULL);
+    extractEclCmdOption(optCACert, globals, ECLOPT_CA_CERT_ENV, ECLOPT_CA_CERT_INI, NULL, NULL);
+    if (!sslOptProvided)
+        extractEclCmdOption(optSSL, globals, ECLOPT_SSL_ENV, ECLOPT_SSL_INI, false);
+    if (!selfsignedOptProvided)
+        extractEclCmdOption(optAcceptSelfSigned, globals, ECLOPT_ACCEPT_SELFSIGNED_ENV, ECLOPT_ACCEPT_SELFSIGNED_INI, false);
 
+
+    //if an empty password was explicitly provided, optPasswordProvided would still be set
+    if (!optPasswordProvided)
+        optPasswordProvided = extractEclCmdOption(optPassword, globals, ECLOPT_PASSWORD_ENV, ECLOPT_PASSWORD_INI, NULL, NULL);
     if (!optUsername.isEmpty() && !optPasswordProvided)
     {
         VStringBuffer prompt("%s's password: ", optUsername.get());
@@ -386,7 +415,11 @@ bool EclCmdCommon::finalizeOptions(IProperties *globals)
         if (pw.length())
             optPassword.set(pw);
     }
-
+    if (!optClientCert.isEmpty() && optClientPrivateKey.isEmpty())
+    {
+        fprintf(stdout, "\n ... Adding a client certificate requires adding a client private key.\n");
+        return false;
+    }
     if (!optVerbose)
     {
         Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_user, MSGCLS_error);
@@ -430,10 +463,20 @@ public:
             cmdLine.append(" --nostdinc");
         if (cmd.optDebug)
             cmdLine.append(" -g");
+        ForEachItemIn(i, cmd.extraOptions)
+            cmdLine.append(" ").append(cmd.extraOptions.item(i));
         appendOptPath(cmdLine, 'I', cmd.optImpPath.str());
         appendOptPath(cmdLine, 'L', cmd.optLibPath.str());
-        if (cmd.optAttributePath.length())
-            cmdLine.append(" -main ").append(cmd.optAttributePath.get());
+
+        StringBuffer fullAttributePath;
+        if (cmd.getFullAttributePath(fullAttributePath))
+            cmdLine.append(" -main ").append(fullAttributePath);
+
+        if (!cmd.optDefaultRepo.isEmpty())
+            cmdLine.append(" --defaultrepo ").append(cmd.optDefaultRepo);
+        if (!cmd.optDefaultRepoVersion.isEmpty())
+            cmdLine.append(" --defaultrepoversion ").append(cmd.optDefaultRepoVersion);
+
         if (cmd.optObj.type == eclObjManifest)
             cmdLine.append(" -manifest ").append(cmd.optObj.value.get());
         else
@@ -502,7 +545,7 @@ public:
         }
         StringBuffer errors;
         Owned<EclCmdErrorReader> errorReader = new EclCmdErrorReader(pipe, errors);
-        errorReader->start();
+        errorReader->start(false);
 
         if (pipe->hasInput())
         {
@@ -610,6 +653,23 @@ bool matchVariableOption(ArgvIterator &iter, const char prefix, IArrayOf<IEspNam
     return true;
 }
 
+bool EclCmdWithEclTarget::getFullAttributePath(StringBuffer & result)
+{
+    if (optAttributePath.isEmpty())
+        return false;
+
+    result.append(optAttributePath);
+    if (!strchr(optAttributePath, '@'))
+    {
+        if (optAttributeRepo.isEmpty())
+            return true;
+        result.append('@').append(optAttributeRepo);
+    }
+    if (!strchr(result, '#') && !optAttributeRepoVersion.isEmpty())
+        result.append('#').append(optAttributeRepoVersion);
+    return true;
+}
+
 bool EclCmdWithEclTarget::setTarget(const char *target)
 {
     if (!optTargetCluster.isEmpty())
@@ -663,6 +723,14 @@ eclCmdOptionMatchIndicator EclCmdWithEclTarget::matchCommandLineOption(ArgvItera
         return EclCmdOptionMatch;
     if (iter.matchOption(optAttributePath, ECLOPT_MAIN) || iter.matchOption(optAttributePath, ECLOPT_MAIN_S))
         return EclCmdOptionMatch;
+    if (iter.matchOption(optAttributeRepo, ECLOPT_MAIN_REPO))
+        return EclCmdOptionMatch;
+    if (iter.matchOption(optAttributeRepoVersion, ECLOPT_MAIN_REPO_VERSION))
+        return EclCmdOptionMatch;
+    if (iter.matchOption(optDefaultRepo, ECLOPT_DEFAULT_REPO))
+        return EclCmdOptionMatch;
+    if (iter.matchOption(optDefaultRepoVersion, ECLOPT_DEFAULT_REPO_VERSION))
+        return EclCmdOptionMatch;
     if (iter.matchOption(optSnapshot, ECLOPT_SNAPSHOT) || iter.matchOption(optSnapshot, ECLOPT_SNAPSHOT_S))
         return EclCmdOptionMatch;
     if (iter.matchFlag(optNoArchive, ECLOPT_ECL_ONLY))
@@ -681,6 +749,14 @@ eclCmdOptionMatchIndicator EclCmdWithEclTarget::matchCommandLineOption(ArgvItera
         return EclCmdOptionMatch;
     if (iter.matchOption(optTargetCluster, ECLOPT_CLUSTER_DEPRECATED)||iter.matchOption(optTargetCluster, ECLOPT_CLUSTER_DEPRECATED_S))
         return EclCmdOptionMatch;
+    //Process options which should be passed straight through to eclcc
+    StringBuffer temp;
+    if (iter.matchOptionText(temp, ECLOPT_FETCH_REPOS, true, false) || iter.matchOptionText(temp, ECLOPT_UPDATE_REPOS, true, false) ||
+        iter.matchOptionText(temp, ECLOPT_DEFAULT_GIT_PREFIX, false, false) || iter.matchOptionText(temp, ECLOPT_REPO_MAPPING, false, true))
+    {
+        extraOptions.append(temp);
+        return EclCmdOptionMatch;
+    }
     StringAttr target;
     if (iter.matchOption(target, ECLOPT_TARGET)||iter.matchOption(target, ECLOPT_TARGET_S))
     {
@@ -700,7 +776,12 @@ bool EclCmdWithEclTarget::finalizeOptions(IProperties *globals)
     if (!EclCmdCommon::finalizeOptions(globals))
         return false;
     if (!param.isEmpty())
-        optObj.set(param);
+    {
+        if (optTargetCluster.isEmpty())
+            optTargetCluster.set(param);
+        else
+            optObj.set(param);
+    }
     if (optObj.type == eclObjTypeUnknown)
     {
         if (optAttributePath.length())
@@ -761,6 +842,12 @@ eclCmdOptionMatchIndicator EclCmdWithQueryTarget::matchCommandLineOption(ArgvIte
         }
         return EclCmdOptionMatch;
     }
+    if (iter.matchOption(optActivated, ECLOPT_ACTIVATED))
+        return EclCmdOptionMatch;
+    if (iter.matchFlag(optSuspendedByUser, ECLOPT_SUSPENDEDBYUSER))
+        return EclCmdOptionMatch;
+    if (iter.matchFlag(optDeleteWorkunit, ECLOPT_DELETE_WORKUNIT))
+        return EclCmdOptionMatch;
     StringAttr optTemp; //backward compatible with --queryset option
     if (iter.matchOption(optTemp, ECLOPT_QUERYSET)||iter.matchOption(optTemp, ECLOPT_QUERYSET_S))
     {
@@ -808,4 +895,39 @@ eclCmdOptionMatchIndicator EclCmdWithQueryTarget::parseCommandLineOptions(ArgvIt
             return ind;
     }
     return EclCmdOptionMatch;
+}
+
+void EclCmdOptionsDFU::preallocatePublisherWuid(EclCmdCommon &cmd)
+{
+    Owned<IClientFileSpray> client = createCmdClientExt(FileSpray, cmd, "");
+    Owned<IClientCreateDFUPublisherWorkunit> req = client->createCreateDFUPublisherWorkunitRequest();
+    Owned<IClientCreateDFUPublisherWorkunitResponse> resp;
+    try
+    {
+         resp.setown(client->CreateDFUPublisherWorkunit(req));
+    }
+    catch (IException *E)
+    {
+        //if we can't preallocate the publisher DFU workunit it might be because the server is too old, an expected scenario pre release 9.2, we'll just create the publisher wuid the old way
+        StringBuffer msg;
+        int code = E->errorCode();
+        E->errorMessage(msg);
+        E->Release();
+
+        //try to do is to improve the message when the server is old
+        if (code == -2 && strstr(msg, "CreateDFUPublisherWorkunit not available"))
+            fputs("\nCan't preallocate the Publisher Workunit, server too old, workunit will be created during processing.\n", stderr);
+        else
+            fprintf(stderr, "\nError trying to preallocate the publisher DFU Workunit, will try to create workunit during processing instead.\n%d - %s\n", code, msg.str());
+        return;
+    }
+
+    const char *publisherWuid = resp ? resp->getResult().getID() : nullptr;
+    if (!isEmptyString(publisherWuid))
+    {
+        fprintf(stdout, "\nPublisher workunit: %s", publisherWuid);
+        optDfuPublisherWuid.set(publisherWuid);
+    }
+    else
+        fputs("\nUnable to to preallocate the publisher DFU Workunit.  Workunit will be created during processing instead.\n", stderr);
 }

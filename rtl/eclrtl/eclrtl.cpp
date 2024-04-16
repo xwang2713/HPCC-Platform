@@ -25,6 +25,7 @@
 #include "jlib.hpp"
 #include "jptree.hpp"
 #include "junicode.hpp"
+#include "jsecrets.hpp"
 #include "eclrtl.hpp"
 #include "rtlbcd.hpp"
 #include "eclhelper.hpp"
@@ -3662,7 +3663,7 @@ bool rtlCodepageToCodepageX(unsigned & outlen, char * & out, unsigned maxoutlen,
     else
     {
         out = (char *)rtlRealloc(tempBuffer, len);
-        if (!out)
+        if (!out && len)
             out = tempBuffer;
     }
     return U_SUCCESS(err) != FALSE;
@@ -4210,7 +4211,7 @@ ECLRTL_API unsigned rtlSleep(unsigned delay)
 
 ECLRTL_API unsigned rtlDisplay(unsigned len, const char * src)
 {
-    LOG(MCprogress, unknownJob, "%.*s", len, src);
+    LOG(MCprogress, "%.*s", len, src);
     return 0;
 }
 
@@ -5149,6 +5150,7 @@ void rtlStrToUtf8X(size32_t & outlen, char * & out, size32_t inlen, const char *
     outlen = rtlUtf8Length(outsize, out);
 }
 
+#ifdef _USE_ICU
 #if U_ICU_VERSION_MAJOR_NUM<53
 static int rtlCompareUtf8Utf8ViaUnicode(size32_t llen, const char * left, size32_t rlen, const char * right, const char * locale)
 {
@@ -5160,7 +5162,6 @@ static int rtlCompareUtf8Utf8ViaUnicode(size32_t llen, const char * left, size32
 }
 #endif
 
-#ifdef _USE_ICU
 int rtlCompareUtf8Utf8(size32_t llen, const char * left, size32_t rlen, const char * right, const char * locale)
 {
 #if U_ICU_VERSION_MAJOR_NUM>=53
@@ -6207,8 +6208,10 @@ size32_t rtlGetPackedSizeFromFirst(byte first)
     return numExtraBytesFromFirst(first)+1;
 }
 
-
-
+size32_t rtlGetPackedSize(unsigned __int64 value)
+{
+    return numExtraBytesFromValue(value) + 1;
+}
 
 //Store signed by moving the sign to the bottom bit, and inverting if negative.
 //so small positive and negative numbers are stored compactly.
@@ -6234,14 +6237,14 @@ IAtom * rtlCreateFieldNameAtom(const char * name)
     return createAtom(name);
 }
 
-void rtlBase64Encode(size32_t & tlen, char * & tgt, size32_t slen, const void * src)
+void rtlBase64EncodeV2(size32_t & tlen, char * & tgt, size32_t slen, const void * src, bool addLineBreaks)
 {
     tlen = 0;
     tgt = NULL;
     if (slen)
     {
         StringBuffer out;
-        JBASE64_Encode(src, slen, out, true);
+        JBASE64_Encode(src, slen, out, addLineBreaks);
         tlen = out.length();
         if (tlen)
         {
@@ -6250,6 +6253,11 @@ void rtlBase64Encode(size32_t & tlen, char * & tgt, size32_t slen, const void * 
             tgt = data;
         }
     }
+}
+
+void rtlBase64Encode(size32_t & tlen, char * & tgt, size32_t slen, const void * src)
+{
+    rtlBase64EncodeV2(tlen, tgt, slen, src, true);
 }
 
 void rtlBase64Decode(size32_t & tlen, void * & tgt, size32_t slen, const char * src)
@@ -6269,6 +6277,22 @@ void rtlBase64Decode(size32_t & tlen, void * & tgt, size32_t slen, const char * 
     }
 }
 
+void rtlGetEclUserSecret(size32_t & outlen, void * & out, const char *name, const char *key)
+{
+    Owned<const IPropertyTree> secret = getSecret("eclUser", name);
+    if (secret)
+    {
+        MemoryBuffer data;
+        if (secret->getPropBin(key, data))
+        {
+            outlen = data.length();
+            out = data.detach();
+            return;
+        }
+    }
+    out = nullptr;
+    outlen = 0;
+}
 
 //---------------------------------------------------------------------------
 
@@ -6557,9 +6581,9 @@ protected:
         RegexTestThread t1;
         RegexTestThread t2;
         RegexTestThread t3;
-        t1.start();
-        t2.start();
-        t3.start();
+        t1.start(false);
+        t2.start(false);
+        t3.start(false);
         t1.join();
         t2.join();
         t3.join();

@@ -20,6 +20,8 @@
 #ifndef __JEXCEPT__
 #define __JEXCEPT__
 
+#include <functional>
+
 #include "jiface.hpp"
 #include "jlib.hpp"
 #include "errno.h"
@@ -73,6 +75,7 @@ IException jlib_decl *makeStringException(int code, const char *why);
 IException jlib_decl *makeStringExceptionV(MessageAudience aud, int code, const char *why, ...) __attribute__((format(printf, 3, 4)));
 IException jlib_decl *makeStringExceptionVA(MessageAudience aud, int code, const char *why, va_list args) __attribute__((format(printf, 3, 0)));
 IException jlib_decl *makeStringException(MessageAudience aud, int code, const char *why);
+IException jlib_decl *makePrefixedException(const char * prefix, const IException * e);
 __declspec(noreturn) void jlib_decl throwStringExceptionV(int code, const char *format, ...) __attribute__((format(printf, 2, 3), noreturn));
 IException jlib_decl *makeWrappedExceptionVA(IException *e, int code, const char *why, va_list args) __attribute__((format(printf, 3, 0)));
 IException jlib_decl *makeWrappedExceptionV(IException *e, int code, const char *why, ...) __attribute__((format(printf, 3, 4)));
@@ -131,19 +134,26 @@ void jlib_decl setTerminateOnSEH(bool set=true);
 
 void jlib_decl setProcessAborted(bool _abortVal);
 
-__declspec(noreturn) void jlib_decl throwUnexpectedException(const char * file, unsigned line) __attribute__((noreturn));
-__declspec(noreturn) void jlib_decl throwUnexpectedException(const char * where, const char * file, unsigned line) __attribute__((noreturn));
+__declspec(noreturn) void jlib_decl throwUnexpectedException(const char * function, const char * file, unsigned line) __attribute__((noreturn));
+__declspec(noreturn) void jlib_decl throwUnexpectedException(const char * what, const char * function, const char * file, unsigned line) __attribute__((noreturn));
 
 const char jlib_decl *sanitizeSourceFile(const char *file);
 
-#define makeUnexpectedException()  makeStringExceptionV(9999, "Internal Error at %s(%d)", sanitizeSourceFile(__FILE__), __LINE__)
-#define throwUnexpected()          throwUnexpectedException(sanitizeSourceFile(__FILE__), __LINE__)
-#define throwUnexpectedX(x)        throwUnexpectedException(x, sanitizeSourceFile(__FILE__), __LINE__)
+#define makeUnexpectedException()  makeStringExceptionV(9999, "Internal Error in %s() at %s(%d)", __func__, sanitizeSourceFile(__FILE__), __LINE__)
+#define throwUnexpected()          throwUnexpectedException(__func__, sanitizeSourceFile(__FILE__), __LINE__)
+#define throwUnexpectedX(x)        throwUnexpectedException(x, __func__, sanitizeSourceFile(__FILE__), __LINE__)
 #define assertThrow(x)             assertex(x)
 
-#define UNIMPLEMENTED throw makeStringExceptionV(-1, "UNIMPLEMENTED feature at %s(%d)", sanitizeSourceFile(__FILE__), __LINE__)
-#define UNIMPLEMENTED_X(reason) throw makeStringExceptionV(-1, "UNIMPLEMENTED '" reason "' at %s(%d)", sanitizeSourceFile(__FILE__), __LINE__)
-#define UNIMPLEMENTED_XY(a,b) throw makeStringExceptionV(-1, "UNIMPLEMENTED " a " %s at %s(%d)", b, sanitizeSourceFile(__FILE__), __LINE__)
+__declspec(noreturn) void jlib_decl throwUnimplementedException(const char * function, const char * file, unsigned line) __attribute__((noreturn));
+__declspec(noreturn) void jlib_decl throwUnimplementedException(const char * what, const char * function, const char * file, unsigned line) __attribute__((noreturn));
+__declspec(noreturn) void jlib_decl throwUnimplementedException(const char * what, const char *what2, const char * function, const char * file, unsigned line) __attribute__((noreturn));
+#define throwUnimplemented()        throwUnimplementedException(__func__, sanitizeSourceFile(__FILE__), __LINE__)
+#define throwUnimplementedX(x)      throwUnimplementedException(x, __func__, sanitizeSourceFile(__FILE__), __LINE__)
+
+#define UNIMPLEMENTED throwUnimplementedException(__func__, sanitizeSourceFile(__FILE__), __LINE__)
+#define UNIMPLEMENTED_C throwUnimplementedException("CLASSTYPE:", typeid(*this).name(), __func__, sanitizeSourceFile(__FILE__), __LINE__)
+#define UNIMPLEMENTED_X(reason) throwUnimplementedException(reason, __func__, sanitizeSourceFile(__FILE__), __LINE__)
+#define UNIMPLEMENTED_XY(a,b) throwUnimplementedException(a, b, __func__, sanitizeSourceFile(__FILE__), __LINE__)
 
 IException jlib_decl * deserializeException(MemoryBuffer & in); 
 void jlib_decl serializeException(IException * e, MemoryBuffer & out); 
@@ -264,6 +274,23 @@ inline IError * createError(int errNo, const char *msg, const char *filename, in
 extern jlib_decl const char * querySeverityString(ErrorSeverity errorSeverity);
 class LogMsgCategory;
 extern jlib_decl const LogMsgCategory & mapToLogMsgCategory(ErrorSeverity severity, MessageAudience aud);
+
+enum ExceptionInterceptClass
+{
+    eString = 0x01,
+    eErrno  = 0x02,
+    eOs     = 0x04,
+    eSocket = 0x08
+};
+typedef std::function<void(IException *e)> InterceptHandler;
+interface IExceptionIntercept
+{
+    virtual void handle(ExceptionInterceptClass eClass, IException *e) const = 0;
+    virtual void clear() = 0;
+    virtual void setIntercept(ExceptionInterceptClass eClass, int code, InterceptHandler func) = 0;
+    virtual void addFromConfig(const IPropertyTree *exceptionHandlerTree) = 0;
+};
+extern jlib_decl IExceptionIntercept &queryExceptionIntercept();
 
 #endif
 

@@ -22,6 +22,7 @@
 
 #include "TpWrapper.hpp"
 #include <stdio.h>
+#include "jconfig.hpp"
 #include "workunit.hpp"
 #include "exception_util.hpp"
 #include "portlist.h"
@@ -29,6 +30,7 @@
 #include "dautils.hpp"
 #include "dameta.hpp"
 #include "hpccconfig.hpp"
+#include "securesocket.hpp"
 
 static CConfigUpdateHook configUpdateHook;
 
@@ -39,7 +41,7 @@ const char* MSG_FAILED_GET_ENVIRONMENT_INFO = "Failed to get environment informa
 //////////////////////////////////////////////////////////////////////
 
 void CTpWrapper::getClusterMachineList(double clientVersion,
-                                       const char* ClusterType,
+                                       CTpMachineType ClusterType,
                                        const char* ClusterPath,
                                        const char* ClusterDirectory,
                                        IArrayOf<IEspTpMachine> &MachineList,
@@ -86,13 +88,9 @@ void CTpWrapper::getTpEspServers(IArrayOf<IConstTpEspServer>& list)
 static IEspTpMachine * createHostTpMachine(const char * hostname, const char *path)
 {
     Owned<IEspTpMachine> machine = createTpMachine();
-    IpAddress ipAddr;
-    ipAddr.ipset(hostname);
-    StringBuffer localHost;
-    ipAddr.getIpText(localHost);
-    machine->setName(localHost.str());
-    machine->setNetaddress(localHost.str());
-    machine->setConfigNetaddress(hostname);
+    machine->setName(hostname);
+    machine->setNetaddress(hostname);
+    machine->setConfigNetaddress(hostname); //May be used by legacy ECLWatch. Leave it for now.
     machine->setDirectory(path);
     machine->setOS(getPathSepChar(path) == '/' ? MachineOsLinux : MachineOsW2K);
     return machine.getClear();
@@ -112,14 +110,7 @@ static void gatherDropZoneMachines(IArrayOf<IEspTpMachine> & tpMachines, IProper
 {
     const char * prefix = plane.queryProp("@prefix");
     if (plane.hasProp("hosts"))
-    {
         gatherDropZoneMachinesFromHosts(tpMachines, plane, prefix);
-    }
-    else if (plane.hasProp("@hostGroup"))
-    {
-        Owned<IPropertyTree> hostGroup = getHostGroup(plane.queryProp("@hostGroup"), true);
-        gatherDropZoneMachinesFromHosts(tpMachines, *hostGroup, prefix);
-    }
     else
         tpMachines.append(*createHostTpMachine("localhost", prefix));
 }
@@ -273,7 +264,7 @@ void CTpWrapper::appendThorMachineList(double clientVersion, IConstEnvironment* 
     const char* machineType, unsigned& processNumber, unsigned channels, const char* directory, IArrayOf<IEspTpMachine>& machineList)
 {
     StringBuffer netAddress;
-    node.endpoint().getIpText(netAddress);
+    node.endpoint().getHostText(netAddress);
     if (netAddress.length() == 0)
     {
         OWARNLOG("Net address not found for a node of %s", clusterName);
@@ -323,6 +314,11 @@ void CTpWrapper::getMachineList(double clientVersion, const char* MachineType, c
     const char* Status, const char* Directory, IArrayOf<IEspTpMachine>& MachineList, set<string>* pMachineNames/*=NULL*/)
 {
     IWARNLOG("UNIMPLEMENTED: CONTAINERIZED(CTpWrapper::getMachineList)");
+}
+
+void CTpWrapper::listLogFiles(const char* host, const char* path, IArrayOf<IConstLogFileStruct>& files)
+{
+    IWARNLOG("UNIMPLEMENTED: CONTAINERIZED(CTpWrapper::listLogFiles)");
 }
 
 const char* CTpWrapper::getNodeNameTag(const char* MachineType)
@@ -376,6 +372,9 @@ void CTpWrapper::getTpDropZones(double clientVersion, const char* name, bool ECL
     ForEach(*planes)
     {
         IPropertyTree & plane = planes->query();
+        bool eclwatchVisible = plane.getPropBool("@eclwatchVisible", true);
+        if (ECLWatchVisibleOnly && !eclwatchVisible)
+            continue;
         const char * dropzonename = plane.queryProp("@name");
         const char * path = plane.queryProp("@prefix");
         Owned<IEspTpDropZone> dropZone = createTpDropZone();
@@ -383,7 +382,7 @@ void CTpWrapper::getTpDropZones(double clientVersion, const char* name, bool ECL
         dropZone->setDescription("");
         dropZone->setPath(path);
         dropZone->setBuild("");
-        dropZone->setECLWatchVisible(true);
+        dropZone->setECLWatchVisible(eclwatchVisible);
         IArrayOf<IEspTpMachine> tpMachines;
         gatherDropZoneMachines(tpMachines, plane);
         dropZone->setTpMachines(tpMachines);
@@ -394,33 +393,6 @@ void CTpWrapper::getTpDropZones(double clientVersion, const char* name, bool ECL
 void CTpWrapper::getTpSparkThors(double clientVersion, const char* name, IArrayOf<IConstTpSparkThor>& list)
 {
     UNIMPLEMENTED_X("CONTAINERIZED(CTpWrapper::getTpSparkThors)");
-}
-
-void CTpWrapper::appendTpMachine(double clientVersion, IConstEnvironment* constEnv, IConstInstanceInfo& instanceInfo, IArrayOf<IConstTpMachine>& machines)
-{
-    SCMStringBuffer name, networkAddress, description, directory;
-    Owned<IConstMachineInfo> machineInfo = instanceInfo.getMachine();
-    machineInfo->getName(name);
-    machineInfo->getNetAddress(networkAddress);
-    instanceInfo.getDirectory(directory);
-
-    Owned<IEspTpMachine> machine = createTpMachine();
-    machine->setName(name.str());
-
-    if (networkAddress.length() > 0)
-    {
-        IpAddress ipAddr;
-        ipAddr.ipset(networkAddress.str());
-
-        StringBuffer networkAddressStr;
-        ipAddr.getIpText(networkAddressStr);
-        machine->setNetaddress(networkAddressStr);
-    }
-    machine->setPort(instanceInfo.getPort());
-    machine->setOS(machineInfo->getOS());
-    machine->setDirectory(directory.str());
-    machine->setType(eqSparkThorProcess);
-    machines.append(*machine.getLink());
 }
 
 IEspTpMachine* CTpWrapper::createTpMachineEx(const char* name, const char* type, IConstMachineInfo* machineInfo)
@@ -447,7 +419,7 @@ IEspTpMachine* CTpWrapper::createTpMachineEx(const char* name, const char* type,
         StringBuffer networkAddress;
         IpAddress ipAddr;
         ipAddr.ipset(netAddr.str());
-        ipAddr.getIpText(networkAddress);
+        ipAddr.getHostText(networkAddress);
         machine->setNetaddress(networkAddress.str());
     }
 
@@ -465,7 +437,6 @@ IEspTpMachine* CTpWrapper::createTpMachineEx(const char* name, const char* type,
     }
     return machine.getClear();
 }
-
 
 void CTpWrapper::setAttPath(StringBuffer& Path,const char* PathToAppend,const char* AttName,const char* AttValue,StringBuffer& returnStr)
 {
@@ -524,13 +495,16 @@ class CContainerWUClusterInfo : public CSimpleInterfaceOf<IConstWUClusterInfo>
     StringAttr serverQueue;
     StringAttr agentQueue;
     StringAttr thorQueue;
+    StringAttr ldapUser;
     ClusterType platform;
     unsigned clusterWidth;
     StringArray thorProcesses;
+    RoxieTargetType roxieTargetType = RTTQueued;
 
 public:
-    CContainerWUClusterInfo(const char* _name, const char* type, unsigned _clusterWidth)
-        : name(_name), clusterWidth(_clusterWidth)
+    CContainerWUClusterInfo(const char* _name, const char* type, const char* _ldapUser,
+        unsigned _clusterWidth, bool _queriesOnly)
+        : name(_name), ldapUser(_ldapUser), clusterWidth(_clusterWidth)
     {
         StringBuffer queue;
         if (strieq(type, "thor"))
@@ -543,6 +517,8 @@ public:
         {
             agentQueue.set(getClusterEclAgentQueueName(queue.clear(), name));
             platform = RoxieCluster;
+            if (_queriesOnly)
+                roxieTargetType = RTTPublished;
         }
         else
         {
@@ -585,6 +561,18 @@ public:
     {
         return false;
     }
+    virtual RoxieTargetType getRoxieTargetType() const override
+    {
+        return roxieTargetType;
+    }
+    virtual bool canPublishQueries() const override
+    {
+        return roxieTargetType & RTTPublished;
+    }
+    virtual bool onlyPublishedQueries() const override
+    {
+        return roxieTargetType == RTTPublished;
+    }
     virtual IStringVal& getScope(IStringVal& str) const override
     {
         UNIMPLEMENTED;
@@ -624,11 +612,11 @@ public:
     }
     virtual const char *getLdapUser() const override
     {
-        UNIMPLEMENTED;
+        return ldapUser.get();
     }
     virtual const char *getLdapPassword() const override
     {
-        UNIMPLEMENTED;
+        return nullptr;
     }
     virtual unsigned getRoxieRedundancy() const override
     {
@@ -654,8 +642,13 @@ extern TPWRAPPER_API unsigned getContainerWUClusterInfo(CConstWUClusterInfoArray
     ForEach(*queues)
     {
         IPropertyTree& queue = queues->query();
+
+        // auxillary queues are additional queues and do not have a 1:1 mapping to clusters
+        if (queue.getPropBool("@isAuxQueue"))
+            continue;
         Owned<IConstWUClusterInfo> cluster = new CContainerWUClusterInfo(queue.queryProp("@name"),
-            queue.queryProp("@type"), (unsigned) queue.getPropInt("@width", 1));
+            queue.queryProp("@type"), queue.queryProp("@ldapUser"), (unsigned) queue.getPropInt("@width", 1),
+            queue.getPropBool("@queriesOnly"));
         clusters.append(*cluster.getClear());
     }
 
@@ -680,7 +673,8 @@ extern TPWRAPPER_API IConstWUClusterInfo* getWUClusterInfoByName(const char* clu
         return nullptr;
 
     return new CContainerWUClusterInfo(queue->queryProp("@name"), queue->queryProp("@type"),
-        (unsigned) queue->getPropInt("@width", 1));
+        queue->queryProp("@ldapUser"), (unsigned) queue->getPropInt("@width", 1),
+        queue->getPropBool("@queriesOnly"));
 }
 
 extern TPWRAPPER_API void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory>& connMap)
@@ -689,23 +683,31 @@ extern TPWRAPPER_API void initContainerRoxieTargets(MapStringToMyClass<ISmartSoc
     ForEach(*services)
     {
         IPropertyTree& service = services->query();
-        const char* name = service.queryProp("@name");
         const char* target = service.queryProp("@target");
-        const char* port = service.queryProp("@port");
 
-        if (isEmptyString(target) || isEmptyString(name)) //bad config?
+        if (isEmptyString(target) || isEmptyString(service.queryProp("@name"))) //bad config?
             continue;
 
-        StringBuffer s;
-        s.append(name).append(':').append(port ? port : "9876");
-        Owned<ISmartSocketFactory> sf = new CSmartSocketFactory(s.str(), false, 60, (unsigned) -1);
+        bool tls = service.getPropBool("@tls", false);
+        Owned<ISmartSocketFactory> sf = tls ? createSecureSmartSocketFactory(service, false, 60, 0) : createSmartSocketFactory(service, false, 60, 0);
         connMap.setValue(target, sf.get());
+    }
+}
+
+extern TPWRAPPER_API void getRoxieTargetsSupportingPublishedQueries(StringArray& names)
+{
+    Owned<IPropertyTreeIterator> queues = getComponentConfigSP()->getElements("queues[@type='roxie']");
+    ForEach(*queues)
+    {
+        IPropertyTree& queue = queues->query();
+        if (queue.getPropBool("@queriesOnly"))
+            names.append(queue.queryProp("@name"));
     }
 }
 
 extern TPWRAPPER_API unsigned getThorClusterNames(StringArray& targetNames, StringArray& queueNames)
 {
-    Owned<IStringIterator> targets = getContainerTargetClusters("thor", nullptr);
+    Owned<IStringIterator> targets = config::getContainerTargets("thor", nullptr);
     ForEach(*targets)
     {
         SCMStringBuffer target;
@@ -725,7 +727,7 @@ static CriticalSection configUpdateSect;
 static void refreshValidTargets()
 {
     validTargets.clear();
-    Owned<IStringIterator> it = getContainerTargetClusters(nullptr, nullptr);
+    Owned<IStringIterator> it = config::getContainerTargets(nullptr, nullptr);
     ForEach(*it)
     {
         SCMStringBuffer s;
@@ -791,12 +793,8 @@ bool getSashaServiceEP(SocketEndpoint &serviceEndpoint, const char *service, boo
     return true;
 }
 
-StringBuffer & getRoxieDefaultPlane(StringBuffer & plane, const char * roxieName)
+static StringBuffer & getRoxieDefaultPlane(IPropertyTree * queue, StringBuffer & plane, const char * roxieName)
 {
-    Owned<IPropertyTree> queue = getContainerClusterConfig(roxieName);
-    if (!queue)
-        throw makeStringExceptionV(ECLWATCH_INVALID_CLUSTER_NAME, "Unknown queue name %s", roxieName);
-
     if (queue->getProp("@dataPlane", plane))
         return plane;
 
@@ -805,4 +803,36 @@ StringBuffer & getRoxieDefaultPlane(StringBuffer & plane, const char * roxieName
     if (!dataPlanes->first())
         throwUnexpectedX("No default data plane defined");
     return plane.append(dataPlanes->query().queryProp("@name"));
+}
+
+StringBuffer & getRoxieDefaultPlane(StringBuffer & plane, const char * roxieName)
+{
+    Owned<IPropertyTree> queue = getContainerClusterConfig(roxieName);
+    if (!queue)
+        throw makeStringExceptionV(ECLWATCH_INVALID_CLUSTER_NAME, "Unknown queue name %s", roxieName);
+
+    return getRoxieDefaultPlane(queue, plane, roxieName);
+}
+
+//By default roxie will copy files from planes other than it's default, if a plane is added to directAccessPlanes
+//  roxie will continue to read the file directly without making a copy
+StringArray & getRoxieDirectAccessPlanes(StringArray & planes, StringBuffer &defaultPlane, const char * roxieName, bool includeDefaultPlane)
+{
+    Owned<IPropertyTree> queue = getContainerClusterConfig(roxieName);
+    if (!queue)
+        throw makeStringExceptionV(ECLWATCH_INVALID_CLUSTER_NAME, "Unknown queue name %s", roxieName);
+
+    getRoxieDefaultPlane(queue, defaultPlane, roxieName);
+    if (defaultPlane.length() && includeDefaultPlane)
+        planes.appendUniq(defaultPlane);
+
+    Owned<IPropertyTreeIterator> iter = queue->getElements("directAccessPlanes");
+    ForEach(*iter)
+    {
+        const char *plane = iter->query().queryProp("");
+        if (!isEmptyString(plane))
+            planes.appendUniq(plane);
+    }
+
+    return planes;
 }

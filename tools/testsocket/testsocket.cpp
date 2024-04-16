@@ -76,6 +76,7 @@ FILE * trace;
 CriticalSection traceCrit;
 
 unsigned queryDelayMS = 0;
+unsigned queryAbsDelayMS = 0;  // ex: -u0 -qd 1000 for 1 q/s ...
 unsigned totalQueryCnt = 0;
 double totalQueryMS = 0.0;
 
@@ -562,7 +563,7 @@ int doSendQuery(const char * ip, unsigned port, const char * base)
 #ifdef _USE_OPENSSL
                     if (!persistSecureContext)
                         persistSecureContext.setown(createSecureSocketContext(ClientSocket));
-                    persistSSock.setown(persistSecureContext->createSecureSocket(persistSocket.getClear()));
+                    persistSSock.setown(persistSecureContext->createSecureSocket(persistSocket.getClear(), SSLogNormal, ip));
                     int res = persistSSock->secure_connect();
                     if (res < 0)
                         throw MakeStringException(-1, "doSendQuery : Failed to establish secure connection");
@@ -582,7 +583,7 @@ int doSendQuery(const char * ip, unsigned port, const char * base)
             {
 #ifdef _USE_OPENSSL
                 secureContext.setown(createSecureSocketContext(ClientSocket));
-                Owned<ISecureSocket> ssock = secureContext->createSecureSocket(socket.getClear());
+                Owned<ISecureSocket> ssock = secureContext->createSecureSocket(socket.getClear(), SSLogNormal, ip);
                 int res = ssock->secure_connect();
                 if (res < 0)
                     throw MakeStringException(-1, "doSendQuery : Failed to establish secure connection");
@@ -628,7 +629,8 @@ int doSendQuery(const char * ip, unsigned port, const char * base)
         if (sendToSocket)
         {
             Thread * receive = new ReceiveThread();
-            receive->start();
+            //MORE: The caller should really join this thread before terminating
+            receive->start(false);
             receive->Release();
         }
 
@@ -774,7 +776,14 @@ class QueryThread : public Thread
 public:
     QueryThread(const char * _ip, unsigned _port, const char * _base) : ip(_ip),port(_port),base(_base) {}
 
-    virtual int run() { doSendQuery(ip, port, base); done.signal(); okToSend.signal(); return 0; }
+    virtual int run()
+    {
+        doSendQuery(ip, port, base);
+        done.signal();
+        if (multiThreadMax)
+            okToSend.signal();
+        return 0;
+    }
 
 protected:
     StringAttr      ip;
@@ -792,8 +801,13 @@ int sendQuery(const char * ip, unsigned port, const char * base)
 
     runningQueries++;
     Thread * thread = new QueryThread(ip, port, base);
-    thread->start();
+    //MORE: The caller should really join this thread before terminating
+    thread->start(false);
     thread->Release();
+
+    if (multiThread && queryAbsDelayMS && !multiThreadMax)
+        Sleep(queryAbsDelayMS);
+
     return 0;
 }
 
@@ -1065,6 +1079,12 @@ int main(int argc, char **argv)
     {
         printf("Multi-thread (-u) not available with -persist - ignored\n");
         multiThread = false;
+    }
+
+    if (multiThread && queryDelayMS && !multiThreadMax)
+    {
+        queryAbsDelayMS = queryDelayMS;
+        queryDelayMS = 0;
     }
 
     StringAttr ip;

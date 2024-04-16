@@ -21,7 +21,7 @@
 #include "jerror.hpp"
 #include "junicode.hpp"
 
-/* Based on code extracted from the following source...  Changed quite signficantly */
+/* Based on code extracted from the following source...  Changed quite significantly */
 
 /*
  * Copyright 2001 Unicode, Inc.
@@ -73,6 +73,21 @@ UTF32 UtfReader::next()
     case Utf32be:  return next32be();
     }
     UNIMPLEMENTED;
+}
+
+void UtfReader::skip()
+{
+    size32_t size = 0;
+    switch (type)
+    {
+    case Utf8:    size = 1; break;
+    case Utf16le: size = 2; break;
+    case Utf16be: size = 2; break;
+    case Utf32le: size = 4; break;
+    case Utf32be: size = 4; break;
+    }
+    if (cur + size <= end)
+        cur += size;
 }
 
 size32_t UtfReader::getLegalLength()
@@ -284,6 +299,8 @@ UTF32 UtfReader::next8()
      * The cases all fall through. See "Note A" below.
      */
     UTF32 ch = 0;
+    //The following code does not mask the bits from the incoming bytes as you would expect.
+    //Instead all the extra bits are subtracted away at the end of the function.
     switch (extraBytesToRead) {
         case 3: ch += *source++; ch <<= 6; // fallthrough
         case 2: ch += *source++; ch <<= 6; // fallthrough
@@ -313,6 +330,8 @@ UTF32 readUtf8Character(unsigned len, const byte * & cur)
      * The cases all fall through. See "Note A" below.
      */
     UTF32 ch = 0;
+    //The following code does not mask the bits from the incoming bytes as you would expect.
+    //Instead all the extra bits are subtracted away at the end of the function.
     switch (extraBytesToRead) {
         case 3: ch += *source++; ch <<= 6; // fallthrough
         case 2: ch += *source++; ch <<= 6; // fallthrough
@@ -516,20 +535,23 @@ MemoryBuffer & appendUtf(MemoryBuffer & out, UtfReader::UtfFormat targetType, UT
 
 bool convertUtf(MemoryBuffer & target, UtfReader::UtfFormat targetType, unsigned sourceLength, const void * source, UtfReader::UtfFormat sourceType)
 {
+    bool valid = true;
     UtfReader input(sourceType, false);
     input.set(sourceLength, source);
-    unsigned originalLength = target.length();
     for (;;)
     {
         UTF32 next = input.next();
         if (next == sourceExhausted)
-            return true;
+            return valid;
         if (next == sourceIllegal)
         {
-            target.setLength(originalLength);
-            return false;
+            //Append the substitution character and skip the illegal character
+            appendUtf(target, targetType, 0x1a);
+            input.skip();
+            valid = false;
         }
-        appendUtf(target, targetType, next);
+        else
+            appendUtf(target, targetType, next);
     }
 }
 

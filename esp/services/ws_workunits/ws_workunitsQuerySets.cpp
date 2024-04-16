@@ -18,6 +18,8 @@
 #include "ws_workunitsService.hpp"
 #include "ws_fs.hpp"
 #include "jlib.hpp"
+#include "jconfig.hpp"
+#include "jcontainerized.hpp"
 #include "jflz.hpp"
 #include "daclient.hpp"
 #include "dalienv.hpp"
@@ -32,11 +34,6 @@
 #include "TpWrapper.hpp"
 
 #define DALI_FILE_LOOKUP_TIMEOUT (1000*15*1)  // 15 seconds
-
-const unsigned ROXIECONNECTIONTIMEOUT = 1000;   //1 second
-const unsigned ROXIECONTROLQUERYTIMEOUT = 3000; //3 second
-const unsigned ROXIECONTROLQUERIESTIMEOUT = 30000; //30 second
-const unsigned ROXIELOCKCONNECTIONTIMEOUT = 60000; //60 second
 
 //The CQuerySetQueryActionTypes[] has to match with the ESPenum QuerySetQueryActionTypes in the ecm file.
 static unsigned NumOfQuerySetQueryActionTypes = 7;
@@ -65,13 +62,13 @@ void ensureInputString(const char* input, bool lowerCase, StringBuffer& inputStr
         inputStr.toLowerCase();
 }
 
-static IClientWsWorkunits *ensureWsWorkunitsClient(IClientWsWorkunits *ws, IEspContext *ctx, const char *netAddress)
+static IClientWsWorkunits *ensureWsWorkunitsClient(IClientWsWorkunits *ws, IEspContext *ctx, const char *netAddress, bool useSSL)
 {
     if (ws)
         return LINK(ws);
     StringBuffer url;
     if (netAddress && *netAddress)
-        url.appendf("http://%s%s/WsWorkunits", netAddress, (!strchr(netAddress, ':')) ? ":8010" : "");
+        url.appendf("%s://%s%s/WsWorkunits", useSSL ? "https" : "http", netAddress, (!strchr(netAddress, ':')) ? ":8010" : "");
     else
     {
         if (!ctx)
@@ -79,7 +76,7 @@ static IClientWsWorkunits *ensureWsWorkunitsClient(IClientWsWorkunits *ws, IEspC
         StringBuffer ip;
         short port = 0;
         ctx->getServAddress(ip, port);
-        url.appendf("http://%s:%d/WsWorkunits", ip.str(), port);
+        url.appendf("%s://%s:%d/WsWorkunits", useSSL ? "https" : "http", ip.str(), port);
     }
     Owned<IClientWsWorkunits> cws = createWsWorkunitsClient();
     cws->addServiceUrl(url);
@@ -88,9 +85,9 @@ static IClientWsWorkunits *ensureWsWorkunitsClient(IClientWsWorkunits *ws, IEspC
     return cws.getClear();
 }
 
-IClientWUQuerySetDetailsResponse *fetchQueryDetails(IClientWsWorkunits *_ws, IEspContext *ctx, const char *netAddress, const char *target, const char *queryid)
+IClientWUQuerySetDetailsResponse *fetchQueryDetails(IClientWsWorkunits *_ws, IEspContext *ctx, const char *netAddress, const char *target, const char *queryid, bool useSSL)
 {
-    Owned<IClientWsWorkunits> ws = ensureWsWorkunitsClient(_ws, ctx, netAddress);
+    Owned<IClientWsWorkunits> ws = ensureWsWorkunitsClient(_ws, ctx, netAddress, useSSL);
 
     //using existing WUQuerysetDetails rather than extending WUQueryDetails, to support copying query meta data from prior releases
     Owned<IClientWUQuerySetDetailsRequest> reqQueryInfo = ws->createWUQuerysetDetailsRequest();
@@ -101,9 +98,9 @@ IClientWUQuerySetDetailsResponse *fetchQueryDetails(IClientWsWorkunits *_ws, IEs
     return ws->WUQuerysetDetails(reqQueryInfo);
 }
 
-void fetchRemoteWorkunit(IClientWsWorkunits *_ws, IEspContext *ctx, const char *netAddress, const char *queryset, const char *query, const char *wuid, StringBuffer &name, StringBuffer &xml, StringBuffer &dllname, MemoryBuffer &dll, StringBuffer &daliServer)
+void fetchRemoteWorkunit(IClientWsWorkunits *_ws, IEspContext *ctx, const char *netAddress, const char *queryset, const char *query, const char *wuid, StringBuffer &name, StringBuffer &xml, StringBuffer &dllname, MemoryBuffer &dll, StringBuffer &daliServer, bool useSSL)
 {
-    Owned<IClientWsWorkunits> ws = ensureWsWorkunitsClient(_ws, ctx, netAddress);
+    Owned<IClientWsWorkunits> ws = ensureWsWorkunitsClient(_ws, ctx, netAddress, useSSL);
     Owned<IClientWULogFileRequest> req = ws->createWUFileRequest();
     if (queryset && *queryset)
         req->setQuerySet(queryset);
@@ -113,12 +110,14 @@ void fetchRemoteWorkunit(IClientWsWorkunits *_ws, IEspContext *ctx, const char *
         req->setWuid(wuid);
     req->setErrorMessageFormat(CErrorMessageFormat_XML);
     req->setType("xml");
+    req->updateFileOptions().setFileType(CWUFileType::CWUFileType_XML);
     Owned<IClientWULogFileResponse> resp = ws->WUFile(req);
     if (!resp || resp->getExceptions().ordinality() || !resp->getThefile().length())
         throw MakeStringException(ECLWATCH_CANNOT_GET_WORKUNIT, "Cannot retrieve remote workunit");
     xml.append(resp->getThefile().length(), resp->getThefile().toByteArray());
 
     req->setType("dll");
+    req->updateFileOptions().setFileType(CWUFileType::CWUFileType_DLL);
     resp.setown(ws->WUFile(req));
     if (!resp || resp->getExceptions().ordinality() || !resp->getThefile().length())
         throw MakeStringException(ECLWATCH_CANNOT_GET_WORKUNIT, "Cannot retrieve remote workunit shared object");
@@ -128,14 +127,14 @@ void fetchRemoteWorkunit(IClientWsWorkunits *_ws, IEspContext *ctx, const char *
     SocketEndpoint ep;
     checkUseEspOrDaliIP(ep, resp->getDaliServer(), netAddress);
     if (!ep.isNull())
-        ep.getUrlStr(daliServer);
+        ep.getEndpointHostText(daliServer);
 }
 
-void fetchRemoteWorkunitAndQueryDetails(IClientWsWorkunits *_ws, IEspContext *ctx, const char *netAddress, const char *queryset, const char *query, const char *wuid, StringBuffer &name, StringBuffer &xml, StringBuffer &dllname, MemoryBuffer &dll, StringBuffer &daliServer, Owned<IClientWUQuerySetDetailsResponse> &respQueryInfo)
+void fetchRemoteWorkunitAndQueryDetails(IClientWsWorkunits *_ws, IEspContext *ctx, const char *netAddress, const char *queryset, const char *query, const char *wuid, StringBuffer &name, StringBuffer &xml, StringBuffer &dllname, MemoryBuffer &dll, StringBuffer &daliServer, Owned<IClientWUQuerySetDetailsResponse> &respQueryInfo, bool useSSL)
 {
-    Owned<IClientWsWorkunits> ws = ensureWsWorkunitsClient(_ws, ctx, netAddress);
-    fetchRemoteWorkunit(ws, ctx, netAddress, queryset, query, wuid, name, xml, dllname, dll, daliServer);
-    respQueryInfo.setown(fetchQueryDetails(ws, ctx, netAddress, queryset, query));
+    Owned<IClientWsWorkunits> ws = ensureWsWorkunitsClient(_ws, ctx, netAddress, useSSL);
+    fetchRemoteWorkunit(ws, ctx, netAddress, queryset, query, wuid, name, xml, dllname, dll, daliServer, useSSL);
+    respQueryInfo.setown(fetchQueryDetails(ws, ctx, netAddress, queryset, query, useSSL));
 }
 
 void doWuFileCopy(IClientFileSpray &fs, IEspWULogicalFileCopyInfo &info, const char *logicalname, const char *cluster, bool isRoxie, bool supercopy)
@@ -185,7 +184,7 @@ bool copyWULogicalFiles(IEspContext &context, IConstWorkUnit &cw, const char *cl
     Owned<IConstWUGraphIterator> graphs = &cw.getGraphs(GraphTypeActivities);
     ForEach(*graphs)
     {
-        Owned <IPropertyTree> xgmml = graphs->query().getXGMMLTree(false);
+        Owned <IPropertyTree> xgmml = graphs->query().getXGMMLTree(false, false);
         Owned<IPropertyTreeIterator> iter = xgmml->getElements(".//node");
         ForEach(*iter)
         {
@@ -212,7 +211,7 @@ bool copyWULogicalFiles(IEspContext &context, IConstWorkUnit &cw, const char *cl
                         foreign.append(*info.getClear());
                     else
                     {
-                        Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalname, udesc, false, false, false, nullptr, defaultPrivilegedUser);
+                        Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalname, udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
                         if(!df)
                             notFound.append(*info.getClear());
                         else if (df->findCluster(cluster)!=NotFound)
@@ -366,7 +365,9 @@ void QueryFilesInUse::loadTarget(IPropertyTree *t, const char *target, unsigned 
         wufiles->addFilesFromQuery(cw, pm, queryid);
         if (aborting)
             return;
-        wufiles->resolveFiles(process.str(), NULL, NULL, NULL, true, true, false, false);
+        StringArray locations;
+        locations.append(process.str());
+        wufiles->resolveFiles(locations, NULL, NULL, NULL, true, true, true, false, false);
 
         Owned<IReferencedFileIterator> files = wufiles->getFiles();
         ForEach(*files)
@@ -385,7 +386,14 @@ void QueryFilesInUse::loadTarget(IPropertyTree *t, const char *target, unsigned 
                 IPropertyTree *fileTree = queryTree->addPropTree("File", createPTree("File"));
                 fileTree->setProp("@lfn", lfn);
                 if (rf.getFlags() & RefFileSuper)
+                {
                     fileTree->setPropBool("@super", true);
+                    ForEachItemIn(i, rf.getSubFileNames())
+                    {
+                        IPropertyTree *subfileTree = fileTree->addPropTree("SubFile");
+                        subfileTree->setProp("@lfn", rf.getSubFileNames().item(i));
+                    }
+                }
                 if (rf.getFlags() & RefFileNotFound)
                     fileTree->setPropBool("@notFound", true);
                 const char *fpkgid = rf.queryPackageId();
@@ -403,7 +411,7 @@ void QueryFilesInUse::loadTarget(IPropertyTree *t, const char *target, unsigned 
 void QueryFilesInUse::loadTargets(IPropertyTree *t, unsigned flags)
 {
 #ifdef _CONTAINERIZED
-    Owned<IStringIterator> targets = getContainerTargetClusters("roxie", nullptr);
+    Owned<IStringIterator> targets = config::getContainerTargets("roxie", nullptr);
 #else
     Owned<IStringIterator> targets = getTargetClusters("RoxieCluster", nullptr);
 #endif
@@ -413,6 +421,28 @@ void QueryFilesInUse::loadTargets(IPropertyTree *t, unsigned flags)
         if (aborting)
             return;
         loadTarget(t, targets->str(s).str(), flags);
+    }
+}
+
+void QueryFilesInUse::updateUsers()
+{
+    SCMStringBuffer target;
+
+#ifdef _CONTAINERIZED
+    Owned<IStringIterator> clusters = config::getContainerTargets("roxie", nullptr);
+#else
+    Owned<IStringIterator> clusters = getTargetClusters("RoxieCluster", nullptr);
+#endif
+    ForEach(*clusters)
+    {
+        Owned<IConstWUClusterInfo> info = getWUClusterInfoByName(clusters->str(target).str());
+        Owned<IUserDescriptor> user = createUserDescriptor();
+        const char *ldapUser = info->getLdapUser();
+        if (!isEmptyString(ldapUser))
+            user->set(ldapUser, info->getLdapPassword());
+        else
+            user->set("roxie", "");
+        roxieUserMap.setValue(target.str(), user.getClear());
     }
 }
 
@@ -499,13 +529,15 @@ bool reloadCluster(MapStringToMyClass<ISmartSocketFactory> &roxieConnMap, const 
     ISmartSocketFactory *conn = roxieConnMap.getValue(target);
     if (!conn)
         return true;
+    if (!k8s::isActiveService(target))
+        return true;
 #endif
     try
     {
 #ifndef _CONTAINERIZED
         Owned<IPropertyTree> result = sendRoxieControlAllNodes(addrs.item(0), "<control:reload/>", false, wait);
 #else
-        Owned<IPropertyTree> result = sendRoxieControlAllNodes(conn->nextEndpoint(), "<control:reload/>", false, wait);
+        Owned<IPropertyTree> result = sendRoxieControlAllNodes(conn, "<control:reload/>", false, wait, ROXIECONNECTIONTIMEOUT);
 #endif
         const char *status = result->queryProp("Endpoint[1]/Status");
         if (!status || !strieq(status, "ok"))
@@ -728,9 +760,9 @@ class QueryFileCopier
 {
 public:
     QueryFileCopier(const char *target_) : target(target_) {}
-    void init(IEspContext &context, bool allowForeignFiles)
+    void init(IEspContext &context, bool allowForeignFiles, const char *jobname)
     {
-        files.setown(createReferencedFileList(context.queryUserId(), context.queryPassword(), allowForeignFiles, false));
+        files.setown(createReferencedFileList(context.queryUserId(), context.queryPassword(), allowForeignFiles, false, jobname));
 #ifndef _CONTAINERIZED
         clusterInfo.setown(getTargetClusterInfo(target));
         StringBufferAdaptor sba(process);
@@ -746,28 +778,31 @@ public:
         if (ps)
             pm = ps->queryActiveMap(target);
     }
-    void copy(IConstWorkUnit *cw, unsigned updateFlags)
+    void copy(StringBuffer &publisherWuid, IConstWorkUnit *cw, unsigned updateFlags)
     {
         StringBuffer queryid;
         if (queryname && *queryname)
             queryname = queryid.append(queryname).append(".0").str(); //prepublish dummy version number to support fuzzy match like queries="myquery.*" in package
         files->addFilesFromQuery(cw, pm, queryname);
 
+        StringArray locations;
 #ifdef _CONTAINERIZED
         StringBuffer targetPlane;
-        getRoxieDefaultPlane(targetPlane, target);
+        getRoxieDirectAccessPlanes(locations, targetPlane, target, true);
         const char * targetPlaneOrGroup = targetPlane;
 #else
         const char * targetPlaneOrGroup = process;
+        locations.append(targetPlaneOrGroup);
 #endif
-        files->resolveFiles(targetPlaneOrGroup, remoteIP, remotePrefix, srcCluster, !(updateFlags & (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM | DALI_UPDATEF_SUPERFILES)), true, false, true);
+        files->resolveFiles(locations, remoteLocation, remotePrefix, srcCluster, !(updateFlags & (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM | DALI_UPDATEF_SUPERFILES)), true, false, true, (updateFlags & DFU_UPDATEF_REMOTESTORAGE));
         Owned<IDFUhelper> helper = createIDFUhelper();
+        files->setDfuQueue(dfu_queue);
 #ifdef _CONTAINERIZED
-        files->cloneAllInfo(updateFlags, helper, true, true, 0, 1, 0, nullptr);
+        files->cloneAllInfo(publisherWuid, targetPlaneOrGroup, updateFlags, helper, true, true, 0, 1, 0, nullptr);
 #else
         StringBuffer defReplicateFolder;
         getConfigurationDirectory(NULL, "data2", "roxie", process.str(), defReplicateFolder);
-        files->cloneAllInfo(updateFlags, helper, true, true, clusterInfo->getRoxieRedundancy(), clusterInfo->getChannelsPerNode(), clusterInfo->getRoxieReplicateOffset(), defReplicateFolder);
+        files->cloneAllInfo(publisherWuid, targetPlaneOrGroup, updateFlags, helper, true, true, clusterInfo->getRoxieRedundancy(), clusterInfo->getChannelsPerNode(), clusterInfo->getRoxieReplicateOffset(), defReplicateFolder);
 #endif
     }
 
@@ -788,10 +823,11 @@ public:
     Owned<IReferencedFileList> files;
 
     StringBuffer process;
-    StringAttr remoteIP;
+    StringAttr remoteLocation;
     StringAttr remotePrefix;
     StringAttr srcCluster;
     StringAttr queryname;
+    StringAttr dfu_queue;
 };
 
 #ifndef _CONTAINERIZED
@@ -815,13 +851,15 @@ bool CWsWorkunitsEx::isQuerySuspended(const char* query, const char* target, uns
         ISmartSocketFactory *conn = roxieConnMap.getValue(target);
         if (!conn)
             return false;
+        if (!k8s::isActiveService(target))
+            return false;
 #endif
         StringBuffer control;
         control.appendf("<control:queries><Query id='%s'/></control:queries>",  query);
 #ifndef _CONTAINERIZED
         Owned<IPropertyTree> result = sendRoxieControlAllNodes(addrs.item(0), control.str(), false, wait);
 #else
-        Owned<IPropertyTree> result = sendRoxieControlAllNodes(conn->nextEndpoint(), control, false, wait);
+        Owned<IPropertyTree> result = sendRoxieControlAllNodes(conn, control, false, wait, ROXIECONNECTIONTIMEOUT);
 #endif
         if (!result)
             return false;
@@ -849,8 +887,41 @@ bool CWsWorkunitsEx::isQuerySuspended(const char* query, const char* target, uns
     }
 }
 
+template<class TRequest, class TResponse>
+static bool handlePublisherResponse(TRequest &req, TResponse &resp, const StringBuffer &publisherWuid)
+{
+    if (!publisherWuid.isEmpty())
+        resp.setDfuPublisherWuid(publisherWuid);
+
+    if (req.getOnlyCopyFiles() || (req.getStopIfFilesCopied() && !publisherWuid.isEmpty()))
+    {
+        if (!publisherWuid.isEmpty())
+        {
+            StringBuffer statemsg;
+            resp.setDfuPublisherState(encodeDFUstate(DFUstate_started, statemsg));
+        }
+        return true;
+    }
+
+    if (!publisherWuid.isEmpty())
+    {
+        Owned<IDFUWorkUnitFactory> factory = getDFUWorkUnitFactory();
+        Owned<IConstDFUWorkUnit> dfuPublisherWu = factory->openWorkUnit(publisherWuid, false);
+        DFUstate state = dfuPublisherWu->pollForCompletion(1000*60*30); //make an option, 30 min timeout for now, tbd
+        StringBuffer statemsg;
+        resp.setDfuPublisherState(encodeDFUstate(state, statemsg));
+        if (state != DFUstate_finished)
+            return true;
+    }
+    return false;
+}
+
+
 bool CWsWorkunitsEx::onWUPublishWorkunit(IEspContext &context, IEspWUPublishWorkunitRequest & req, IEspWUPublishWorkunitResponse & resp)
 {
+    if (req.getDontCopyFiles() && req.getOnlyCopyFiles())
+        throw makeStringException(ECLWATCH_INVALID_INPUT,"Cannot combine 'dont-copy-files' and 'only-copy-files'");
+
     StringBuffer wuid(req.getWuid());
     WsWuHelpers::checkAndTrimWorkunit("WUPublishWorkunit", wuid);
 
@@ -900,20 +971,62 @@ bool CWsWorkunitsEx::onWUPublishWorkunit(IEspContext &context, IEspWUPublishWork
         updateFlags |= DALI_UPDATEF_SUPERFILES;
     if (req.getAppendCluster())
         updateFlags |= DALI_UPDATEF_APPEND_CLUSTER;
+    if (req.getDfuCopyFiles())
+        updateFlags |= DFU_UPDATEF_COPY;
+    if (req.getDfuOverwrite())
+        updateFlags |= DFU_UPDATEF_OVERWRITE;
 
+    StringBuffer publisherWuid(req.getDfuPublisherWuid());
     if (!req.getDontCopyFiles())
     {
+        StringBuffer remoteLocation;
+        StringBuffer srcCluster;
+        StringBuffer srcPrefix;
+
+        unsigned updateFlags = 0;
+        const char *remoteStr = req.getRemoteStorage();
+        if (!isEmptyString(remoteStr))
+            updateFlags = DFU_UPDATEF_REMOTESTORAGE;
+        else
+            remoteStr = req.getRemoteDali();
+
+        splitDerivedDfsLocation(remoteStr, srcCluster, remoteLocation, srcPrefix, req.getSourceProcess(),req.getSourceProcess(), NULL, NULL);
+
+        if (srcCluster.length())
+        {
+            if (!validateDataPlaneName(remoteLocation, srcCluster))
+                throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Process cluster %s not found on %s remote", srcCluster.str(), remoteLocation.length() ? remoteLocation.str() : "local");
+        }
+        if (req.getUpdateDfs())
+            updateFlags |= (DALI_UPDATEF_SUPERFILES | DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM);
+        if (req.getUpdateCloneFrom())
+            updateFlags |= DALI_UPDATEF_CLONE_FROM;
+        if (req.getUpdateSuperFiles())
+            updateFlags |= DALI_UPDATEF_SUPERFILES;
+        if (req.getAppendCluster())
+            updateFlags |= DALI_UPDATEF_APPEND_CLUSTER;
+        if (req.getDfuCopyFiles())
+            updateFlags |= DFU_UPDATEF_COPY;
+        if (req.getDfuOverwrite())
+            updateFlags |= DFU_UPDATEF_OVERWRITE;
+
         QueryFileCopier cpr(target);
-        cpr.init(context, req.getAllowForeignFiles());
-        cpr.remoteIP.set(daliIP);
+        cpr.init(context, req.getAllowForeignFiles(), queryName);
+        cpr.remoteLocation.set(remoteLocation);
         cpr.remotePrefix.set(srcPrefix);
         cpr.srcCluster.set(srcCluster);
         cpr.queryname.set(queryName);
-        cpr.copy(cw, updateFlags);
+        cpr.dfu_queue.set(req.getDfuQueue());
+        cpr.copy(publisherWuid, cw, updateFlags);
 
         if (req.getIncludeFileErrors())
             cpr.gatherFileErrors(resp.getFileErrors());
+        if (!publisherWuid.isEmpty())
+            resp.setDfuPublisherWuid(publisherWuid);
     }
+
+    if (handlePublisherResponse(req, resp, publisherWuid))
+        return true;
 
     WorkunitUpdate wu(&cw->lock());
     if (notEmpty(req.getWorkUnitJobName()))
@@ -976,7 +1089,7 @@ bool CWsWorkunitsEx::onWUQuerysets(IEspContext &context, IEspWUQuerysetsRequest 
 {
     IArrayOf<IEspQuerySet> querySets;
 #ifdef _CONTAINERIZED
-    Owned<IStringIterator> targets = getContainerTargetClusters(nullptr, nullptr);
+    Owned<IStringIterator> targets = config::getContainerTargets(nullptr, nullptr);
 #else
     Owned<IStringIterator> targets = getTargetClusters(nullptr, nullptr);
 #endif
@@ -1135,7 +1248,7 @@ void retrieveQuerysetDetailsFromAlias(IEspContext &context, IPropertyTree *regis
         Owned<IEspQuerySetAlias> a = createQuerySetAlias();
         gatherQuerySetAliasDetails(&alias, a);
         xpath.clear().append("Query[@id='").append(a->getId()).append("']");
-        aliases.append(*a.getClear());
+        aliases.append(*a.getLink());
 
         IPropertyTree *query = registry->queryPropTree(xpath);
         if (!query)
@@ -1249,6 +1362,8 @@ IPropertyTree *getQueriesOnCluster(const char *target, const char *queryset, Str
     ISmartSocketFactory *conn = roxieConnMap.getValue(target);
     if (!conn)
         return nullptr;
+    if (!k8s::isActiveService(target))
+        return nullptr;
 #endif
 
     try
@@ -1265,13 +1380,16 @@ IPropertyTree *getQueriesOnCluster(const char *target, const char *queryset, Str
         }
 #ifndef _CONTAINERIZED
         Owned<ISocket> sock = ISocket::connect_timeout(eps.item(0), ROXIECONNECTIONTIMEOUT);
-#else
-        Owned<ISocket> sock = ISocket::connect_timeout(conn->nextEndpoint(), ROXIECONNECTIONTIMEOUT);
-#endif
         if (checkAllNodes)
             return sendRoxieControlAllNodes(sock, control, false, ROXIECONTROLQUERIESTIMEOUT);
         else
             return sendRoxieControlQuery(sock, control, ROXIECONTROLQUERIESTIMEOUT);
+#else
+        if (checkAllNodes)
+            return sendRoxieControlAllNodes(conn, control, false, ROXIECONTROLQUERIESTIMEOUT, ROXIECONNECTIONTIMEOUT);
+        else
+            return sendRoxieControlQuery(conn, control, ROXIECONTROLQUERIESTIMEOUT, ROXIECONNECTIONTIMEOUT);
+#endif
     }
     catch(IException* e)
     {
@@ -1438,23 +1556,30 @@ unsigned CWsWorkunitsEx::getGraphIdsByQueryId(const char *target, const char *qu
     ISmartSocketFactory *conn = roxieConnMap.getValue(target);
     if (!conn)
         return 0;
+    if (!k8s::isActiveService(target))
+        return 0;
 #endif
 
-    VStringBuffer xpath("<control:querystats><Query id='%s'/></control:querystats>", queryId);
+    VStringBuffer xpath("<control:querystats><Query id='%s' action='listGraphNames'/></control:querystats>", queryId);
 #ifndef _CONTAINERIZED
     Owned<ISocket> sock = ISocket::connect_timeout(eps.item(0), ROXIECONNECTIONTIMEOUT);
-#else
-    Owned<ISocket> sock = ISocket::connect_timeout(conn->nextEndpoint(), ROXIECONNECTIONTIMEOUT);
-#endif
     Owned<IPropertyTree> querystats = sendRoxieControlQuery(sock, xpath.str(), ROXIECONTROLQUERYTIMEOUT);
+#else
+    Owned<IPropertyTree> querystats = sendRoxieControlQuery(conn, xpath.str(), ROXIECONTROLQUERYTIMEOUT, ROXIECONNECTIONTIMEOUT);
+#endif
     if (!querystats)
         return 0;
 
-    Owned<IPropertyTreeIterator> graphs = querystats->getElements("Endpoint/Query/Graph");
+    Owned<IPropertyTreeIterator> graphs = querystats->getElements("Endpoint/Query/Graphs/Graph");
+    if (!graphs->first())
+        graphs.setown(querystats->getElements("Endpoint/Query/Graph"));
+
     ForEach(*graphs)
     {
         IPropertyTree &graph = graphs->query();
-        const char* graphId = graph.queryProp("@id");
+        const char* graphId = graph.queryProp("@name");
+        if (!graphId)
+            graphId = graph.queryProp("@id");
         if (graphId && *graphId)
             graphIds.appendUniq(graphId);
     }
@@ -1713,34 +1838,21 @@ void CWsWorkunitsEx::getSuspendedQueriesByCluster(MapStringTo<bool> &suspendedQu
     if (!isEmptyString(queryID))
         queryIDs.append(queryID);
 
+    StringArray roxieTargets;
     if (!isEmptyString(querySet))
-    {
-#ifndef _CONTAINERIZED
-        Owned<IPropertyTree> queriesOnCluster = getQueriesOnCluster(querySet, querySet, &queryIDs, checkAllNodes);
-#else
-        Owned<IPropertyTree> queriesOnCluster = getQueriesOnCluster(querySet, querySet, &queryIDs, checkAllNodes, roxieConnMap);
-#endif
-        addSuspendedQueryIDs(suspendedQueries, queriesOnCluster, querySet);
-    }
+        roxieTargets.append(querySet);
     else
-    {
-#ifdef _CONTAINERIZED
-        Owned<IStringIterator> targets = getContainerTargetClusters("roxie", nullptr);
-#else
-        Owned<IStringIterator> targets = getTargetClusters("RoxieCluster", nullptr);
-#endif
-        ForEach(*targets)
-        {
-            SCMStringBuffer target;
-            targets->str(target);
+        getRoxieTargetsSupportingPublishedQueries(roxieTargets);
 
+    ForEachItemIn(i, roxieTargets)
+    {
+        const char *roxieTarget = roxieTargets.item(i);
 #ifndef _CONTAINERIZED
-            Owned<IPropertyTree> queriesOnCluster = getQueriesOnCluster(target.str(), target.str(), &queryIDs, checkAllNodes);
+        Owned<IPropertyTree> queriesOnCluster = getQueriesOnCluster(roxieTarget, roxieTarget, &queryIDs, checkAllNodes);
 #else
-            Owned<IPropertyTree> queriesOnCluster = getQueriesOnCluster(target.str(), target.str(), &queryIDs, checkAllNodes, roxieConnMap);
+        Owned<IPropertyTree> queriesOnCluster = getQueriesOnCluster(roxieTarget, roxieTarget, &queryIDs, checkAllNodes, roxieConnMap);
 #endif
-            addSuspendedQueryIDs(suspendedQueries, queriesOnCluster, target.str());
-        }
+        addSuspendedQueryIDs(suspendedQueries, queriesOnCluster, roxieTarget);
     }
 }
 
@@ -1787,7 +1899,7 @@ bool CWsWorkunitsEx::onWUListQueriesUsingFile(IEspContext &context, IEspWUListQu
     {
         SCMStringBuffer targetStr;
 #ifdef _CONTAINERIZED
-        Owned<IStringIterator> targetClusters = getContainerTargetClusters("roxie", process);
+        Owned<IStringIterator> targetClusters = config::getContainerTargets("roxie", process);
 #else
         Owned<IStringIterator> targetClusters = getTargetClusters("RoxieCluster", process);
 #endif
@@ -1831,41 +1943,99 @@ bool CWsWorkunitsEx::onWUListQueriesUsingFile(IEspContext &context, IEspWUListQu
     return true;
 }
 
+void addQueryFiles(IPropertyTree *queryTree, StringBuffer &queryid, IArrayOf<IEspFileUsedByQuery> &referencedFiles, IArrayOf<IEspQuerySuperFile> &referencedSuperFiles)
+{
+    queryid.set(queryTree->queryProp("@id"));
+    Owned<IPropertyTreeIterator> files = queryTree->getElements("File");
+    ForEach(*files)
+    {
+        IPropertyTree &file = files->query();
+        if (file.getPropBool("@super"))
+        {
+            Owned<IEspQuerySuperFile> superFile = createQuerySuperFile();
+            superFile->setName(file.queryProp("@lfn"));
+            Owned<IPropertyTreeIterator> subfiles = file.getElements("SubFile");
+            ForEach(*subfiles)
+                superFile->getSubFiles().append(subfiles->query().queryProp("@lfn"));
+            referencedSuperFiles.append(*superFile.getClear());
+        }
+        else
+        {
+            Owned<IEspFileUsedByQuery> respFile = createFileUsedByQuery();
+            respFile->setFileName(file.queryProp("@lfn"));
+            respFile->setFileSize(file.getPropInt64("@size"));
+            respFile->setNumberOfParts(file.getPropInt("@numparts"));
+            referencedFiles.append(*respFile.getClear());
+        }
+    }
+}
+
+void addQueriesFiles(IPropertyTreeIterator *queriesTrees, IArrayOf<IEspQueryFilesUsed> &queriesFiles)
+{
+    ForEach(*queriesTrees)
+    {
+        IPropertyTree &queryTree = queriesTrees->get();
+
+        StringBuffer id;
+        IArrayOf<IEspFileUsedByQuery> referencedFiles;
+        IArrayOf<IEspQuerySuperFile> referencedSuperFiles;
+        addQueryFiles(&queryTree, id, referencedFiles, referencedSuperFiles);
+
+        Owned<IEspQueryFilesUsed> queryFilesUsed = createQueryFilesUsed();
+        queryFilesUsed->setQueryId(id);
+        queryFilesUsed->setFiles(referencedFiles);
+        queryFilesUsed->setSuperFiles(referencedSuperFiles);
+        queriesFiles.append(*queryFilesUsed.getClear());
+    }
+}
+
 bool CWsWorkunitsEx::onWUQueryFiles(IEspContext &context, IEspWUQueryFilesRequest &req, IEspWUQueryFilesResponse &resp)
 {
     const char *target = req.getTarget();
     validateTargetName(target);
 
+    StringAttr queryid;
     const char *query = req.getQueryId();
     if (!query || !*query)
-        throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query not specified");
-    Owned<IPropertyTree> registeredQuery = resolveQueryAlias(target, query, true);
-    if (!registeredQuery)
-        throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query not found");
-    PROGLOG("WUQueryFiles: target %s, query %s", target, query);
-    StringAttr queryid(registeredQuery->queryProp("@id"));
-    registeredQuery.clear();
+    {
+        if (context.getClientVersion()<1.86)
+            throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query not specified");
+        PROGLOG("WUQueryFiles: target %s, all queries", target);
+    }
+    else
+    {
+        Owned<IPropertyTree> registeredQuery = resolveQueryAlias(target, query, true);
+        if (!registeredQuery)
+            throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query not found");
+        PROGLOG("WUQueryFiles: target %s, query %s", target, query);
+        queryid.set(registeredQuery->queryProp("@id"));
+    }
 
     Owned<IPropertyTree> tree = filesInUse.getTree();
-    VStringBuffer xpath("%s/Query[@id='%s']", target, queryid.get());
-    IPropertyTree *queryTree = tree->queryPropTree(xpath);
-    if (!queryTree)
-       throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query not found in file cache (%s)", xpath.str());
-
-    IArrayOf<IEspFileUsedByQuery> referencedFiles;
-    Owned<IPropertyTreeIterator> files = queryTree->getElements("File");
-    ForEach(*files)
+    if (queryid.length())
     {
-        IPropertyTree &file = files->query();
-        if (file.getPropBool("@super", 0))
-            continue;
-        Owned<IEspFileUsedByQuery> respFile = createFileUsedByQuery();
-        respFile->setFileName(file.queryProp("@lfn"));
-        respFile->setFileSize(file.getPropInt64("@size"));
-        respFile->setNumberOfParts(file.getPropInt("@numparts"));
-        referencedFiles.append(*respFile.getClear());
+        VStringBuffer xpath("%s/Query[@id='%s']", target, queryid.get());
+        IPropertyTree *queryTree = tree->queryPropTree(xpath);
+        if (!queryTree)
+            throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query not found in file cache (%s)", xpath.str());
+
+        IArrayOf<IEspFileUsedByQuery> referencedFiles;
+        IArrayOf<IEspQuerySuperFile> referencedSuperFiles;
+        StringBuffer id;
+        addQueryFiles(queryTree, id, referencedFiles, referencedSuperFiles);
+
+        resp.setFiles(referencedFiles);
+        resp.setSuperFiles(referencedSuperFiles);
     }
-    resp.setFiles(referencedFiles);
+    else
+    {
+        //return entire queryset
+        VStringBuffer xpath("%s/Query", target);
+        Owned<IPropertyTreeIterator> queryTrees = tree->getElements(xpath);
+        IArrayOf<IEspQueryFilesUsed> queriesFiles;
+        addQueriesFiles(queryTrees, queriesFiles);
+        resp.setQueries(queriesFiles);
+    }
     return true;
 }
 
@@ -1906,7 +2076,6 @@ void copyWorkunitForRecompile(IEspContext &context, IWorkUnitFactory *factory, c
             wu->setDebugValue(name.str(), src->getDebugValue(name.str(), value).str(), true);
     }
 }
-
 
 bool CWsWorkunitsEx::onWURecreateQuery(IEspContext &context, IEspWURecreateQueryRequest &req, IEspWURecreateQueryResponse &resp)
 {
@@ -1977,19 +2146,28 @@ bool CWsWorkunitsEx::onWURecreateQuery(IEspContext &context, IEspWURecreateQuery
 
         if (req.getRepublish())
         {
+            StringBuffer publisherWuid(req.getDfuPublisherWuid());
             if (!req.getDontCopyFiles())
             {
-                StringBuffer daliIP;
+                StringBuffer remoteLocation;
                 StringBuffer srcCluster;
                 StringBuffer srcPrefix;
-                splitDerivedDfsLocation(req.getRemoteDali(), srcCluster, daliIP, srcPrefix, req.getSourceProcess(),req.getSourceProcess(), NULL, NULL);
+
+                unsigned updateFlags = 0;
+                const char *remoteStr = req.getRemoteStorage();
+                if (!isEmptyString(remoteStr))
+                    updateFlags = DFU_UPDATEF_REMOTESTORAGE;
+                else
+                    remoteStr = req.getRemoteDali();
+
+                splitDerivedDfsLocation(remoteStr, srcCluster, remoteLocation, srcPrefix, req.getSourceProcess(),req.getSourceProcess(), NULL, NULL);
 
                 if (srcCluster.length())
                 {
-                    if (!validateDataPlaneName(daliIP, srcCluster))
-                        throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Process cluster %s not found on %s DALI", srcCluster.str(), daliIP.length() ? daliIP.str() : "local");
+                    if (!validateDataPlaneName(remoteLocation, srcCluster))
+                        throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Process cluster %s not found on %s remote", srcCluster.str(), remoteLocation.length() ? remoteLocation.str() : "local");
                 }
-                unsigned updateFlags = 0;
+
                 if (req.getUpdateDfs())
                     updateFlags |= (DALI_UPDATEF_SUPERFILES | DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM);
                 if (req.getUpdateCloneFrom())
@@ -1998,18 +2176,28 @@ bool CWsWorkunitsEx::onWURecreateQuery(IEspContext &context, IEspWURecreateQuery
                     updateFlags |= DALI_UPDATEF_SUPERFILES;
                 if (req.getAppendCluster())
                     updateFlags |= DALI_UPDATEF_APPEND_CLUSTER;
+                if (req.getDfuCopyFiles())
+                    updateFlags |= DFU_UPDATEF_COPY;
+                if (req.getDfuOverwrite())
+                    updateFlags |= DFU_UPDATEF_OVERWRITE;
 
                 QueryFileCopier cpr(target);
-                cpr.init(context, req.getAllowForeignFiles());
-                cpr.remoteIP.set(daliIP);
+                cpr.init(context, req.getAllowForeignFiles(), srcQueryName);
+                cpr.remoteLocation.set(remoteLocation);
                 cpr.remotePrefix.set(srcPrefix);
                 cpr.srcCluster.set(srcCluster);
                 cpr.queryname.set(srcQueryName);
-                cpr.copy(cw, updateFlags);
+                cpr.dfu_queue.set(req.getDfuQueue());
+                cpr.copy(publisherWuid, cw, updateFlags);
 
                 if (req.getIncludeFileErrors())
                     cpr.gatherFileErrors(resp.getFileErrors());
+                if (!publisherWuid.isEmpty())
+                    resp.setDfuPublisherWuid(publisherWuid);
             }
+
+            if (handlePublisherResponse(req, resp, publisherWuid))
+                return true;
 
             StringBuffer queryId;
             WorkunitUpdate wu(&cw->lock());
@@ -2405,7 +2593,9 @@ bool CWsWorkunitsEx::getQueryFiles(IEspContext &context, const char* wuid, const
         Owned<IReferencedFileList> wufiles = createReferencedFileList(context.queryUserId(),
             context.queryPassword(), true, true);
         wufiles->addFilesFromQuery(cw, (ps) ? ps->queryActiveMap(target) : NULL, query);
-        wufiles->resolveFiles(process.str(), NULL, NULL, NULL, true, true, true, true);
+        StringArray locations;
+        locations.append(process.str());
+        wufiles->resolveFiles(locations, NULL, NULL, NULL, true, true, true, true, false);
         Owned<IReferencedFileIterator> refFileItr = wufiles->getFiles();
         ForEach(*refFileItr)
         {
@@ -2460,9 +2650,26 @@ inline bool verifyQueryActionAllowsAlias(CQuerySetQueryActionTypes action)
 {
     return (action!=CQuerySetQueryActionTypes_Activate && action!=CQuerySetQueryActionTypes_RemoveAllAliases);
 }
-void expandQueryActionTargetList(IProperties *queryIds, IPropertyTree *queryset, IArrayOf<IConstQuerySetQueryActionItem> &items, CQuerySetQueryActionTypes action)
+
+void setQueryActionTargetList(IProperties *queryIds, const char *queryId, bool suspendedByUser, const char *wuidToDelete, StringArray *wuidsToDelete)
 {
-    bool allowWildChecked=false;
+    queryIds->setProp(queryId, suspendedByUser);
+    if (wuidsToDelete && wuidToDelete)
+        wuidsToDelete->appendUniq(wuidToDelete);
+}
+
+void findActiveQueries(IPropertyTree *queryset, StringArray &queryIds)
+{
+    Owned<IPropertyTreeIterator> active = queryset->getElements("Alias");
+    ForEach(*active)
+        queryIds.append(active->query().queryProp("@id"));
+}
+
+void expandQueryActionTargetList(IProperties *queryIds, StringArray *wuidsToDelete, IPropertyTree *queryset, IArrayOf<IConstQuerySetQueryActionItem> &items, CQuerySetQueryActionTypes action)
+{
+    StringArray activeQueryIds;
+    bool activeQueryIdsFound = false;
+    bool allowWildChecked = false;
     ForEachItemIn(i, items)
     {
         const char *itemId = items.item(i).getQueryId();
@@ -2473,7 +2680,10 @@ void expandQueryActionTargetList(IProperties *queryIds, IPropertyTree *queryset,
             if (itemSuspendState && (strieq(itemSuspendState, "By User") || strieq(itemSuspendState, "1")))
                 suspendedByUser = true;
             if (!verifyQueryActionAllowsAlias(action))
-                queryIds->setProp(itemId, suspendedByUser);
+            {
+                Owned<IPropertyTree> query = getQueryById(queryset, itemId);
+                setQueryActionTargetList(queryIds, itemId, suspendedByUser, wuidsToDelete ? query->queryProp("@wuid") : nullptr, wuidsToDelete);
+            }
             else
             {
                 Owned<IPropertyTree> query = resolveQueryAlias(queryset, itemId);
@@ -2481,14 +2691,26 @@ void expandQueryActionTargetList(IProperties *queryIds, IPropertyTree *queryset,
                 {
                     const char *id = query->queryProp("@id");
                     if (id && *id)
-                        queryIds->setProp(id, suspendedByUser);
+                        setQueryActionTargetList(queryIds, id, suspendedByUser, wuidsToDelete ? query->queryProp("@wuid") : nullptr, wuidsToDelete);
                 }
             }
         }
         else
         {
             verifyQueryActionAllowsWild(allowWildChecked, action);
-            if (verifyQueryActionAllowsAlias(action))
+
+            bool checkActivated = !items.item(i).getActivated_isNull();
+            bool activated = checkActivated && items.item(i).getActivated();
+            bool suspendedByUser = items.item(i).getSuspendedByUser();
+
+            if (checkActivated && !activated && !activeQueryIdsFound)
+            {
+                activeQueryIdsFound = true;
+                findActiveQueries(queryset, activeQueryIds);
+            }
+
+            StringArray activeQueryInActionTargetList;
+            if (verifyQueryActionAllowsAlias(action) && (!checkActivated || activated))
             {
                 Owned<IPropertyTreeIterator> active = queryset->getElements("Alias");
                 ForEach(*active)
@@ -2496,15 +2718,28 @@ void expandQueryActionTargetList(IProperties *queryIds, IPropertyTree *queryset,
                     const char *name = active->query().queryProp("@name");
                     const char *id = active->query().queryProp("@id");
                     if (name && id && WildMatch(name, itemId))
-                        queryIds->setProp(id, 0);
+                    {
+                        Owned<IPropertyTree> query = getQueryById(queryset, id);
+                        if (!suspendedByUser || query->getPropBool("@suspended", false))
+                        {
+                            setQueryActionTargetList(queryIds, id, 0, wuidsToDelete ? query->queryProp("@wuid") : nullptr, wuidsToDelete);
+                            activeQueryInActionTargetList.append(id);
+                        }
+                    }
                 }
             }
             Owned<IPropertyTreeIterator> queries = queryset->getElements("Query");
             ForEach(*queries)
             {
                 const char *id = queries->query().queryProp("@id");
-                if (id && WildMatch(id, itemId))
-                    queryIds->setProp(id, 0);
+                if (id && WildMatch(id, itemId) && (activeQueryInActionTargetList.find(id) == NotFound))
+                {
+                    if (!checkActivated || (activated == (activeQueryIds.find(id) != NotFound)))
+                    {
+                        if (!suspendedByUser || queries->query().getPropBool("@suspended", false))
+                            setQueryActionTargetList(queryIds, id, 0, wuidsToDelete ? queries->query().queryProp("@wuid") : nullptr, wuidsToDelete);
+                    }
+                }
             }
         }
     }
@@ -2516,7 +2751,7 @@ void expandQueryActionTargetList(IProperties *queryIds, IPropertyTree *queryset,
     Owned<IEspQuerySetQueryActionItem> item = createQuerySetQueryActionItem();
     item->setQueryId(id);
     items.append(*(IConstQuerySetQueryActionItem*)item.getClear());
-    expandQueryActionTargetList(queryIds, queryset, items, action);
+    expandQueryActionTargetList(queryIds, nullptr, queryset, items, action);
 }
 
 bool CWsWorkunitsEx::onWUQueryConfig(IEspContext &context, IEspWUQueryConfigRequest & req, IEspWUQueryConfigResponse & resp)
@@ -2578,9 +2813,14 @@ bool CWsWorkunitsEx::onWUQuerysetQueryAction(IEspContext &context, IEspWUQuerySe
     if (!queryset)
         throw MakeStringException(ECLWATCH_QUERYSET_NOT_FOUND, "Queryset %s not found", req.getQuerySetName());
 
+    CQuerySetQueryActionTypes action = req.getAction();
     Owned<IProperties> queryIds = createProperties();
-    expandQueryActionTargetList(queryIds, queryset, req.getQueries(), req.getAction());
-    if (req.getAction() == CQuerySetQueryActionTypes_ResetQueryStats)
+    StringArray wuidsToDelete;
+    if (action == CQuerySetQueryActionTypes_DeleteQueriesAndWUs)
+        expandQueryActionTargetList(queryIds, &wuidsToDelete, queryset, req.getQueries(), action);
+    else
+        expandQueryActionTargetList(queryIds, nullptr, queryset, req.getQueries(), action);
+    if (action == CQuerySetQueryActionTypes_ResetQueryStats)
         return resetQueryStats(context, req.getQuerySetName(), queryIds, resp);
 
     IArrayOf<IEspQuerySetQueryActionResult> results;
@@ -2595,7 +2835,6 @@ bool CWsWorkunitsEx::onWUQuerysetQueryAction(IEspContext &context, IEspWUQuerySe
             Owned<IPropertyTree> query = getQueryById(queryset, id);
             if (!query)
                 throw MakeStringException(ECLWATCH_QUERYID_NOT_FOUND, "Query %s/%s not found.", req.getQuerySetName(), id);
-            CQuerySetQueryActionTypes action = req.getAction();
             const char* strAction = (action > -1) && (action < NumOfQuerySetQueryActionTypes) ? QuerySetQueryActionTypes[action] : "Undefined";
             PROGLOG("%s: queryset %s, query %s", strAction, req.getQuerySetName(), id);
             switch (action)
@@ -2613,6 +2852,7 @@ bool CWsWorkunitsEx::onWUQuerysetQueryAction(IEspContext &context, IEspWUQuerySe
                     setQueryAlias(queryset, query->queryProp("@name"), id);
                     break;
                 case CQuerySetQueryActionTypes_Delete:
+                case CQuerySetQueryActionTypes_DeleteQueriesAndWUs:
                     removeNamedQuery(queryset, id);
                     query.clear();
                     break;
@@ -2633,6 +2873,33 @@ bool CWsWorkunitsEx::onWUQuerysetQueryAction(IEspContext &context, IEspWUQuerySe
             e->Release();
         }
         results.append(*result.getClear());
+    }
+
+    if (action == CQuerySetQueryActionTypes_DeleteQueriesAndWUs)
+    {
+        queryset.clear();
+
+        Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
+        ForEachItemIn(i, wuidsToDelete)
+        {
+            const char *wuid = wuidsToDelete.item(i);
+            Owned<IEspQuerySetQueryActionResult> result = createQuerySetQueryActionResult();
+            result->setWUID(wuid);
+            try
+            {
+                factory->deleteWorkUnitEx(wuid, true, context.querySecManager(), context.queryUser());
+                result->setSuccess(true);
+            }
+            catch(IException *e)
+            {
+                VStringBuffer msg("Deleting %s. ", wuid);
+                result->setMessage(e->errorMessage(msg).str());
+                result->setCode(e->errorCode());
+                result->setSuccess(false);
+                e->Release();
+            }
+            results.append(*result.getClear());
+        }
     }
     resp.setResults(results);
     return true;
@@ -2715,12 +2982,12 @@ bool splitQueryPath(const char *path, StringBuffer &netAddress, StringBuffer &qu
     return true;
 }
 
-IPropertyTree *fetchRemoteQuerySetInfo(IEspContext *context, const char *srcAddress, const char *srcTarget)
+IPropertyTree *fetchRemoteQuerySetInfo(IEspContext *context, const char *srcAddress, const char *srcTarget, bool useSSL)
 {
     if (!srcAddress || !*srcAddress || !srcTarget || !*srcTarget)
         return NULL;
 
-    VStringBuffer url("http://%s%s/WsWorkunits/WUQuerysetDetails.xml?ver_=1.51&QuerySetName=%s&FilterType=All", srcAddress, (!strchr(srcAddress, ':')) ? ":8010" : "", srcTarget);
+    VStringBuffer url("%s://%s%s/WsWorkunits/WUQuerysetDetails.xml?ver_=1.51&QuerySetName=%s&FilterType=All", useSSL ? "https" : "http", srcAddress, (!strchr(srcAddress, ':')) ? ":8010" : "", srcTarget);
 
     Owned<IHttpClientContext> httpCtx = getHttpClientContext();
     Owned<IHttpClient> httpclient = httpCtx->createHttpClient(NULL, url);
@@ -2745,11 +3012,11 @@ IPropertyTree *fetchRemoteQuerySetInfo(IEspContext *context, const char *srcAddr
 class QueryCloner
 {
 public:
-    QueryCloner(IEspContext *_context, const char *address, const char *source, const char *_target) :
-        context(_context), target(_target), srcAddress(address)
+    QueryCloner(IEspContext *_context, const char *address, const char *source, const char *_target, bool _useSSL) :
+        context(_context), target(_target), srcAddress(address), useSSL(_useSSL)
     {
         if (srcAddress.length())
-            srcQuerySet.setown(fetchRemoteQuerySetInfo(context, srcAddress, source));
+            srcQuerySet.setown(fetchRemoteQuerySetInfo(context, srcAddress, source, useSSL));
         else
             srcQuerySet.setown(getQueryRegistry(source, true));
         if (!srcQuerySet)
@@ -2777,6 +3044,59 @@ public:
     {
         queryDirectory.set(dir);
     }
+
+    void addToBePublished(const char *wuid, const char *name, bool makeActive, const char *userid, IPropertyTree *query)
+    {
+        IPropertyTree *entry = toBePublished->addPropTree("Publish");
+        entry->setProp("@wuid", wuid);
+        entry->setProp("@name", name);
+        entry->setPropBool("@makeActive", makeActive);
+        entry->setProp("@userid", userid);
+        entry->addPropTree("Info", createPTreeFromIPT(query));
+
+        Owned<IAttributeIterator> aiter = query->getAttributes();
+        IPropertyTree *attrs = entry->addPropTree("Attrs");
+        ForEach(*aiter)
+        {
+            const char *atname = aiter->queryName();
+            attrs->setProp(atname, aiter->queryValue());
+        }
+    }
+
+    void publish()
+    {
+        Owned<IPropertyTreeIterator> entries = toBePublished->getElements("Publish");
+        ForEach(*entries)
+        {
+            IPropertyTree &entry = entries->query();
+            StringBuffer newQueryId;
+            Owned<IWorkUnit> workunit = factory->updateWorkUnit(entry.queryProp("@wuid"));
+            addQueryToQuerySet(workunit, destQuerySet, entry.queryProp("@name"), entry.getPropBool("@makeActive") ? ACTIVATE_SUSPEND_PREVIOUS : DO_NOT_ACTIVATE, newQueryId, entry.queryProp("@userid"));
+            copiedQueryIds.append(newQueryId);
+            IPropertyTree *info = entry.queryPropTree("Info");
+            if (info)
+            {
+                Owned<IPropertyTree> destQuery = getQueryById(destQuerySet, newQueryId);
+                if (destQuery)
+                {
+                    Owned<IAttributeIterator> aiter = info->getAttributes();
+                    ForEach(*aiter)
+                    {
+                        const char *atname = aiter->queryName();
+                        if (!destQuery->hasProp(atname))
+                            destQuery->setProp(atname, aiter->queryValue());
+                    }
+                    Owned<IPropertyTreeIterator> children = info->getElements("*");
+                    ForEach(*children)
+                    {
+                        IPropertyTree &child = children->query();
+                        destQuery->addPropTree(child.queryName(), createPTreeFromIPT(&child));
+                    }
+                }
+            }
+        }
+    }
+
     void cloneQueryRemote(IPropertyTree *query, bool makeActive)
     {
         StringBuffer wuid(query->queryProp("Wuid"));
@@ -2791,7 +3111,7 @@ public:
         StringBuffer dllname;
         StringBuffer fetchedName;
         StringBuffer remoteDfs;
-        fetchRemoteWorkunit(NULL, context, srcAddress.str(), NULL, NULL, wuid, fetchedName, xml, dllname, dll, remoteDfs);
+        fetchRemoteWorkunit(NULL, context, srcAddress.str(), NULL, NULL, wuid, fetchedName, xml, dllname, dll, remoteDfs, useSSL);
         deploySharedObject(*context, wuid, dllname, target, queryName, dll, queryDirectory, xml.str(), false);
 
         SCMStringBuffer existingQueryId;
@@ -2803,22 +3123,13 @@ public:
                 activateQuery(destQuerySet, ACTIVATE_SUSPEND_PREVIOUS, queryName, existingQueryId.str(), context->queryUserId());
             return;
         }
-        StringBuffer newQueryId;
-        Owned<IWorkUnit> workunit = factory->updateWorkUnit(wuid);
-        addQueryToQuerySet(workunit, destQuerySet, queryName, makeActive ? ACTIVATE_SUSPEND_PREVIOUS : DO_NOT_ACTIVATE, newQueryId, context->queryUserId());
-        copiedQueryIds.append(newQueryId);
-        Owned<IPropertyTree> destQuery = getQueryById(destQuerySet, newQueryId);
-        if (destQuery)
+        addToBePublished(wuid, queryName, makeActive, context->queryUserId(), query);
+
+        if (cloneFilesEnabled && wufiles)
         {
-            Owned<IAttributeIterator> aiter = query->getAttributes();
-            ForEach(*aiter)
-            {
-                const char *atname = aiter->queryName();
-                if (!destQuery->hasProp(atname))
-                    destQuery->setProp(atname, aiter->queryValue());
-            }
-            if (cloneFilesEnabled && wufiles)
-                wufiles->addFilesFromQuery(workunit, pm, newQueryId);
+            VStringBuffer queryPmMatch("%s.0", queryName);
+            Owned<IConstWorkUnit> workunit = factory->openWorkUnit(wuid);
+            wufiles->addFilesFromQuery(workunit, pm, queryPmMatch);
         }
     }
 
@@ -2848,28 +3159,14 @@ public:
             missingWuids.append(msg);
             return;
         }
-
-        if (!newQueryId.length())
-            addQueryToQuerySet(workunit, destQuerySet, queryName, makeActive ? ACTIVATE_SUSPEND_PREVIOUS : DO_NOT_ACTIVATE, newQueryId, context->queryUserId());
-        copiedQueryIds.append(newQueryId);
-        Owned<IPropertyTree> destQuery = getQueryById(destQuerySet, newQueryId);
-        if (destQuery)
+        addToBePublished(wuid, queryName, makeActive, context->queryUserId(), query);
+        if (cloneFilesEnabled && wufiles)
+            wufiles->addFilesFromQuery(workunit, pm, newQueryId);
+        if (cloneFilesEnabled && wufiles)
         {
-            Owned<IAttributeIterator> aiter = query->getAttributes();
-            ForEach(*aiter)
-            {
-                const char *atname = aiter->queryName();
-                if (!destQuery->hasProp(atname))
-                    destQuery->setProp(atname, aiter->queryValue());
-            }
-            Owned<IPropertyTreeIterator> children = query->getElements("*");
-            ForEach(*children)
-            {
-                IPropertyTree &child = children->query();
-                destQuery->addPropTree(child.queryName(), createPTreeFromIPT(&child));
-            }
-            if (cloneFilesEnabled && wufiles)
-                wufiles->addFilesFromQuery(workunit, pm, newQueryId);
+            VStringBuffer queryPmMatch("%s.0", queryName);
+            Owned<IConstWorkUnit> workunit = factory->openWorkUnit(wuid);
+            wufiles->addFilesFromQuery(workunit, pm, queryPmMatch);
         }
     }
 
@@ -2962,28 +3259,28 @@ public:
         if (isContainerized())
         {
             StringAttrBuilder builder(process);
-            getRoxieDefaultPlane(builder, target);
+            getRoxieDirectAccessPlanes(locations, builder, target, true);
         }
         else
             process.set(destProcess);
     }
-
-    void cloneFiles()
+    void cloneFiles(StringBuffer &publisherWuid)
     {
         if (cloneFilesEnabled)
         {
-            wufiles->resolveFiles(process, dfsIP, srcPrefix, srcCluster, !(updateFlags & (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM)), true, false, true);
+            wufiles->resolveFiles(locations, dfsIP, srcPrefix, srcCluster, !(updateFlags & (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM)), true, false, true, false);
             Owned<IDFUhelper> helper = createIDFUhelper();
             Owned <IConstWUClusterInfo> cl = getWUClusterInfoByName(target);
             if (cl)
             {
+                wufiles->setDfuQueue(dfu_queue);
 #ifdef _CONTAINERIZED
-                wufiles->cloneAllInfo(updateFlags, helper, true, true, 0, 1, 0, nullptr);
+                wufiles->cloneAllInfo(publisherWuid, process.str(), updateFlags, helper, true, true, 0, 1, 0, nullptr);
 #else
                 SCMStringBuffer process;
                 StringBuffer defReplicateFolder;
                 getConfigurationDirectory(NULL, "data2", "roxie", cl->getRoxieProcess(process).str(), defReplicateFolder);
-                wufiles->cloneAllInfo(updateFlags, helper, true, true, cl->getRoxieRedundancy(), cl->getChannelsPerNode(), cl->getRoxieReplicateOffset(), defReplicateFolder);
+                wufiles->cloneAllInfo(publisherWuid, process.str(), updateFlags, helper, true, true, cl->getRoxieRedundancy(), cl->getChannelsPerNode(), cl->getRoxieReplicateOffset(), defReplicateFolder);
 #endif
             }
         }
@@ -2999,6 +3296,7 @@ private:
     Linked<IWorkUnitFactory> factory;
     Owned<IPropertyTree> destQuerySet;
     Owned<IPropertyTree> srcQuerySet;
+    Owned<IPropertyTree> toBePublished = createPTree();
     Owned<IReferencedFileList> wufiles;
     Owned<const IHpccPackageMap> pm;
     StringBuffer dfsIP;
@@ -3009,12 +3307,16 @@ private:
     StringAttr process;
     StringAttr queryDirectory;
     bool cloneFilesEnabled = false;
+    bool useSSL = false;
     unsigned updateFlags = 0;
+    StringArray locations;
 
 public:
     StringArray existingQueryIds;
     StringArray copiedQueryIds;
     StringArray missingWuids;
+    StringBuffer dfu_jobname;
+    StringAttr dfu_queue;
 };
 
 bool CWsWorkunitsEx::onWUCopyQuerySet(IEspContext &context, IEspWUCopyQuerySetRequest &req, IEspWUCopyQuerySetResponse &resp)
@@ -3036,10 +3338,11 @@ bool CWsWorkunitsEx::onWUCopyQuerySet(IEspContext &context, IEspWUCopyQuerySetRe
 
     DBGLOG("%s copying queryset %s from %s target %s", context.queryUserId(), target, srcAddress.str(), srcTarget.str());
 
-    QueryCloner cloner(&context, srcAddress, srcTarget, target);
+    QueryCloner cloner(&context, srcAddress, srcTarget, target, req.getSourceSSL());
     cloner.setQueryDirectory(queryDirectory);
 
     SCMStringBuffer process;
+    StringBuffer publisherWuid(req.getDfuPublisherWuid());
     if (req.getCopyFiles())
     {
         Owned <IConstWUClusterInfo> clusterInfo = getWUClusterInfoByName(target);
@@ -3057,6 +3360,14 @@ bool CWsWorkunitsEx::onWUCopyQuerySet(IEspContext &context, IEspWUCopyQuerySetRe
                 updateFlags |= DALI_UPDATEF_SUPERFILES;
             if (req.getAppendCluster())
                 updateFlags |= DALI_UPDATEF_APPEND_CLUSTER;
+            if (req.getDfuCopyFiles())
+            {
+                updateFlags |= DFU_UPDATEF_COPY;
+                cloner.dfu_jobname.append("copy queryset ").append(srcTarget);
+            }
+            if (req.getDfuOverwrite())
+                updateFlags |= DFU_UPDATEF_OVERWRITE;
+            cloner.dfu_queue.set(req.getDfuQueue());
 
             cloner.enableFileCloning(updateFlags, req.getDfsServer(), process.str(), req.getSourceProcess(), req.getAllowForeignFiles());
         }
@@ -3067,9 +3378,14 @@ bool CWsWorkunitsEx::onWUCopyQuerySet(IEspContext &context, IEspWUCopyQuerySetRe
     else
         cloner.cloneAll(req.getCloneActiveState());
 
-    cloner.cloneFiles();
+    cloner.cloneFiles(publisherWuid);
     if (req.getIncludeFileErrors())
         cloner.gatherFileErrors(resp.getFileErrors());
+
+    if (handlePublisherResponse(req, resp, publisherWuid))
+        return true;
+
+    cloner.publish();
 
     resp.setCopiedQueries(cloner.copiedQueryIds);
     resp.setExistingQueries(cloner.existingQueryIds);
@@ -3079,6 +3395,9 @@ bool CWsWorkunitsEx::onWUCopyQuerySet(IEspContext &context, IEspWUCopyQuerySetRe
 
 bool CWsWorkunitsEx::onWUQuerysetCopyQuery(IEspContext &context, IEspWUQuerySetCopyQueryRequest &req, IEspWUQuerySetCopyQueryResponse &resp)
 {
+    if (req.getDontCopyFiles() && req.getOnlyCopyFiles())
+        throw makeStringException(ECLWATCH_INVALID_INPUT,"Cannot combine 'dont-copy-files' and 'only-copy-files'");
+
     unsigned start = msTick();
     const char *source = req.getSource();
     if (!source || !*source)
@@ -3110,7 +3429,7 @@ bool CWsWorkunitsEx::onWUQuerysetCopyQuery(IEspContext &context, IEspWUQuerySetC
         MemoryBuffer dll;
         StringBuffer dllname;
         StringBuffer queryName;
-        fetchRemoteWorkunitAndQueryDetails(NULL, &context, srcAddress.str(), srcQuerySet.str(), srcQuery.str(), NULL, queryName, xml, dllname, dll, remoteIP, sourceQueryInfoResp);
+        fetchRemoteWorkunitAndQueryDetails(NULL, &context, srcAddress.str(), srcQuerySet.str(), srcQuery.str(), NULL, queryName, xml, dllname, dll, remoteIP, sourceQueryInfoResp, req.getSourceSSL());
         if (sourceQueryInfoResp && sourceQueryInfoResp->getQuerysetQueries().ordinality())
             srcInfo = &sourceQueryInfoResp->getQuerysetQueries().item(0);
         if (srcInfo)
@@ -3123,7 +3442,7 @@ bool CWsWorkunitsEx::onWUQuerysetCopyQuery(IEspContext &context, IEspWUQuerySetC
     {
         //Could get the atributes without soap call, but this creates a common data structure shared with fetching remote query info
         //Get query attributes before resolveQueryAlias, to avoid deadlock
-        sourceQueryInfoResp.setown(fetchQueryDetails(NULL, &context, NULL, srcQuerySet, srcQuery));
+        sourceQueryInfoResp.setown(fetchQueryDetails(NULL, &context, NULL, srcQuerySet, srcQuery, req.getSourceSSL()));
         if (sourceQueryInfoResp && sourceQueryInfoResp->getQuerysetQueries().ordinality())
             srcInfo = &sourceQueryInfoResp->getQuerysetQueries().item(0);
 
@@ -3142,13 +3461,28 @@ bool CWsWorkunitsEx::onWUQuerysetCopyQuery(IEspContext &context, IEspWUQuerySetC
     Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
     Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid.str());
 
+    StringBuffer publisherWuid(req.getDfuPublisherWuid());
     if (!req.getDontCopyFiles())
     {
-        StringBuffer daliIP;
+        StringBuffer remoteLocation;
         StringBuffer srcCluster;
         StringBuffer srcPrefix;
-        splitDerivedDfsLocation(req.getDaliServer(), srcCluster, daliIP, srcPrefix, req.getSourceProcess(), req.getSourceProcess(), remoteIP.str(), NULL);
+
         unsigned updateFlags = 0;
+        const char *remoteStr = req.getRemoteStorage();
+        if (!isEmptyString(remoteStr))
+            updateFlags = DFU_UPDATEF_REMOTESTORAGE;
+        else
+            remoteStr = req.getDaliServer();
+
+        splitDerivedDfsLocation(remoteStr, srcCluster, remoteLocation, srcPrefix, req.getSourceProcess(),req.getSourceProcess(), remoteIP.str(), NULL);
+
+        if (srcCluster.length())
+        {
+            if (!validateDataPlaneName(remoteLocation, srcCluster))
+                throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Process cluster %s not found on %s remote", srcCluster.str(), remoteLocation.length() ? remoteLocation.str() : "local");
+        }
+
         if (req.getOverwrite())
             updateFlags |= (DALI_UPDATEF_REPLACE_FILE | DALI_UPDATEF_CLONE_FROM | DALI_UPDATEF_SUPERFILES);
         if (req.getUpdateCloneFrom())
@@ -3157,18 +3491,29 @@ bool CWsWorkunitsEx::onWUQuerysetCopyQuery(IEspContext &context, IEspWUQuerySetC
             updateFlags |= DALI_UPDATEF_SUPERFILES;
         if (req.getAppendCluster())
             updateFlags |= DALI_UPDATEF_APPEND_CLUSTER;
+        if (req.getDfuCopyFiles())
+            updateFlags |= DFU_UPDATEF_COPY;
+        if (req.getDfuOverwrite())
+            updateFlags |= DFU_UPDATEF_OVERWRITE;
 
         QueryFileCopier cpr(target);
-        cpr.init(context, req.getAllowForeignFiles());
-        cpr.remoteIP.set(daliIP);
+        cpr.init(context, req.getAllowForeignFiles(), targetQueryName);
+        cpr.remoteLocation.set(remoteLocation);
         cpr.remotePrefix.set(srcPrefix);
         cpr.srcCluster.set(srcCluster);
         cpr.queryname.set(targetQueryName);
-        cpr.copy(cw, updateFlags);
+        cpr.dfu_queue.set(req.getDfuQueue());
+
+        cpr.copy(publisherWuid, cw, updateFlags);
 
         if (req.getIncludeFileErrors())
             cpr.gatherFileErrors(resp.getFileErrors());
+        if (!publisherWuid.isEmpty())
+            resp.setDfuPublisherWuid(publisherWuid);
     }
+
+    if (handlePublisherResponse(req, resp, publisherWuid))
+        return true;
 
     WorkunitUpdate wu(&cw->lock());
     if (!wu)
@@ -3273,9 +3618,15 @@ bool CWsWorkunitsEx::onWUQuerysetImport(IEspContext &context, IEspWUQuerysetImpo
         else
             cloner.cloneAllLocal(activate, req.getQueryMask());
 
-        cloner.cloneFiles();
+        StringBuffer publisherWuid(req.getDfuPublisherWuid());
+        cloner.cloneFiles(publisherWuid);
         if (req.getIncludeFileErrors())
             cloner.gatherFileErrors(resp.getFileErrors());
+
+        if (handlePublisherResponse(req, resp, publisherWuid))
+            return true;
+
+        cloner.publish();
 
         resp.setImportedQueries(cloner.copiedQueryIds);
         resp.setExistingQueries(cloner.existingQueryIds);
@@ -3388,16 +3739,21 @@ void CWsWorkunitsEx::getGraphsByQueryId(const char *target, const char *queryId,
 
     PROGLOG("getGraphsByQueryId: target %s, query %s", target, queryId);
     VStringBuffer control("<control:querystats><Query id='%s'/></control:querystats>", queryId);
-    Owned<IPropertyTree> querystats = sendRoxieControlAllNodes(conn->nextEndpoint(), control.str(), false, ROXIELOCKCONNECTIONTIMEOUT);
+    Owned<IPropertyTree> querystats = sendRoxieControlAllNodes(conn, control.str(), false, ROXIELOCKCONNECTIONTIMEOUT, ROXIECONNECTIONTIMEOUT);
 #endif
     if (!querystats)
         return;
 
-    Owned<IPropertyTreeIterator> graphs = querystats->getElements("Endpoint/Query/Graph");
+    Owned<IPropertyTreeIterator> graphs = querystats->getElements("Endpoint/Query/Graphs/Graph");
+    if (!graphs->first())
+        graphs.setown(querystats->getElements("Endpoint/Query/Graph"));
+
     ForEach(*graphs)
     {
         IPropertyTree &graph = graphs->query();
-        const char* aGraphId = graph.queryProp("@id");
+        const char* aGraphId = graph.queryProp("@name");
+        if (!aGraphId)
+            aGraphId = graph.queryProp("@id");
         if (graphId && *graphId && !strieq(graphId, aGraphId))
             continue;
 
@@ -3509,14 +3865,14 @@ IPropertyTree* CWsWorkunitsEx::sendControlQuery(IEspContext& context, const char
         throw MakeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "CWsWorkunitsEx::sendControlQuery: Server not found for %s", target);
 
     Owned<ISocket> sock = ISocket::connect_timeout(eps.item(0), timeout);
+    return sendRoxieControlQuery(sock, query, timeout);
 #else
     ISmartSocketFactory *conn = roxieConnMap.getValue(target);
     if (!conn)
         throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "roxie target cluster not mapped: %s", target);
 
-    Owned<ISocket> sock = ISocket::connect_timeout(conn->nextEndpoint(), timeout);
+    return sendRoxieControlQuery(conn, query, timeout, ROXIECONNECTIONTIMEOUT);
 #endif
-    return sendRoxieControlQuery(sock, query, timeout);
 }
 
 bool CWsWorkunitsEx::onWUUpdateQueryEntry(IEspContext& context, IEspWUUpdateQueryEntryRequest& req, IEspWUUpdateQueryEntryResponse& resp)
@@ -3584,7 +3940,7 @@ bool CWsWorkunitsEx::onWUGetNumFileToCopy(IEspContext& context, IEspWUGetNumFile
                 PROGLOG("WUGetNumFileToCopy: Process Server not found for %s", clusterName.get());
                 return nullptr;
             }
-            Owned<IPropertyTree> result = sendRoxieControlAllNodes(conn->nextEndpoint(), "<control:numfilestoprocess/>", false, ROXIELOCKCONNECTIONTIMEOUT);
+            Owned<IPropertyTree> result = sendRoxieControlAllNodes(conn, "<control:numfilestoprocess/>", false, ROXIELOCKCONNECTIONTIMEOUT, ROXIECONNECTIONTIMEOUT);
 #endif
             if (!result)
             {
@@ -3684,6 +4040,8 @@ bool CWsWorkunitsEx::onWUQueryGetSummaryStats(IEspContext& context, IEspWUQueryG
         ISmartSocketFactory *conn = roxieConnMap.getValue(target);
         if (!conn)
             throw makeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Roxie name not found");
+        if (!k8s::isActiveService(target))
+            throw makeStringException(ECLWATCH_INVALID_CLUSTER_NAME, "Roxie cluster has no active servers");
 #endif
 
         double version = context.getClientVersion();
@@ -3727,7 +4085,7 @@ bool CWsWorkunitsEx::onWUQueryGetSummaryStats(IEspContext& context, IEspWUQueryG
 #ifndef _CONTAINERIZED
         Owned<IPropertyTree> queryAggregates = sendRoxieControlAllNodes(eps.item(0), control.str(), false, ROXIELOCKCONNECTIONTIMEOUT);
 #else
-        Owned<IPropertyTree> queryAggregates = sendRoxieControlAllNodes(conn->nextEndpoint(), control, false, ROXIELOCKCONNECTIONTIMEOUT);
+        Owned<IPropertyTree> queryAggregates = sendRoxieControlAllNodes(conn, control, false, ROXIELOCKCONNECTIONTIMEOUT, ROXIECONNECTIONTIMEOUT);
 #endif
         if (!queryAggregates)
         {

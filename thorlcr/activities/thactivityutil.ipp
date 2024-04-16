@@ -77,8 +77,7 @@ interface ILookAheadStopNotify
 {
     virtual void onInputFinished(rowcount_t count) = 0;
 };
-interface IDiskUsage;
-IStartableEngineRowStream *createRowStreamLookAhead(CSlaveActivity *activity, IEngineRowStream *inputStream, IThorRowInterfaces *rowIf, size32_t bufsize, bool spillenabled, bool preserveGrouping=true, rowcount_t maxcount=RCUNBOUND, ILookAheadStopNotify *notify=NULL, IDiskUsage *_diskUsage=NULL); //maxcount is maximum rows to read set to RCUNBOUND for all
+IStartableEngineRowStream *createRowStreamLookAhead(CSlaveActivity *activity, IEngineRowStream *inputStream, IThorRowInterfaces *rowIf, size32_t bufsize, bool spillenabled, bool preserveGrouping=true, rowcount_t maxcount=RCUNBOUND, ILookAheadStopNotify *notify=NULL); //maxcount is maximum rows to read set to RCUNBOUND for all
 
 
 StringBuffer &locateFilePartPath(CActivityBase *activity, const char *logicalFilename, IPartDescriptor &partDesc, StringBuffer &filePath);
@@ -99,7 +98,7 @@ class CAsyncCall : implements IThreaded
     std::function<void()> func;
 public:
     CAsyncCall(std::function<void()> _func) : threaded("CAsyncCall", this), func(_func) { }
-    void start() { threaded.start(); }
+    void start() { threaded.start(true); }
     void wait() { threaded.join(); }
 // IThreaded
     virtual void threadmain() override { func(); }

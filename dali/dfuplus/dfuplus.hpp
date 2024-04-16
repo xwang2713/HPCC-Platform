@@ -45,6 +45,8 @@ public:
     bool checkLocalDaFileSvr(const char *eps,SocketEndpoint &epout); // only supported in dfuplus command line
 
 private:
+    void setMtlsSecret(IEspClientRpcSettings &rpc);
+
     int spray();
     int replicate();
     int despray();
@@ -74,6 +76,23 @@ private:
     void error(const char *format, ...) __attribute__((format(printf, 2, 3)));
     void progress(const char *format, ...) __attribute__((format(printf, 2, 3)));
     void exc(const IMultiException &e,const char *title);
+
+    template <class T>
+    bool outputServiceCallExceptions(T *resp)
+    {
+        const IMultiException* excep = &resp->getExceptions();
+        if(excep && excep->ordinality())
+        {
+            StringBuffer msg;
+            error("%s\n", excep->errorMessage(msg).str());
+            return true;
+        }
+        return false;
+    }
+
+    int reportDfuWorkunitStatus(IConstDFUWorkunit & dfuwu, bool jobinfo, bool summarizeFinished);
+    int reportDfuWorkunitStatus(const char *wuid, bool jobinfo, bool summarizeFinished);
+    int reportDfuPublisherStatus(const char *wuid, int limit);
 
     Owned<IProperties> globals;
     Owned<IClientFileSpray> sprayclient;

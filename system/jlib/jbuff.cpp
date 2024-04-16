@@ -25,6 +25,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <math.h>
+#include <utility>
 
 #ifndef WIN32
 #include <sys/mman.h>
@@ -51,14 +52,15 @@
 
 
 #if 1
-#define ChunkSize         0x10000
-#define DOUBLE_LIMIT      0x7fffffff    // avoid doubling hitting 0 and infinite loop
+constexpr unsigned ChunkSize=0x10000;
+constexpr unsigned BUFF_DOUBLE_LIMIT=0x7fffffff;    // avoid doubling hitting 0 and infinite loop
 #else
-#define ChunkSize         2048
-#define DOUBLE_LIMIT      4096
+// For testing
+constexpr unsigned ChunkSize=2048;
+constexpr unsigned BUFF_DOUBLE_LIMIT=4096;
 #endif
-#define FIRST_CHUNK_SIZE  8
-#define DETACH_GRANULARITY 16
+constexpr unsigned BUFF_FIRST_CHUNK_SIZE=8;
+constexpr unsigned BUFF_DETACH_GRANULARITY=16;
 
 
 #ifdef _DEBUG
@@ -188,6 +190,11 @@ void MemoryAttr::setOwn(size_t _len, void * _ptr)
     ptr = _ptr;
 }
 
+void MemoryAttr::swapWith(MemoryAttr & other)
+{
+    std::swap(len, other.len);
+    std::swap(ptr, other.ptr);
+}
 
 void MemoryAttr::clear()
 {
@@ -255,10 +262,10 @@ void MemoryBuffer::_realloc(size32_t newLen)
         assertex(ownBuffer);
         size32_t newMax = maxLen;
         //double up to a certain size, otherwise go up in chunks.
-        if (newLen < DOUBLE_LIMIT)
+        if (newLen < BUFF_DOUBLE_LIMIT)
         {
             if (newMax == 0)
-                newMax = FIRST_CHUNK_SIZE;
+                newMax = BUFF_FIRST_CHUNK_SIZE;
             while (newLen > newMax)
             {
                 size32_t newMaxTmp = checkMemoryBufferOverflow(newMax, newMax);
@@ -407,7 +414,7 @@ void *MemoryBuffer::detach()
 {
     void *ret;
     if (ownBuffer) { 
-        if (maxLen>curLen+DETACH_GRANULARITY)
+        if (maxLen>curLen+BUFF_DETACH_GRANULARITY)
             buffer = (char *)realloc(buffer,curLen);
         ret = buffer;
     }
@@ -450,17 +457,18 @@ void MemoryBuffer::setWritePos(unsigned len)
     curLen = len;
 }
 
-#define SWAP(x, y, t)  { t t_##x = x; x = y; y = t_##x; }
+#define SWAPMEM(x, y, t)  { t t_##x = x; x = y; y = t_##x; }
 void MemoryBuffer::swapWith(MemoryBuffer & other)
 {
     //swap two string buffers.  Used for efficiently moving a string on in a pipeline etc.
-    SWAP(buffer, other.buffer, char *);
-    SWAP(curLen, other.curLen, size32_t);
-    SWAP(maxLen, other.maxLen, size32_t);
-    SWAP(readPos, other.readPos, size32_t);
-    SWAP(swapEndian, other.swapEndian, bool);
-    SWAP(ownBuffer, other.ownBuffer, bool);
+    SWAPMEM(buffer, other.buffer, char *);
+    SWAPMEM(curLen, other.curLen, size32_t);
+    SWAPMEM(maxLen, other.maxLen, size32_t);
+    SWAPMEM(readPos, other.readPos, size32_t);
+    SWAPMEM(swapEndian, other.swapEndian, bool);
+    SWAPMEM(ownBuffer, other.ownBuffer, bool);
 }
+#undef SWAPMEM
 
 bool MemoryBuffer::matches(const MemoryBuffer & other) const
 {
@@ -475,13 +483,11 @@ bool MemoryBuffer::matches(const MemoryBuffer & other) const
 MemoryBuffer::MemoryBuffer(size_t initial)
 {
     assertex((size32_t)initial == initial);
-    init();
     _realloc((size32_t)initial);
 }
 
 MemoryBuffer::MemoryBuffer(size_t len, const void * newBuffer)
 {
-    init();
     assertex((size32_t)len == len);
     append((size32_t)len, newBuffer);
 }

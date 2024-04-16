@@ -15,6 +15,9 @@
     limitations under the License.
 ############################################################################## */
 
+#ifndef __UDPMSGPK__
+#define __UDPMSGPK__
+
 #include "roxiemem.hpp"
 #include <queue>
 
@@ -26,14 +29,14 @@ typedef MapXToMyClass<PUID, PUID, PackageSequencer> msg_map;
 class CMessageCollator : public CInterfaceOf<IMessageCollator>
 {
 private:
-    std::queue<PackageSequencer*> queue;
+    Linked<roxiemem::IRowManager> rowMgr;  // Must be placed first to ensure it is destroyed last
+    std::deque<PackageSequencer*> queue;
     msg_map             mapping;  // Note - only accessed from collator thread
     RelaxedAtomic<bool> activity;
     bool                memLimitExceeded;
     bool                encrypted;
     CriticalSection     queueCrit;
     InterruptableSemaphore sem;
-    Linked<roxiemem::IRowManager> rowMgr;
     ruid_t ruid;
     std::atomic<unsigned> totalBytesReceived = {0};
     std::atomic<unsigned> totalDuplicates = {0};
@@ -59,3 +62,4 @@ public:
     bool attach_data(const void *data, unsigned len);
     void noteDuplicate(bool isResend);
 };
+#endif // __UDPMSGPK__

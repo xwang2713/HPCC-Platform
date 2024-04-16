@@ -21,6 +21,7 @@
 #include "jlog.hpp"
 #include "roxie.hpp"
 #include "roxiemem.hpp"
+#include "portlist.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -33,12 +34,49 @@ using roxiemem::IDataBufferManager;
 
 IDataBufferManager *bufferManager;
 
+// All exported udp configuration options - these values provide the default values
+#ifdef TEST_DROPPED_PACKETS
+bool udpDropDataPackets = false;
+unsigned udpDropDataPacketsPercent = 0;
+unsigned udpDropFlowPackets[flowType::max_flow_cmd] = {};
+unsigned flowPacketsSent[flowType::max_flow_cmd] = {};
+#endif
+
 bool udpTraceFlow = false;
 bool udpTraceTimeouts = false;
+
 unsigned udpTraceLevel = 0;
 unsigned udpFlowSocketsSize = 131072;
 unsigned udpLocalWriteSocketSize = 1024000;
 unsigned udpStatsReportInterval = 60000;
+
+unsigned udpOutQsPriority = 0;
+unsigned udpSendTraceThresholdMs = 50;
+
+unsigned udpMaxPermitDeadTimeouts = 5;  // How many permit grants are allowed to expire (with no flow message) until request is ignored
+unsigned udpRequestDeadTimeout = 10000; // Timeout for sender getting no response to request to send before assuming that the receiver is dead.
+
+
+//The following control the timeouts within the udp layer.  All timings are in milliseconds, but I suspect some of these should possibly be sub-millisecond
+//The following timeouts are described in more detail in a comment at the head of udptrr.cpp
+unsigned udpFlowAckTimeout = 2;         // [sender] the maximum time that it is expected to take to receive an acknowledgement of a flow message (when one is sent) - should be small
+unsigned updDataSendTimeout = 20;       // [sender+receiver] how long to receive the maximum amount of data, ~100 packets of 8K should take 10ms on a 1Gb network. Timeout for assuming send_complete has been lost
+unsigned udpRequestTimeout = 20;        // [sender] A reasonable expected time between a request for a permit until the permit is granted - used as a timeout to guard against an ok_to_send has been lost.
+unsigned udpPermitTimeout = 50;         // [receiver] How long is a grant expected to last before it is assumed lost?
+unsigned udpResendDelay = 0;            // [sender+receiver] How long should elapse after a data packet has been sent before we assume it is lost.
+                                        // 0 means they are unlikely to be lost, so worth resending as soon as it appears to be missing - trading duplicate packets for delays (good if allowasync=false)
+
+unsigned udpMaxPendingPermits = 10;     // This seems like a reasonable compromise - each sender will be able to send up to 20% of the input queue each request.
+unsigned udpMaxClientPercent = 600;     // What percentage of (queueSize/maxPendingPermits) should be granted to each sender.
+unsigned udpMinSlotsPerSender = 1;      // The smallest number of slots to assign to a sender
+bool udpResendAllMissingPackets = true; // If set do not limit the number of missing packets sent to the size of the permit.
+bool udpResendLostPackets = true;       // is the code to resend lost data packets enabled?
+bool udpAssumeSequential = false;       // If a data packet with a later sequence has been received is it reasonable to assume it has been lost?
+bool udpAdjustThreadPriorities = false; // Adjust the priorities for the UDP receiving and sending threads so they have priority.
+                                        // Enabling tends to cause a big rise in context switches from other threads, so disabled by default
+bool udpAllowAsyncPermits = false;      // Allow requests to send more data to overtake the data packets that are being sent.
+bool udpRemoveDuplicatePermits = true;
+bool udpEncryptOnSendThread = false;
 
 unsigned multicastTTL = 1;
 
@@ -91,39 +129,56 @@ queue_t::~queue_t()
     }
 }
 
-unsigned queue_t::available()
-{
-    CriticalBlock b(c_region);
-    if (count < limit)
-        return limit - count;
-    return 0;
-}
-
-int queue_t::free_slots() 
-{
-    int res=0;
-    while (res <= 0)
-    {
-        c_region.enter();
-        res = limit - count;
-        if (res <= 0)
-            signal_free_sl++;
-        c_region.leave();
-        if (res <= 0)
-        {
-            while (!free_sl.wait(3000))
-            {
-                if (udpTraceLevel >= 1)
-                    DBGLOG("queue_t::free_slots blocked for 3 seconds waiting for free_sl semaphore");
-            }
-        }
-    }
-    return res;
-}
-
 void queue_t::interrupt()
 {
     data_avail.interrupt();
+}
+
+void queue_t::doEnqueue(DataBuffer *buf)
+{
+    // Must currently be called within a critical section.  Does not signal - that should be done outside the CS.
+    // Could probably be done lock-free, which given one thread using this is high priority might avoid some
+    // potential priority-inversion issues. Or we might consider using PI-aware futexes here?
+    if (tail)
+    {
+        assert(head);
+        assert(!tail->msgNext);
+        tail->msgNext = buf;
+    }
+    else
+    {
+        assert(!head);
+        head = buf;
+    }
+    tail = buf;
+    count.fastAdd(1); // inside a critical section, so no need for atomic inc.
+}
+
+void queue_t::pushOwnWait(DataBuffer * buf)
+{
+    assert(!buf->msgNext);
+    for (;;)
+    {
+        {
+            CriticalBlock b(c_region);
+
+            if (count < limit)
+            {
+                doEnqueue(buf);
+                break;  // signal outside the critical section, rather than here, so the waiting thread can progress
+            }
+            signal_free_sl++;
+        }
+
+        unsigned delay = 3;
+        while (!free_sl.wait(delay * 1000))
+        {
+            if (udpTraceLevel >= 1)
+                DBGLOG("queue_t::pushOwnWait blocked for %u seconds waiting for free_sl semaphore [%u/%u]", delay, count.load(), limit);
+            delay *= 2;
+        }
+    }
+    data_avail.signal();
 }
 
 void queue_t::pushOwn(DataBuffer *buf)
@@ -132,24 +187,9 @@ void queue_t::pushOwn(DataBuffer *buf)
     // potential priority-inversion issues. Or we might consider using PI-aware futexes here?
     assert(!buf->msgNext);
     {
+        buf->changeState(roxiemem::DBState::unowned, roxiemem::DBState::queued, __func__);
         CriticalBlock b(c_region);
-        if (tail)
-        {
-            assert(head);
-            assert(!tail->msgNext);
-            tail->msgNext = buf;
-        }
-        else
-        {
-            assert(!head);
-            head = buf;
-        }
-        tail = buf;
-        count++;
-#ifdef _DEBUG
-        if (count > limit)
-            DBGLOG("queue_t::pushOwn set count to %u", count);
-#endif
+        doEnqueue(buf);
     }
     data_avail.signal();
 }
@@ -162,23 +202,23 @@ DataBuffer *queue_t::pop(bool block)
     unsigned signalFreeSlots = 0;
     {
         CriticalBlock b(c_region);
-        if (!count)
+        if (unlikely(!count))
             return nullptr;
-        count--;
+        count.fastAdd(-1); // inside a critical section => not atomic
         ret = head;
-        head = head->msgNext;
+        head = ret->msgNext;
         if (!head)
         {
             assert(!count);
             tail = nullptr;
         }
-        ret->msgNext = nullptr;
         if (count < limit && signal_free_sl)
         {
             signal_free_sl--;
             signalFreeSlots++;
         }
     }
+    ret->msgNext = nullptr;
     if (signalFreeSlots)
         free_sl.signal(signalFreeSlots);
     return ret;
@@ -211,7 +251,7 @@ unsigned queue_t::removeData(const void *key, PKT_CMP_FUN pkCmpFn)
                     if (temp==tail)
                         tail = prev;
                     ::Release(temp);
-                    count--;
+                    count.fastAdd(-1);
                     if (count < limit && signal_free_sl)
                     {
                         signal_free_sl--;
@@ -286,6 +326,9 @@ int check_max_socket_write_buffer(int size) {
 #if defined( __linux__) || defined(__APPLE__)
 void setLinuxThreadPriority(int level)
 {
+    if (!udpAdjustThreadPriorities)
+        return;
+
     pthread_t self = pthread_self();
     int policy;
     sched_param param;
@@ -330,11 +373,6 @@ bool PacketTracker::noteSeen(UdpPacketHeader &hdr)
     // Be careful to think about wrapping. Less than and higher can't really be distinguished, but we treat resent differently from original
     bool duplicate = false;
     unsigned delta = seq - base;
-    if (udpTraceLevel > 5)
-    {
-        DBGLOG("PacketTracker::noteSeen %" SEQF "u: delta %d", hdr.sendSeq, delta);
-        dump();
-    }
     if (delta < TRACKER_BITS)
     {
         unsigned idx = (seq / 64) % TRACKER_DWORDS;
@@ -361,9 +399,10 @@ bool PacketTracker::noteSeen(UdpPacketHeader &hdr)
         else if (!resent)
             packetsOOO++;
     }
-    else if (resent)
+    else if (resent && base)
         // Don't treat a resend that goes out of range as indicative of a restart - it probably just means
-        // that the resend was not needed and the original moved things on when it arrived
+        // that the resend was not needed and the original moved things on when it arrived. Unless base is 0
+        // in which case it probably means I restarted
         duplicate = true;
     else
     {
@@ -401,11 +440,6 @@ bool PacketTracker::hasSeen(sequence_t seq) const
     // Accessed only on sender side where these are not modified, so no need for locking
     // Careful about wrapping!
     unsigned delta = seq - base;
-    if (udpTraceLevel > 5)
-    {
-       DBGLOG("PacketTracker::hasSeen - have I seen %" SEQF "u, %d", seq, delta);
-       dump();
-    }
     if (delta < TRACKER_BITS)
     {
         unsigned idx = (seq / 64) % TRACKER_DWORDS;
@@ -422,11 +456,6 @@ bool PacketTracker::canRecord(sequence_t seq) const
 {
     // Careful about wrapping!
     unsigned delta = seq - base;
-    if (udpTraceLevel > 5)
-    {
-       DBGLOG("PacketTracker::hasSeen - can I record %" SEQF "u, %d", seq, delta);
-       dump();
-    }
     return (delta < TRACKER_BITS);
 }
 
@@ -440,6 +469,91 @@ void PacketTracker::dump() const
     DBGLOG("PacketTracker base=%" SEQF "u, hwm=%" SEQF "u, seen[0]=%" I64F "x", base, hwm, seen[0]);
 }
 
+//---------------------------------------------------------------------------------------------------------------------
+
+void sanityCheckUdpSettings(unsigned receiveQueueSize, unsigned sendQueueSize, unsigned numSenders, __uint64 networkSpeedBitsPerSecond)
+{
+    unsigned maxDataPacketSize = 0x2000;    // assume jumbo frames roxiemem::DATA_ALIGNMENT_SIZE;
+    __uint64 bytesPerSecond = networkSpeedBitsPerSecond / 10;
+
+    unsigned __int64 minPacketTimeNs = (maxDataPacketSize * U64C(1000000000)) / bytesPerSecond;
+    unsigned __int64 minLatencyNs = 50000;
+    unsigned maxSlotsPerClient = (udpMaxPendingPermits == 1) ? receiveQueueSize : (udpMaxClientPercent * receiveQueueSize) / (udpMaxPendingPermits * 100);
+    unsigned __int64 minTimeForAllPackets = receiveQueueSize * minPacketTimeNs;
+    //The data for a permit may arrive after the data from all the other senders => need to take the entire queue into account
+    unsigned __int64 minTimeForPermitPackets = minTimeForAllPackets;
+
+    auto trace = [](const char * title, unsigned value, unsigned __int64 minValue, unsigned maxFactor)
+    {
+        DBGLOG("%s: %u [%u..%u]  us: %u [%u..%u]", title, value, (unsigned)(minValue/1000000), (unsigned)(minValue*maxFactor/1000000),
+                                                          value*1000, (unsigned)(minValue/1000), (unsigned)(minValue*maxFactor/1000));
+    };
+
+    //MORE: Allow the udpReceiverSize to be defined and finish implementing the following, with some comments to describe the thinking
+    // All in milliseconds
+    if (udpTraceTimeouts || udpTraceLevel >= 1)
+    {
+        DBGLOG("udpAssumeSequential: %s", boolToStr(udpAssumeSequential));
+        DBGLOG("udpResendLostPackets: %s", boolToStr(udpResendLostPackets));
+        DBGLOG("udpResendAllMissingPackets: %s", boolToStr(udpResendAllMissingPackets));
+        DBGLOG("udpAdjustThreadPriorities: %s", boolToStr(udpAdjustThreadPriorities));
+        DBGLOG("udpAllowAsyncPermits: %s", boolToStr(udpAllowAsyncPermits));
+        trace("udpFlowAckTimeout", udpFlowAckTimeout, minLatencyNs*2, 20);
+        trace("updDataSendTimeout", updDataSendTimeout, minTimeForAllPackets, 10);
+        trace("udpPermitTimeout", udpPermitTimeout, 2 * minLatencyNs + minTimeForPermitPackets, 10);
+        trace("udpRequestTimeout", udpRequestTimeout, (2 * minLatencyNs + minTimeForPermitPackets) * 2 / 5, 10);
+        trace("udpResendDelay", udpResendDelay, minTimeForAllPackets, 10);
+        DBGLOG("udpMaxPendingPermits: %u [%u..%u]", udpMaxPendingPermits, udpMaxPendingPermits, udpMaxPendingPermits);
+        DBGLOG("udpMaxClientPercent: %u [%u..%u]", udpMaxClientPercent, 100, udpMaxPendingPermits * 100);
+        DBGLOG("udpMaxPermitDeadTimeouts: %u [%u..%u]", udpMaxPermitDeadTimeouts, 2, 10);
+        DBGLOG("udpRequestDeadTimeout: %u [%u..%u]", udpRequestDeadTimeout, 10000, 120000);
+        DBGLOG("udpMinSlotsPerSender: %u [%u..%u]", udpMinSlotsPerSender, 1, 5);
+        DBGLOG("Queue sizes: send(%u) receive(%u)", sendQueueSize, receiveQueueSize);
+    }
+
+    // Some sanity checks
+    if (!udpResendLostPackets)
+        WARNLOG("udpResendLostPackets is currently disabled - only viable on a very reliable network");
+    if (udpAllowAsyncPermits)
+    {
+        if (udpResendDelay == 0)
+            ERRLOG("udpResendDelay of 0 should not be used if udpAllowAsyncPermits=true");
+    }
+    else
+    {
+        if (udpResendDelay != 0)
+            WARNLOG("udpResendDelay of 0 is recommended if udpAllowAsyncPermits=false");
+    }
+    if (udpFlowAckTimeout == 0)
+    {
+        ERRLOG("udpFlowAckTimeout should not be set to 0");
+        udpFlowAckTimeout = 1;
+    }
+    if (udpRequestTimeout == 0)
+    {
+        ERRLOG("udpRequestTimeout should not be set to 0");
+        udpFlowAckTimeout = 10;
+    }
+    if (udpMaxPendingPermits > receiveQueueSize)
+        throwUnexpectedX("udpMaxPendingPermits > receiveQueueSize");
+    if (maxSlotsPerClient == 0)
+        throwUnexpectedX("maxSlotsPerClient == 0");
+
+    if (udpFlowAckTimeout * 10 > udpRequestTimeout)
+        WARNLOG("udpFlowAckTimeout should be significantly smaller than udpRequestTimeout");
+    if (udpRequestTimeout >= udpPermitTimeout)
+        WARNLOG("udpRequestTimeout should be lower than udpPermitTimeout, otherwise dropped ok_to_send will not be spotted early enough");
+    if (udpMaxPendingPermits == 1)
+        WARNLOG("udpMaxPendingPermits=1: only one sender can send at a time");
+    if (udpMaxClientPercent < 100)
+        ERRLOG("udpMaxClientPercent should be >= 100");
+    else if (maxSlotsPerClient > receiveQueueSize)
+        ERRLOG("maxSlotsPerClient * udpMaxClientPercent exceeds the queue size => all slots will be initially allocated to the first sender");
+    if (udpMinSlotsPerSender > 10)
+        ERRLOG("udpMinSlotsPerSender of %u is higher than recommended", udpMinSlotsPerSender);
+}
+
+//---------------------------------------------------------------------------------------------------------------------
 #ifdef _USE_CPPUNIT
 #include "unittests.hpp"
 
@@ -655,3 +769,330 @@ If you do need global:
 
 
 */
+
+/* Simulating traffic flow
+
+N threads that simulate behaviour of agents
+fake write socket that
+- accepts data pushed to it
+- moves it to a read socket
+fake read socket that
+- accepts packets from write sockets
+- discards when full (but tells you)
+- delivers packets to consumer
+
+*/
+
+#ifdef SOCKET_SIMULATION
+bool isUdpTestMode = false;
+bool udpTestUseUdpSockets = true;
+bool udpTestSocketJitter = false;
+unsigned udpTestSocketDelay = 0;
+bool udpTestVariableDelay = false;
+
+
+static CriticalSection allWriteSocketsCrit;
+static ICopyArrayOf<CSimulatedQueueWriteSocket> allWriteSockets;
+
+class DelayedSocketWriter : public Thread
+{
+public:
+    virtual int run() override
+    {
+        while (running)
+        {
+            unsigned shortestDelay = udpTestSocketDelay;
+            unsigned now = msTick();
+            {
+                CriticalBlock b(allWriteSocketsCrit);
+                ForEachItemIn(idx, allWriteSockets)
+                {
+                    CSimulatedQueueWriteSocket &ws = allWriteSockets.item(idx);
+                    shortestDelay = std::min(shortestDelay, ws.writeDelayed(now));
+                }
+            }
+            MilliSleep(shortestDelay);
+        }
+        return 0;
+    }
+    virtual void start(bool inheritThreadContext) override
+    {
+        running = true;
+        Thread::start(inheritThreadContext);
+    }
+    void stop()
+    {
+        running = false;
+        join();
+    }
+private:
+    std::atomic<bool> running = { false };
+} delayedWriter;
+
+CSimulatedQueueWriteSocket::CSimulatedQueueWriteSocket(const SocketEndpoint &ep) : destEp(ep), delay(udpTestSocketDelay), jitter(udpTestSocketJitter)
+{
+    if (delay)
+    {
+        CriticalBlock b(allWriteSocketsCrit);
+        if (!allWriteSockets.length())
+            delayedWriter.start(false);
+        allWriteSockets.append(*this);
+    }
+}
+
+CSimulatedQueueWriteSocket::~CSimulatedQueueWriteSocket()
+{
+    if (delay)
+    {
+        CriticalBlock b(allWriteSocketsCrit);
+        allWriteSockets.zap(*this);
+        if (!allWriteSockets.length())
+            delayedWriter.stop();
+    }
+}
+
+CSimulatedQueueWriteSocket* CSimulatedQueueWriteSocket::udp_connect(const SocketEndpoint &ep)
+{
+    return new CSimulatedQueueWriteSocket(ep);
+}
+
+unsigned CSimulatedQueueWriteSocket::writeDelayed(unsigned now)
+{
+    CriticalBlock b(crit);
+    while (dueTimes.size())
+    {
+        int delay = dueTimes.front() - now;
+        if (delay > 0)
+            return delay;
+        unsigned jitteredSize = 0;
+        const void *jitteredBuff = nullptr;
+        if (jitter && dueTimes.size()>1 && rand() % 100 == 0)
+        {
+            jitteredSize = packetSizes.front();
+            jitteredBuff = packets.front();
+            dueTimes.pop();
+            packets.pop();
+            packetSizes.pop();
+        }
+        CriticalBlock b(CSimulatedQueueReadSocket::allReadersCrit);
+        CSimulatedQueueReadSocket *dest = CSimulatedQueueReadSocket::connectSimulatedSocket(destEp);
+        if (dest)
+        {
+            dest->writeOwnSimulatedPacket(packets.front(), packetSizes.front());
+            if (jitteredBuff)
+                dest->writeOwnSimulatedPacket(jitteredBuff, jitteredSize);
+        }
+        else
+        {
+            StringBuffer s;
+            free((void *) packets.front());
+            if (jitteredBuff)
+                free((void *) jitteredBuff);
+            DBGLOG("Write to disconnected socket %s", destEp.getEndpointHostText(s).str());
+        }
+        dueTimes.pop();
+        packets.pop();
+        packetSizes.pop();
+    }
+    return (unsigned) -1;
+}
+
+size32_t CSimulatedQueueWriteSocket::write(void const* buf, size32_t size)
+{
+    if (delay)
+    {
+        CriticalBlock b(crit);
+        packetSizes.push(size);
+        packets.push(memcpy(malloc(size), buf, size));
+        dueTimes.push(msTick() + delay * (udpTestVariableDelay && size>200 ? 1 : 3));
+    }
+    else
+    {
+        CriticalBlock b(CSimulatedQueueReadSocket::allReadersCrit);
+        CSimulatedQueueReadSocket *dest = CSimulatedQueueReadSocket::connectSimulatedSocket(destEp);
+        if (dest)
+            dest->writeSimulatedPacket(buf, size);
+        else
+        {
+            StringBuffer s;
+            DBGLOG("Write to disconnected socket %s", destEp.getEndpointHostText(s).str());
+        }
+    }
+    return size;
+}
+
+std::map<SocketEndpoint, CSimulatedQueueReadSocket *> CSimulatedQueueReadSocket::allReaders;
+CriticalSection CSimulatedQueueReadSocket::allReadersCrit;
+
+CSimulatedQueueReadSocket::CSimulatedQueueReadSocket(const SocketEndpoint &_me) : me(_me)
+{
+    StringBuffer s;
+    DBGLOG("Creating fake socket %s", me.getEndpointHostText(s).str());
+    CriticalBlock b(allReadersCrit);
+    allReaders[me] = this;
+}
+
+CSimulatedQueueReadSocket::~CSimulatedQueueReadSocket()
+{
+    StringBuffer s;
+    DBGLOG("Closing fake socket %s", me.getEndpointHostText(s).str());
+    CriticalBlock b(allReadersCrit);
+    allReaders.erase(me);
+}
+
+CSimulatedQueueReadSocket* CSimulatedQueueReadSocket::udp_create(const SocketEndpoint &_me)
+{
+    return new CSimulatedQueueReadSocket(_me);
+}
+
+CSimulatedQueueReadSocket* CSimulatedQueueReadSocket::connectSimulatedSocket(const SocketEndpoint &ep)
+{
+    CriticalBlock b(allReadersCrit);
+    return allReaders[ep];
+}
+
+void CSimulatedQueueReadSocket::writeSimulatedPacket(void const* buf, size32_t size)
+{
+    {
+        CriticalBlock b(crit);
+        if (size+used > max)
+        {
+            DBGLOG("Lost packet");
+            return;
+        }
+        packetSizes.push(size);
+        packets.push(memcpy(malloc(size), buf, size));
+        used += size;
+    }
+//    StringBuffer s; DBGLOG("Signalling available data on %s", me.getEndpointHostText(s).str());
+    avail.signal();
+}
+
+void CSimulatedQueueReadSocket::writeOwnSimulatedPacket(void const* buf, size32_t size)
+{
+    {
+        CriticalBlock b(crit);
+        if (size+used > max)
+        {
+            DBGLOG("Lost packet");
+            free((void *) buf);
+            return;
+        }
+        packetSizes.push(size);
+        packets.push(buf);
+        used += size;
+    }
+//    StringBuffer s; DBGLOG("Signalling available data on %s", me.getEndpointHostText(s).str());
+    avail.signal();
+}
+
+void CSimulatedQueueReadSocket::read(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeoutsecs)
+{
+    unsigned tms = timeoutsecs == WAIT_FOREVER ? WAIT_FOREVER : timeoutsecs * 1000;
+    readtms(buf, min_size, max_size, size_read, tms);
+}
+
+void CSimulatedQueueReadSocket::readtms(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read,
+                     unsigned timeout)
+{
+    size_read = 0;
+    if (!timeout || wait_read(timeout))
+    {
+        CriticalBlock b(crit);
+        const void *thisData = packets.front();
+        unsigned thisSize = packetSizes.front();
+        if (thisSize > max_size)
+        {
+            assert(false);
+            UNIMPLEMENTED;  // Partial packet read not supported yet - add if needed
+        }
+        else
+        {
+            packets.pop();
+            packetSizes.pop();
+            used -= thisSize;
+        }
+        size_read = thisSize;
+        memcpy(buf, thisData, thisSize);
+        free((void *) thisData);
+    }
+    else
+        throw makeStringException(JSOCKERR_timeout_expired, "");
+}
+
+int CSimulatedQueueReadSocket::wait_read(unsigned timeout)
+{
+    bool ret = avail.wait(timeout);
+    return ret;
+}
+
+
+//------------------------------------------------------------------------------------------------------------------------------
+
+//Hash the ip and port and map that to a local port - complain if more than one combination is hashed to the same port.
+constexpr unsigned basePort = 9010;
+constexpr unsigned maxPorts = 980;
+static std::atomic_bool connected[maxPorts];
+unsigned getMappedSocketPort(const SocketEndpoint & ep)
+{
+    unsigned hash = ep.hash(0x31415926);
+    return basePort + hash % maxPorts;
+}
+
+CSimulatedUdpReadSocket::CSimulatedUdpReadSocket(const SocketEndpoint &_me)
+{
+    port = getMappedSocketPort(_me);
+    if (connected[port-basePort].exchange(true))
+        throw makeStringException(0, "Two ip/ports mapped to the same port - improve the hash (or change maxPorts)!");
+    realSocket.setown(ISocket::udp_create(port));
+}
+
+CSimulatedUdpReadSocket::~CSimulatedUdpReadSocket()
+{
+    connected[port-basePort].exchange(false);
+}
+
+size32_t CSimulatedUdpReadSocket::get_receive_buffer_size() { return realSocket->get_receive_buffer_size(); }
+void CSimulatedUdpReadSocket::set_receive_buffer_size(size32_t sz) { realSocket->set_receive_buffer_size(sz); }
+void CSimulatedUdpReadSocket::read(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeoutsecs)
+{
+    realSocket->read(buf, min_size, max_size, size_read, timeoutsecs);
+}
+void CSimulatedUdpReadSocket::readtms(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeout)
+{
+    realSocket->readtms(buf, min_size, max_size, size_read, timeout);
+}
+int CSimulatedUdpReadSocket::wait_read(unsigned timeout)
+{
+    return realSocket->wait_read(timeout);
+}
+void CSimulatedUdpReadSocket::close()
+{
+    realSocket->close();
+}
+
+CSimulatedUdpReadSocket* CSimulatedUdpReadSocket::udp_create(const SocketEndpoint &_me) { return new CSimulatedUdpReadSocket(_me); }
+
+CSimulatedUdpWriteSocket::CSimulatedUdpWriteSocket( const SocketEndpoint &ep)
+{
+    unsigned port = getMappedSocketPort(ep);
+    SocketEndpoint localEp(port, queryLocalIP());
+    realSocket.setown(ISocket::udp_connect(localEp));
+}
+
+CSimulatedUdpWriteSocket*  CSimulatedUdpWriteSocket::udp_connect( const SocketEndpoint &ep) { return new CSimulatedUdpWriteSocket(ep); }
+
+size32_t CSimulatedUdpWriteSocket::write(void const* buf, size32_t size)
+{
+    return realSocket->write(buf, size);
+}
+void CSimulatedUdpWriteSocket::set_send_buffer_size(size32_t sz)
+{
+    realSocket->set_send_buffer_size(sz);
+}
+void CSimulatedUdpWriteSocket::close()
+{
+    realSocket->close();
+}
+
+#endif

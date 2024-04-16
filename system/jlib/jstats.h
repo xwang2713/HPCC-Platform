@@ -83,9 +83,13 @@ public:
     void setEdgeId(unsigned _id, unsigned _output);
     void setFunctionId(const char * _name);
     void setFileId(const char * _name);
+    void setChannelId(unsigned id);
     void setSubgraphId(unsigned _id);
     void setWorkflowId(unsigned _id);
     void setChildGraphId(unsigned _id);
+    void setDfuWorkunitId(const char * _name);
+    void setSectionId(const char * _name);
+    void setOperationId(const char * _name);
 
     int compare(const StatsScopeId & other) const;
 
@@ -101,6 +105,12 @@ protected:
 
 interface IStatisticCollectionIterator;
 interface IStatisticGatherer;
+interface IStatisticVisitor;
+interface ISpan;
+
+class jlib_decl StatisticsMapping;
+typedef std::function<void(const char * scope, StatisticScopeType sst, StatisticKind kind, stat_type value)> AggregateUpdatedCallBackFunc;
+
 interface IStatisticCollection : public IInterface
 {
 public:
@@ -114,13 +124,25 @@ public:
     virtual IStatisticCollectionIterator & getScopes(const char * filter, bool sorted) = 0;
     virtual void getMinMaxScope(IStringVal & minValue, IStringVal & maxValue, StatisticScopeType searchScopeType) const = 0;
     virtual void getMinMaxActivity(unsigned & minValue, unsigned & maxValue) const = 0;
+    virtual bool setStatistic(const char *scope, StatisticKind kind, unsigned __int64 value) = 0;
     virtual void serialize(MemoryBuffer & out) const = 0;
     virtual unsigned __int64 queryWhenCreated() const = 0;
     virtual void mergeInto(IStatisticGatherer & target) const = 0;
+    virtual StringBuffer &toXML(StringBuffer &out) const = 0;
+    virtual void visit(IStatisticVisitor & target) const = 0;
+    virtual void visitChildren(IStatisticVisitor & target) const = 0;
+    virtual void refreshAggregates(const StatisticsMapping & mapping, AggregateUpdatedCallBackFunc & fWhenAggregateUpdated) = 0;
+    virtual stat_type aggregateStatistic(StatisticKind kind) const = 0;
+    virtual void recordStats(const StatisticsMapping & mapping, IStatisticCollection * statsCollection, std::initializer_list<const StatsScopeId> path) = 0;
 };
 
 interface IStatisticCollectionIterator : public IIteratorOf<IStatisticCollection>
 {
+};
+
+interface IStatisticVisitor
+{
+    virtual bool visitScope(const IStatisticCollection & cur) = 0;        // return true to iterate through children
 };
 
 enum StatsMergeAction
@@ -131,6 +153,8 @@ enum StatsMergeAction
     StatsMergeMin,
     StatsMergeMax,
     StatsMergeAppend,
+    StatsMergeFirst,
+    StatsMergeLast,
 };
 
 interface IStatisticGatherer : public IInterface
@@ -141,8 +165,9 @@ public:
     virtual void beginActivityScope(unsigned id) = 0;
     virtual void beginEdgeScope(unsigned id, unsigned oid) = 0;
     virtual void beginChildGraphScope(unsigned id) = 0;
+    virtual void beginChannelScope(unsigned id) = 0;
     virtual void endScope() = 0;
-    virtual void addStatistic(StatisticKind kind, unsigned __int64 value) = 0;
+    virtual void addStatistic(StatisticKind kind, unsigned __int64 value) = 0; // use updateStatistic() if kind could already be defined for the active scope
     virtual void updateStatistic(StatisticKind kind, unsigned __int64 value, StatsMergeAction mergeAction) = 0;
     virtual IStatisticCollection * getResult() = 0;
 };
@@ -208,6 +233,15 @@ public:
     inline StatsActivityScope(IStatisticGatherer & _gatherer, unsigned id) : StatsScopeBlock(_gatherer)
     {
         gatherer.beginActivityScope(id);
+    }
+};
+
+class ChannelActivityScope : public StatsScopeBlock
+{
+public:
+    inline ChannelActivityScope(IStatisticGatherer & _gatherer, unsigned id) : StatsScopeBlock(_gatherer)
+    {
+        gatherer.beginChannelScope(id);
     }
 };
 
@@ -408,7 +442,7 @@ public:
     {
         for (auto kind : kinds)
         {
-            assert((kind != StKindNone) && (kind != StKindAll));
+            assert((kind != StKindNone) && (kind != StKindAll) && (kind < StMax));
             assert(!indexToKind.contains(kind));
             indexToKind.append(kind);
         }
@@ -423,7 +457,7 @@ public:
         }
         else
         {
-            assert(kind != StKindNone);
+            assert(kind != StKindNone && kind < StMax);
             indexToKind.append(kind);
         }
         createMappings();
@@ -433,8 +467,13 @@ public:
         dbgassertex(kind >= StKindNone && kind < StMax);
         return kindToIndex.item(kind);
     }
+    inline bool hasKind(StatisticKind kind) const
+    {
+        return kindToIndex.item(kind) != numStatistics();
+    }
     inline StatisticKind getKind(unsigned index) const { return (StatisticKind)indexToKind.item(index); }
     inline unsigned numStatistics() const { return indexToKind.ordinality(); }
+    inline unsigned getUniqueHash() const { return hashcode; }
 
 protected:
     StatisticsMapping() { }
@@ -451,20 +490,25 @@ protected:
             indexToKind.append(mapping->indexToKind.item(idx));
     }
     void createMappings();
+    bool equals(const StatisticsMapping & other);
 
 protected:
     UnsignedArray kindToIndex;
     UnsignedArray indexToKind;
+    unsigned hashcode = 0;          // Used to uniquely define the StatisticsMapping class required for nested scopes (do not persist)
 private:
     StatisticsMapping& operator=(const StatisticsMapping&) =delete;
 };
 
+extern const jlib_decl StatisticsMapping noStatistics;
 extern const jlib_decl StatisticsMapping allStatistics;
 extern const jlib_decl StatisticsMapping heapStatistics;
 extern const jlib_decl StatisticsMapping diskLocalStatistics;
 extern const jlib_decl StatisticsMapping diskRemoteStatistics;
 extern const jlib_decl StatisticsMapping diskReadRemoteStatistics;
 extern const jlib_decl StatisticsMapping diskWriteRemoteStatistics;
+extern const jlib_decl StatisticsMapping jhtreeCacheStatistics;
+extern const jlib_decl StatisticsMapping stdAggregateKindStatistics;
 
 //---------------------------------------------------------------------------------------------------------------------
 
@@ -491,7 +535,8 @@ public:
     inline unsigned __int64 getClearAtomic()
     {
         unsigned __int64 ret = value;
-        value.fetch_sub(ret);
+        if (likely(ret))
+            value.fetch_sub(ret);
         return ret;
     }
     inline void clear() { set(0); }
@@ -503,39 +548,55 @@ protected:
     RelaxedAtomic<unsigned __int64> value;
 };
 
-//This class is used to gather statistics for an activity - it has no notion of scope.
-interface IContextLogger;
 class CNestedRuntimeStatisticMap;
 
+//The CRuntimeStatisticCollection  used to gather statistics for an activity - it has no notion of its scope, but can contain nested scopes.
+//Some of the functions have node parameters which have no meaning for the base implementation, but are used by the derived class
+//CRuntimeSummaryStatisticCollection which is used fro summarising stats from multiple different worker nodes.
 class jlib_decl CRuntimeStatisticCollection
 {
 public:
-    CRuntimeStatisticCollection(const StatisticsMapping & _mapping) : mapping(_mapping)
+    CRuntimeStatisticCollection(const StatisticsMapping & _mapping, bool _ignoreUnknown = false) : mapping(_mapping)
+#ifdef _DEBUG
+    ,ignoreUnknown(_ignoreUnknown)
+#endif
     {
         unsigned num = mapping.numStatistics();
-        values = new CRuntimeStatistic[num+1]; // extra entry is to gather unexpected stats
+        values = new CRuntimeStatistic[num+1]; // extra entry is to gather unexpected stats and avoid tests when accumulating
     }
-    CRuntimeStatisticCollection(const CRuntimeStatisticCollection & _other) : mapping(_other.mapping)
-    {
-        unsigned num = mapping.numStatistics();
-        values = new CRuntimeStatistic[num+1];
-        for (unsigned i=0; i <= num; i++)
-            values[i].set(_other.values[i].get());
-    }
+    CRuntimeStatisticCollection(const CRuntimeStatisticCollection & _other);
     virtual ~CRuntimeStatisticCollection();
 
     inline CRuntimeStatistic & queryStatistic(StatisticKind kind)
     {
         unsigned index = queryMapping().getIndex(kind);
-        dbgassertex(index < mapping.numStatistics());
+#ifdef _DEBUG
+        if (!ignoreUnknown)
+            dbgassertex(index < mapping.numStatistics());
+#endif
         return values[index];
+    }
+    inline CRuntimeStatistic * queryOptStatistic(StatisticKind kind) const
+    {
+        unsigned index = queryMapping().getIndex(kind);
+        if (index == mapping.numStatistics())
+            return nullptr;
+        return &values[index];
     }
     inline const CRuntimeStatistic & queryStatistic(StatisticKind kind) const
     {
         unsigned index = queryMapping().getIndex(kind);
-        dbgassertex(index < mapping.numStatistics());
+#ifdef _DEBUG
+        if (!ignoreUnknown)
+            dbgassertex(index < mapping.numStatistics());
+#endif
         return values[index];
     }
+    inline const CRuntimeStatistic & queryStatisticByIndex(unsigned index) const
+    {
+        return values[index];
+    }
+
 
     void addStatistic(StatisticKind kind, unsigned __int64 value)
     {
@@ -553,7 +614,8 @@ public:
     }
     unsigned __int64 getStatisticValue(StatisticKind kind) const
     {
-        return queryStatistic(kind).get();
+        CRuntimeStatistic * stat = queryOptStatistic(kind);
+        return stat ? stat->get() : 0;
     }
     unsigned __int64 getSerialStatisticValue(StatisticKind kind) const;
     void reset();
@@ -566,25 +628,28 @@ public:
     inline StatisticKind getKind(unsigned i) const { return mapping.getKind(i); }
     inline unsigned __int64 getValue(unsigned i) const { return values[i].get(); }
 
+    void set(const CRuntimeStatisticCollection & other, unsigned node = 0);
     void merge(const CRuntimeStatisticCollection & other, unsigned node = 0);
     void updateDelta(CRuntimeStatisticCollection & target, const CRuntimeStatisticCollection & source);
-    void rollupStatistics(IContextLogger * target) { rollupStatistics(1, &target); }
-    void rollupStatistics(unsigned num, IContextLogger * const * targets) const;
 
-
-    virtual void recordStatistics(IStatisticGatherer & target) const;
-    void getNodeProgressInfo(IPropertyTree &node) const;
+    // Add the statistics to a span
+    void exportToSpan(ISpan * span, StringBuffer & prefix) const;
 
     // Print out collected stats to string
     StringBuffer &toStr(StringBuffer &str) const;
     // Print out collected stats to string as XML
     StringBuffer &toXML(StringBuffer &str) const;
-    // Serialize/deserialize
+
+// The following functions are re-implemented in the derived CRuntimeSummaryStatisticCollection class
+    virtual void recordStatistics(IStatisticGatherer & target, bool clear) const;
+    virtual void setStatistic(StatisticKind kind, unsigned __int64 value, unsigned node);
     virtual void mergeStatistic(StatisticKind kind, unsigned __int64 value, unsigned node);
     virtual bool serialize(MemoryBuffer & out) const;  // Returns true if any non-zero
     virtual void deserialize(MemoryBuffer & in);
     virtual void deserializeMerge(MemoryBuffer& in);
 
+    // Nested statistics need to be protected before merging, non nested are merged atomically
+    inline bool isThreadSafeMergeSource() const { return nested == nullptr; }
 
 protected:
     virtual CNestedRuntimeStatisticMap *createNested() const;
@@ -602,7 +667,36 @@ protected:
     CRuntimeStatistic * values;
     std::atomic<CNestedRuntimeStatisticMap *> nested {nullptr};
     static CriticalSection nestlock;
+#ifdef _DEBUG
+    bool ignoreUnknown = false;
+#endif
 };
+
+/*
+CRuntimeSummaryStatisticCollection
+I can think of 3 different implementations of this class, each of which have advantages and disadvantages
+1) Current scheme - specialized derived classes.
+Derived versions of CRuntimeStatisticCollection, CNestedRuntimeStatisticCollection and CNestedRuntimeStatisticMap.
+The individual results from the different nodes are not stored, but a summary result is stored and updated as stats
+are updated.  The disadvantage with this approach is some functions in CRuntimeStatisticCollection which aren't
+necessary.
+
+2) Use template classes instead of derived classes.
+Collection<CRuntimeStatistic> and Collection<DerivedStats:CRuntimeStatistic>.  It might be slightly more efficient,
+but would require node to be passed to CRuntimeStatistic functions that ignore it.
+
+3) Implement as completely separate classes.
+Would provide a cleaner interface to the two classes, but would duplicate a substantial amount of code (all the nested
+scope processing in addition to main class).  Unlikely to be better.
+
+4) Have an array of stats, one for each node.
+In this model the derived stats would only be calculated when required.  It would probably produce a cleaner interface
+but would use more memory.  Perhaps more significantly it would be hard to merge the nested scopes e.g. for function
+timings.  Only some of the stats would have them, so you would need to perform a union of all stat scopes.
+
+So although HPCC-26541 was opened to refactor these classes, none of the alternatives are preferrable.
+*/
+
 
 //NB: Serialize and deserialize are not currently implemented.
 class jlib_decl CRuntimeSummaryStatisticCollection : public CRuntimeStatisticCollection
@@ -611,18 +705,21 @@ public:
     CRuntimeSummaryStatisticCollection(const StatisticsMapping & _mapping);
     ~CRuntimeSummaryStatisticCollection();
 
-    virtual void recordStatistics(IStatisticGatherer & target) const override;
+    virtual void recordStatistics(IStatisticGatherer & target, bool clear = false) const override;
     virtual bool serialize(MemoryBuffer & out) const override;  // Returns true if any non-zero
     virtual void deserialize(MemoryBuffer & in) override;
     virtual void deserializeMerge(MemoryBuffer& in) override;
 
     void mergeStatistic(StatisticKind kind, unsigned __int64 value, unsigned node);
-
+    void setStatistic(StatisticKind kind, unsigned __int64 value, unsigned node);
+    double queryStdDevInfo(StatisticKind kind, unsigned __int64 &_min, unsigned __int64 &_max, unsigned &_minNode, unsigned &_maxNode) const;
 protected:
     struct DerivedStats
     {
     public:
         void mergeStatistic(unsigned __int64 value, unsigned node);
+        void setStatistic(unsigned __int64 value, unsigned node);
+        double queryStdDevInfo(unsigned __int64 &_min, unsigned __int64 &_max, unsigned &_minNode, unsigned &_maxNode) const;
     public:
         unsigned __int64 max = 0;
         unsigned __int64 min = 0;
@@ -658,8 +755,10 @@ public:
     bool serialize(MemoryBuffer & out) const;  // Returns true if any non-zero
     void deserialize(MemoryBuffer & in);
     void deserializeMerge(MemoryBuffer& in);
+    void set(const CNestedRuntimeStatisticCollection & other, unsigned node);
     void merge(const CNestedRuntimeStatisticCollection & other, unsigned node);
-    void recordStatistics(IStatisticGatherer & target) const;
+    void recordStatistics(IStatisticGatherer & target, bool clear) const;
+    void exportToSpan(ISpan * span, StringBuffer & prefix) const;
     StringBuffer & toStr(StringBuffer &str) const;
     StringBuffer & toXML(StringBuffer &str) const;
     void updateDelta(CNestedRuntimeStatisticCollection & target, const CNestedRuntimeStatisticCollection & source);
@@ -680,7 +779,9 @@ public:
     void deserialize(MemoryBuffer & in);
     void deserializeMerge(MemoryBuffer& in);
     void merge(const CNestedRuntimeStatisticMap & other, unsigned node);
-    void recordStatistics(IStatisticGatherer & target) const;
+    void set(const CNestedRuntimeStatisticMap & other, unsigned node);
+    void recordStatistics(IStatisticGatherer & target, bool clear) const;
+    void exportToSpan(ISpan * span, StringBuffer & prefix) const;
     StringBuffer & toStr(StringBuffer &str) const;
     StringBuffer & toXML(StringBuffer &str) const;
     void updateDelta(CNestedRuntimeStatisticMap & target, const CNestedRuntimeStatisticMap & source);
@@ -694,7 +795,7 @@ protected:
     mutable ReadWriteLock lock;
 };
 
-class CNestedSummaryRuntimeStatisticMap : public CNestedRuntimeStatisticMap
+class CNestedRuntimeSummaryStatisticMap : public CNestedRuntimeStatisticMap
 {
 protected:
     virtual CRuntimeStatisticCollection * createStats(const StatisticsMapping & mapping) override;
@@ -719,13 +820,13 @@ void mergeStats(CRuntimeStatisticCollection & stats, INTERFACE * source, const S
 }
 
 template <class INTERFACE>
-void mergeStats(CRuntimeStatisticCollection & stats, Shared<INTERFACE> source, const StatisticsMapping & mapping) { mergeStats(stats, source.get(), mapping); }
+void mergeStats(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, const StatisticsMapping & mapping) { mergeStats(stats, source.get(), mapping); }
 
 template <class INTERFACE>
 void mergeStats(CRuntimeStatisticCollection & stats, INTERFACE * source)       { mergeStats(stats, source, stats.queryMapping()); }
 
 template <class INTERFACE>
-void mergeStats(CRuntimeStatisticCollection & stats, Shared<INTERFACE> source) { mergeStats(stats, source.get(), stats.queryMapping()); }
+void mergeStats(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source) { mergeStats(stats, source.get(), stats.queryMapping()); }
 
 template <class INTERFACE>
 void mergeStat(CRuntimeStatisticCollection & stats, INTERFACE * source, StatisticKind kind)
@@ -735,7 +836,43 @@ void mergeStat(CRuntimeStatisticCollection & stats, INTERFACE * source, Statisti
 }
 
 template <class INTERFACE>
-void mergeStat(CRuntimeStatisticCollection & stats, Shared<INTERFACE> source, StatisticKind kind) { mergeStat(stats, source.get(), kind); }
+void mergeStat(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, StatisticKind kind) { mergeStat(stats, source.get(), kind); }
+
+
+//Some template helper classes for overwriting/setting statistics from external sources.
+
+template <class INTERFACE>
+void setStats(CRuntimeStatisticCollection & stats, INTERFACE * source, const StatisticsMapping & mapping)
+{
+    if (!source)
+        return;
+
+    unsigned max = mapping.numStatistics();
+    for (unsigned i=0; i < max; i++)
+    {
+        StatisticKind kind = mapping.getKind(i);
+        stats.setStatistic(kind, source->getStatistic(kind));
+    }
+}
+
+template <class INTERFACE>
+void setStats(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, const StatisticsMapping & mapping) { setStats(stats, source.get(), mapping); }
+
+template <class INTERFACE>
+void setStats(CRuntimeStatisticCollection & stats, INTERFACE * source)       { setStats(stats, source, stats.queryMapping()); }
+
+template <class INTERFACE>
+void setStats(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source) { setStats(stats, source.get(), stats.queryMapping()); }
+
+template <class INTERFACE>
+void setStat(CRuntimeStatisticCollection & stats, INTERFACE * source, StatisticKind kind)
+{
+    if (source)
+        stats.setStatistic(kind, source->getStatistic(kind));
+}
+
+template <class INTERFACE>
+void setStat(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, StatisticKind kind) { setStat(stats, source.get(), kind); }
 
 //---------------------------------------------------------------------------------------------------------------------
 
@@ -748,19 +885,19 @@ extern jlib_decl StringBuffer & formatStatistic(StringBuffer & out, unsigned __i
 extern jlib_decl StringBuffer & formatStatistic(StringBuffer & out, unsigned __int64 value, StatisticKind kind);
 extern jlib_decl void formatTimeStampAsLocalTime(StringBuffer & out, unsigned __int64 value);
 extern jlib_decl stat_type readStatisticValue(const char * cur, const char * * end, StatisticMeasure measure);
+extern jlib_decl stat_type normalizeTimestampToNs(stat_type value);
 
-extern jlib_decl unsigned __int64 mergeStatistic(StatisticMeasure measure, unsigned __int64 value, unsigned __int64 otherValue);
 extern jlib_decl unsigned __int64 mergeStatisticValue(unsigned __int64 prevValue, unsigned __int64 newValue, StatsMergeAction mergeAction);
 
 extern jlib_decl StatisticMeasure queryMeasure(StatisticKind kind);
 extern jlib_decl const char * queryStatisticName(StatisticKind kind);
 extern jlib_decl void queryLongStatisticName(StringBuffer & out, StatisticKind kind);
+extern jlib_decl const char * queryStatisticDescription(StatisticKind kind);
 extern jlib_decl const char * queryTreeTag(StatisticKind kind);
 extern jlib_decl const char * queryCreatorTypeName(StatisticCreatorType sct);
 extern jlib_decl const char * queryScopeTypeName(StatisticScopeType sst);
 extern jlib_decl const char * queryMeasureName(StatisticMeasure measure);
 extern jlib_decl const char * queryMeasurePrefix(StatisticMeasure measure);
-extern jlib_decl StatsMergeAction queryMergeMode(StatisticMeasure measure);
 extern jlib_decl StatsMergeAction queryMergeMode(StatisticKind kind);
 
 extern jlib_decl StatisticMeasure queryMeasure(const char *  measure, StatisticMeasure dft);
@@ -772,6 +909,7 @@ extern jlib_decl IStatisticGatherer * createStatisticsGatherer(StatisticCreatorT
 extern jlib_decl void serializeStatisticCollection(MemoryBuffer & out, IStatisticCollection * collection);
 extern jlib_decl IStatisticCollection * createStatisticCollection(MemoryBuffer & in);
 
+extern jlib_decl IStatisticCollection * createStatisticCollection(const StatsScopeId & scopeId);
 inline unsigned __int64 milliToNano(unsigned __int64 value) { return value * 1000000; } // call avoids need to upcast values
 inline unsigned __int64 nanoToMilli(unsigned __int64 value) { return value / 1000000; }
 
@@ -788,6 +926,7 @@ extern jlib_decl unsigned __int64 extractTimeCollatable(const char *s, const cha
 
 extern jlib_decl void validateScopeId(const char * idText);
 extern jlib_decl void validateScope(const char * scopeText);
+extern jlib_decl StatisticScopeType getScopeType(const char * scope);
 
 //Scopes need to be processed in a consistent order so they can be merged.
 //activities are in numeric order
@@ -808,9 +947,22 @@ interface IStatisticTarget
 class jlib_decl NullStatisticTarget : implements IStatisticTarget
 {
 public:
-    virtual void addStatistic(StatisticScopeType scopeType, const char * scope, StatisticKind kind, char * description, unsigned __int64 value, unsigned __int64 count, unsigned __int64 maxValue, StatsMergeAction mergeAction)
+    virtual void addStatistic(StatisticScopeType scopeType, const char * scope, StatisticKind kind, char * description, unsigned __int64 value, unsigned __int64 count, unsigned __int64 maxValue, StatsMergeAction mergeAction) override
     {
     }
+};
+
+class jlib_decl RuntimeStatisticTarget : implements IStatisticTarget
+{
+public:
+    RuntimeStatisticTarget(CRuntimeStatisticCollection & _target) : target(_target) {}
+
+    virtual void addStatistic(StatisticScopeType scopeType, const char * scope, StatisticKind kind, char * description, unsigned __int64 value, unsigned __int64 count, unsigned __int64 maxValue, StatsMergeAction mergeAction) override
+    {
+        target.addStatistic(kind, value);
+    }
+protected:
+    CRuntimeStatisticCollection & target;
 };
 
 extern jlib_decl StringBuffer & formatMoney(StringBuffer &out, unsigned __int64 value);

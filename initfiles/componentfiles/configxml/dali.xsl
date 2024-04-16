@@ -65,6 +65,7 @@
 
 
   <xsl:variable name="daliServerNode" select="/Environment/Software/DaliServerProcess[@name=$process]"/>
+  <xsl:variable name="daliServerPort" select="/Environment/Software/DaliServerProcess[@name=$process]/Instance[1]/@port"/>
 
 
   <xsl:template match="/">
@@ -81,6 +82,9 @@
     <DALI>
       <xsl:attribute name="name">
         <xsl:value-of select="@name"/>
+      </xsl:attribute>
+      <xsl:attribute name="port">
+        <xsl:value-of select="$daliServerPort"/>
       </xsl:attribute>
       <xsl:if test="string(@LogDir)!=''">
         <xsl:attribute name="log_dir">
@@ -100,7 +104,23 @@
         </xsl:attribute>
       </xsl:if>
       <xsl:copy-of select="/Environment/Software/Directories"/>
-
+      <xsl:choose>
+          <xsl:when test="tracing">
+              <xsl:copy-of select="./tracing"/>
+          </xsl:when>
+          <xsl:otherwise>
+              <xsl:copy-of select="/Environment/Software/tracing"/>
+          </xsl:otherwise>
+      </xsl:choose>
+      <!--
+      # Generated for configuration info. accessed by getGlobalConfig()
+      -->
+      <global>
+        <expert>
+          <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+        </expert>
+        <xsl:copy-of select="/Environment/Hardware/cost"/>
+      </global>
       <xsl:if test="@authMethod='secmgrPlugin'">
       <SecurityManagers>
           <SecurityManager>
@@ -128,7 +148,7 @@
       <xsl:element name="SDS">
         <xsl:attribute name="store">dalisds.xml</xsl:attribute>
         <xsl:attribute name="caseInsensitive">0</xsl:attribute>
-        <xsl:copy-of select="@recoverFromIncErrors |@snmpSendWarnings | @enableSNMP | @enableSysLog | @snmpErrorMsgLevel | @msgLevel | @lightweightCoalesce | @keepStores | @backupLargeWarningThreshold | @backupSoftQueueLimit | @backupSoftQueueLimitDelay"/>
+        <xsl:copy-of select="@nobackup | @recoverFromIncErrors | @snmpSendWarnings | @enableSNMP | @enableSysLog | @snmpErrorMsgLevel | @msgLevel | @lightweightCoalesce | @keepStores | @deltaSaveThresholdSecs | @deltaTransactionQueueLimit | @deltaTransactionMaxMemMB"/>
         <xsl:if test="string(@IdlePeriod) != ''">
             <xsl:attribute name="lCIdlePeriod">
                 <xsl:value-of select="@IdlePeriod"/>
@@ -276,9 +296,6 @@
             <xsl:attribute name="modulesBasedn">
                 <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@modulesBasedn"/>
             </xsl:attribute>
-            <xsl:attribute name="sudoersBasedn">
-                <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@sudoersBasedn"/>
-            </xsl:attribute>
             <xsl:attribute name="usersBasedn">
                 <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@usersBasedn"/>
             </xsl:attribute>
@@ -321,12 +338,13 @@
             </xsl:attribute>
 
             <xsl:for-each select="$ldapServerNode">
-              <xsl:copy-of select="@ldapPort | @ldapSecurePort | @ldapTimeoutSecs | @cacheTimeout | @workunitsBasedn | @modulesBasedn | @systemBasedn | @systemCommonName | @systemUser | @systemPassword | @usersBasedn | @groupsBasedn| @viewsBasedn | @serverType"/>
+              <xsl:copy-of select="@ldapPort | @ldapSecurePort | @ldapTimeoutSecs | @ldapCipherSuite | @cacheTimeout | @workunitsBasedn | @modulesBasedn | @systemBasedn | @systemCommonName | @systemUser | @systemPassword | @usersBasedn | @groupsBasedn| @viewsBasedn | @serverType"/>
             </xsl:for-each>
           </xsl:element>
         </xsl:if>
       </xsl:element>
     </DALI>
+    <xsl:call-template name="addMetricsConfig"/>
   </xsl:template>
 
   <xsl:template name="makeAbsolutePath">
@@ -360,6 +378,10 @@
       </xsl:otherwise>
 
     </xsl:choose>
+  </xsl:template>
+
+  <xsl:template name="addMetricsConfig">
+    <xsl:copy-of select="/Environment/Software/metrics"/>
   </xsl:template>
 
 </xsl:stylesheet>

@@ -10,12 +10,18 @@ define([
 
     "hpcc/GridDetailsWidget",
     "src/ws_access",
-    "src/ESPUtil"
+    "src/ESPUtil",
+    "src/Utility",
+
+    "dijit/Dialog",
+    "dijit/form/TextBox",
+
+    "hpcc/TableContainer"
 
 ], function (declare, nlsHPCCMod,
     registry, CheckBox,
     tree, editor,
-    GridDetailsWidget, WsAccess, ESPUtil) {
+    GridDetailsWidget, WsAccess, ESPUtil, Utility) {
 
     var nlsHPCC = nlsHPCCMod.default;
     return declare("PermissionsWidget", [GridDetailsWidget], {
@@ -58,7 +64,7 @@ define([
                         autoSave: true,
                         canEdit: function (object, value) { return object.__hpcc_type !== "Permission"; },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.AllowAccess;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.AllowAccess, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     allow_read: editor({
@@ -69,7 +75,7 @@ define([
                         autoSave: true,
                         canEdit: function (object, value) { return object.__hpcc_type !== "Permission"; },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.AllowRead;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.AllowRead, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     allow_write: editor({
@@ -80,7 +86,7 @@ define([
                         autoSave: true,
                         canEdit: function (object, value) { return object.__hpcc_type !== "Permission"; },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.AllowWrite;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.AllowWrite, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     allow_full: editor({
@@ -91,7 +97,7 @@ define([
                         autoSave: true,
                         canEdit: function (object, value) { return object.__hpcc_type !== "Permission"; },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.AllowFull;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.AllowFull, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     padding: {
@@ -111,7 +117,7 @@ define([
                             return true;
                         },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.DenyAccess;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.DenyAccess, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     deny_read: editor({
@@ -127,7 +133,7 @@ define([
                             return true;
                         },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.DenyRead;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.DenyRead, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     deny_write: editor({
@@ -143,7 +149,7 @@ define([
                             return true;
                         },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.DenyWrite;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.DenyWrite, "center").split(" ").join("<br />");
                         }
                     }, CheckBox),
                     deny_full: editor({
@@ -159,7 +165,7 @@ define([
                             return true;
                         },
                         renderHeaderCell: function (node) {
-                            node.innerHTML = context.i18n.DenyFull;
+                            node.innerHTML = Utility.wrapStringWithTag(context.i18n.DenyFull, "center").split(" ").join("<br />");
                         }
                     }, CheckBox)
                 }

@@ -76,11 +76,13 @@ StringBuffer cachedDigest;
 bool responseDirty = true;
 unsigned lastTimeoutCheck = 0;
 unsigned lastTopologyReport = 0;
-const unsigned timeoutCheckInterval = 1000;
-const unsigned heartbeatInterval = 5000;
-const unsigned timeoutHeartbeatInterval = 10000;
-const unsigned removeHeartbeatInterval = 120000;
-const unsigned topologyReportInterval = 60000;
+
+unsigned timeoutCheckInterval = 1000;       // How often we check to see what has expired
+unsigned heartbeatInterval = 10000;          // How often nodes send heartbeats
+unsigned timeoutHeartbeatServer = 60000;    // How long before a server is marked as down
+unsigned timeoutHeartbeatAgent = 20000;     // How long before an agent is marked as down
+unsigned removeHeartbeatInterval = 120000;  // How long before a node is removed from list
+unsigned topologyReportInterval = 60000;    // How often topology is reported to logging (if traceLevel >= 2)
 bool aborted = false;
 Semaphore stopping;
 StringBuffer topologyFile;
@@ -144,26 +146,30 @@ void timeoutTopology()
         return;
     for (auto it = topology.begin(); it != topology.end(); /* no increment */)
     {
+        bool isServer = it->first.rfind("server", 0)==0;
         unsigned lastSeen = it->second.lastSeen;
-        if (now-lastSeen > timeoutHeartbeatInterval)
+        unsigned timeout = isServer ? timeoutHeartbeatServer : timeoutHeartbeatAgent;
+        // If a server is missing a heartbeat for a while, we mark it as down. Queued packets for that server will get discarded, and
+        // it will be sorted to the end of the priority list for agent requests
+        // The timeout is different for server vs agent - for servers, we want to be sure it really is down, and there's no huge cost for waiting,
+        // while for agents we want to divert traffic away from it ASAP (so long as there are other destinations available)
+        // Note that there's a difference between 'sick' and 'shut down'
+        if (now-lastSeen > timeout)
         {
             if (traceLevel)
             {
                 DBGLOG("No heartbeat for %u ms for %s", now-lastSeen, it->first.c_str());
             }
-            if (now-lastSeen > removeHeartbeatInterval)
-                it = topology.erase(it);
-            else
-            {
-                it->second.instance = 0;  // By leaving the entry present but with instance=0, we will ensure that all clients get to see that the machine is no longer present
-                ++it;
-            }
             responseDirty = true;
+            if (now-lastSeen > removeHeartbeatInterval)
+            {
+                it = topology.erase(it);
+                continue;
+            }
+            if (it->second.instance != (time_t) -1)
+                it->second.instance = 0;  // By leaving the entry present but with instance=0, we will ensure that all clients get to see that the machine is degraded
         }
-        else
-        {
-            ++it;
-        }
+        ++it;
     }
     lastTimeoutCheck = now;
 }
@@ -262,7 +268,7 @@ void doServer(ISocket *socket)
                         if (line[0]=='-')
                         {
                             line = line.substr(1);
-                            instance = 0;
+                            instance = (time_t) -1;
                         }
                         if (traceLevel >= 6)
                             DBGLOG("Adding entry %s instance %" I64F "u", line.c_str(), (__uint64) instance);
@@ -316,6 +322,8 @@ static constexpr const char * defaultYaml = R"!!(
     port: 9004
     stdlog: true
     traceLevel: 1
+    logging:
+      queueDrop: 32
 )!!";
 
 int main(int argc, const char *argv[])
@@ -357,6 +365,14 @@ int main(int argc, const char *argv[])
         Owned<IPropertyTree> topology = loadConfiguration(defaultYaml, argv, "toposerver", "TOPOSERVER", nullptr, nullptr);
         traceLevel = topology->getPropInt("@traceLevel", 1);
         topoPort = topology->getPropInt("@port", TOPO_SERVER_PORT);
+
+        timeoutCheckInterval = topology->getPropInt("@timeoutCheckInterval", timeoutCheckInterval);
+        heartbeatInterval = topology->getPropInt("@heartbeatInterval", heartbeatInterval);
+        timeoutHeartbeatAgent = topology->getPropInt("@timeoutHeartbeatAgent", heartbeatInterval*2);
+        timeoutHeartbeatServer = topology->getPropInt("@timeoutHeartbeatServer", heartbeatInterval*6);
+        removeHeartbeatInterval = topology->getPropInt("@removeHeartbeatInterval", heartbeatInterval*10);
+        topologyReportInterval = topology->getPropInt("@topologyReportInterval", topologyReportInterval);
+
 #ifndef _CONTAINERIZED
         if (topology->getPropBool("@stdlog", traceLevel != 0))
             queryStderrLogMsgHandler()->setMessageFields(MSGFIELD_time | MSGFIELD_milliTime | MSGFIELD_thread | MSGFIELD_prefix);
@@ -374,6 +390,21 @@ int main(int argc, const char *argv[])
 #else
         setupContainerizedLogMsgHandler();
 #endif
+        if (timeoutHeartbeatAgent < (heartbeatInterval*4)/3)
+        {
+            timeoutHeartbeatAgent = heartbeatInterval*2;
+            DBGLOG("timeoutHeartbeatAgent value too small - setting to %u", timeoutHeartbeatAgent);
+        }
+        if (timeoutHeartbeatServer < (heartbeatInterval*2))
+        {
+            timeoutHeartbeatServer = heartbeatInterval*6;
+            DBGLOG("timeoutHeartbeatServer value too small - setting to %u", timeoutHeartbeatServer);
+        }
+        if (removeHeartbeatInterval < timeoutHeartbeatServer)
+        {
+            removeHeartbeatInterval = timeoutHeartbeatServer*2;
+            DBGLOG("removeHeartbeatInterval value too small - setting to %u", removeHeartbeatInterval);
+        }
         Owned<ISocket> socket = ISocket::create(topoPort);
         if (traceLevel)
             DBGLOG("Topology server starting on port %u", topoPort);

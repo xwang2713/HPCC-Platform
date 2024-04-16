@@ -50,11 +50,11 @@ include_directories(
     ${CMAKE_BINARY_DIR}
     ${CMAKE_BINARY_DIR}/oss
     ${CMAKE_BINARY_DIR}/esp/services/ws_configmgr
-    ${BOOST_REGEX_INCLUDE_DIR}
+    ${Boost_INCLUDE_DIRS}
     ${HPCC_SOURCE_DIR}/common/thorhelper
     )
 
-add_definitions(-D_USRDLL)
+add_definitions(-D_USRDLL -Dws_configmgr_API_LOCAL )
 
 HPCC_ADD_LIBRARY(ws_configmgr SHARED ${SRCS})
 install(

@@ -1,28 +1,48 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, getTheme, ICommandBarItemProps } from "@fluentui/react";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
 import { useConst, useOnEvent } from "@fluentui/react-hooks";
-import { Editor, ECLEditor, XMLEditor } from "@hpcc-js/codemirror";
+import { Editor, ECLEditor, XMLEditor, JSONEditor } from "@hpcc-js/codemirror";
+import { Workunit } from "@hpcc-js/comms";
 import nlsHPCC from "src/nlsHPCC";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { AutosizeHpccJSComponent } from "../layouts/HpccJSAdapter";
-import { useWorkunitXML } from "../hooks/Workunit";
-import { darkTheme } from "../themes";
+import { useUserTheme } from "../hooks/theme";
+import { useWorkunitXML } from "../hooks/workunit";
 import { ShortVerticalDivider } from "./Common";
+
 import "eclwatch/css/cmDarcula.css";
 
-interface SourceEditorProps {
-    text?: string;
-    readonly?: boolean;
-    mode?: "ecl" | "xml" | "text";
+type ModeT = "ecl" | "xml" | "json" | "text";
+
+function newEditor(mode: ModeT) {
+    switch (mode) {
+        case "ecl":
+            return new ECLEditor();
+        case "xml":
+            return new XMLEditor();
+        case "json":
+            return new JSONEditor();
+        case "text":
+        default:
+            return new Editor();
+    }
 }
 
-const SourceEditor: React.FunctionComponent<SourceEditorProps> = ({
+interface SourceEditorProps {
+    mode?: ModeT;
+    text?: string;
+    readonly?: boolean;
+    onChange?: (text: string) => void;
+}
+
+export const SourceEditor: React.FunctionComponent<SourceEditorProps> = ({
+    mode = "text",
     text = "",
     readonly = false,
-    mode = "text"
+    onChange = (text: string) => { }
 }) => {
 
-    const theme = getTheme();
+    const { isDark } = useUserTheme();
 
     //  Command Bar  ---
     const buttons: ICommandBarItemProps[] = [
@@ -35,33 +55,36 @@ const SourceEditor: React.FunctionComponent<SourceEditorProps> = ({
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
     ];
 
-    const editor = useConst(mode === "text" ? new Editor() : new XMLEditor());
+    const editor = useConst(() => newEditor(mode)
+        .on("changes", () => {
+            onChange(editor.text());
+        })
+    );
+
     React.useEffect(() => {
+        editor.option("theme", isDark ? "darcula" : "default");
+        if (editor.text() !== text) {
+            editor.text(text);
+        }
+
         editor
-            .text(text)
             .readOnly(readonly)
             .lazyRender()
             ;
+    }, [editor, text, readonly, isDark]);
 
-        if (theme.semanticColors.link === darkTheme.palette.themePrimary) {
-            editor.setOption("theme", "darcula");
-        }
-
-    }, [editor, readonly, text, theme.semanticColors.link]);
-
-    const handleThemeToggle = (evt) => {
+    const handleThemeToggle = React.useCallback((evt) => {
         if (!editor) return;
         if (evt.detail && evt.detail.dark === true) {
-            editor.setOption("theme", "darcula");
+            editor.option("theme", "darcula");
         } else {
-            editor.setOption("theme", "default");
+            editor.option("theme", "default");
         }
-    };
-
+    }, [editor]);
     useOnEvent(document, "eclwatch-theme-toggle", handleThemeToggle);
 
     return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} />}
+        header={<CommandBar items={buttons} />}
         main={
             <AutosizeHpccJSComponent widget={editor} padding={4} />
         }
@@ -92,6 +115,36 @@ export const XMLSourceEditor: React.FunctionComponent<XMLSourceEditorProps> = ({
 }) => {
 
     return <SourceEditor text={text} readonly={readonly} mode="xml"></SourceEditor>;
+};
+
+interface JSONSourceEditorProps {
+    json?: object;
+    readonly?: boolean;
+    onChange?: (obj: object) => void;
+}
+
+export const JSONSourceEditor: React.FunctionComponent<JSONSourceEditorProps> = ({
+    json,
+    readonly = false,
+    onChange = (obj: object) => { }
+}) => {
+
+    const text = React.useMemo(() => {
+        try {
+            return JSON.stringify(json, undefined, 4);
+        } catch (e) {
+            return "";
+        }
+    }, [json]);
+
+    const textChanged = React.useCallback((text) => {
+        try {
+            onChange(JSON.parse(text));
+        } catch (e) {
+        }
+    }, [onChange]);
+
+    return <SourceEditor text={text} readonly={readonly} mode="json" onChange={textChanged}></SourceEditor>;
 };
 
 export interface WUXMLSourceEditorProps {
@@ -140,7 +193,7 @@ export const ECLSourceEditor: React.FunctionComponent<ECLSourceEditorProps> = ({
     setEditor
 }) => {
 
-    const editor = useConst(new ECLEditor());
+    const editor = useConst(() => new ECLEditor());
     React.useEffect(() => {
         editor
             .text(text)
@@ -158,12 +211,14 @@ export const ECLSourceEditor: React.FunctionComponent<ECLSourceEditorProps> = ({
 
 interface FetchEditor {
     url: string;
+    wuid?: string;
     readonly?: boolean;
     mode?: "ecl" | "xml" | "text";
 }
 
 export const FetchEditor: React.FunctionComponent<FetchEditor> = ({
     url,
+    wuid,
     readonly = true,
     mode = "text"
 }) => {
@@ -171,12 +226,19 @@ export const FetchEditor: React.FunctionComponent<FetchEditor> = ({
     const [text, setText] = React.useState("");
 
     React.useEffect(() => {
-        fetch(url).then(response => {
-            return response.text();
-        }).then(content => {
-            setText(content);
-        });
-    }, [url]);
+        if (wuid) {
+            const wu = Workunit.attach({ baseUrl: "" }, wuid);
+            wu.fetchQuery().then(function (query) {
+                setText(query?.Text ?? "");
+            });
+        } else {
+            fetch(url).then(response => {
+                return response.text();
+            }).then(content => {
+                setText(content);
+            });
+        }
+    }, [url, wuid]);
 
     return <SourceEditor text={text} readonly={readonly} mode={mode}></SourceEditor>;
 };

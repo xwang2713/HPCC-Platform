@@ -3,7 +3,7 @@ define([
     "dojo/_base/lang",
     "src/nlsHPCC",
     "dojo/_base/array",
-    "src/Memory",
+    "src/store/Memory",
     "dojo/dom-class",
     "dojo/dom-style",
     "dojo/has",
@@ -198,6 +198,7 @@ define([
                 }
                 return (timer.Name !== "Process" &&
                     timer.Name !== "compile" &&
+                    timer.Name !== ">compile" &&
                     timer.Name !== "Total thor time" &&
                     timer.Name !== "Total cluster time" &&
                     timer.Name.indexOf(":TimeElapsed") < 0);

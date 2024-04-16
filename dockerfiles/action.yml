@@ -13,20 +13,59 @@ inputs:
   password:
     description: 'The login password for docker hub'
     required: true
+  docker_repo:
+    description: 'The name of the docker repository to pull and push to/from'
+    required: false
+  registry:
+    description: 'The docker image registry to log in to for image pushes'
+    required: false
   build_type:
     description: 'The build type - Debug, RelWithDebInfo, or Release'
     required: false
   build_label:
     description: 'The docker version tag'
     required: false
-  docker_repo:
-    description: 'The name of the docker repository to pull and push to/from'
-    required: false
   latest:
     description: 'Set to 1 to also tag as latest when maturity is release'
     required: false
+  github_actor:
+    description: 'The actor of the github action'
+    required: false
+  github_token:
+    description: 'The github token associated with the current build'
+    required: false
   build_ml:
     description: 'What to build ml - all, or combination of ml,gnn,gnn-gpu separated by comma'
+    required: false
+  lnb_token:
+    description: 'Token to build LN images'
+    required: false
+  build_ln:
+    description: 'Build the ln images'
+    required: false
+  ln_username:
+    description: 'The login username for ln repository'
+    required: true
+  ln_password:
+    description: 'The login password for ln repository'
+    required: true
+  ln_docker_repo:
+    description: 'The name of the docker repository to push ln images to'
+    required: false
+  ln_registry:
+    description: 'The docker image registry to log in to for ln image pushes'
+    required: false
+  sign_modules:
+    description: 'Flag to turn on ECL std library and module signing'
+    required: false
+  signing_secret:
+    description: 'The key used for signing'
+    required: false
+  signing_keyid:
+    description: 'Name of key used for signing in gpg'
+    required: false
+  signing_passphrase:
+    description: 'The passphrase for the secret key in gpg'
     required: false
 outputs:
   tag:

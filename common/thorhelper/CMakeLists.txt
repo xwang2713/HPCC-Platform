@@ -25,6 +25,10 @@
 
 project( thorhelper ) 
 
+if (USE_TBB)
+    find_package(TBB CONFIG REQUIRED)
+endif ()
+
 set (    SRCS 
 
          commonext.cpp
@@ -104,15 +108,21 @@ include_directories (
          ${HPCC_SOURCE_DIR}/ecl/hql
          ${HPCC_SOURCE_DIR}/roxie/roxiemem
          ${HPCC_SOURCE_DIR}/testing/unittests
-         ${HPCC_SOURCE_DIR}/system/tbb_sm/tbb/include
          ${HPCC_SOURCE_DIR}/system/security/shared
          ${HPCC_SOURCE_DIR}/fs/dafsclient
     )
 
+if (USE_PARQUET)
+    include_directories (
+         ${HPCC_SOURCE_DIR}/esp/platform
+         ${HPCC_SOURCE_DIR}/plugins/parquet
+    )
+endif()
+
 ADD_DEFINITIONS( -DTHORHELPER_EXPORTS -D_USRDLL )
 
 HPCC_ADD_LIBRARY( thorhelper SHARED ${SRCS} )
-install ( TARGETS thorhelper RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
+install ( TARGETS thorhelper RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} CALC_DEPS )
 target_link_libraries ( thorhelper 
          jlib 
          nbcd 
@@ -120,16 +130,19 @@ target_link_libraries ( thorhelper
          eclrtl 
          roxiemem
          deftype 
-         dalibase 
+         dalibase
     )
 
+if (USE_PARQUET)
+    target_link_libraries( thorhelper parquetembed )
+endif()
+
 if (USE_NUMA)
- target_link_libraries ( thorhelper numa )
+ target_link_libraries ( thorhelper ${NUMA_LIBRARIES} )
 endif ()
 
 if (USE_TBB)
-   add_dependencies ( thorhelper tbb )
-   target_link_libraries ( thorhelper libtbb )
+   target_link_libraries ( thorhelper TBB::tbb )
 endif()
 
 

@@ -379,7 +379,7 @@ bool getVersion(INode *node)
     Owned<ISashaCommand> cmd = createSashaCommand();
     cmd->setAction(SCA_GETVERSION);
     StringBuffer ips;
-    node->endpoint().getIpText(ips);
+    node->endpoint().getHostText(ips);
     if (!cmd->send(node,1*60*1000)) {
         OERRLOG("Could not connect to Sasha server on %s",ips.str());
         return false;
@@ -406,8 +406,10 @@ int main(int argc, char* argv[])
     EnableSEHtoExceptionMapping();
     Thread::setDefaultStackSize(0x10000);
     try {
+        initNullConfiguration();
+
         startMPServer(0);
-        attachStandardFileLogMsgMonitor("sasha.log", NULL, MSGFIELD_STANDARD, MSGAUD_all, MSGCLS_all, TopDetail, false, true);
+        attachStandardFileLogMsgMonitor("sasha.log", NULL, MSGFIELD_STANDARD, MSGAUD_all, MSGCLS_all, TopDetail, LOGFORMAT_table, true);
         queryStderrLogMsgHandler()->setMessageFields(MSGFIELD_prefix);
 
         SocketEndpoint ep;

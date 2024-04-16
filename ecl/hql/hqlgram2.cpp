@@ -360,8 +360,8 @@ HqlGram::HqlGram(IHqlScope * _globalScope, IHqlScope * _containerScope, IFileCon
     lexObject->setLegacyWhen(queryLegacyWhenSemantics());
 
     //MORE: This should be in the parseContext calculated once
-    if (lookupCtx.queryRepository() && loadImplicit)
-        getImplicitScopes(implicitScopes, lookupCtx.queryRepository(), _containerScope, lookupCtx);
+    if (lookupCtx.queryPackage() && loadImplicit)
+        getImplicitScopes(implicitScopes, lookupCtx.queryPackage(), _containerScope, lookupCtx);
 }
 
 
@@ -450,23 +450,20 @@ IHqlScope * HqlGram::queryGlobalScope()
     return globalScope;
 }
 
-IHqlScope * HqlGram::queryMacroScope()
+IHqlScope * HqlGram::queryMacroScope(IEclPackage * & package)
 {
-    const char * scopeName = lexObject->queryMacroScopeName();
+    const char * scopeName = lexObject->queryMacroScopeName(package);
     if (scopeName)
     {
-        OwnedHqlExpr matched = getResolveAttributeFullPath(scopeName, LSFpublic, lookupCtx);
+        assertex(package);
+        HqlLookupContext macroCtx(lookupCtx);
+        macroCtx.rootPackage = package;
+        OwnedHqlExpr matched = getResolveAttributeFullPath(scopeName, LSFpublic, macroCtx, nullptr);
         if (matched && matched->queryScope())
             return matched->queryScope();
     }
 
     return globalScope;
-}
-
-IAtom * HqlGram::queryGlobalScopeId()
-{
-    const char * globalName = globalScope->queryFullName();
-    return createAtom(globalName);
 }
 
 void HqlGram::init(IHqlScope * _globalScope, IHqlScope * _containerScope)
@@ -1178,7 +1175,15 @@ IHqlExpression * HqlGram::processIndexBuild(const attribute &err, attribute & in
     }
     else
     {
-        checkIndexRecordType(dataset->queryRecord(), 1, false, indexAttr);
+        IHqlExpression * record = dataset->queryRecord();
+        IHqlExpression * payloadAttr = record->queryAttribute(_payload_Atom);
+        unsigned numPayload = 1;
+        if (payloadAttr)
+        {
+            numPayload = (unsigned)getIntValue(payloadAttr->queryChild(0));
+            flags.setown(createComma(flags.getClear(), LINK(payloadAttr)));
+        }
+        checkIndexRecordType(dataset->queryRecord(), numPayload, false, indexAttr);
     }
 
     HqlExprArray args;
@@ -2205,10 +2210,9 @@ void HqlGram::doAddAssignSelf(IHqlExpression * assignall, IHqlExpression * field
     doAddAssignCompoundOwn(assignall, getSelf(curTransform), src, field, errpos);
 }
 
-IHqlExpression * HqlGram::createRowAssignTransform(const attribute & srcAttr, const attribute & tgtAttr, const attribute & seqAttr)
+IHqlExpression * HqlGram::createRowAssignTransform(const attribute & srcAttr, const attribute & tgtAttr, IHqlExpression * res_rec, const attribute & seqAttr)
 {
     IHqlExpression * src = srcAttr.queryExpr();
-    IHqlExpression * res_rec = tgtAttr.queryExpr();
     
     // create transform
     OwnedHqlExpr unadornedRecord = getUnadornedRecord(res_rec);
@@ -2223,6 +2227,16 @@ IHqlExpression * HqlGram::createRowAssignTransform(const attribute & srcAttr, co
     // close transform
     checkAllAssigned(res_rec, unadornedRecord, srcAttr);
     return endTransform(srcAttr);
+}
+
+IHqlExpression * HqlGram::createRowAssignTransform(const attribute & srcAttr, IHqlExpression * res_rec, const attribute & seqAttr)
+{
+    return createRowAssignTransform(srcAttr, srcAttr, res_rec, seqAttr);
+}
+
+IHqlExpression * HqlGram::createRowAssignTransform(const attribute & srcAttr, const attribute & tgtAttr, const attribute & seqAttr)
+{
+    return createRowAssignTransform(srcAttr, tgtAttr, tgtAttr.queryExpr(), seqAttr);
 }
 
 
@@ -2564,13 +2578,18 @@ ITypeInfo * HqlGram::mapAlienType(IHqlSimpleScope * scope, ITypeInfo * type, con
 }
 
 /* In parm e: not linked */
-void HqlGram::addFields(const attribute &errpos, IHqlExpression *e, IHqlExpression * dataset, bool clone)
+void HqlGram::addFields(const attribute &errpos, IHqlExpression * _e, IHqlExpression * dataset, bool clone)
 {
+    LinkedHqlExpr e = _e;
     if (e->getOperator() != no_record)
     {
         //dataset.childrecord or similar!
         clone = true;
-        e = e->queryRecord();
+        e.set(e->queryRecord());
+    }
+    else if (e->hasAttribute(packedAtom))
+    {
+        e.setown(getPackedRecord(e));
     }
 
     //If inside an ifblock this may not match activeRecord.tos()..
@@ -3725,7 +3744,7 @@ IHqlExpression *HqlGram::lookupSymbol(IHqlScope * scope, IIdAtom * searchName)
 
 unsigned HqlGram::getExtraLookupFlags(IHqlScope * scope)
 {
-    if (scope == containerScope)
+    if (scope->isEquivalentScope(*containerScope))
         return LSFsharedOK;
     return 0;
 }
@@ -4048,6 +4067,85 @@ void HqlGram::checkMaxCompatible(IHqlExpression * sortOrder, IHqlExpression * va
             return;
         }
     }
+}
+
+
+void HqlGram::checkRegex(const attribute & pattern)
+{
+    Owned<IException> e = checkRegexSyntax(pattern.queryExpr());
+    if (e)
+    {
+        StringBuffer msg;
+        e->errorMessage(msg);
+        reportError(HQLERR_InvalidRegex, pattern.pos, HQLERR_InvalidRegex_Text, msg.str());
+    }
+}
+
+static void extractExtraImports(HqlExprCopyArray & extra, HqlLookupContext & lookupCtx, IHqlScope * scope, IHqlScope * baseScope)
+{
+    HqlExprArray symbols;
+    scope->getSymbols(symbols);
+
+    ForEachItemIn(i, symbols)
+    {
+        IHqlExpression & cur = symbols.item(i);
+        if (cur.isExported())
+        {
+            OwnedHqlExpr resolved = baseScope->lookupSymbol(cur.queryId(), LSFpublic, lookupCtx);
+            if (!resolved)
+                extra.append(cur);
+        }
+    }
+}
+
+static StringBuffer & expandSymbolList(StringBuffer & out, HqlExprCopyArray & symbols)
+{
+    ForEachItemIn(i, symbols)
+    {
+        if (i)
+            out.append(',');
+        out.append(str(symbols.item(i).queryId()));
+    }
+    return out;
+}
+
+ITypeInfo * HqlGram::checkCompatibleScopes(const attribute& left, const attribute& right)
+{
+    ITypeInfo * leftType = left.queryExprType();
+    ITypeInfo * rightType = right.queryExprType();
+    if (leftType->assignableFrom(rightType))
+        return LINK(leftType);
+    if (rightType->assignableFrom(leftType))
+        return LINK(rightType);
+
+    //Is there a shared base module - if so symbols in that module can be accessed.
+    IHqlExpression * common = findCommonBaseModule(left.queryExpr(), right.queryExpr());
+    if (common)
+        return common->getType();
+
+    //For the moment allow them to be compatible if one module's exports are a subset of the others
+    HqlExprCopyArray leftExtraSymbols, rightExtraSymbols;
+    extractExtraImports(leftExtraSymbols, lookupCtx, left.queryExpr()->queryScope(), right.queryExpr()->queryScope());
+    extractExtraImports(rightExtraSymbols, lookupCtx, right.queryExpr()->queryScope(), left.queryExpr()->queryScope());
+
+    if (leftExtraSymbols.length() && rightExtraSymbols.length())
+    {
+        StringBuffer leftSymbols, rightSymbols;
+        reportError(ERR_TYPE_INCOMPATIBLE, left.pos, "Modules are not compatible. Extra exports: left(%s) right(%s)",
+                    expandSymbolList(leftSymbols, leftExtraSymbols).str(), expandSymbolList(rightSymbols, rightExtraSymbols).str());
+        return LINK(leftType);
+    }
+    else
+    {
+        if (leftExtraSymbols.length() || rightExtraSymbols.length())
+            reportWarning(CategoryInformation, ERR_TYPE_INCOMPATIBLE, left.pos, "Modules do not share a common base MODULE");
+    }
+
+    if (leftExtraSymbols.length())
+        return LINK(rightType);
+    else if (rightExtraSymbols.length())
+        return LINK(leftType);
+    return LINK(leftType);
 }
 
 void HqlGram::checkSvcAttrNoValue(IHqlExpression* attr, const attribute& errpos)
@@ -6357,7 +6455,7 @@ static bool includeError(HqlLookupContext & ctx, WarnErrorCategory category)
 {
     if (ctx.syntaxChecking() && !ctx.ignoreSimplified())
     {
-        if (category==CategorySyntax || category==CategoryError)
+        if (category==CategorySyntax || category==CategoryError || category==CategoryMistake)
             return true;
         else
             return false;
@@ -7645,7 +7743,7 @@ inline bool hasHttpMarkupFlag(IHqlExpression *flags)
 {
     if (!flags)
         return false;
-    return (queryAttributeInList(jsonAtom, flags)!=nullptr || queryAttributeInList(xmlAtom, flags)!=nullptr);
+    return (queryAttributeInList(jsonAtom, flags)!=nullptr || queryAttributeInList(xmlAtom, flags)!=nullptr || queryAttributeInList(formEncodedAtom, flags)!=nullptr);
 }
 
 IHqlExpression * HqlGram::processHttpMarkupFlag(__int64 op)
@@ -8894,6 +8992,31 @@ bool HqlGram::convertAllToAttribute(attribute &atr)
     return true;
 }
 
+void HqlGram::setPluggableModeExpr(attribute & targetAttr, attribute & pluginAttr, attribute & options)
+{
+    const char * fileFormatStr = str(pluginAttr.getId());
+
+    if (hasGenericFiletypeName(fileFormatStr))
+    {
+        // Do we just cite the name of the plugin, or perhaps something
+        // like a unique ID from the plugin's factory (assuming there is one)?
+        OwnedHqlExpr fileTypeExp = createExprAttribute(fileTypeAtom, createConstant(fileFormatStr));
+
+        // Create an option list with the filetype first (easy to find while debugging)
+        HqlExprArray args;
+        args.append(*LINK(fileTypeExp));
+        options.unwindCommaList(args);
+        targetAttr.setExpr(createValue(no_filetype, makeNullType(), args));
+    }
+    else
+    {
+        // ERR_UNKNOWN_TYPE is generic; create file type-specific error?
+        reportError(ERR_UNKNOWN_TYPE, pluginAttr, "Unknown plugin file type %s", fileFormatStr);
+        options.release();
+        // Set the target to something...
+        targetAttr.setExpr(createValue(no_thor, makeNullType()));
+    }
+}
 
 void HqlGram::checkValidRecordMode(IHqlExpression * dataset, attribute & atr, attribute & modeattr)
 {
@@ -9602,11 +9725,11 @@ void HqlGram::checkDerivedCompatible(IIdAtom * name, IHqlExpression * scope, IHq
             if (match)
             {
                 if (!canBeVirtual(match))
-                    reportError(ERR_MISMATCH_PROTO, errpos, "Definition %s, cannot override this kind of definition", str(name));
+                    reportError(ERR_MISMATCH_PROTO, errpos, "Definition %s, cannot override this kind of definition", nullText(str(name)));
                 else
                 {
                     if (!areSymbolsCompatible(expr, isParametered, parameters, match))
-                        reportError(ERR_MISMATCH_PROTO, errpos, "Prototypes for %s in base and derived modules must match", str(name));
+                        reportError(ERR_MISMATCH_PROTO, errpos, "Prototypes for %s in base and derived modules must match", nullText(str(name)));
                 }
             }
         }
@@ -10569,6 +10692,7 @@ void HqlGram::cloneInheritedAttributes(IHqlScope * scope, const attribute & errp
         IHqlScope * curBase = cur->queryScope();
         if (curBase)
         {
+            curBase->ensureSymbolsDefined(lookupCtx);
             IHqlExpression * baseVirtualAttr = cur->queryAttribute(_virtualSeq_Atom);
             bool baseIsLibrary = cur->getOperator() == no_libraryscopeinstance;
 
@@ -11045,19 +11169,22 @@ inline bool isRootModule(IHqlExpression * expr)
     return expr->isAttribute() && (expr->queryName() == _root_Atom);
 }
 
-IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpression * expr)
+IHqlExpression * HqlGram::doResolveImportModule(HqlLookupContext & importCtx, const attribute & errpos, IHqlExpression * expr)
 {
     if (isDollarModule(expr))
         return LINK(queryExpression(globalScope));
     if (isHashDollarModule(expr))
-        return LINK(queryExpression(queryMacroScope()));
+    {
+        //NOTE: This also updates importCtx.rootPackage so relative references are resolved within the correct package
+        return LINK(queryExpression(queryMacroScope(importCtx.rootPackage)));
+    }
     if (isRootModule(expr))
-        return LINK(queryExpression(lookupCtx.queryRepository()->queryRootScope()));
+        return LINK(queryExpression(importCtx.queryPackage()->queryRootScope()));
 
     IAtom * name = expr->queryName();
     if ((name != _dot_Atom) && (name != _container_Atom))
     {
-        if (!lookupCtx.queryRepository())
+        if (!importCtx.queryPackage())
         {
             //This never happens in practice since a null repository is generally passed.
             reportError(ERR_MODULE_UNKNOWN, "Import not supported with no repository specified",  
@@ -11068,13 +11195,14 @@ IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpr
         }
 
         IIdAtom * id = expr->queryId();
-        OwnedHqlExpr importMatch = lookupCtx.queryRepository()->queryRootScope()->lookupSymbol(id, LSFimport, lookupCtx);
+        IHqlScope * rootScope = importCtx.queryPackage()->queryRootScope();
+        OwnedHqlExpr importMatch = rootScope->lookupSymbol(id, LSFimport, importCtx);
         if (!importMatch)
             importMatch.setown(lookupParseSymbol(id));
 
         if (!importMatch || !importMatch->queryScope())
         {
-            if (lookupCtx.queryParseContext().ignoreUnknownImport)
+            if (importCtx.queryParseContext().ignoreUnknownImport)
                 return NULL;
 
             StringBuffer msg;
@@ -11092,7 +11220,7 @@ IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpr
         return importMatch.getClear();
     }
 
-    OwnedHqlExpr parent = resolveImportModule(errpos, expr->queryChild(0));
+    OwnedHqlExpr parent = doResolveImportModule(importCtx, errpos, expr->queryChild(0));
     if (!parent)
         return NULL;
 
@@ -11105,7 +11233,7 @@ IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpr
         //scope as the parent, rather than the merged scope...
         if (containerName)
         {
-            OwnedHqlExpr matched = getResolveAttributeFullPath(containerName, LSFpublic, lookupCtx);
+            OwnedHqlExpr matched = getResolveAttributeFullPath(containerName, LSFpublic, importCtx, nullptr);
             if (matched)
                 return matched.getClear();
         }
@@ -11113,7 +11241,7 @@ IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpr
         {
             //A null parent must be because it is within the global scope, or is the global scope
             if (parentName)
-                return LINK(lookupCtx.queryRepository()->queryRootScope()->queryExpression());
+                return LINK(importCtx.queryPackage()->queryRootScope()->queryExpression());
         }
 
         if (parentName)
@@ -11124,7 +11252,7 @@ IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpr
     }
 
     IIdAtom * childId = expr->queryChild(1)->queryId();
-    OwnedHqlExpr resolved = parent->queryScope()->lookupSymbol(childId, LSFpublic, lookupCtx);
+    OwnedHqlExpr resolved = parent->queryScope()->lookupSymbol(childId, LSFpublic, importCtx);
     if (!resolved)
     {
         if (!parentName)
@@ -11139,6 +11267,13 @@ IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpr
         return NULL;
     }
     return resolved.getClear();
+}
+
+IHqlExpression * HqlGram::resolveImportModule(const attribute & errpos, IHqlExpression * expr)
+{
+    //Create a local lookup context, because any modules resolved within $# need to be resolved within the macro's package
+    HqlLookupContext importCtx(lookupCtx);
+    return doResolveImportModule(importCtx, errpos, expr);
 }
 
 void HqlGram::processImportAll(attribute & modulesAttr)
@@ -11420,6 +11555,7 @@ static void getTokenText(StringBuffer & msg, int token)
     case TOK_FIXED: msg.append("FIXED"); break;
     case FLAT: msg.append("FLAT"); break;
     case FORMAT_ATTR: msg.append("FORMAT"); break;
+    case FORMENCODED: msg.append("FORMENCODED"); break;
     case FORWARD: msg.append("FORWARD"); break;
     case FROM: msg.append("FROM"); break;
     case FROMUNICODE: msg.append("FROMUNICODE"); break;
@@ -11428,6 +11564,7 @@ static void getTokenText(StringBuffer & msg, int token)
     case FULL: msg.append("FULL"); break;
     case FUNCTION: msg.append("FULL"); break;
     case GETENV: msg.append("GETENV"); break;
+    case GETSECRET: msg.append("GETSECRET"); break;
     case GLOBAL: msg.append("GLOBAL"); break;
     case GRAPH: msg.append("GRAPH"); break;
     case GROUP: msg.append("GROUP"); break;
@@ -11662,6 +11799,7 @@ static void getTokenText(StringBuffer & msg, int token)
     case TOK_TRUE: msg.append("TRUE"); break;
     case TYPE: msg.append("TYPE"); break;
     case TYPEOF: msg.append("TYPEOF"); break;
+    case UNCOMPRESSED: msg.append("UNCOMPRESSED"); break;
     case UNGROUP: msg.append("UNGROUP"); break;
     case UNICODEORDER: msg.append("UNICODEORDER"); break;
     case UNLIKELY: msg.append("UNLIKELY"); break;
@@ -11834,7 +11972,7 @@ void HqlGram::simplifyExpected(int *expected)
                        GROUP, GROUPED, KEYED, UNGROUP, JOIN, PULL, ROLLUP, ITERATE, PROJECT, NORMALIZE, PIPE, DENORMALIZE, CASE, MAP, 
                        HTTPCALL, SOAPCALL, LIMIT, PARSE, FAIL, MERGE, PRELOAD, ROW, TOPN, ALIAS, LOCAL, NOFOLD, NOCOMBINE, NOHOIST, NOTHOR, IF, GLOBAL, __COMMON__, __COMPOUND__, TOK_ASSERT, _EMPTY_,
                        COMBINE, ROWS, REGROUP, XMLPROJECT, SKIP, LOOP, CLUSTER, NOLOCAL, REMOTE, PROCESS, ALLNODES, THISNODE, GRAPH, MERGEJOIN, STEPPED, NONEMPTY, HAVING,
-                       TOK_CATCH, '@', SECTION, WHEN, IFF, COGROUP, HINT, INDEX, PARTITION, AGGREGATE, SUBSORT, TOK_ERROR, CHOOSE, TRACE, QUANTILE, UNORDERED, 0);
+                       TOK_CATCH, '@', SECTION, WHEN, IFF, COGROUP, HINT, INDEX, PARTITION, AGGREGATE, SUBSORT, TOK_ERROR, CHOOSE, TRACE, QUANTILE, UNORDERED, PREFETCH, GETSECRET, 0);
     simplify(expected, EXP, ABS, SIN, COS, TAN, SINH, COSH, TANH, ACOS, ASIN, ATAN, ATAN2, 
                        COUNT, CHOOSE, MAP, CASE, IF, HASH, HASH32, HASH64, HASHMD5, CRC, LN, TOK_LOG, POWER, RANDOM, ROUND, ROUNDUP, SQRT, 
                        TRUNCATE, LENGTH, TRIM, INTFORMAT, REALFORMAT, ASSTRING, TRANSFER, MAX, MIN, EVALUATE, SUM,
@@ -12022,7 +12160,7 @@ IHqlExpression * HqlGram::createCheckMatchAttr(attribute & attr, type_t tc)
         type.setown(makeUtf8Type(UNKNOWN_LENGTH, NULL));
         break;
     default:
-        throwUnexpectedType(type);
+        throwUnexpected();
     }
 
     OwnedHqlExpr arg = attr.getExpr();
@@ -12725,6 +12863,7 @@ void parseAttribute(IHqlScope * scope, IFileContents * contents, HqlLookupContex
         //NOTE: The container scope needs to be re-resolved globally so merged file trees are supported
         const char * moduleName = scope->queryFullName();
         Owned<IHqlScope> globalScope = getResolveDottedScope(moduleName, LSFpublic, ctx);
+        assertex(globalScope);
         HqlGram parser(globalScope, scope, contents, attrCtx, NULL, false, true);
         parser.setExpectedAttribute(name);
         parser.setAssociateWarnings(true);

@@ -98,7 +98,7 @@ IFvDataSource * createFileDataSource(const char * logicalName, const char * clus
         udesc->set(username, password);
     }
 
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, udesc.get(),false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, udesc.get(),AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     if (!df)
         throwError1(FVERR_CouldNotResolveX, logicalName);
     return createFileDataSource(df, logicalName, cluster, username, password);
@@ -2136,7 +2136,7 @@ IDistributedFile * CResultSetFactory::lookupLogicalName(const char * logicalName
         udesc->set(username, password);
     }
 
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, udesc.get(),false,false,false,nullptr,defaultPrivilegedUser);
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, udesc.get(),AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
     if (!df)
         throwError1(FVERR_CouldNotResolveX, logicalName);
     return df.getClear();
@@ -2342,11 +2342,12 @@ extern FILEVIEW_API unsigned writeResultCursorXml(IXmlWriterExt & writer, IResul
         writer.outputCString(schemaName, "@xmlSchema");
     if (xmlns)
     {
-        Owned<IPropertyIterator> it = const_cast<IProperties*>(xmlns)->getIterator();
+        Owned<IPropertyIterator> it = xmlns->getIterator();
         ForEach(*it)
         {
             const char *name = it->getPropKey();
-            writer.outputXmlns(name,const_cast<IProperties*>(xmlns)->queryProp(name));
+            const char *value = it->queryPropValue();
+            writer.outputXmlns(name,value);
         }
     }
     cursor->beginWriteXmlRows(writer);

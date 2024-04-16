@@ -33,7 +33,7 @@ static void serializeAttributes(StringBuffer& outbuf, IProperties* attrs)
         for (it->first(); it->isValid(); it->next())
         {
             const char* k = it->getPropKey();
-            const char* v = attrs->queryProp(k);
+            const char* v = it->queryPropValue();
             outbuf.append(' ').append(k).append("=\"");
             encodeUtf8XML(v,outbuf);
             outbuf.append('"');
@@ -171,7 +171,8 @@ void CRpcMessage::add_attr(const char * path, const char * name, const char * va
             for (piter->first(); piter->isValid(); piter->next())
             {
                 const char *propkey = piter->getPropKey();
-                par->add_attribute(propkey, attrs.queryProp(propkey));
+                const char *value = piter->queryPropValue();
+                par->add_attribute(propkey, value);
             }
         }
     }
@@ -181,7 +182,8 @@ void CRpcMessage::add_attr(const char * path, const char * name, const char * va
         for (piter->first(); piter->isValid(); piter->next())
         {
             const char *propkey = piter->getPropKey();
-            add_attribute(propkey, attrs.queryProp(propkey));
+            const char *value = piter->queryPropValue();
+            add_attribute(propkey, value);
         }
     }
 }
@@ -579,7 +581,7 @@ CSoapValue::CSoapValue(CSoapValue* soapvalue)
             m_attributes.setown(createProperties());
             Owned<IPropertyIterator> it = attrs->getIterator();
             for (it->first(); it->isValid(); it->next())
-                m_attributes->setProp(it->getPropKey(), attrs->queryProp(it->getPropKey()));
+                m_attributes->setProp(it->getPropKey(), it->queryPropValue());
         }
         m_is_array_element = soapvalue->m_is_array_element;
     }
@@ -1171,7 +1173,7 @@ void CSoapValue::add_value(const char* path, const char* ns, const char* name, c
         for (piter->first(); piter->isValid(); piter->next())
         {
             const char *propkey = piter->getPropKey();
-            sv->add_attribute(propkey, attrs.queryProp(propkey));
+            sv->add_attribute(propkey, piter->queryPropValue());
         }
     }
 }
@@ -1529,7 +1531,7 @@ void CSoapValue::serialize(StringBuffer& outbuf, CMimeMultiPart* multipart)
         if(m_value.length() > 0)
         {
             if (m_encode_xml)
-                encodeUtf8XML(m_value.str(), outbuf);
+                encodeUtf8XML(m_value.str(), outbuf, 0, m_value.length());
             else
                 outbuf.append(m_value.str());
         }

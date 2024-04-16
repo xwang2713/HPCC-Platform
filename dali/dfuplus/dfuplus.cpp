@@ -68,7 +68,7 @@ public:
         if (listenep.isNull())
             eps.append(listenep.port);
         else
-            listenep.getUrlStr(eps);
+            listenep.getEndpointHostText(eps);
 #endif
         server.setown(createRemoteFileServer());
         server->setThrottle(ThrottleStd, 0); // disable throttling
@@ -78,7 +78,7 @@ public:
     int run()
     {
         try {
-            server->run(securitySettings.queryDAFSConnectCfg(), listenep);
+            server->run(nullptr, securitySettings.queryDAFSConnectCfg(), listenep);
         }
         catch (IException *e) {
             EXCLOG(e,"dfuplus(dafilesrv)");
@@ -131,7 +131,7 @@ bool CDfuPlusHelper::runLocalDaFileSvr(SocketEndpoint &listenep,bool requireauth
             addlPort.appendf("port %u", sslport);
         else if (connectMethod == SSLFirst)
             addlPort.appendf("ports %u:%u", sslport, port);
-        else
+        else // inc UnsecureAndSSL
             addlPort.appendf("ports %u:%u", port, sslport);
         progress("Started local Dali file server on %s\n", addlPort.str());
     }
@@ -146,16 +146,16 @@ bool CDfuPlusHelper::runLocalDaFileSvr(SocketEndpoint &listenep,bool requireauth
             printep.port = sslport;
             addlPort.appendf(":%u", port);
         }
-        else
+        else // inc UnsecureAndSSL
         {
             printep.port = port;
             addlPort.appendf(":%u", sslport);
         }
         StringBuffer eps;
-        progress("Started local Dali file server on %s%s\n", printep.getUrlStr(eps).str(), addlPort.str());
+        progress("Started local Dali file server on %s%s\n", printep.getEndpointHostText(eps).str(), addlPort.str());
     }
 
-    thr->start();
+    thr->start(false);
 
     if (timeout==0) {
         setDafsTrace(nullptr,0); // disable client tracing
@@ -197,7 +197,7 @@ bool CDfuPlusHelper::checkLocalDaFileSvr(const char *eps,SocketEndpoint &epout)
         dafsPort = sslport;
         addlPort.appendf("ports %u:%u", sslport, port);
     }
-    else
+    else // inc UnsecureAndSSL
     {
         dafsPort = port;
         addlPort.appendf("ports %u:%u", port, sslport);
@@ -351,6 +351,15 @@ int CDfuPlusHelper::doit()
     return 0;
 }
 
+void CDfuPlusHelper::setMtlsSecret(IEspClientRpcSettings &rpc)
+{
+    //will only affect HTTPS
+    const char *mtlsSecretName = globals->queryProp("mtls-secret");
+    if (!isEmptyString(mtlsSecretName))
+        rpc.setMtlsSecretName(mtlsSecretName);
+}
+
+
 bool CDfuPlusHelper::fixedSpray(const char* srcxml,const char* srcip,const char* srcfile,const char* srcplane,
                                 const MemoryBuffer &xmlbuf,const char* dstcluster,const char* dstname,
                                 const char *format, StringBuffer &retwuid, StringBuffer &except)
@@ -376,6 +385,8 @@ bool CDfuPlusHelper::fixedSpray(const char* srcxml,const char* srcip,const char*
     }
 
     Owned<IClientSprayFixed> req = sprayclient->createSprayFixedRequest();
+    setMtlsSecret(req->rpc());
+
     if(isEmptyString(srcxml))
     {
         info("\nFixed spraying from %s on %s to %s\n", srcfile, srcplane?srcplane:srcip, dstname);
@@ -451,6 +462,7 @@ bool CDfuPlusHelper::variableSpray(const char* srcxml,const char* srcip,const ch
                                    const char *format,StringBuffer &retwuid, StringBuffer &except)
 {
     Owned<IClientSprayVariable> req = sprayclient->createSprayVariableRequest();
+    setMtlsSecret(req->rpc());
     if(isEmptyString(srcxml))
     {
         info("\nVariable spraying from %s on %s to %s\n", srcfile, srcplane?srcplane:srcip, dstname);
@@ -646,12 +658,12 @@ int CDfuPlusHelper::spray()
     else if (stricmp(format, "delimited") == 0)
         format="csv";
 
+    StringBuffer localeps;
     if (!usingSrcPlane)
     {
         SocketEndpoint localep;
-        StringBuffer localeps;
         if (checkLocalDaFileSvr(srcip,localep))
-            srcip = localep.getUrlStr(localeps).str();
+            srcip = localep.getEndpointHostText(localeps).str();
     }
     StringBuffer wuid;
     StringBuffer errmsg;
@@ -690,6 +702,7 @@ int CDfuPlusHelper::replicate()
     bool nowait = globals->getPropBool("nowait", false);
 
     Owned<IClientReplicate> req = sprayclient->createReplicateRequest();
+    setMtlsSecret(req->rpc());
     req->setSourceLogicalName(srcname);
     req->setReplicateOffset(globals->getPropInt("replicateoffset",1));
     bool repeatlast = globals->getPropBool("repeatlast");
@@ -761,6 +774,7 @@ int CDfuPlusHelper::despray()
     }
 
     Owned<IClientDespray> req = sprayclient->createDesprayRequest();
+    setMtlsSecret(req->rpc());
     req->setSourceLogicalName(srcname);
     StringBuffer extrainfo;
     if(isEmptyString(dstxml))
@@ -818,7 +832,7 @@ int CDfuPlusHelper::despray()
     SocketEndpoint localep;
     StringBuffer localeps;
     if (isEmptyString(dstplane) && checkLocalDaFileSvr(dstip,localep))
-        dstip = localep.getUrlStr(localeps).str();
+        dstip = localep.getEndpointHostText(localeps).str();
     Owned<IClientDesprayResponse> result = sprayclient->Despray(req);
     const char* wuid = result->getWuid();
     if(isEmptyString(wuid))
@@ -858,6 +872,7 @@ int CDfuPlusHelper::copy()
     info("\nCopying from %s to %s\n", srcname, dstname);
 
     Owned<IClientCopy> req = sprayclient->createCopyRequest();
+    setMtlsSecret(req->rpc());
     req->setSourceLogicalName(srcname);
     req->setDestLogicalName(dstname);
     if(dstcluster != nullptr)
@@ -915,6 +930,8 @@ int CDfuPlusHelper::copy()
 
     if(globals->hasProp("expireDays"))
         req->setExpireDays(globals->getPropInt("expireDays"));
+    if(globals->hasProp("ensure"))
+        req->setEnsure(globals->getPropBool("ensure"));
 
     Owned<IClientCopyResponse> result = sprayclient->Copy(req);
     const char* wuid = result->getResult();
@@ -957,6 +974,7 @@ int CDfuPlusHelper::copysuper()
     info("\nCopying superfile from %s to %s\n", srcname, dstname);
 
     Owned<IClientCopy> req = sprayclient->createCopyRequest();
+    setMtlsSecret(req->rpc());
     req->setSuperCopy(true);
     req->setSourceLogicalName(srcname);
     req->setDestLogicalName(dstname);
@@ -1039,6 +1057,7 @@ int CDfuPlusHelper::monitor()
 
 
     Owned<IClientDfuMonitorRequest> req = sprayclient->createDfuMonitorRequest();
+    setMtlsSecret(req->rpc());
     if (eventname)
         req->setEventName(eventname);
     if (lfn)
@@ -1138,6 +1157,7 @@ int CDfuPlusHelper::remove()
         throw MakeStringException(-1, "file name not specified");
 
     Owned<IClientDFUArrayActionRequest> req = dfuclient->createDFUArrayActionRequest();
+    setMtlsSecret(req->rpc());
     req->setType("Delete");
     req->setLogicalFiles(files);
 
@@ -1207,6 +1227,7 @@ int CDfuPlusHelper::rename()
     info("\nRenaming from %s to %s\n", srcname, dstname);
 
     Owned<IClientRename> req = sprayclient->createRenameRequest();
+    setMtlsSecret(req->rpc());
     req->setSrcname(srcname);
     req->setDstname(dstname);
 
@@ -1323,6 +1344,7 @@ int CDfuPlusHelper::superfile(const char* action)
         }
 
         Owned<IClientSuperfileActionRequest> req = dfuclient->createSuperfileActionRequest();
+        setMtlsSecret(req->rpc());
         req->setAction(action);
         req->setSuperfile(superfile);
         req->setSubfiles(subfiles);
@@ -1352,6 +1374,7 @@ int CDfuPlusHelper::superfile(const char* action)
     else if(stricmp(action, "list") == 0)
     {
         Owned<IClientSuperfileListRequest> req = dfuclient->createSuperfileListRequest();
+        setMtlsSecret(req->rpc());
         req->setSuperfile(superfile);
         Owned<IClientSuperfileListResponse> resp = dfuclient->SuperfileList(req);
 
@@ -1381,6 +1404,7 @@ int CDfuPlusHelper::savexml()
         throw MakeStringException(-1, "srcname not specified");
 
     Owned<IClientSavexmlRequest> req = dfuclient->createSavexmlRequest();
+    setMtlsSecret(req->rpc());
     req->setName(lfn);
 
     Owned<IClientSavexmlResponse> resp = dfuclient->Savexml(req);
@@ -1448,6 +1472,7 @@ int CDfuPlusHelper::add()
         const char* dstcluster = globals->queryProp("dstcluster");
 
         Owned<IClientAddRequest> req = dfuclient->createAddRequest();
+        setMtlsSecret(req->rpc());
         req->setDstname(lfn);
         req->setXmlmap(xmlbuf);
         req->setDstcluster(dstcluster);
@@ -1466,6 +1491,7 @@ int CDfuPlusHelper::add()
     else
     {
         Owned<IClientAddRemoteRequest> req = dfuclient->createAddRemoteRequest();
+        setMtlsSecret(req->rpc());
         req->setDstname(lfn);
         req->setSrcname(srcname);
         req->setSrcdali(srcdali);
@@ -1490,61 +1516,114 @@ int CDfuPlusHelper::add()
     return 0;
 }
 
-
+bool isDfuPublisherWuid(const char *wuid)
+{
+    return (!isEmptyString(wuid) && 'P'==*wuid && !strchr(wuid, 'T'));
+}
 int CDfuPlusHelper::status()
 {
     const char* wuid = globals->queryProp("wuid");
     if(!wuid || !*wuid)
         throw MakeStringException(-1, "wuid not specified");
+    int limit = globals->getPropInt("limit", -1);
+    if (isDfuPublisherWuid(wuid))
+        return reportDfuPublisherStatus(wuid, limit);
+    return reportDfuWorkunitStatus(wuid, false, true);
+}
 
-    Owned<IClientGetDFUWorkunit> req = sprayclient->createGetDFUWorkunitRequest();
-    req->setWuid(wuid);
-
-    Owned<IClientGetDFUWorkunitResponse> resp = sprayclient->GetDFUWorkunit(req);
-    const IMultiException* excep = &resp->getExceptions();
-    if(excep != nullptr &&  excep->ordinality() > 0)
+int CDfuPlusHelper::reportDfuWorkunitStatus(IConstDFUWorkunit & dfuwu, bool jobinfo, bool summarizeFinished)
+{
+    const char *wuid = dfuwu.getID();
+    if (isEmptyString(wuid))
     {
-        StringBuffer errmsg;
-        excep->errorMessage(errmsg);
-        error("%s\n", errmsg.str());
+        info("Workunit entry with missing wuid found\n");
         return -1;
     }
 
-    IConstDFUWorkunit & dfuwu = resp->getResult();
-
+    StringBuffer jobinfoText;
+    if (jobinfo && dfuwu.getJobName())
+        jobinfoText.appendf(" [%s]", dfuwu.getJobName());
     switch(dfuwu.getState())
     {
         case DFUstate_unknown:
-            progress("%s status: unknown\n", wuid);
+            progress("%s status: unknown%s\n", wuid, jobinfoText.str());
             break;
         case DFUstate_scheduled:
-            progress("%s status: scheduled\n", wuid);
+            progress("%s status: scheduled%s\n", wuid, jobinfoText.str());
             break;
         case DFUstate_queued:
-            progress("%s status: queued\n", wuid);
+            progress("%s status: queued%s\n", wuid, jobinfoText.str());
             break;
         case DFUstate_started:
-            progress("%s\n", dfuwu.getProgressMessage());
+            if (jobinfo)
+            {
+                const char *prgmsg = dfuwu.getProgressMessage();
+                if (isEmptyString(prgmsg))
+                    prgmsg = "status: started"; //older server
+                progress("%s %s%s\n", wuid, prgmsg, jobinfoText.str());
+            }
+            else
+                progress("%s\n", dfuwu.getProgressMessage());
             break;
 
         case DFUstate_aborted:
-            info("%s status: aborted\n", wuid);
+            info("%s status: aborted%s\n", wuid, jobinfoText.str());
             return -1;
 
         case DFUstate_failed:
-            info("%s status: failed - %s\n", wuid, dfuwu.getSummaryMessage());
-            return -1;
-
+            {
+                const char *msg = dfuwu.getSummaryMessage();
+                info("%s status: failed - %s%s\n", wuid, msg ? msg : "", jobinfoText.str());
+                return -1;
+            }
         case DFUstate_finished:
-            info("%s Finished\n", wuid);
-            progress("%s\n", dfuwu.getSummaryMessage());
+            info("%s Finished%s\n", wuid, jobinfoText.str());
+            if (summarizeFinished && dfuwu.getSummaryMessage())
+                progress("%s\n", dfuwu.getSummaryMessage());
             break;
         default:
             error("%s is in an unrecognizable state - %d\n", wuid, dfuwu.getState());
     }
-
     return 0;
+}
 
+int CDfuPlusHelper::reportDfuWorkunitStatus(const char *wuid, bool jobinfo, bool summarizeFinished)
+{
+    Owned<IClientGetDFUWorkunit> req = sprayclient->createGetDFUWorkunitRequest();
+    setMtlsSecret(req->rpc());
+    req->setWuid(wuid);
+
+    Owned<IClientGetDFUWorkunitResponse> resp = sprayclient->GetDFUWorkunit(req);
+    if (outputServiceCallExceptions(resp.get()))
+        return -1;
+
+    return reportDfuWorkunitStatus(resp->getResult(), jobinfo, summarizeFinished);
+}
+
+int CDfuPlusHelper::reportDfuPublisherStatus(const char *wuid, int limit)
+{
+    //First show the overall status of the parent workunit
+    reportDfuWorkunitStatus(wuid, true, false);
+    //limit 0 means only show parent status
+    if (limit==0)
+        return 0;
+
+    info("----------------\n");
+
+    Owned<IClientGetDFUWorkunits> req = sprayclient->createGetDFUWorkunitsRequest();
+    setMtlsSecret(req->rpc());
+    req->setPublisherWuid(wuid);
+    req->setPageSize((limit > 0) ? limit : 1000);
+    req->setIncludeProgressMessages(true);
+
+    Owned<IClientGetDFUWorkunitsResponse> resp = sprayclient->GetDFUWorkunits(req);
+    if (outputServiceCallExceptions(resp.get()))
+        return -1;
+
+    IArrayOf<IConstDFUWorkunit> & dfuwus = resp->getResults();
+    ForEachItemIn(i, dfuwus)
+        reportDfuWorkunitStatus(dfuwus.item(i), true, false);
+    return 0;
 }
 
 int CDfuPlusHelper::abort()
@@ -1554,6 +1633,7 @@ int CDfuPlusHelper::abort()
         throw MakeStringException(-1, "wuid not specified");
 
     Owned<IClientAbortDFUWorkunit> req = sprayclient->createAbortDFUWorkunitRequest();
+    setMtlsSecret(req->rpc());
     req->setWuid(wuid);
 
     Owned<IClientAbortDFUWorkunitResponse> resp = sprayclient->AbortDFUWorkunit(req);
@@ -1601,6 +1681,7 @@ int CDfuPlusHelper::listhistory()
         throw MakeStringException(-1, "srcname not specified");
 
     Owned<IClientListHistoryRequest> req = dfuclient->createListHistoryRequest();
+    setMtlsSecret(req->rpc());
     req->setName(lfn);
 
     Owned<IClientListHistoryResponse> resp = dfuclient->ListHistory(req);
@@ -1791,6 +1872,7 @@ int CDfuPlusHelper::erasehistory()
         // Get and backup file history before erased.
         // If any problem happens during the backup the history remain intact.
         Owned<IClientListHistoryRequest> req = dfuclient->createListHistoryRequest();
+        setMtlsSecret(req->rpc());
         req->setName(lfn);
 
         Owned<IClientListHistoryResponse> resp = dfuclient->ListHistory(req);
@@ -1833,6 +1915,7 @@ int CDfuPlusHelper::erasehistory()
     }
 
     Owned<IClientEraseHistoryRequest> req = dfuclient->createEraseHistoryRequest();
+    setMtlsSecret(req->rpc());
     req->setName(lfn);
 
     Owned<IClientEraseHistoryResponse> resp = dfuclient->EraseHistory(req);
@@ -1858,6 +1941,7 @@ int CDfuPlusHelper::resubmit()
         throw MakeStringException(-1, "wuid not specified");
 
     Owned<IClientSubmitDFUWorkunit> req = sprayclient->createSubmitDFUWorkunitRequest();
+    setMtlsSecret(req->rpc());
     req->setWuid(wuid);
 
     Owned<IClientSubmitDFUWorkunitResponse> resp = sprayclient->SubmitDFUWorkunit(req);
@@ -1883,6 +1967,7 @@ int CDfuPlusHelper::waitToFinish(const char* wuid)
         return 0;
 
     Owned<IClientGetDFUWorkunit> req = sprayclient->createGetDFUWorkunitRequest();
+    setMtlsSecret(req->rpc());
     req->setWuid(wuid);
 
     int wait_cycle = 10;
@@ -1957,6 +2042,7 @@ int CDfuPlusHelper::updatejobname(const char* wuid, const char* jobname)
         throw MakeStringException(-1, "jobname not specified");
 
     Owned<IClientGetDFUWorkunit> req = sprayclient->createGetDFUWorkunitRequest();
+    setMtlsSecret(req->rpc());
     req->setWuid(wuid);
 
     Owned<IClientGetDFUWorkunitResponse> resp = sprayclient->GetDFUWorkunit(req);
@@ -1974,6 +2060,7 @@ int CDfuPlusHelper::updatejobname(const char* wuid, const char* jobname)
     dfuwu.setJobName(jobname);
 
     Owned<IClientUpdateDFUWorkunit> updatereq = sprayclient->createUpdateDFUWorkunitRequest();
+    setMtlsSecret(req->rpc());
     updatereq->setWu(dfuwu);
     updatereq->setStateOrig(dfuwu.getState());
     sprayclient->UpdateDFUWorkunit(updatereq);

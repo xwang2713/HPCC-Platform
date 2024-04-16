@@ -71,6 +71,8 @@
 #include "zcrypt.hpp"
 #endif
 
+#include "ws_dfsclient.hpp"
+
 //#define TEST_LEGACY_DEPENDENCY_CODE
 
 #define INIFILE "eclcc.ini"
@@ -211,7 +213,7 @@ public:
     Linked<IFile> inputFile;
     Linked<IPropertyTree> archive;
     Linked<IWorkUnit> wu;
-    Owned<IEclRepository> dataServer;  // A member which can be cleared after parsing the query
+    Owned<IEclPackage> dataServer;  // A member which can be cleared after parsing the query
     OwnedHqlExpr query;  // parsed query - cleared when generating to free memory
     StringAttr eclVersion;
     const char * outputFilename;
@@ -251,6 +253,13 @@ public:
 #ifdef _CONTAINERIZED
         setSecurityOptions();
 #endif
+        const char * defaultGitPrefix = getenv("ECLCC_DEFAULT_GITPREFIX");
+        if (isEmptyString(defaultGitPrefix))
+            defaultGitPrefix = "https://github.com/";
+        optDefaultGitPrefix.set(defaultGitPrefix);
+        const char * gitUser = getenv("HPCC_GIT_USERNAME");
+        if (!isEmptyString(gitUser))
+            optGitUser.set(gitUser);
     }
     ~EclCC()
     {
@@ -298,24 +307,23 @@ protected:
     bool isWithinPath(const char * sourcePathname, const char * searchPath);
     void getComplexity(IWorkUnit *wu, IHqlExpression * query, IErrorReceiver & errorProcessor);
     void outputXmlToOutputFile(EclCompileInstance & instance, IPropertyTree * xml);
-    void processSingleQuery(EclCompileInstance & instance,
-                               IFileContents * queryContents,
-                               const char * queryAttributePath);
+    void processSingleQuery(const EclRepositoryManager & localRepositoryManager,
+                            EclCompileInstance & instance,
+                            IFileContents * queryContents,
+                            const char * queryAttributePath);
     void processXmlFile(EclCompileInstance & instance, const char *archiveXML);
     void processFile(EclCompileInstance & info);
-    void processReference(EclCompileInstance & instance, const char * queryAttributePath);
+    void processReference(EclCompileInstance & instance, const char * queryAttributePath, const char * queryAttributePackage);
     void processBatchFiles();
-    void processDefinitions(EclRepositoryArray & repositories);
+    void processDefinitions(EclRepositoryManager & target);
+    void recordPackagesUsed(IWorkUnit * wu, const EclRepositoryManager & manager);
     void reportCompileErrors(IErrorReceiver & errorProcessor, const char * processName);
     void setDebugOption(const char * name, bool value);
     void traceError(char const * format, ...) __attribute__((format(printf, 2, 3)));
     void usage();
 
 protected:
-    Owned<IEclRepository> pluginsRepository;
-    Owned<IEclRepository> libraryRepository;
-    Owned<IEclRepository> bundlesRepository;
-    Owned<IEclRepository> includeRepository;
+    EclRepositoryManager repositoryManager;
     mutable CriticalSection dfsCrit;
     mutable MapStringToMyClass<IHqlExpression> fileCache;
     mutable MapStringTo<int> fileMissCache;  // values are the error code
@@ -327,17 +335,24 @@ protected:
     StringBuffer hooksPath;
     StringBuffer eclLibraryPath;
     StringBuffer eclBundlePath;
+    StringBuffer eclRepoPath;
     StringBuffer stdIncludeLibraryPath;
     StringBuffer includeLibraryPath;
     StringBuffer compilerPath;
     StringBuffer libraryPath;
+    StringBuffer querySearchPath;
 
     StringBuffer cclogFilename;
     StringAttr optLogfile;
     StringAttr optIniFilename;
     StringAttr optOutputDirectory;
     StringAttr optOutputFilename;
-    StringAttr optQueryRepositoryReference;
+    StringAttr optQueryMainAttribute;
+    StringAttr optDefaultRepo;
+    StringAttr optDefaultRepoVersion;
+    bool optExplicitMainPackage = false;
+    StringBuffer optQueryMainPackage;
+    StringAttr optQueryMainPackageVersion;
     StringAttr optComponentName;
     StringAttr optDFS;
     StringAttr optCluster;
@@ -359,6 +374,7 @@ protected:
     StringArray inputFileNames;
     StringArray applicationOptions;
     StringArray debugOptions;
+    StringArray repoMappings;
     StringArray definitions;
     StringArray warningMappings;
     StringArray compileOptions;
@@ -370,6 +386,10 @@ protected:
     StringArray deniedPermissions;
     StringAttr optMetaLocation;
     StringBuffer neverSimplifyRegEx;
+    StringAttr optDefaultGitPrefix;
+    StringAttr optGitUser;
+    StringAttr optGitPasswordPath;
+
     bool defaultAllowed[2];
 
     ClusterType optTargetClusterType = RoxieCluster;
@@ -377,7 +397,6 @@ protected:
     unsigned optThreads = 0;
     unsigned batchPart = 0;
     unsigned batchSplit = 1;
-    unsigned optLogDetail = 0;
     unsigned optMonitorInterval = 60;
     unsigned optMaxErrors = 0;
     unsigned optDaliTimeout = 30000;
@@ -422,6 +441,11 @@ protected:
     bool optIgnoreCache = false;
     bool optIgnoreSimplified = false;
     bool optExtraStats = false;
+    bool optPruneArchive = true;
+    bool optFetchRepos = true;
+    bool optUpdateRepos = true;
+    bool optCleanInvalidRepos = true;
+    bool optCleanRepos = false;
 
     mutable bool daliConnected = false;
     mutable bool disconnectReported = false;
@@ -522,7 +546,7 @@ int main(int argc, const char *argv[])
     unsigned exitCode = 0;
     try
     {
-        configuration.setown(loadConfiguration(defaultYaml, argv, "eclccserver", "ECLCCSERVER", nullptr, nullptr, nullptr, false));
+        configuration.setown(loadConfiguration(defaultYaml, argv, "eclccserver", "ECLCCSERVER", "eclccserver.xml", nullptr, nullptr, false));
 
 #ifndef _CONTAINERIZED
         // Turn logging down (we turn it back up if -v option seen)
@@ -530,7 +554,7 @@ int main(int argc, const char *argv[])
         queryLogMsgManager()->changeMonitorFilter(queryStderrLogMsgHandler(), filter);
 #else
         setupContainerizedLogMsgHandler();
-        bool useChildProcesses = configuration->getPropInt("@useChildProcesses", false);
+        bool useChildProcesses = configuration->getPropBool("@useChildProcesses", false);
         if (!useChildProcesses)  // If using eclcc in separate container (useChildProcesses==false),
         {                        // it will need to create a directory for gpg and import keys from secrets
             queryCodeSigner().initForContainer();
@@ -602,8 +626,11 @@ void EclCC::loadManifestOptions()
             optLegacyWhen = ecl->getPropBool("@legacyWhen", optLegacy);
         }
 
-        if (!optQueryRepositoryReference && ecl->hasProp("@main"))
-            optQueryRepositoryReference.set(ecl->queryProp("@main"));
+        if (!optQueryMainAttribute && ecl->hasProp("@main"))
+        {
+            optQueryMainAttribute.set(ecl->queryProp("@main"));
+            optQueryMainPackage.set(ecl->queryProp("@package"));
+        }
 
         if (ecl->hasProp("@targetPlatform"))
             setTargetPlatformOption(ecl->queryProp("@targetPlatform"), optTargetClusterType);
@@ -669,6 +696,7 @@ void EclCC::loadOptions()
         extractOption(hooksPath, globals, "HPCC_FILEHOOKS_PATH", "filehooks", syspath, "filehooks");
         extractOption(eclLibraryPath, globals, "ECLCC_ECLLIBRARY_PATH", "eclLibrariesPath", syspath, "share" PATHSEPSTR "ecllibrary" PATHSEPSTR);
         extractOption(eclBundlePath, globals, "ECLCC_ECLBUNDLE_PATH", "eclBundlesPath", homepath, PATHSEPSTR "bundles" PATHSEPSTR);
+        extractOption(eclRepoPath, globals, "ECLCC_ECLREPO_PATH", "eclRepoPath", homepath, PATHSEPSTR "repos" PATHSEPSTR);
     }
     extractOption(stdIncludeLibraryPath, globals, "ECLCC_ECLINCLUDE_PATH", "eclIncludePath", ".", NULL);
 
@@ -676,7 +704,7 @@ void EclCC::loadOptions()
     {
         Owned<ILogMsgHandler> handler = getHandleLogMsgHandler(stdout);
         handler->setMessageFields(MSGFIELD_STANDARD);
-        Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_all, MSGCLS_all, optLogDetail ? optLogDetail : DefaultDetail, true);
+        Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_all, MSGCLS_all, DefaultDetail, true);
         queryLogMsgManager()->addMonitor(handler, filter);
     }
 #ifndef _CONTAINERIZED
@@ -690,7 +718,7 @@ void EclCC::loadOptions()
             if (optLogfile.length())
             {
                 StringBuffer lf;
-                openLogFile(lf, optLogfile, optLogDetail, false);
+                openLogFile(lf, optLogfile, 0, false);
                 if (logVerbose)
                     fprintf(stdout, "Logging to '%s'\n",lf.str());
             }
@@ -824,12 +852,9 @@ void EclCC::reportCompileErrors(IErrorReceiver & errorProcessor, const char * pr
 
 //=========================================================================================
 
-void gatherResourceManifestFilenames(EclCompileInstance & instance, StringArray &filenames)
+static void gatherResourceManifestFilenames(IPropertyTree * tree, const char * tag, StringArray &filenames)
 {
-    IPropertyTree *tree = (instance.archive) ? instance.archive.get() : instance.globalDependTree.get();
-    if (!tree)
-        return;
-    Owned<IPropertyTreeIterator> iter = tree->getElements((instance.archive) ? "Module/Attribute" : "Attribute");
+    Owned<IPropertyTreeIterator> iter = tree->getElements(tag);
     ForEach(*iter)
     {
         StringBuffer filename(iter->query().queryProp("@sourcePath"));
@@ -838,9 +863,28 @@ void gatherResourceManifestFilenames(EclCompileInstance & instance, StringArray 
             getFullFileName(filename, true).append(".manifest");
             if (filenames.contains(filename))
                 continue;
-            if (checkFileExists(filename))
+            Owned<IFile> manifest = createIFile(filename);
+            if (manifest->exists())
                 filenames.append(filename);
         }
+    }
+
+}
+
+void gatherResourceManifestFilenames(EclCompileInstance & instance, StringArray &filenames)
+{
+    if (instance.archive)
+    {
+        gatherResourceManifestFilenames(instance.archive, "Module/Attribute", filenames);
+
+        //Gather resources from dependent packages
+        Owned<IPropertyTreeIterator> packageIter = instance.archive->getElements("Archive");
+        ForEach(*packageIter)
+            gatherResourceManifestFilenames(&packageIter->query(), "Module/Attribute", filenames);
+    }
+    else if (instance.globalDependTree)
+    {
+        gatherResourceManifestFilenames(instance.globalDependTree, "Attribute", filenames);
     }
 }
 
@@ -885,7 +929,8 @@ void EclCC::instantECL(EclCompileInstance & instance, IWorkUnit *wu, const char 
                     }
                     else
                     {
-                        generator->addArchiveAsResource(buf);
+                        if (!instance.wu->getDebugValueBool("obfuscateOutput", false))
+                            generator->addArchiveAsResource(buf);
                     }
                 }
                 bool generateOk = generator->processQuery(instance.query, target);  // NB: May clear instance.query
@@ -977,7 +1022,7 @@ void EclCC::instantECL(EclCompileInstance & instance, IWorkUnit *wu, const char 
 void EclCC::getComplexity(IWorkUnit *wu, IHqlExpression * query, IErrorReceiver & errs)
 {
     double complexity = getECLcomplexity(query, &errs, wu, optTargetClusterType);
-    LOG(MCstats, unknownJob, "Complexity = %g", complexity);
+    LOG(MCoperatorProgress, "Complexity = %g", complexity);
 }
 
 //=========================================================================================
@@ -1158,7 +1203,8 @@ void EclCC::evaluateResult(EclCompileInstance & instance)
     printf("%s\n", out.str());
 }
 
-void EclCC::processSingleQuery(EclCompileInstance & instance,
+void EclCC::processSingleQuery(const EclRepositoryManager & localRepositoryManager,
+                               EclCompileInstance & instance,
                                IFileContents * queryContents,
                                const char * queryAttributePath)
 {
@@ -1206,6 +1252,12 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     }
 
     IErrorReceiver & errorProcessor = *severityMapper;
+    //Associate the error handler - so that failures to fetch from git can be reported as errors, but also mapped
+    //to warnings to ensure that automated tasks do not fail because the could not connect to git.
+    localRepositoryManager.setErrorReceiver(&errorProcessor);
+    //Ensure the error processor is cleared up when we exit this function
+    COnScopeExit scoped([&]() { localRepositoryManager.setErrorReceiver(NULL); });
+
     //All dlls/exes are essentially cloneable because you may be running multiple instances at once
     //The only exception would be a dll created for a one-time query.  (Currently handled by eclserver.)
     instance.wu->setCloneable(true);
@@ -1214,6 +1266,7 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     applyDebugOptions(instance.wu);
     applyApplicationOptions(instance.wu);
 
+    optTargetCompiler = queryCompilerType(instance.wu, optTargetCompiler);
     if (optTargetCompiler != DEFAULT_COMPILER)
         instance.wu->setDebugValue("targetCompiler", compilerTypeText[optTargetCompiler], true);
 
@@ -1226,8 +1279,8 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     bool optGatherDiskStats = instance.wu->getDebugValueBool("gatherEclccDiskStats", false);
     size32_t prevErrs = errorProcessor.errCount();
     cycle_t startCycles = get_cycles_now();
-    CpuInfo systemStartTime(false, true);
-    CpuInfo processStartTime(true, false);
+    SystemInfo systemStartTime(ReadAllInfo);
+    ProcessInfo processStartTime(ReadAllInfo);
 
     //Avoid creating the OsDiskStats object if not gathering timings to avoid unnecessary initialisation
     OwnedPtr<OsDiskStats> systemIoStartInfo;
@@ -1235,7 +1288,7 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
         systemIoStartInfo.setown(new OsDiskStats(true));
 
     if (optCompileBatchOut.isEmpty())
-        addTimeStamp(instance.wu, SSTcompilestage, "compile", StWhenStarted);
+        addTimeStamp(instance.wu, SSToperation, ">compile", StWhenStarted);
     const char * sourcePathname = queryContents ? str(queryContents->querySourcePath()) : NULL;
     const char * defaultErrorPathname = sourcePathname ? sourcePathname : queryAttributePath;
 
@@ -1273,8 +1326,10 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
         instance.archive->setPropBool("@legacyWhen", instance.legacyWhen);
         if (withinRepository)
         {
+            IEclPackage * package = instance.dataServer.get();
             instance.archive->setProp("Query", "");
             instance.archive->setProp("Query/@attributePath", queryAttributePath);
+            instance.archive->setProp("Query/@package", package->queryPackageName());
         }
     }
 
@@ -1298,7 +1353,7 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     {
         //Minimize the scope of the parse context to reduce lifetime of cached items.
         WuStatisticTarget statsTarget(instance.wu, "eclcc");
-        HqlParseContext parseCtx(instance.dataServer, &instance, instance.archive, statsTarget);
+        HqlParseContext parseCtx(&instance, instance.archive, statsTarget);
         parseCtx.cache = cache;
         parseCtx.optionHash = optionHash;
         if (optSyntax)
@@ -1362,14 +1417,14 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
         if (exportDependencies || optMetaLocation)
             parseCtx.nestedDependTree.setown(createPTree("Dependencies", ipt_fast));
 
-        addTimeStamp(instance.wu, SSTcompilestage, "compile:parse", StWhenStarted);
+        addTimeStamp(instance.wu, SSToperation, ">compile:>parse", StWhenStarted);
         try
         {
-            HqlLookupContext ctx(parseCtx, &errorProcessor);
+            HqlLookupContext ctx(parseCtx, &errorProcessor, instance.dataServer);
 
             if (withinRepository)
             {
-                instance.query.setown(getResolveAttributeFullPath(queryAttributePath, LSFpublic, ctx));
+                instance.query.setown(getResolveAttributeFullPath(queryAttributePath, LSFpublic, ctx, instance.dataServer));
                 if (!instance.query && !syntaxChecking && (errorProcessor.errCount() == prevErrs))
                 {
                     StringBuffer msg;
@@ -1391,6 +1446,10 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
                         p += 3;
                     instance.archive->setProp("Query", p );
                     instance.archive->setProp("Query/@originalFilename", sourcePathname);
+
+                    const char * defaultPackageName = instance.dataServer->queryPackageName();
+                    if (defaultPackageName)
+                        instance.archive->setProp("Query/@package", defaultPackageName);
                 }
             }
 
@@ -1411,11 +1470,14 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
             unsigned __int64 parseTimeNs = cycle_to_nanosec(get_cycles_now() - startCycles);
             instance.stats.parseTime = (unsigned)nanoToMilli(parseTimeNs);
 
-            updateWorkunitStat(instance.wu, SSTcompilestage, "compile:parse", StTimeElapsed, NULL, parseTimeNs);
+            updateWorkunitStat(instance.wu, SSToperation, ">compile:>parse", StTimeElapsed, NULL, parseTimeNs);
+            stat_type sourceDownloadTime = localRepositoryManager.getStatistic(StTimeElapsed);
+            if (sourceDownloadTime)
+                updateWorkunitStat(instance.wu, SSToperation, ">compile:>parse:>download", StTimeElapsed, NULL, sourceDownloadTime);
 
             if (optExtraStats)
             {
-                updateWorkunitStat(instance.wu, SSTcompilestage, "compile:cache", StNumAttribsProcessed, NULL, parseCtx.numAttribsProcessed);
+                updateWorkunitStat(instance.wu, SSToperation, ">compile:>parse", StNumAttribsProcessed, NULL, parseCtx.numAttribsProcessed);
             }
 
             if (exportDependencies)
@@ -1451,9 +1513,14 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
         {
             StringBuffer s;
             e->errorMessage(s);
-            errorProcessor.reportError(3, s.str(), defaultErrorPathname, 1, 0, 0);
+            unsigned errorCode = e->errorCode();
+            if ((errorCode < HQL_ERROR_START) || (errorCode > HQL_ERROR_END))
+                errorCode = ERR_UNKNOWN_EXCEPTION;
+            errorProcessor.reportError(errorCode, s.str(), defaultErrorPathname, 1, 0, 0);
             e->Release();
         }
+
+        recordPackagesUsed(instance.wu, localRepositoryManager);
     }
 
     //Free up the repository (and any cached expressions) as soon as the expression has been parsed
@@ -1512,43 +1579,45 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     }
 
     unsigned __int64 totalTimeNs = cycle_to_nanosec(get_cycles_now() - startCycles);
-    CpuInfo systemFinishTime(false, true);
-    CpuInfo processFinishTime(true, false);
+    SystemInfo systemFinishTime(ReadAllInfo);
+    ProcessInfo processFinishTime(ReadAllInfo);
     OwnedPtr<OsDiskStats> systemIoFinishInfo;
     if (optGatherDiskStats)
         systemIoFinishInfo.setown(new OsDiskStats(true));
     instance.stats.generateTime = (unsigned)nanoToMilli(totalTimeNs) - instance.stats.parseTime;
-    const char *scopeName = optCompileBatchOut.isEmpty() ? "compile" : "compile:generate";
+    const char *scopeName = optCompileBatchOut.isEmpty() ? ">compile" : ">compile:>generate";
     if (optCompileBatchOut.isEmpty())
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StTimeElapsed, NULL, totalTimeNs);
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StTimeElapsed, NULL, totalTimeNs);
 
     const cost_type cost = money2cost_type(calcCost(getMachineCostRate(), nanoToMilli(totalTimeNs)));
     if (cost)
-        instance.wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTcompilestage, scopeName, StCostExecute, NULL, cost, 1, 0, StatsMergeReplace);
+        instance.wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSToperation, scopeName, StCostCompile, NULL, cost, 1, 0, StatsMergeReplace);
 
     if (systemFinishTime.getTotal())
     {
-        CpuInfo systemElapsed = systemFinishTime - systemStartTime;
-        CpuInfo processElapsed = processFinishTime - processStartTime;
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StNumSysContextSwitches, NULL, systemElapsed.getNumContextSwitches());
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StTimeOsUser, NULL, systemElapsed.getUserNs());
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StTimeOsSystem, NULL, systemElapsed.getSystemNs());
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StTimeOsTotal, NULL, systemElapsed.getTotalNs());
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StTimeUser, NULL, processElapsed.getUserNs());
-        updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StTimeSystem, NULL, processElapsed.getSystemNs());
+        SystemProcessInfo systemElapsed = systemFinishTime - systemStartTime;
+        SystemProcessInfo processElapsed = processFinishTime - processStartTime;
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StNumSysContextSwitches, NULL, systemElapsed.getNumContextSwitches());
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StTimeOsUser, NULL, systemElapsed.getUserNs());
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StTimeOsSystem, NULL, systemElapsed.getSystemNs());
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StTimeOsTotal, NULL, systemElapsed.getTotalNs());
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StTimeUser, NULL, processElapsed.getUserNs());
+        updateWorkunitStat(instance.wu, SSToperation, scopeName, StTimeSystem, NULL, processElapsed.getSystemNs());
+        if (processFinishTime.getPeakResidentMemory())
+            updateWorkunitStat(instance.wu, SSToperation, scopeName, StSizePeakMemory, NULL, processFinishTime.getPeakResidentMemory());
     }
 
     if (optGatherDiskStats)
     {
         const BlockIoStats summaryIo = systemIoFinishInfo->querySummaryStats() - systemIoStartInfo->querySummaryStats();
         if (summaryIo.rd_sectors)
-            updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StSizeOsDiskRead, NULL, summaryIo.rd_sectors * summaryIo.getSectorSize());
+            updateWorkunitStat(instance.wu, SSToperation, scopeName, StSizeDiskRead, NULL, summaryIo.rd_sectors * summaryIo.getSectorSize());
         if (summaryIo.wr_sectors)
-            updateWorkunitStat(instance.wu, SSTcompilestage, scopeName, StSizeOsDiskWrite, NULL, summaryIo.wr_sectors * summaryIo.getSectorSize());
+            updateWorkunitStat(instance.wu, SSToperation, scopeName, StSizeDiskWrite, NULL, summaryIo.wr_sectors * summaryIo.getSectorSize());
     }
 }
 
-void EclCC::processDefinitions(EclRepositoryArray & repositories)
+void EclCC::processDefinitions(EclRepositoryManager & target)
 {
     ForEachItemIn(iDef, definitions)
     {
@@ -1585,7 +1654,7 @@ void EclCC::processDefinitions(EclRepositoryArray & repositories)
         //Create a repository with just that attribute.
         timestamp_type ts = 1; // Use a non zero timestamp so the value can be cached.  Changes are spotted through the optionHash
         Owned<IFileContents> contents = createFileContentsFromText(value, NULL, false, NULL, ts);
-        repositories.append(*createSingleDefinitionEclRepository(module, attr, contents));
+        target.addSingleDefinitionEclRepository(module, attr, contents, true);
     }
 }
 
@@ -1627,9 +1696,14 @@ void EclCC::processXmlFile(EclCompileInstance & instance, const char *archiveXML
 
     const char * queryText = archiveTree->queryProp("Query");
     const char * queryAttributePath = archiveTree->queryProp("Query/@attributePath");
+    const char * queryAttributePackage = archiveTree->queryProp("Query/@package");
+
     //Takes precedence over an entry in the archive - so you can submit parts of an archive.
-    if (optQueryRepositoryReference)
-        queryAttributePath = optQueryRepositoryReference;
+    if (optQueryMainAttribute)
+    {
+        queryAttributePath = optQueryMainAttribute;
+        queryAttributePackage = optQueryMainPackage;
+    }
 
     //The legacy mode (if specified) in the archive takes precedence - it needs to match to compile.
     instance.legacyImport = archiveTree->getPropBool("@legacyMode", instance.legacyImport);
@@ -1645,28 +1719,11 @@ void EclCC::processXmlFile(EclCompileInstance & instance, const char *archiveXML
     if (optCheckEclVersion)
         instance.checkEclVersionCompatible();
 
-    Owned<IEclSourceCollection> archiveCollection;
-    if (archiveTree->getPropBool("@testRemoteInterface", false))
-    {
-        //This code is purely here for regression testing some of the classes used in the enterprise version.
-        Owned<IXmlEclRepository> xmlRepository = createArchiveXmlEclRepository(archiveTree);
-        archiveCollection.setown(createRemoteXmlEclCollection(NULL, *xmlRepository, NULL, false));
-        archiveCollection->checkCacheValid();
-    }
-    else
-        archiveCollection.setown(createArchiveEclCollection(archiveTree));
-
-    EclRepositoryArray repositories;
-    //Items first in the list have priority -Dxxx=y overrides all
-    processDefinitions(repositories);
-    repositories.append(*LINK(pluginsRepository));
-
-    //Default to using the local system libraries so that updates are kept in sync with the plugins
-    bool useLocalSystemLibraries = archiveTree->getPropBool("@useLocalSystemLibraries", true);
-    if (useLocalSystemLibraries)
-        repositories.append(*LINK(libraryRepository));
-
+    EclRepositoryManager localRepositoryManager;
+    processDefinitions(localRepositoryManager);
+    localRepositoryManager.inherit(repositoryManager); // Definitions, plugins, std library etc.
     Owned<IFileContents> contents;
+    Owned<IEclPackage> mainPackage;
     StringBuffer fullPath; // Here so it doesn't get freed when leaving the else block
 
     if (queryText || queryAttributePath)
@@ -1677,7 +1734,7 @@ void EclCC::processXmlFile(EclCompileInstance & instance, const char *archiveXML
         if (queryAttributePath && queryText && *queryText)
         {
             Owned<IEclSourceCollection> inputFileCollection = createSingleDefinitionEclCollection(queryAttributePath, contents);
-            repositories.append(*createRepository(inputFileCollection));
+            localRepositoryManager.addRepository(inputFileCollection, nullptr, true);
         }
     }
     else
@@ -1695,18 +1752,20 @@ void EclCC::processXmlFile(EclCompileInstance & instance, const char *archiveXML
 
         //Create a repository with just that attribute, and place it before the archive in the resolution order.
         Owned<IFileContents> contents = createFileContentsFromText(queryText, NULL, false, NULL, 0);
-        repositories.append(*createSingleDefinitionEclRepository(syntaxCheckModule, syntaxCheckAttribute, contents));
+        localRepositoryManager.addSingleDefinitionEclRepository(syntaxCheckModule, syntaxCheckAttribute, contents, true);
     }
 
-    repositories.append(*createRepository(archiveCollection));
+    localRepositoryManager.processArchive(archiveTree);
 
-    instance.dataServer.setown(createCompoundRepository(repositories));
+    if (queryAttributePackage)
+        instance.dataServer.set(localRepositoryManager.queryRepositoryAsRoot(queryAttributePackage, nullptr));
+    else
+        instance.dataServer.setown(localRepositoryManager.createPackage(nullptr));
 
     //Ensure classes are not linked by anything else
-    archiveCollection.clear();
-    repositories.kill();
+    localRepositoryManager.kill();  // help ensure non-shared repositories are freed as soon as possible
 
-    processSingleQuery(instance, contents, queryAttributePath);
+    processSingleQuery(localRepositoryManager, instance, contents, queryAttributePath);
 }
 
 
@@ -1738,7 +1797,7 @@ void EclCC::processFile(EclCompileInstance & instance)
     if (optArchive || optGenerateDepend || optSaveQueryArchive)
         instance.archive.setown(createAttributeArchive());
 
-    instance.wu.setown(createLocalWorkUnit(NULL));
+    instance.wu.setown(createLocalWorkUnit());
     //Record the version of the compiler in the workunit, but not when regression testing (to avoid spurious differences)
     if (!optBatchMode)
         instance.wu->setDebugValue("eclcc_compiler_version", LANGUAGE_VERSION, true);
@@ -1750,7 +1809,7 @@ void EclCC::processFile(EclCompileInstance & instance)
 
     //On a system with userECL not allowed, all compilations must be from checked-in code that has been
     //deployed to the eclcc machine via other means (typically via a version-control system)
-    if (!allowAccess("userECL", false) && (!optQueryRepositoryReference || queryText->length()))
+    if (!allowAccess("userECL", false) && (!optQueryMainAttribute || queryText->length()))
     {
         instance.queryErrorProcessor().reportError(HQLERR_UserCodeNotAllowed, HQLERR_UserCodeNotAllowed_Text, NULL, 1, 0, 0);
     }
@@ -1762,41 +1821,45 @@ void EclCC::processFile(EclCompileInstance & instance)
     else
     {
         StringBuffer attributePath;
+        const char * attributePackage = nullptr;
         bool withinRepository = false;
 
         //Specifying --main indicates that the query text (if present) replaces that definition
-        if (optQueryRepositoryReference)
+        if (optQueryMainAttribute)
         {
             withinRepository = true;
-            attributePath.clear().append(optQueryRepositoryReference);
+            attributePath.clear().append(optQueryMainAttribute);
+            if (!optQueryMainPackage.isEmpty())
+                attributePackage = optQueryMainPackage;
         }
         else
         {
             withinRepository = !inputFromStdIn && !optNoSourcePath && checkWithinRepository(attributePath, curFilename);
+            if (!optDefaultRepo.isEmpty())
+                attributePackage = optDefaultRepo.str();
         }
 
-        EclRepositoryArray repositories;
-        //Items first in the list have priority -Dxxx=y overrides all
-        processDefinitions(repositories);
-        repositories.append(*LINK(pluginsRepository));
-        repositories.append(*LINK(libraryRepository));
-        if (bundlesRepository)
-            repositories.append(*LINK(bundlesRepository));
+        EclRepositoryManager localRepositoryManager;
+        processDefinitions(localRepositoryManager);
+        localRepositoryManager.inherit(repositoryManager); // don't include -I
+        if (!optNoBundles)
+            localRepositoryManager.addQuerySourceFileEclRepository(&instance.queryErrorProcessor(), eclBundlePath.str(), ESFoptional|ESFnodependencies, 0);
 
         //Ensure that this source file is used as the definition (in case there are potential clashes)
         //Note, this will not override standard library files.
+        Owned<IEclSourceCollection> inputFileCollection;
         if (withinRepository)
         {
             //-main only overrides the definition if the query is non-empty.  Otherwise use the existing text.
-            if (!optQueryRepositoryReference || queryText->length())
+            if (!optQueryMainAttribute || queryText->length())
             {
-                Owned<IEclSourceCollection> inputFileCollection = createSingleDefinitionEclCollection(attributePath, queryText);
-                repositories.append(*createRepository(inputFileCollection));
+                inputFileCollection.setown(createSingleDefinitionEclCollection(attributePath, queryText));
+                localRepositoryManager.addRepository(inputFileCollection, nullptr, true);
             }
         }
         else
         {
-            //Ensure that $ is valid for any file submitted - even if it isn't in the include direcotories
+            //Ensure that $ is valid for any file submitted - even if it isn't in the include directories
             //Disable this for the moment when running the regression suite.
             if (!optBatchMode && !withinRepository && !inputFromStdIn && !optNoSourcePath && !optLegacyImport)
             {
@@ -1810,21 +1873,27 @@ void EclCC::processFile(EclCompileInstance & instance)
                 splitFilename(expandedSourceName, &thisDirectory, &thisDirectory, &thisTail, NULL);
                 attributePath.append(moduleName).append(".").append(thisTail);
 
-                Owned<IEclSourceCollection> inputFileCollection = createSingleDefinitionEclCollection(attributePath, queryText);
-                repositories.append(*createRepository(inputFileCollection));
+                inputFileCollection.setown(createSingleDefinitionEclCollection(attributePath, queryText));
+                localRepositoryManager.addRepository(inputFileCollection, nullptr, true);
 
-                Owned<IEclSourceCollection> directory = createFileSystemEclCollection(&instance.queryErrorProcessor(), thisDirectory, 0, 0);
-                Owned<IEclRepository> directoryRepository = createRepository(directory, moduleName);
-                Owned<IEclRepository> nested = createNestedRepository(moduleNameId, directoryRepository);
-                repositories.append(*LINK(nested));
+                Owned<IEclSourceCollection> directory = createFileSystemEclCollection(&instance.queryErrorProcessor(), thisDirectory, ESFnone, 0);
+                localRepositoryManager.addNestedRepository(moduleNameId, directory, true);
             }
         }
 
-        repositories.append(*LINK(includeRepository));
+        if (attributePackage)
+        {
+            //If attribute package is specified, resolve that package as the source for the query
+            instance.dataServer.set(localRepositoryManager.queryRepositoryAsRoot(attributePackage, inputFileCollection));
+        }
+        else
+        {
+            localRepositoryManager.addQuerySourceFileEclRepository(&instance.queryErrorProcessor(), querySearchPath.str(), ESFdependencies, 0);
 
-        instance.dataServer.setown(createCompoundRepository(repositories));
-        repositories.kill();
-        processSingleQuery(instance, queryText, attributePath.str());
+            instance.dataServer.setown(localRepositoryManager.createPackage(nullptr));
+        }
+
+        processSingleQuery(localRepositoryManager, instance, queryText, attributePath.str());
     }
 
     if (!instance.reportErrorSummary() || instance.archive || (optGenerateMeta && instance.generatedMeta))
@@ -1929,12 +1998,14 @@ void EclCC::generateOutput(EclCompileInstance & instance)
                 option->setProp("@value", valueStr.str());
                 instance.archive->addPropTree("Option", option.getClear());
             }
-            gatherResourceManifestFilenames(instance, resourceManifestFiles);
-            ForEachItemIn(i, resourceManifestFiles)
-                addManifestResourcesToArchive(instance.archive, resourceManifestFiles.item(i));
 
             if (optArchive)
             {
+                //Only include resources in the archive if a full archive is being created, not if it is being saved in the workunit
+                gatherResourceManifestFilenames(instance, resourceManifestFiles);
+                ForEachItemIn(i, resourceManifestFiles)
+                    addManifestResourcesToArchive(instance.archive, resourceManifestFiles.item(i));
+
                 if (optCheckDirty)
                 {
                     Owned<IPipeProcess> pipe = createPipeProcess();
@@ -1987,28 +2058,58 @@ void EclCC::generateOutput(EclCompileInstance & instance)
 }
 
 
-void EclCC::processReference(EclCompileInstance & instance, const char * queryAttributePath)
+void EclCC::processReference(EclCompileInstance & instance, const char * queryAttributePath, const char * queryAttributePackage)
 {
     const char * outputFilename = instance.outputFilename;
 
-    instance.wu.setown(createLocalWorkUnit(NULL));
+    instance.wu.setown(createLocalWorkUnit());
     if (optArchive || optGenerateDepend || optSaveQueryArchive)
         instance.archive.setown(createAttributeArchive());
 
-    EclRepositoryArray repositories;
-    processDefinitions(repositories);
-    repositories.append(*LINK(pluginsRepository));
-    repositories.append(*LINK(libraryRepository));
-    if (bundlesRepository)
-        repositories.append(*LINK(bundlesRepository));
-    repositories.append(*LINK(includeRepository));
-    instance.dataServer.setown(createCompoundRepository(repositories));
+    EclRepositoryManager localRepositoryManager;
+    processDefinitions(localRepositoryManager);
+    localRepositoryManager.inherit(repositoryManager);
+    if (!optNoBundles)
+        localRepositoryManager.addQuerySourceFileEclRepository(&instance.queryErrorProcessor(), eclBundlePath.str(), ESFoptional|ESFnodependencies, 0);
 
-    processSingleQuery(instance, NULL, queryAttributePath);
+    if (!isEmptyString(queryAttributePackage))
+    {
+        instance.dataServer.set(localRepositoryManager.queryRepositoryAsRoot(queryAttributePackage, nullptr));
+    }
+    else
+    {
+        const char * searchPath = querySearchPath;
+        while (*searchPath == ENVSEPCHAR)
+            searchPath++;
+
+        if (looksLikeGitPackage(searchPath))
+        {
+            instance.dataServer.set(localRepositoryManager.queryRepositoryAsRoot(searchPath, nullptr));
+        }
+        else
+        {
+            localRepositoryManager.addQuerySourceFileEclRepository(&instance.queryErrorProcessor(), searchPath, ESFdependencies, 0);
+            instance.dataServer.setown(localRepositoryManager.createPackage(nullptr));
+        }
+    }
+
+    processSingleQuery(localRepositoryManager, instance, NULL, queryAttributePath);
 
     if (instance.reportErrorSummary())
         return;
     generateOutput(instance);
+}
+
+void EclCC::recordPackagesUsed(IWorkUnit * wu, const EclRepositoryManager & manager)
+{
+    StringArray packages;
+    manager.gatherPackagesUsed(packages);
+    ForEachItemIn(i, packages)
+    {
+        StringBuffer key;
+        key.append("package").append(i+1);
+        wu->setApplicationValue("packages", key, packages.item(i), true);
+    }
 }
 
 bool EclCC::generatePrecompiledHeader()
@@ -2107,6 +2208,7 @@ bool EclCC::processFiles()
     {
         printf("CL_PATH=%s\n", compilerPath.str());
         printf("ECLCC_ECLBUNDLE_PATH=%s\n", eclBundlePath.str());
+        printf("ECLCC_ECLREPO_PATH=%s\n", eclRepoPath.str());
         printf("ECLCC_ECLINCLUDE_PATH=%s\n", stdIncludeLibraryPath.str());
         printf("ECLCC_ECLLIBRARY_PATH=%s\n", eclLibraryPath.str());
         printf("ECLCC_INCLUDE_PATH=%s\n", cppIncludePath.str());
@@ -2121,51 +2223,73 @@ bool EclCC::processFiles()
     }
     else if (inputFiles.ordinality() == 0)
     {
-        if (optBatchMode || !optQueryRepositoryReference)
+        if (optBatchMode || !optQueryMainAttribute)
         {
             UERRLOG("No input files could be opened");
             return false;
         }
     }
 
-    StringBuffer searchPath;
     if (!optNoStdInc && stdIncludeLibraryPath.length())
-        searchPath.append(stdIncludeLibraryPath).append(ENVSEPCHAR);
-    searchPath.append(includeLibraryPath);
+        querySearchPath.append(stdIncludeLibraryPath).append(ENVSEPCHAR);
+    querySearchPath.append(includeLibraryPath);
     if (optCheckIncludePaths)
-        checkForOverlappingPaths(searchPath);
+        checkForOverlappingPaths(querySearchPath);
 
+    bool includePluginsInArchive = !optPruneArchive;
+    bool includeLibraryInArchive = !optPruneArchive;
     Owned<IErrorReceiver> errs = optXml ? createXmlFileErrorReceiver(stderr) : createFileErrorReceiver(stderr);
-    pluginsRepository.setown(createNewSourceFileEclRepository(errs, pluginsPath.str(), ESFallowplugins, logVerbose ? PLUGIN_DLL_MODULE : 0));
-    if (!optNoBundles)
-        bundlesRepository.setown(createNewSourceFileEclRepository(errs, eclBundlePath.str(), 0, 0));
-    libraryRepository.setown(createNewSourceFileEclRepository(errs, eclLibraryPath.str(), 0, 0));
-    includeRepository.setown(createNewSourceFileEclRepository(errs, searchPath.str(), 0, 0));
-
-    //Ensure symbols for plugins are initialised - see comment before CHqlMergedScope...
-//    lookupAllRootDefinitions(pluginsRepository);
-
     bool ok = true;
-    if (optBatchMode)
-    {
-        processBatchFiles();
-    }
-    else if (inputFiles.ordinality() == 0)
-    {
-        assertex(optQueryRepositoryReference);
-        EclCompileInstance info(*this, NULL, *errs, stderr, optOutputFilename, optLegacyImport, optLegacyWhen, optIgnoreSignatures, optIgnoreUnknownImport, optXml);
-        processReference(info, optQueryRepositoryReference);
-        ok = (errs->errCount() == 0);
 
-        info.logStats(logTimings);
-    }
-    else
+    try
     {
-        EclCompileInstance info(*this, &inputFiles.item(0), *errs, stderr, optOutputFilename, optLegacyImport, optLegacyWhen, optIgnoreSignatures, optIgnoreUnknownImport, optXml);
-        processFile(info);
-        ok = (errs->errCount() == 0);
+        //Set up the default repository information.  This could be simplified to not use a localRepositoryManager later
+        //if eclcc did not have a strange mode for running multiple queries as part of the regression suite testing on windows.
+        repositoryManager.setOptions(eclRepoPath, optGitUser, optGitPasswordPath, optDefaultGitPrefix, optFetchRepos, optUpdateRepos, optCleanRepos, optCleanInvalidRepos, logVerbose);
+        ForEachItemIn(iMapping, repoMappings)
+        {
+            const char * cur = repoMappings.item(iMapping);
+            const char * eq = strchr(cur, '=');
+            StringBuffer repo(eq-cur, cur);
+            repositoryManager.addMapping(repo, eq+1);
+        }
 
-        info.logStats(logTimings);
+        //Items first in the list have priority -Dxxx=y overrides all
+        repositoryManager.addSharedSourceFileEclRepository(errs, pluginsPath.str(), ESFallowplugins|ESFnodependencies, logVerbose ? PLUGIN_DLL_MODULE : 0, includePluginsInArchive);
+        repositoryManager.addSharedSourceFileEclRepository(errs, eclLibraryPath.str(), ESFnodependencies, 0, includeLibraryInArchive);
+        //Bundles are not included in other repos.  Should eventually be replaced by dependent repos
+
+        //Ensure symbols for plugins are initialised - see comment before CHqlMergedScope...
+    //    lookupAllRootDefinitions(pluginsRepository);
+
+        if (optBatchMode)
+        {
+            processBatchFiles();
+        }
+        else if (inputFiles.ordinality() == 0)
+        {
+            EclCompileInstance info(*this, NULL, *errs, stderr, optOutputFilename, optLegacyImport, optLegacyWhen, optIgnoreSignatures, optIgnoreUnknownImport, optXml);
+            processReference(info, optQueryMainAttribute, optQueryMainPackage);
+            ok = (errs->errCount() == 0);
+
+            info.logStats(logTimings);
+        }
+        else
+        {
+            EclCompileInstance info(*this, &inputFiles.item(0), *errs, stderr, optOutputFilename, optLegacyImport, optLegacyWhen, optIgnoreSignatures, optIgnoreUnknownImport, optXml);
+            processFile(info);
+            ok = (errs->errCount() == 0);
+
+            info.logStats(logTimings);
+        }
+    }
+    catch (IException * e)
+    {
+        //Ensure any exceptions are reported as xml if that option is selected
+        StringBuffer msg;
+        errs->reportError(e->errorCode(), e->errorMessage(msg).str(), nullptr, 0, 0, 0);
+        e->Release();
+        ok = false;
     }
 
     return ok;
@@ -2193,7 +2317,7 @@ void EclCC::traceError(char const * format, ...)
         UERRLOG("<exception msg='%s'/>", encoded.str());
     }
     else
-        VALOG(MCuserError, unknownJob, format, args);
+        VALOG(MCuserError, format, args);
 
     va_end(args);
 }
@@ -2228,13 +2352,6 @@ void EclCompileInstance::logStats(bool logTimings)
 {
     if (wu && wu->getDebugValueBool("logCompileStats", false))
     {
-        memsize_t peakVm, peakResident;
-        getPeakMemUsage(peakVm, peakResident);
-        //Stats: added as a prefix so it is easy to grep, and a comma so can be read as a csv list.
-        DBGLOG("Stats:,parse,%u,generate,%u,peakmem,%u,xml,%" I64F "u,cpp,%" I64F "u",
-                stats.parseTime, stats.generateTime, (unsigned)(peakResident / 0x100000),
-                (unsigned __int64)stats.xmlSize, (unsigned __int64)stats.cppSize);
-
         //Following only produces output if the system has been compiled with TRANSFORM_STATS defined
         dbglogTransformStats(true);
     }
@@ -2445,7 +2562,7 @@ IHqlExpression *EclCC::lookupDFSlayout(const char *filename, IErrorReceiver &err
         // Look up the file in Dali
         try
         {
-            Owned<IDistributedFile> dfsFile = queryDistributedFileDirectory().lookup(filename, udesc, false, false, false, nullptr, defaultPrivilegedUser);
+            Owned<IDistributedFile> dfsFile = wsdfs::lookup(filename, udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser, INFINITE);
             if (dfsFile)
             {
                 const char *recordECL = dfsFile->queryAttributes().queryProp("ECL");
@@ -2554,6 +2671,7 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
     StringAttr tempArg;
     bool tempBool;
     bool showHelp = false;
+    unsigned tempUnsigned;
     for (; !iter.done(); iter.next())
     {
         const char * arg = iter.query();
@@ -2594,6 +2712,12 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchFlag(optCheckDirty, "-checkDirty"))
         {
         }
+        else if (iter.matchFlag(optCleanRepos, "--cleanrepos"))
+        {
+        }
+        else if (iter.matchFlag(optCleanInvalidRepos, "--cleaninvalidrepos"))
+        {
+        }
         else if (iter.matchOption(optCluster, "-cluster"))
         {
         }
@@ -2603,6 +2727,15 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchOption(tempArg, "--daemon"))
         {
             //Ignore any --daemon option supplied to eclccserver which may be passed onto eclcc
+        }
+        else if (iter.matchOption(optDefaultGitPrefix, "--defaultgitprefix"))
+        {
+        }
+        else if (iter.matchOption(optDefaultRepo, "--defaultrepo"))
+        {
+        }
+        else if (iter.matchOption(optDefaultRepoVersion, "--defaultrepoversion"))
+        {
         }
         else if (iter.matchOption(optDFS, "-dfs") || /*deprecated*/ iter.matchOption(optDFS, "-dali"))
         {
@@ -2668,6 +2801,9 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchFlag(optFastSyntax, "--fastsyntax"))
         {
         }
+        else if (iter.matchFlag(optFetchRepos, "--fetchrepos"))
+        {
+        }
         else if (iter.matchFlag(tempBool, "-g") || iter.matchFlag(tempBool, "--debug"))
         {
             if (tempBool)
@@ -2706,6 +2842,13 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         {
             optScope.set(tempArg);
         }
+        else if (iter.matchOption(optGitUser, "--gituser"))
+        {
+        }
+        else if (iter.matchOption(optGitPasswordPath, "--gitpasswordpath"))
+        {
+            //This option is primarily to help debug the git authentication, unlikely to be used by end users.
+        }
         else if (iter.matchFlag(showHelp, "-help") || iter.matchFlag(showHelp, "--help"))
         {
         }
@@ -2714,6 +2857,10 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         }
         else if (iter.matchFlag(optIgnoreUnknownImport, "--ignoreunknownimport"))
         {
+        }
+        else if (iter.matchOption(tempArg, "--jobid"))
+        {
+            setDefaultJobName(tempArg);
         }
         else if (iter.matchFlag(optKeywords, "--keywords"))
         {
@@ -2754,13 +2901,42 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchFlag(optNoBundles, "--nobundles"))
         {
         }
-        else if (iter.matchOption(optLogDetail, "--logdetail"))
+        else if (iter.matchOption(tempUnsigned, "--logdetail")) // Now ignored
         {
         }
         else if (iter.matchOption(optMonitorInterval, "--monitorinterval"))
         {
         }
-        else if (iter.matchOption(optQueryRepositoryReference, "-main"))
+        else if (iter.matchOption(tempArg, "-main") || iter.matchOption(tempArg, "--main"))
+        {
+            const char * arg = tempArg;
+            const char * at = strchr(arg, '@');
+            const char * hash = strchr(arg, '#');
+            if (at)
+            {
+                optQueryMainAttribute.set(arg, at - arg);
+                optQueryMainPackage.set(at+1);
+                optExplicitMainPackage = true;
+            }
+            else if (hash)
+            {
+                optQueryMainAttribute.set(arg, hash - arg);
+                optQueryMainPackageVersion.set(hash+1);
+            }
+            else
+            {
+                optQueryMainAttribute.set(arg);
+                optQueryMainPackage.set(nullptr);
+            }
+        }
+        else if (iter.matchOption(tempArg, "--mainrepo"))
+        {
+            //--mainrepo only provides a default - it does not override an explicit package specified by --main
+            //but does override a previous setting of --mainrepo
+            if (!optExplicitMainPackage)
+                optQueryMainPackage.set(tempArg);
+        }
+        else if (iter.matchOption(optQueryMainPackageVersion, "--mainrepoversion"))
         {
         }
         else if (iter.matchFlag(optDebugMemLeak, "-m"))
@@ -2801,6 +2977,9 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchFlag(optGenerateHeader, "-pch"))
         {
         }
+        else if (iter.matchFlag(optPruneArchive, "--prunearchive"))
+        {
+        }
         else if (iter.matchOption(optComponentName, "--component"))
         {
         }
@@ -2809,6 +2988,10 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         }
         else if (iter.matchFlag(optSaveQueryArchive, "-qa"))
         {
+        }
+        else if (iter.matchOption(tempArg, "--repocachepath"))
+        {
+            eclRepoPath.set(tempArg);
         }
         else if (iter.matchFlag(optNoCompile, "-S"))
         {
@@ -2878,6 +3061,12 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchFlag(optRegenerateCache, "--regeneratecache"))
         {
         }
+        else if (iter.matchFlag(tempArg, "-R"))
+        {
+            if (!strchr(tempArg, '='))
+                throw MakeStringException(99, "'-R%s' should have form -Rrepo[#version]=path", tempArg.str());
+            repoMappings.append(tempArg);
+        }
         else if (iter.matchFlag(optIgnoreCache, "--internalignorecache"))
         {
         }
@@ -2885,6 +3074,9 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         {
         }
         else if (iter.matchFlag(optExtraStats, "--internalextrastats"))
+        {
+        }
+        else if (iter.matchFlag(optUpdateRepos, "--updaterepos"))
         {
         }
         else if (iter.matchFlag(logVerbose, "-v") || iter.matchFlag(logVerbose, "--verbose"))
@@ -2923,6 +3115,10 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         {
             inputFileNames.append("stdin:");
         }
+        else if (iter.matchFlag(tempArg, "--logging.postMortem"))
+        {
+            // Ignore, but may be present
+        }
         else if (arg[0] == '-')
         {
             //If --config has been specified, then ignore any unknown options beginning with -- since they will be added to the globals.
@@ -2953,6 +3149,62 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         optIgnoreSignatures = true;
     }
 
+    // If a default version is explicitly given it takes precedence over the version provided in optDefaultRepo
+    // ensure optDefaultRepo is fully qualified, and optDefaultRepoVersion is consistent
+    if (!optDefaultRepo.isEmpty())
+    {
+        StringBuffer temp;
+        const char * repo = optDefaultRepo.str();
+        const char * hash = strchr(repo, '#');
+        if (hash)
+        {
+            if (!optDefaultRepoVersion.isEmpty())
+            {
+                //Unusual situation: version provided in default and explicitly, but resolve it consistently
+                //An explicit --defaultrepoversion takes precedence over any default in the repo stringe
+                optDefaultRepo.set(temp.clear().append(hash-repo, repo).append("#").append(optDefaultRepoVersion));
+            }
+            else
+            {
+                //Extract the default version from the version provided to --defaultrepo
+                optDefaultRepoVersion.set(hash+1);
+            }
+        }
+        else if (!optDefaultRepoVersion.isEmpty())
+            optDefaultRepo.set(temp.clear().append(optDefaultRepo).append("#").append(optDefaultRepoVersion));
+    }
+
+    // Rules for the repo used if --main has been specified:
+    //   If no repo is specified then use the default repoistory and version
+    //   If repo is specified with no version then use the default repo
+    //   If main repoversion is specified then that takes precedence.
+    // Set up optQueryMainPackage. (optQueryMainPackageVersion does not need to be updated.)
+    if (optQueryMainPackage.isEmpty())
+        optQueryMainPackage.append(optDefaultRepo);
+
+    if (!optQueryMainPackage.isEmpty())
+    {
+        const char * repo = optQueryMainPackage.str();
+        const char * hash = strchr(repo, '#');
+        const char * newVersion = nullptr;
+        if (hash)
+        {
+            //only thing that takes precedence is optQueryMainPackageVersion
+            if (!optQueryMainPackageVersion.isEmpty())
+            {
+                optQueryMainPackage.setLength(hash-repo); // Remove the version - ready for replacing below.
+                newVersion = optQueryMainPackageVersion;
+            }
+        }
+        else if (!optQueryMainPackageVersion.isEmpty())
+            newVersion = optQueryMainPackageVersion.str();
+        else if (!optDefaultRepoVersion.isEmpty())
+            newVersion = optDefaultRepoVersion.str();
+
+        if (newVersion)
+            optQueryMainPackage.append("#").append(newVersion);
+    }
+
     optReleaseAllMemory = optDebugMemLeak || optLeakCheck;
     loadManifestOptions();
 
@@ -2967,7 +3219,7 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
 
     if (inputFileNames.ordinality() == 0 && !optKeywords)
     {
-        if (optGenerateHeader || optShowPaths || (!optBatchMode && optQueryRepositoryReference))
+        if (optGenerateHeader || optShowPaths || (!optBatchMode && optQueryMainAttribute))
             return 0;
         UERRLOG("No input filenames supplied");
         return 1;
@@ -3060,7 +3312,7 @@ void EclCC::processBatchedFile(IFile & file, bool multiThreaded)
         {
             if (!multiThreaded)
             {
-                handler.setown(getHandleLogMsgHandler(logFile, 0, false));
+                handler.setown(getHandleLogMsgHandler(logFile, 0, LOGFORMAT_table));
                 Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_all, MSGCLS_all, DefaultDetail);
                 queryLogMsgManager()->addMonitor(handler, filter);
 
@@ -3156,7 +3408,7 @@ void EclCC::processBatchFiles()
         for (unsigned i = 0; i < optThreads; i++)
         {
             threads[i] = new BatchThread(*this, queue, fileReady);
-            threads[i]->start();
+            threads[i]->start(false);
         }
     }
 

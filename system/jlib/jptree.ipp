@@ -58,7 +58,7 @@ protected:
     virtual unsigned getHashFromElement(const void *e) const override;
     virtual unsigned getHashFromFindParam(const void *fp) const override
     {
-        return hashc((const unsigned char *)fp, (size32_t)strlen((const char *)fp), 0);
+        return hashcz((const unsigned char *)fp, 0);
     }
     virtual bool matchesFindParam(const void *e, const void *fp, unsigned fphash) const override
     {
@@ -108,7 +108,7 @@ public:
 // SuperHashTable definitions
     virtual unsigned getHashFromFindParam(const void *fp) const override
     {
-        return hashnc((const unsigned char *)fp, (size32_t)strlen((const char *)fp), 0);
+        return hashncz((const unsigned char *)fp, 0);
     }
     virtual bool matchesFindParam(const void *e, const void *fp, unsigned fphash) const override
     {
@@ -347,7 +347,7 @@ struct AttrStrC : public AttrStrAtom
 {
     static inline unsigned getHash(const char *k)
     {
-        return hashc((const byte *)k, strlen(k), 17);
+        return hashcz((const byte *)k, 17);
     }
     inline bool eq(const char *k)
     {
@@ -364,7 +364,7 @@ struct AttrStrNC : public AttrStrAtom
 {
     static inline unsigned getHash(const char *k)
     {
-        return hashnc((const byte *)k, strlen(k), 17);
+        return hashncz((const byte *)k, 17);
     }
     inline bool eq(const char *k)
     {
@@ -499,17 +499,35 @@ struct PtrStrUnion
 #define USE_READONLY_ATOMTABLE
 #endif
 
+inline bool hasPTreeEncodedMarker(const char *name)
+{
+    return (name && *name=='~');
+}
+
+inline const char *skipPTreeEncodedMarker(const char *name)
+{
+    if (hasPTreeEncodedMarker(name))
+        name++;
+    return name;
+}
+
 typedef PtrStrUnion<AttrStr> AttrStrUnion;
 static_assert(sizeof(AttrStrUnion) == sizeof(AttrStr *), "AttrStrUnion size mismatch");  // Sanity check!
 
 #ifdef USE_READONLY_ATOMTABLE
 struct AttrStrUnionWithTable : public AttrStrUnion
 {
+    inline bool isEncoded() const
+    {
+        if (!isPtr() && flag==3)
+            return (hasPTreeEncodedMarker(roNameTable->getIndex(idx2)->str_DO_NOT_USE_DIRECTLY));
+        return hasPTreeEncodedMarker(AttrStrUnion::get());
+    }
     inline const char *get() const
     {
         if (!isPtr() && flag==3)
-            return roNameTable->getIndex(idx2)->str_DO_NOT_USE_DIRECTLY;  // Should probably rename this back now!
-        return AttrStrUnion::get();
+            return skipPTreeEncodedMarker(roNameTable->getIndex(idx2)->str_DO_NOT_USE_DIRECTLY);  // Should probably rename this back now!
+        return skipPTreeEncodedMarker(AttrStrUnion::get());
     }
     bool set(const char *key)
     {
@@ -598,7 +616,6 @@ public:
     aindex_t findChild(IPropertyTree *child, bool remove=false);
     inline bool isnocase() const { return IptFlagTst(flags, ipt_caseInsensitive); }
     ipt_flags queryFlags() const { return (ipt_flags) flags; }
-    void serializeSelf(MemoryBuffer &tgt);
     void serializeCutOff(MemoryBuffer &tgt, int cutoff=-1, int depth=0);
     void deserializeSelf(MemoryBuffer &src);
     void serializeAttributes(MemoryBuffer &tgt);
@@ -626,6 +643,17 @@ public:
     }
     virtual void createChildMap() { children = isnocase()?new ChildMapNC():new ChildMap(); }
     virtual void setName(const char *name) = 0;
+    virtual void serializeSelf(MemoryBuffer &tgt);
+    inline void markNameEncoded() { IptFlagSet(flags, ipt_escaped); }
+    inline bool isNameEncoded() const { return IptFlagTst(flags, ipt_escaped); }
+    inline bool isAttributeNameEncoded(const char *key) const
+    {
+        AttrValue *a = findAttribute(key);
+        if (!a)
+            return false;
+        return a->key.isEncoded();
+    }
+    virtual void setAttribute(const char *attr, const char *val, bool encoded) = 0;
 
 // IPropertyTree impl.
     virtual bool hasProp(const char * xpath) const override;
@@ -644,6 +672,8 @@ public:
     virtual __int64 getPropInt64(const char *xpath, __int64 dft=0) const override;
     virtual void setPropInt64(const char * xpath, __int64 val) override;
     virtual void addPropInt64(const char *xpath, __int64 val) override;
+    virtual void setPropReal(const char * xpath, double val) override;
+    virtual void addPropReal(const char *xpath, double val) override;
     virtual int getPropInt(const char *xpath, int dft=0) const override;
     virtual void setPropInt(const char *xpath, int val) override;
     virtual void addPropInt(const char *xpath, int val) override;
@@ -693,7 +723,6 @@ protected:
     virtual IPropertyTree *create(MemoryBuffer &mb) = 0;
     virtual IPropertyTree *ownPTree(IPropertyTree *tree);
 
-    virtual void setAttribute(const char *attr, const char *val) = 0;
     virtual bool removeAttribute(const char *k) = 0;
 
     AttrValue *findAttribute(const char *k) const;
@@ -704,8 +733,8 @@ private:
     void addLocal(size32_t l, const void *data, bool binary=false, int pos=-1);
     void resolveParentChild(const char *xpath, IPropertyTree *&parent, IPropertyTree *&child, StringAttr &path, StringAttr &qualifier);
     void replaceSelf(IPropertyTree *val);
+    IPropertyTree *addPropTree(const char *xpath, IPropertyTree *val, bool alwaysUseArray);
     void addPTreeArrayItem(IPropertyTree *peer, const char *xpath, PTree *val, aindex_t pos = (aindex_t) -1);
-    IPropertyTree *addPropTree(const char *xpath, IPropertyTree *val, bool array);
 
 protected: // data
     /* NB: the order of the members here is important to reduce the size of the objects, because very large numbers of these are created.
@@ -776,7 +805,6 @@ class jlib_decl CAtomPTree : public PTree
     void freeAttrArray(AttrValue *a, unsigned n);
     PtrStrUnion<HashKeyElement> name;
 protected:
-    virtual void setAttribute(const char *attr, const char *val) override;
     virtual bool removeAttribute(const char *k) override;
 public:
     CAtomPTree(const char *name=nullptr, byte flags=ipt_none, IPTArrayValue *value=nullptr, ChildMap *children=nullptr);
@@ -784,6 +812,7 @@ public:
     const char *queryName() const override;
     virtual unsigned queryHash() const override;
     virtual void setName(const char *_name) override;
+    virtual void setAttribute(const char *attr, const char *val, bool encoded) override;
     virtual bool isEquivalent(IPropertyTree *tree) const override { return (nullptr != QUERYINTERFACE(tree, CAtomPTree)); }
     virtual IPropertyTree *create(const char *name=nullptr, IPTArrayValue *value=nullptr, ChildMap *children=nullptr, bool existing=false) override
     {
@@ -803,7 +832,6 @@ jlib_decl IPropertyTree *createPropBranch(IPropertyTree *tree, const char *xpath
 class jlib_decl LocalPTree : public PTree
 {
 protected:
-    virtual void setAttribute(const char *attr, const char *val) override;
     virtual bool removeAttribute(const char *k) override;
     AttrStrUnion name;
 public:
@@ -819,6 +847,7 @@ public:
         return isnocase() ? hashnc((const byte *)myname, nl, 0): hashc((const byte *)myname, nl, 0);
     }
     virtual void setName(const char *_name) override;
+    virtual void setAttribute(const char *attr, const char *val, bool encoded) override;
     virtual bool isEquivalent(IPropertyTree *tree) const override { return (nullptr != QUERYINTERFACE(tree, LocalPTree)); }
     virtual IPropertyTree *create(const char *name=nullptr, IPTArrayValue *value=nullptr, ChildMap *children=nullptr, bool existing=false) override
     {
@@ -916,6 +945,7 @@ private: // data
 
 class CPTreeMaker : public CInterfaceOf<IPTreeMaker>
 {
+protected:
     bool rootProvided, noRoot;  // pack into the space following the link count
     IPropertyTree *root;
     ICopyArrayOf<IPropertyTree> ptreeStack;
@@ -1024,5 +1054,78 @@ public:
     }
 };
 
+class CPTreeEncodeNamesMaker : public CPTreeMaker
+{
+public:
+    CPTreeEncodeNamesMaker(byte flags=ipt_none, IPTreeNodeCreator *_nodeCreator=NULL, IPropertyTree *_root=NULL, bool _noRoot=false) : CPTreeMaker(flags, _nodeCreator, _root, _noRoot)
+    {
+    }
+    ~CPTreeEncodeNamesMaker()
+    {
+    }
+
+// IPTreeMaker
+    virtual void beginNode(const char *tag, bool arrayitem, offset_t startOffset) override
+    {
+        if (rootProvided)
+        {
+            currentNode = root;
+            rootProvided = false;
+        }
+        else
+        {
+            //Having to encode is the uncommon case.  Keep overhead low by only using a StringAttr here. If we do have to encode, take the hit then and use an adapter (StringAttrBuilder).
+            StringAttr encoded;
+            const char *startEncoding = findFirstInvalidPTreeNameChar(tag);
+            if (startEncoding)
+            {
+                {
+                    StringAttrBuilder encodingBuilder(encoded);
+                    encodePTreeName(encodingBuilder, tag, startEncoding);
+                }
+                tag = encoded.str();
+            }
+
+            IPropertyTree *parent = currentNode;
+            if (!root)
+            {
+                currentNode = nodeCreator->create(tag);
+                root = currentNode;
+                if (encoded.length())
+                    markPTreeNameEncoded(root);
+            }
+            else
+                currentNode = nodeCreator->create(NULL);
+            if (!parent && noRoot)
+                parent = root;
+            if (parent)
+            {
+                IPropertyTree *added = nullptr;
+                if (arrayitem)
+                    added = parent->addPropTreeArrayItem(tag, currentNode);
+                else
+                    added = parent->addPropTree(tag, currentNode);
+                if (encoded.length())
+                    markPTreeNameEncoded(added);
+            }
+        }
+        ptreeStack.append(*currentNode);
+    }
+    virtual void newAttribute(const char *name, const char *value) override
+    {
+        StringAttr encoded;
+        const char *startEncoding = findFirstInvalidPTreeNameChar(name);
+        if (startEncoding)
+        {
+            {
+                StringAttrBuilder encodingBuilder(encoded);
+                encodingBuilder.append('~'); //used internally for marking the attribute, not used when building xpaths
+                encodePTreeName(encodingBuilder, name, startEncoding);
+            }
+            name = encoded.str();
+        }
+        setPTreeAttribute(currentNode, name, value, !encoded.isEmpty());
+    }
+};
 
 #endif

@@ -16,7 +16,7 @@ define([
     "dojox/widget/Toaster",
 
     "css!hpcc/css/ecl.css",
-    "css!dojo-themes/flat/flat.css",
+    "css!dijit-themes/flat/flat.css",
     "css!hpcc/css/hpcc.css"
 
 ], function (fx, dom, domStyle, ioQuery, ready, lang, arrayUtil, topic,
@@ -24,6 +24,18 @@ define([
     entities, Toaster) {
 
     Session.initSession();
+
+    const params = ioQuery.queryToObject(dojo.doc.location.search.substr((dojo.doc.location.search.substr(0, 1) === "?" ? 1 : 0)));
+    const hpccWidget = params.Widget ? params.Widget : "HPCCPlatformWidget";
+
+    Session.needsRedirectV5().then(redirected => {
+        if (!redirected) {
+            ready(function () {
+                parseUrl();
+                initUI();
+            });
+        }
+    });
 
     function startLoading(targetNode) {
         domStyle.set(dom.byId("loadingOverlay"), "display", "block");
@@ -40,9 +52,6 @@ define([
     }
 
     function initUI() {
-        var params = ioQuery.queryToObject(dojo.doc.location.search.substr((dojo.doc.location.search.substr(0, 1) === "?" ? 1 : 0)));
-        var hpccWidget = params.Widget ? params.Widget : "HPCCPlatformWidget";
-
         topic.subscribe("hpcc/session_management_status", function (publishedMessage) {
             if (publishedMessage.status === "Unlocked") {
                 Session.unlock();
@@ -134,9 +143,4 @@ define([
             fullPath: location.origin + "/esp/files"
         };
     }
-
-    ready(function () {
-        parseUrl();
-        initUI();
-    });
 });

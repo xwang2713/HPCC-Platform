@@ -1,19 +1,23 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Link } from "@fluentui/react";
 import * as WsWorkunits from "src/WsWorkunits";
 import * as ESPQuery from "src/ESPQuery";
-import * as Utility from "src/Utility";
 import nlsHPCC from "src/nlsHPCC";
+import { QuerySortItem } from "src/store/Store";
+import { useConfirm } from "../hooks/confirm";
+import { useMyAccount } from "../hooks/user";
+import { useHasFocus, useIsMounted } from "../hooks/util";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { pushParams } from "../util/history";
+import { FluentPagedGrid, FluentPagedFooter, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid, selector } from "./DojoGrid";
+import { ShortVerticalDivider } from "./Common";
+import { SizeMe } from "react-sizeme";
 
 const FilterFields: Fields = {
     "QueryID": { type: "string", label: nlsHPCC.ID, placeholder: nlsHPCC.QueryIDPlaceholder },
+    "Priority": { type: "queries-priority", label: nlsHPCC.Priority },
     "QueryName": { type: "string", label: nlsHPCC.Name, placeholder: nlsHPCC.QueryNamePlaceholder },
     "PublishedBy": { type: "string", label: nlsHPCC.PublishedBy, placeholder: nlsHPCC.PublishedBy },
     "WUID": { type: "string", label: nlsHPCC.WUID, placeholder: "W20130222-171723" },
@@ -24,19 +28,13 @@ const FilterFields: Fields = {
     "Activated": { type: "queries-active-state", label: nlsHPCC.Activated }
 };
 
-function formatQuery(filter: any, wuid?: string) {
-    if (wuid !== undefined) {
-        return {
-            WUID: wuid
-        };
-    }
-    const retVal = { ...filter };
-    if (filter.StartDate) {
-        retVal.StartDate = new Date(filter.StartDate).toISOString();
-    }
-    if (filter.EndDate) {
-        retVal.EndDate = new Date(filter.StartDate).toISOString();
-    }
+function formatQuery(filter: any): { [id: string]: any } {
+    const retVal = {
+        ...filter,
+        PriorityLow: filter.Priority,
+        PriorityHigh: filter.Priority
+    };
+    delete retVal.Priority;
     return retVal;
 }
 
@@ -50,135 +48,150 @@ const defaultUIState = {
 
 interface QueriesProps {
     wuid?: string;
-    filter?: object;
+    filter?: { [id: string]: any };
+    sort?: QuerySortItem;
     store?: any;
+    page?: number;
 }
 
 const emptyFilter = {};
+const defaultSort = { attribute: undefined, descending: false };
 
 export const Queries: React.FunctionComponent<QueriesProps> = ({
     wuid,
     filter = emptyFilter,
+    sort = defaultSort,
+    page = 1,
     store
 }) => {
 
-    const [grid, setGrid] = React.useState<any>(undefined);
     const [showFilter, setShowFilter] = React.useState(false);
-    const [mine, setMine] = React.useState(false);
-    const [selection, setSelection] = React.useState([]);
+    const { currentUser } = useMyAccount();
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
+    const {
+        selection, setSelection,
+        pageNum, setPageNum,
+        pageSize, setPageSize,
+        total, setTotal,
+        refreshTable } = useFluentStoreState({ page });
+
+    const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
+
+    //  Refresh on focus  ---
+    const isMounted = useIsMounted();
+    const hasFocus = useHasFocus();
+    React.useEffect(() => {
+        if (isMounted && hasFocus) {
+            refreshTable.call();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hasFocus]);
 
     //  Grid ---
-    const gridStore = useConst(store || ESPQuery.CreateQueryStore({}));
-    const gridQuery = useConst(formatQuery(filter, wuid));
-    const gridSort = useConst([{ attribute: "Id" }]);
-    const gridColumns = useConst({
-        col1: selector({
-            width: 27,
-            selectorType: "checkbox"
-        }),
-        Suspended: {
-            label: nlsHPCC.Suspended,
-            renderHeaderCell: function (node) {
-                node.innerHTML = Utility.getImageHTML("suspended.png", nlsHPCC.Suspended);
-            },
-            width: 25,
-            sortable: false,
-            formatter: function (suspended) {
-                if (suspended === true) {
-                    return Utility.getImageHTML("suspended.png");
-                }
-                return "";
-            }
-        },
-        ErrorCount: {
-            renderHeaderCell: function (node) {
-                node.innerHTML = Utility.getImageHTML("errwarn.png", nlsHPCC.ErrorWarnings);
-            },
-            width: 25,
-            sortable: false,
-            formatter: function (error) {
-                if (error > 0) {
-                    return Utility.getImageHTML("errwarn.png");
-                }
-                return "";
-            }
-        },
-        MixedNodeStates: {
-            renderHeaderCell: function (node) {
-                node.innerHTML = Utility.getImageHTML("mixwarn.png", nlsHPCC.MixedNodeStates);
-            },
-            width: 25,
-            sortable: false,
-            formatter: function (mixed) {
-                if (mixed === true) {
-                    return Utility.getImageHTML("mixwarn.png");
-                }
-                return "";
-            }
-        },
-        Activated: {
-            renderHeaderCell: function (node) {
-                node.innerHTML = Utility.getImageHTML("active.png", nlsHPCC.Active);
-            },
-            width: 25,
-            formatter: function (activated) {
-                if (activated === true) {
-                    return Utility.getImageHTML("active.png");
-                }
-                return Utility.getImageHTML("inactive.png");
-            }
-        },
-        Id: {
-            label: nlsHPCC.ID,
-            width: 380,
-            formatter: function (Id, row) {
-                return `<a href='#/queries/${row.QuerySetId}/${Id}' class='dgrid-row-url'>${Id}</a>`;
-            }
-        },
-        Name: {
-            label: nlsHPCC.Name
-        },
-        QuerySetId: {
-            width: 140,
-            label: nlsHPCC.Target,
-            sortable: true
-        },
-        Wuid: {
-            width: 160,
-            label: nlsHPCC.WUID,
-            formatter: function (Wuid, idx) {
-                return "<a href='#' onClick='return false;' class='dgrid-row-url2'>" + Wuid + "</a>";
-            }
-        },
-        Dll: {
-            width: 180,
-            label: nlsHPCC.Dll
-        },
-        PublishedBy: {
-            width: 100,
-            label: nlsHPCC.PublishedBy,
-            sortable: false
-        },
-        Status: {
-            width: 100,
-            label: nlsHPCC.Status,
-            sortable: false
-        }
-    });
+    const gridStore = React.useMemo(() => {
+        return store || ESPQuery.CreateQueryStore({});
+    }, [store]);
 
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", formatQuery(filter, wuid));
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [filter, grid, wuid]);
+    const query = React.useMemo(() => {
+        return formatQuery(filter);
+    }, [filter]);
+
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            col1: {
+                width: 16,
+                selectorType: "checkbox"
+            },
+            Suspended: {
+                headerIcon: "Pause",
+                headerTooltip: nlsHPCC.Suspended,
+                width: 16,
+                sortable: false,
+                formatter: (suspended) => {
+                    if (suspended === true) {
+                        return <Icon iconName="Pause" />;
+                    }
+                    return "";
+                }
+            },
+            ErrorCount: {
+                headerIcon: "Warning",
+                headerTooltip: nlsHPCC.ErrorWarnings,
+                width: 16,
+                sortable: false,
+                formatter: (error) => {
+                    if (error > 0) {
+                        return <Icon iconName="Warning" />;
+                    }
+                    return "";
+                }
+            },
+            MixedNodeStates: {
+                headerIcon: "Error",
+                headerTooltip: nlsHPCC.MixedNodeStates,
+                width: 16,
+                sortable: false,
+                formatter: (mixed) => {
+                    if (mixed === true) {
+                        return <Icon iconName="Error" />;
+                    }
+                    return "";
+                }
+            },
+            Activated: {
+                headerIcon: "SkypeCircleCheck",
+                headerTooltip: nlsHPCC.Active,
+                width: 16,
+                formatter: (activated) => {
+                    if (activated === true) {
+                        return <Icon iconName="SkypeCircleCheck" />;
+                    }
+                    return "";
+                }
+            },
+            Id: {
+                label: nlsHPCC.ID,
+                formatter: (Id, row) => {
+                    return <Link href={`#/queries/${row.QuerySetId}/${Id}`} >{Id}</Link>;
+                }
+            },
+            priority: {
+                label: nlsHPCC.Priority,
+                width: 80,
+                formatter: (priority, row) => {
+                    return priority === undefined ? "" : priority;
+                }
+            },
+            Name: { label: nlsHPCC.Name },
+            QuerySetId: { label: nlsHPCC.Target, sortable: true },
+            Wuid: {
+                label: nlsHPCC.WUID, width: 100,
+                formatter: (Wuid, idx) => {
+                    return <Link href={`#/workunits/${Wuid}`}>{Wuid}</Link>;
+                }
+            },
+            Dll: { label: nlsHPCC.Dll },
+            PublishedBy: { label: nlsHPCC.PublishedBy },
+            Status: { label: nlsHPCC.Status, sortable: false }
+        };
+    }, []);
+
+    const copyButtons = useCopyButtons(columns, selection, "roxiequeries");
+
+    const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
+        title: nlsHPCC.Delete,
+        message: nlsHPCC.DeleteSelectedWorkunits,
+        items: selection.map(s => s.Id),
+        onSubmit: React.useCallback(() => {
+            WsWorkunits.WUQuerysetQueryAction(selection, "Delete").then(() => refreshTable.call(true));
+        }, [refreshTable, selection])
+    });
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshTable.call()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -195,58 +208,58 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
         },
         {
             key: "delete", text: nlsHPCC.Delete, disabled: !uiState.hasSelection, iconProps: { iconName: "Delete" },
-            onClick: () => {
-                const list = selection.map(s => s.Id);
-                if (confirm(nlsHPCC.DeleteSelectedWorkunits + "\n" + list)) {
-                    WsWorkunits.WUQuerysetQueryAction(selection, "Delete").then(() => refreshTable(true));
-                }
-            }
+            onClick: () => setShowDeleteConfirm(true)
         },
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
             key: "Suspend", text: nlsHPCC.Suspend, disabled: !uiState.isSuspended,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Suspend"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Suspend").then(() => refreshTable.call());
+            }
         },
         {
             key: "Unsuspend", text: nlsHPCC.Unsuspend, disabled: !uiState.isNotSuspended,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Unsuspend"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Unsuspend").then(() => refreshTable.call());
+            }
         },
         {
             key: "Activate", text: nlsHPCC.Activate, disabled: !uiState.isActive,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Activate"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Activate").then(() => refreshTable.call());
+            }
         },
         {
             key: "Deactivate", text: nlsHPCC.Deactivate, disabled: !uiState.isNotActive,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Deactivate"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Deactivate").then(() => refreshTable.call());
+            }
         },
         { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
-            key: "filter", text: nlsHPCC.Filter, disabled: store !== undefined || wuid !== undefined, iconProps: { iconName: "Filter" },
+            key: "filter", text: nlsHPCC.Filter, disabled: store !== undefined || wuid !== undefined, iconProps: { iconName: hasFilter ? "FilterSolid" : "Filter" },
             onClick: () => {
                 setShowFilter(true);
             }
         },
         {
-            key: "mine", text: nlsHPCC.Mine, disabled: true, iconProps: { iconName: "Contact" }, canCheck: true, checked: mine,
+            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username || !total, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter["PublishedBy"] === currentUser.username,
             onClick: () => {
-                setMine(!mine);
+                if (filter["PublishedBy"] === currentUser.username) {
+                    filter["PublishedBy"] = "";
+                } else {
+                    filter["PublishedBy"] = currentUser.username;
+                }
+                pushParams(filter);
             }
         },
-    ], [mine, refreshTable, selection, store, uiState.hasSelection, uiState.isActive, uiState.isNotActive, uiState.isNotSuspended, uiState.isSuspended, wuid]);
-
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "roxiequeries.csv")
-    ], [grid, selection]);
+    ], [currentUser.username, filter, hasFilter, refreshTable, selection, setShowDeleteConfirm, store, total, uiState.hasSelection, uiState.isActive, uiState.isNotActive, uiState.isNotSuspended, uiState.isSuspended, wuid]);
 
     //  Filter  ---
     const filterFields: Fields = {};
     for (const field in FilterFields) {
         filterFields[field] = { ...FilterFields[field], value: filter[field] };
     }
-
-    React.useEffect(() => {
-        refreshTable();
-    }, [filter, refreshTable]);
 
     //  Selection  ---
     React.useEffect(() => {
@@ -270,12 +283,40 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
     }, [selection]);
 
     return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
             <>
-                <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
+                <SizeMe monitorHeight>{({ size }) =>
+                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                        <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
+                            <FluentPagedGrid
+                                store={gridStore}
+                                query={query}
+                                sort={sort}
+                                pageNum={pageNum}
+                                pageSize={pageSize}
+                                total={total}
+                                columns={columns}
+                                height={`${size.height}px`}
+                                setSelection={setSelection}
+                                setTotal={setTotal}
+                                refresh={refreshTable}
+                            ></FluentPagedGrid>
+                        </div>
+                    </div>
+                }</SizeMe>
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
+                <DeleteConfirm />
             </>
         }
+        footer={<FluentPagedFooter
+            persistID={"queries"}
+            pageNum={pageNum}
+            selectionCount={selection.length}
+            setPageNum={setPageNum}
+            setPageSize={setPageSize}
+            total={total}
+        ></FluentPagedFooter>}
+        footerStyles={{}}
     />;
 };

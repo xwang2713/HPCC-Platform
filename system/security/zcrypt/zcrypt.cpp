@@ -22,13 +22,13 @@
 #include "aes.hpp"
 #include "base64.ipp"
 
-#include "zip.h"
+#include <minizip/zip.h>
 #include "jexcept.hpp"
 #include <math.h>
 
 #ifdef WIN32
 #define USEWIN32IOAPI
-#include "iowin32.h"
+#include "minizip/iowin32.h"
 #endif
 
 IZBuffer::~IZBuffer()
@@ -81,16 +81,19 @@ void RSAZCryptor::init()
     priv_size = 0;
     pub_size = 0;
 
-    CRYPTO_mem_ctrl(CRYPTO_MEM_CHECK_ON);
     bio_err=BIO_new_fp(stderr, BIO_NOCLOSE);
 
 #if defined(_WIN32) || defined(__linux__)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     OpenSSL_add_all_ciphers();
+#endif
 #else
     SSL_library_init();
 #endif
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     ERR_load_crypto_strings ();
+#endif
 
     seed_prng();
 
@@ -230,7 +233,9 @@ RSAZCryptor::~RSAZCryptor()
     if(pub_rsa)
         RSA_free(pub_rsa);      
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     EVP_cleanup();
+#endif
 }
 
 void RSAZCryptor::throw_error()
@@ -241,7 +246,7 @@ void RSAZCryptor::throw_error()
     if(m_trace_level > 0)
         printf("Error: %s\n", errbuf);
 
-    throw string(errbuf);
+    throw std::string(errbuf);
 }
 
 void RSAZCryptor::setTraceLevel(unsigned trace_level)
@@ -573,6 +578,7 @@ int RSAZCryptor::zip(int in_len, unsigned char* in, ZBuffer& outbuf)
 
     strm.avail_in = in_len;
     strm.next_in = in;
+    strm.total_out = 0;
     ZBuffer onebuf(buflen);
     do 
     {

@@ -66,8 +66,15 @@ public:
 
 class CFileSprayEx : public CFileSpray
 {
-    void readAndCheckSpraySourceReq(MemoryBuffer& srcxml, const char* srcIP, const char* srcPath, const char* srcplane,
-        StringBuffer& sourceIPReq, StringBuffer& sourcePathReq);
+    void readAndCheckSpraySourceReq(IEspContext& context, MemoryBuffer& srcxml, const char* srcIP, const char* srcPath, const char* srcplane,
+        StringBuffer& sourcePlaneReq, StringBuffer& sourceIPReq, StringBuffer& sourcePathReq);
+    void getServersInDropZone(const char* dropZoneName, IArrayOf<IConstTpDropZone>& dropZoneList,
+        bool isECLWatchVisibleOnly, StringArray& serverList);
+    IPropertyTree* getAndValidateDropZone(const char * path, const char * host);
+    IEspDFUWorkunit* createDFUWUFromSashaListResult(const char* result);
+    void setDFUCommand(const char* commandStr, IEspDFUWorkunit* dfuWU);
+    void setSpraySourceDFUFileSpec(IEspContext& context, const char* srcPlane, const char * srcHost,
+        const char* srcFile, MemoryBuffer& srcXML, IDFUfileSpec* srcDFUfileSpec);
 
 public:
     virtual void init(IPropertyTree *cfg, const char *process, const char *service);
@@ -106,6 +113,7 @@ public:
     virtual bool onGetDFUWorkunits(IEspContext &context, IEspGetDFUWorkunits &req, IEspGetDFUWorkunitsResponse &resp);
     virtual bool onGetDFUWorkunit(IEspContext &context, IEspGetDFUWorkunit &req, IEspGetDFUWorkunitResponse &resp);
     virtual bool onCreateDFUWorkunit(IEspContext &context, IEspCreateDFUWorkunit &req, IEspCreateDFUWorkunitResponse &resp);
+    virtual bool onCreateDFUPublisherWorkunit(IEspContext &context, IEspCreateDFUPublisherWorkunit &req, IEspCreateDFUPublisherWorkunitResponse &resp);
     virtual bool onUpdateDFUWorkunit(IEspContext &context, IEspUpdateDFUWorkunit &req, IEspUpdateDFUWorkunitResponse &resp);
     virtual bool onDeleteDFUWorkunits(IEspContext &context, IEspDeleteDFUWorkunits &req, IEspDeleteDFUWorkunitsResponse &resp);
     virtual bool onDeleteDFUWorkunit(IEspContext &context, IEspDeleteDFUWorkunit &req, IEspDeleteDFUWorkunitResponse &resp);
@@ -130,6 +138,7 @@ public:
     virtual bool onDeleteDropZoneFiles(IEspContext &context, IEspDeleteDropZoneFilesRequest &req, IEspDFUWorkunitsActionResponse &resp);
     virtual bool onGetSprayTargets(IEspContext &context, IEspGetSprayTargetsRequest &req, IEspGetSprayTargetsResponse &resp);
     virtual bool onGetDFUServerQueues(IEspContext &context, IEspGetDFUServerQueuesRequest &req, IEspGetDFUServerQueuesResponse &resp);
+    virtual bool onGetRemoteTargets(IEspContext &context, IEspGetRemoteTargetsRequest &req, IEspGetRemoteTargetsResponse &resp);
 
 protected:
     StringBuffer m_QueueLabel;
@@ -141,19 +150,20 @@ protected:
     void getInfoFromSasha(IEspContext &context, const char *sashaServer, const char* wuid, IEspDFUWorkunit *info);
     bool getArchivedWUInfo(IEspContext &context, IEspGetDFUWorkunit &req, IEspGetDFUWorkunitResponse &resp);
     bool GetArchivedDFUWorkunits(IEspContext &context, IEspGetDFUWorkunits &req, IEspGetDFUWorkunitsResponse &resp);
-    bool getDropZoneFiles(IEspContext &context, const char* dropZone, const char* netaddr, const char* path, IEspDropZoneFilesRequest &req, IEspDropZoneFilesResponse &resp);
+    void getPhysicalFiles(IEspContext &context, const char *dropZoneName, const char *host, const char *path, const char *fileNameMask, bool directoryOnly, IArrayOf<IConstPhysicalFileStruct> &files);
     bool ParseLogicalPath(const char * pLogicalPath, StringBuffer &title);
     bool ParseLogicalPath(const char * pLogicalPath, const char *group, const char* cluster, StringBuffer &folder, StringBuffer &title, StringBuffer &defaultFolder, StringBuffer &defaultReplicateFolder);
     StringBuffer& getAcceptLanguage(IEspContext& context, StringBuffer& acceptLanguage);
     void appendGroupNode(IArrayOf<IEspGroupNode>& groupNodes, const char* nodeName, const char* clusterType, bool replicateOutputs);
     bool getOneDFUWorkunit(IEspContext& context, const char* wuid, IEspGetDFUWorkunitsResponse& resp);
-    void getDropZoneInfoByIP(double clientVersion, const char* destIP, const char* destFile, StringBuffer& path, StringBuffer& mask);
     void getDropZoneInfoByDestPlane(double clientVersion, const char* destGroup, const char* destFileIn, StringBuffer& destFileOut, StringBuffer& umask, StringBuffer & hostip);
     bool checkDropZoneIPAndPath(double clientVersion, const char* dropZone, const char* netAddr, const char* path);
-    void addDropZoneFile(IEspContext& context, IDirectoryIterator* di, const char* name, const char pathSep, IArrayOf<IEspPhysicalFileStruct>&files);
-    void searchDropZoneFiles(IEspContext& context, IpAddress& ip, const char* dir, const char* nameFilter, IArrayOf<IEspPhysicalFileStruct>& files, unsigned& filesFound);
+    void addPhysicalFile(IEspContext& context, IDirectoryIterator* di, const char* name, const char* path, const char* server, IArrayOf<IConstPhysicalFileStruct>&files);
+    bool searchDropZoneFiles(IEspContext& context, const char* dropZone, const char* server, const char* dir, const char* relDir, const char* nameFilter, IArrayOf<IConstPhysicalFileStruct>& files, unsigned& filesFound);
     void setDFUServerQueueReq(const char* dfuServerQueue, IDFUWorkUnit* wu);
     void setUserAuth(IEspContext &context, IDFUWorkUnit* wu);
+    void checkDropZoneFileScopeAccess(IEspContext &context, const char *dropZoneName, const char *netAddress,
+        const char *dropZonePath, const StringArray &dropZoneFiles, SecAccessFlags accessReq);
 };
 
 #endif //_ESPWIZ_FileSpray_HPP__

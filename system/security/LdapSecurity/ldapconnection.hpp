@@ -213,6 +213,7 @@ interface ILdapConfig : extends IInterface
     virtual void setResourceBasedn(const char* rbasedn, SecResourceType rtype = RT_DEFAULT) = 0;
     virtual int getLdapTimeout() = 0;
     virtual bool isAzureAD() = 0;
+    virtual void setUserBasedn(const char * basedn) = 0;
 };
 
 
@@ -301,8 +302,10 @@ interface ILdapClient : extends IInterface
         ResourcePermissionField* sortOrder, const unsigned pageStartFrom, const unsigned pageSize, unsigned* total, __int64* cacheHint) = 0;
     virtual bool changePermission(CPermissionAction& action) = 0;
     virtual void changeUserGroup(const char* action, const char* username, const char* groupname, const char * groupDN=nullptr) = 0;
+    virtual void changeGroupMember(const char* action, const char* groupdn, const char* userdn) = 0;
     virtual bool deleteUser(ISecUser* user) = 0;
     virtual void addGroup(const char* groupname, const char * groupOwner, const char * groupDesc) = 0;
+    virtual void addGroup(const char* groupname, const char * groupOwner, const char * groupDesc, const char* basedn) = 0;
     virtual void deleteGroup(const char* groupname, const char * groupsDN=nullptr) = 0;
     virtual void getGroupMembers(const char* groupname, StringArray & users, const char * groupsDN=nullptr) = 0;
     virtual void deleteResource(SecResourceType rtype, const char* name, const char* basedn) = 0;
@@ -315,7 +318,6 @@ interface ILdapClient : extends IInterface
     virtual int countResources(const char* basedn, const char* searchstr, int limit) = 0;
     virtual ILdapConfig* queryConfig() = 0;
     virtual const char* getPasswordStorageScheme() = 0;
-    virtual bool createUserScope(ISecUser& user) = 0;
     virtual aindex_t getManagedScopeTree(LDAP* ld, SecResourceType rtype, const char * basedn, IArrayOf<ISecResource>& scopes) = 0;
     virtual SecAccessFlags queryDefaultPermission(ISecUser& user) = 0;
 
@@ -332,6 +334,9 @@ interface ILdapClient : extends IInterface
     virtual void removeViewMembers(const char * viewName, StringArray & viewUsers, StringArray & viewGroups) = 0;
     virtual void queryViewMembers(const char * viewName, StringArray & viewUsers, StringArray & viewGroups) = 0;
     virtual bool userInView(const char * user, const char* viewName) = 0;
+    virtual void createLdapBasedn(ISecUser* user, const char* basedn, SecPermissionType ptype, const char* description) = 0;
+    virtual const bool organizationalUnitExists(const char * ou) const = 0;
+    virtual bool addUser(ISecUser & user, const char* basedn) = 0;
 };
 
 ILdapClient* createLdapClient(IPropertyTree* cfg);

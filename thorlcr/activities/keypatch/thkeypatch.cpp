@@ -55,21 +55,18 @@ public:
         queryThorFileManager().addScope(container.queryJob(), outputHelperName, expandedFileName.clear(), false);
         outputName.set(expandedFileName);
 
-        originalIndexFile.setown(queryThorFileManager().lookup(container.queryJob(), originalHelperName, false, false, false, container.activityIsCodeSigned()));
+        originalIndexFile.setown(lookupReadFile(originalHelperName, AccessMode::readRandom, false, false, false));
         if (!isFileKey(originalIndexFile))
-            throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read flat file as an index: %s", originalHelperName.get());
-        patchFile.setown(queryThorFileManager().lookup(container.queryJob(), patchHelperName, false, false, false, container.activityIsCodeSigned()));
+            throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read flat file as an index: %s", originalHelperName.get());
+        patchFile.setown(lookupReadFile(patchHelperName, AccessMode::readRandom, false, false, false));
         if (isFileKey(patchFile))
-            throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read index as a patch file: %s", patchHelperName.get());
+            throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read index as a patch file: %s", patchHelperName.get());
         
         if (originalIndexFile->numParts() != patchFile->numParts())
             throw MakeActivityException(this, TE_KeyPatchIndexSizeMismatch, "Index %s and patch %s differ in width", originalName.get(), patchName.get());
         if (originalIndexFile->querySuperFile() || patchFile->querySuperFile())
             throw MakeActivityException(this, 0, "Patching super files not supported");
         
-        addReadFile(originalIndexFile);
-        addReadFile(patchFile);
-
         width = originalIndexFile->numParts();
 
         originalDesc.setown(originalIndexFile->getFileDescriptor());
@@ -84,6 +81,9 @@ public:
         if (width > container.queryJob().querySlaves())
             throw MakeActivityException(this, 0, "Unsupported: keypatch(%s, %s) - Cannot patch a key that's wider(%d) than the target cluster size(%d)", originalIndexFile->queryLogicalName(), patchFile->queryLogicalName(), width, container.queryJob().querySlaves());
 
+        StringBuffer defaultCluster;
+        if (getDefaultIndexBuildStoragePlane(defaultCluster))
+            clusters.append(defaultCluster);
         IArrayOf<IGroup> groups;
         fillClusterArray(container.queryJob(), outputName, clusters, groups);
         newIndexDesc.setown(queryThorFileManager().create(container.queryJob(), outputName, clusters, groups, 0 != (KDPoverwrite & helper->getFlags()), 0, !local, width));
@@ -186,7 +186,7 @@ public:
         if (0==(KDPoverwrite & helper->getFlags()))
         {
             if (KDPvaroutputname & helper->getFlags()) return;
-            Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), outputName, false, true, false, container.activityIsCodeSigned());
+            Owned<IDistributedFile> file = queryThorFileManager().lookup(container.queryJob(), outputName, AccessMode::readMeta, false, true, false, container.activityIsCodeSigned());
             if (file)
                 throw MakeActivityException(this, TE_OverwriteNotSpecified, "Cannot write %s, file already exists (missing OVERWRITE attribute?)", file->queryLogicalName());
         }

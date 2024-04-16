@@ -1,0 +1,234 @@
+/*##############################################################################
+
+    HPCC SYSTEMS software Copyright (C) 2021 HPCC Systems®.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+############################################################################## */
+
+ESPenum LogAccessType : int
+{
+    All(0, "All"),
+    ByJobID(1, "ByJobID"),
+    ByComponent(2, "ByComponent"),
+    ByLogType(3, "ByLogType"),
+    ByTargetAudience(4, "ByTargetAudience"),
+    BySourceInstance(5, "BySourceInstance"),
+    BySourceNode(6, "BySourceNode"),
+    ByFieldName(7, "ByFieldName"),
+    ByPod(8, "ByPod")
+};
+
+ESPenum LogAccessLogFormat : int
+{
+    XML(0, "XML"),
+    JSON(1, "JSON"),
+    CSV(2, "CSV")
+} ;
+
+ESPenum LogSelectColumnMode : int
+{
+    MIN(0, "MIN"),
+    DEFAULT(1, "DEFAULT"),
+    ALL(2, "ALL"),
+    CUSTOM(3, "CUSTOM")
+};
+
+ESPStruct TimeRange
+{
+    xsdDateTime StartDate; //example 1980-03-23T10:20:15
+    xsdDateTime EndDate;   //example 1980-03-23T10:20:15
+};
+
+ESPRequest GetLogAccessInfoRequest
+{
+};
+
+ESPenum LogColumnType : string
+{
+    global("global"),
+    workunits("workunits"),
+    components("components"),
+    audience("audience"),
+    logclass("class"),
+    instance("instance"),
+    node("node"),
+    message("message"),
+    logid("logid"),
+    processid("processid"),
+    threadid("threadid"),
+    timestamp("timestamp"),
+    pod("pod")
+};
+
+ESPenum LogColumnValueType : string
+{
+    str("string"),
+    numeric("numeric"),
+    datetime("datetime"),
+    enum("enum")
+};
+
+ESPStruct [nil_remove] LogColumn
+{
+    string Name;
+    ESPenum LogColumnType LogType;
+    ESParray<string> EnumeratedValues;
+    LogSelectColumnMode ColumnMode;
+    ESPenum LogColumnValueType ColumnType;
+};
+
+ESPResponse GetLogAccessInfoResponse
+{
+    [min_ver("1.04")] ESParray<ESPstruct LogColumn, Column> Columns;
+    string RemoteLogManagerType;
+    string RemoteLogManagerConnectionString;
+    [min_ver("1.05")] bool SupportsResultPaging;
+};
+
+ESPenum LogAccessFilterOperator : int
+{
+    NONE(0, "NONE"),
+    AND(1, "AND"),
+    OR(2, "OR")
+};
+
+ESPenum LogEventClass : string
+{
+    All("ALL"),
+    Disaster("DIS"),
+    Error("ERR"),
+    Warning("WRN"),
+    Info("INF"),
+    Progress("PRO"),
+    Metric("MET"),
+    Event("EVT")
+};
+
+/*
+* Provides mechanism to query log entries
+*
+* Caller can query by JobId, component, log event type, target audience, source instance, or host by providing the appropriate
+* enumerated value in the LogCategory field, as well as the targeted value in the SearchByValue field.
+* Caller can also query by field name directly by choosing the 'ByFieldName' option and providing the field name, and desired filter value.
+*
+* SearchbyValue is optional if LogCategory == ALL
+*
+* SearchbyValue contains value used to identify target log entries.
+* Limited to values associated with the the LogCategory choice.
+*
+* If searching by "ByJobID", the SearchByValue should contain the jobid of interest
+* If searching by "ByComponent", the SearchByValue should contain the component of interest
+* If searching by "ByLogType", the SearchByValue should contain the 3 letter code associated with the log type of interest.
+* valid values at time of writing are:
+*    DIS - Disaster
+*    ERR - Error
+*    WRN - Warning
+*    INF - Information
+*    PRO - Progress
+*    MET - Metric
+*    EVT - Event
+*
+*If searching by "ByTargetAudience", the SearchByValue should contain the 3 letter code associated with the target audience of interest.
+* valid values at time of writing are:
+*    OPR - Operator
+*    USR - User
+*    PRO - Programmer
+*    MON - Monitor
+*    ADT - Audit
+*If searching by "BySourceInstance", the SearchByValue should contain the instance of interest
+*If searching by "BySourceNode", the SearchByValue should contain the node of interest
+*If searching by "ByFieldName", the SearchByValue should contain the field value of interest, and the SearchField 
+* should be populated.
+* Caller should restrict the query to target a specific time range specified in the Range field.
+* By default, the first 100 log entries encountered are returned. Caller to paginate using the
+* LogLineStartFrom field (specifies as zero-indexed start index) and the LogLineLimit (specifies the maximum
+* number of log entries to be returned)
+* Caller can specify which log columns should be reported via the Columns field, all available columns returned by default.
+*
+* The report format can be specified via the Format field: JSON|XML|CSV
+*/
+ESPStruct LogFilter
+{
+    ESPenum LogAccessType LogCategory;
+    string SearchByValue; 
+    string SearchField;
+};
+
+ESPStruct BinaryLogFilter
+{
+    ESPStruct LogFilter leftFilter;
+    ESParray<ESPstruct BinaryLogFilter> leftBinaryFilter;
+
+    ESPenum LogAccessFilterOperator Operator;
+
+    ESPStruct LogFilter rightFilter;
+    ESParray<ESPstruct BinaryLogFilter> rightBinaryFilter;
+};
+
+ESPenum SortDirection : int
+{
+    ASC(0, "ASC"),
+    DSC(1, "DSC")
+};
+
+ESPenum SortColumType : int
+{
+    ByDate(0, "ByDate"),
+    ByJobID(1, "ByJobID"),
+    ByComponent(2, "ByComponent"),
+    ByLogType(3, "ByLogType"),
+    ByTargetAudience(4, "ByTargetAudience"),
+    BySourceInstance(5, "BySourceInstance"),
+    BySourceNode(6, "BySourceNode"),
+    ByFieldName(7, "ByFieldName"),
+    ByPod(8, "ByPod")
+};
+
+ESPStruct SortCondition
+{
+    ESPenum SortColumType BySortType(0);  //Choose Sortby type - known/mapped fields, or by a free-hand field name
+    string ColumnName;                    //Name of field to sortby - Only used in conjunction with BySortType=ByFieldName(7)
+    ESPenum SortDirection Direction(1);
+};
+
+ESPRequest GetLogsRequest
+{
+    [min_ver("1.02")] ESPStruct BinaryLogFilter Filter;
+    [depr_ver("1.02")] ESPenum LogAccessType LogCategory;
+    [depr_ver("1.02")] string SearchByValue; //Value used to identify target log entries.
+    ESPStruct TimeRange Range;
+    unsigned LogLineLimit(100);
+    int64 LogLineStartFrom(0);
+    [min_ver("1.01")] ESPenum LogSelectColumnMode SelectColumnMode(1);
+    ESParray<string> Columns;
+    LogAccessLogFormat Format("JSON");
+    [min_ver("1.03")] ESParray<ESPstruct SortCondition> SortBy;
+};
+
+ESPResponse GetLogsResponse
+{
+    string LogLines;
+    [min_ver("1.02")] unsigned int LogLineCount;
+    [min_ver("1.02")] unsigned int TotalLogLinesAvailable;
+};
+
+ESPservice [auth_feature("WsLogAccess:READ"), version("1.05"), default_client_version("1.05"), exceptions_inline("xslt/exceptions.xslt")] ws_logaccess
+{
+    ESPmethod GetLogAccessInfo(GetLogAccessInfoRequest, GetLogAccessInfoResponse);
+    ESPmethod GetLogs(GetLogsRequest, GetLogsResponse);
+};
+
+SCMexportdef(ws_logaccess);
+
+SCMapi(ws_logaccess) IClientws_logaccess *createws_logaccessClient();
+

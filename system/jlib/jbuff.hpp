@@ -45,6 +45,7 @@ public:
     inline void *       mem() const         { return ptr; }
     void                set(size_t _len, const void * _ptr);
     void                setOwn(size_t _len, void * _ptr);
+    void                swapWith(MemoryAttr & other);
     
     static int          compare(const MemoryAttr & m1, const MemoryAttr & m2);
 
@@ -65,10 +66,10 @@ protected:
     CLASS *ptr = nullptr;
 
 public:
-    OwnedPtrCustomFree<CLASS, FREE_FUNC>() { }
-    OwnedPtrCustomFree<CLASS, FREE_FUNC>(CLASS *_ptr) : ptr(_ptr) { }
-    OwnedPtrCustomFree<CLASS, FREE_FUNC>(SELF &&_ptr) { ptr = _ptr.getClear(); }
-    ~OwnedPtrCustomFree<CLASS, FREE_FUNC>() { safeFree(ptr); }
+    OwnedPtrCustomFree() { }
+    OwnedPtrCustomFree(CLASS *_ptr) : ptr(_ptr) { }
+    OwnedPtrCustomFree(SELF &&_ptr) { ptr = _ptr.getClear(); }
+    ~OwnedPtrCustomFree() { safeFree(ptr); }
 
     void operator = (CLASS * _ptr)
     {
@@ -125,7 +126,7 @@ private:
 class jlib_decl MemoryBuffer
 {
 public:
-    inline MemoryBuffer()  { init(); }
+    constexpr MemoryBuffer() = default;
     MemoryBuffer(size_t initial);
     MemoryBuffer(size_t len, const void * buffer);
     MemoryBuffer(MemoryBuffer & value) = delete;
@@ -230,12 +231,12 @@ private:
     MemoryBuffer & _reverse();
     const char* _str();
     
-    mutable char *  buffer;
-    size32_t  curLen;
-    size32_t  maxLen;
-    size32_t  readPos;
-    bool    swapEndian;
-    bool    ownBuffer;
+    mutable char * buffer = nullptr;
+    size32_t curLen = 0;
+    size32_t maxLen = 0;
+    size32_t readPos = 0;
+    bool swapEndian= false;
+    bool ownBuffer = true;
 };
 
 // Utility class, to back patch a scalar into current position

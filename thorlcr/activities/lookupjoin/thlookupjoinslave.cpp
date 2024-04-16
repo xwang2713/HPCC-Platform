@@ -118,7 +118,7 @@ class CBroadcaster : public CSimpleInterface
         void start()
         {
             aborted = false;
-            threaded.start();
+            threaded.start(true);
         }
         void abort(bool join)
         {
@@ -188,7 +188,7 @@ class CBroadcaster : public CSimpleInterface
         {
             aborted = false;
             exception.clear();
-            threaded.start();
+            threaded.start(true);
         }
         void abort(bool join)
         {
@@ -556,7 +556,7 @@ class CMarker
             chunkUnique = 0;
         }
         rowidx_t getUnique() const { return chunkUnique; }
-        void start() { threaded.start(); }
+        void start() { threaded.start(true); }
         void join() { threaded.join(); }
     // IThreaded
         virtual void threadmain() override
@@ -860,7 +860,7 @@ protected:
             stopped = false;
             clearQueue();
             exception.clear();
-            threaded.start();
+            threaded.start(true);
         }
         void abort()
         {
@@ -905,6 +905,7 @@ protected:
             {
                 exception.setown(e);
                 EXCLOG(e, "CRowProcessor");
+                owner.broadcaster->cancel(e);
             }
         }
     } *rowProcessor;
@@ -1390,7 +1391,7 @@ public:
         {
             startInput(0);
             if (ensureStartFTLookAhead(0))
-                setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), LOOKUPJOINL_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, this, &container.queryJob().queryIDiskUsage()), false);
+                setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), LOOKUPJOINL_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, this), false);
             left.set(inputStream); // can be replaced by loader stream
         }
         catch(IException *e)
@@ -1727,7 +1728,6 @@ protected:
     using PARENT::queryInput;
     using PARENT::rhsRowLock;
     using PARENT::hasStarted;
-    using PARENT::stats;
 
     IHash *leftHash, *rightHash;
     ICompare *compareRight, *compareLeftRight;
@@ -1877,7 +1877,7 @@ protected:
 
                         VStringBuffer tempPrefix("spill_%d", container.queryId());
                         StringBuffer tempName;
-                        GetTempName(tempName, tempPrefix.str(), true);
+                        GetTempFilePath(tempName, tempPrefix.str());
                         file.setown(new CFileOwner(createIFile(tempName.str())));
                         VStringBuffer spillPrefixStr("clearAllNonLocalRows(%d)", SPILL_PRIORITY_SPILLABLE_STREAM);
                         // 3rd param. is skipNulls = true, the row arrays may have had the non-local rows delete already.
@@ -2941,7 +2941,7 @@ public:
             rwFlags |= spillCompInfo;
         }
         StringBuffer tempFilename;
-        GetTempName(tempFilename, "lookup_local", true);
+        GetTempFilePath(tempFilename, "lookup_local");
         ActPrintLog("Overflowing RHS broadcast rows to spill file: %s", tempFilename.str());
         OwnedIFile iFile = createIFile(tempFilename.str());
         overflowWriteFile.setown(new CFileOwner(iFile.getLink()));
@@ -2952,15 +2952,15 @@ public:
             overflowWriteStream->putRow(rhsInRowsTemp.getClear(r));
         return true;
     }
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
+        PARENT::gatherActiveStats(activeStats);
         if (isSmart())
         {
             if (isGlobal())
-                stats.setStatistic(StNumSmartJoinDegradedToLocal, aggregateFailoversToLocal); // NB: is going to be same for all slaves.
-            stats.setStatistic(StNumSmartJoinSlavesDegradedToStd, aggregateFailoversToStandard);
+                activeStats.setStatistic(StNumSmartJoinDegradedToLocal, aggregateFailoversToLocal); // NB: is going to be same for all slaves.
+            activeStats.setStatistic(StNumSmartJoinSlavesDegradedToStd, aggregateFailoversToStandard);
         }
-        PARENT::serializeStats(mb);
     }
 };
 

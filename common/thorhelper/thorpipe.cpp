@@ -37,7 +37,7 @@ private:
     Linked<IPipeProcess> pipe;
 
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     int run()
     {
@@ -75,7 +75,7 @@ public:
     void run(IPipeProcess *_pipe)
     {
         pipe.set(_pipe);
-        this->start();
+        this->start(true);
     }
 
     void wait()

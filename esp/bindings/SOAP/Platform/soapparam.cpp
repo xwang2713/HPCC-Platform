@@ -107,7 +107,7 @@ void SoapStringParam::toXMLValue(StringBuffer &s, bool encode)
     if (!encode)
         s.append(value);
     else
-        encodeUtf8XML(value.str(), s, getEncodeNewlines() ? ENCODE_NEWLINES : 0);
+        encodeUtf8XML(value.str(), s, getEncodeNewlines() ? ENCODE_NEWLINES : 0, value.length());
 }
 
 void SoapStringParam::toStr(IEspContext* ctx, StringBuffer &s, const char *tagname, const char *basepath, bool encode, const char *xsdtype, const char *prefix, bool encodeJSON)
@@ -576,7 +576,7 @@ bool EspBaseArrayParam::unmarshall(IEspContext* ctx, IProperties &params, MapStr
             {
                 if (strlen(keyname)==taglen || !strncmp(keyname+taglen, "_rd_", 4))
                 {
-                    const char *finger = params.queryProp(iter->getPropKey());
+                    const char *finger = iter->queryPropValue();
                     StringBuffer itemval;
                     while (*finger)
                     {
@@ -610,7 +610,7 @@ bool EspBaseArrayParam::unmarshall(IEspContext* ctx, IProperties &params, MapStr
                 }
                 else if (strncmp(keyname+taglen, "_i", 2)==0)
                 {
-                    append(params.queryProp(iter->getPropKey()));
+                    append(iter->queryPropValue());
                     hasValue = true;
                 }
             }

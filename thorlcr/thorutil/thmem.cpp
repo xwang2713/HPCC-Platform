@@ -61,8 +61,6 @@ static CriticalSection MTcritsect;  // held when blocked
 static Owned<ILargeMemLimitNotify> MTthresholdnotify;
 static bool MTlocked = false;
 
-#define DEFAULT_SORT_COMPBLKSZ 0x10000 // 64K
-
 void checkMultiThorMemoryThreshold(bool inc)
 {
     if (MTthresholdnotify.get()) {
@@ -246,7 +244,7 @@ protected:
 
         StringBuffer tempName;
         VStringBuffer tempPrefix("streamspill_%d", activity.queryId());
-        GetTempName(tempName, tempPrefix.str(), true);
+        GetTempFilePath(tempName, tempPrefix.str());
         spillFile.setown(createIFile(tempName.str()));
 
         VStringBuffer spillPrefixStr("SpillableStream(%u)", spillPriority);
@@ -598,7 +596,10 @@ void CThorExpandingRowArray::doSort(rowidx_t n, void **const rows, ICompare &com
             dbgassertex(NULL != stableTable);
             stableTablePtr = stableTable;
         }
-        parsortvecstableinplace(rows, n, compare, stableTablePtr, maxCores);
+        if (useMergeSort)
+            parmsortvecstableinplace(rows, n, compare, stableTablePtr);
+        else
+            parqsortvecstableinplace(rows, n, compare, stableTablePtr, maxCores);
     }
     else
         parqsortvec((void **)rows, n, compare, maxCores);
@@ -1624,15 +1625,16 @@ protected:
     unsigned overflowCount = 0;
     unsigned maxCores = 0;
     unsigned outStreams = 0;
-    offset_t sizeSpill = 0;
     ICompare *iCompare;
     StableSortFlag stableSort;
     EmptyRowSemantics emptyRowSemantics = ers_forbidden;
     Owned<CSharedSpillableRowSet> spillableRowSet;
     unsigned options = 0;
     unsigned spillCompInfo = 0;
-    __uint64 spillCycles = 0;
-    __uint64 sortCycles = 0;
+    RelaxedAtomic<unsigned> statOverflowCount{0};
+    RelaxedAtomic<offset_t> statSizeSpill{0};
+    RelaxedAtomic<__uint64> statSpillCycles{0};
+    RelaxedAtomic<__uint64> statSortCycles{0};
 
     bool spillRows(bool critical)
     {
@@ -1648,19 +1650,20 @@ protected:
         {
             CCycleTimer timer;
             spillableRows.sort(*iCompare, maxCores); // sorts committed rows
-            sortCycles += timer.elapsedCycles();
+            statSortCycles.fastAdd(timer.elapsedCycles());
             ActPrintLog(&activity, "%sSorting %" RIPF "u rows took: %f", tracingPrefix.str(), spillableRows.numCommitted(), ((float)timer.elapsedMs())/1000);
             tempPrefix.append("srt");
         }
         tempPrefix.appendf("spill_%d", activity.queryId());
-        GetTempName(tempName, tempPrefix.str(), true);
+        GetTempFilePath(tempName, tempPrefix.str());
         Owned<IFile> iFile = createIFile(tempName.str());
         VStringBuffer spillPrefixStr("%sRowCollector(%d)", tracingPrefix.str(), spillPriority);
         spillableRows.save(*iFile, spillCompInfo, false, spillPrefixStr.str()); // saves committed rows
         spillFiles.append(new CFileOwner(iFile.getLink()));
         ++overflowCount;
-        sizeSpill += iFile->size();
-        spillCycles += spillTimer.elapsedCycles();
+        statOverflowCount.fastAdd(1); // NB: this is total over multiple uses of this class
+        statSizeSpill.fastAdd(iFile->size());
+        statSpillCycles.fastAdd(spillTimer.elapsedCycles());
         return true;
     }
     void setEmptyRowSemantics(EmptyRowSemantics _emptyRowSemantics)
@@ -1748,7 +1751,7 @@ protected:
                     {
                         CCycleTimer timer;
                         spillableRows.sort(*iCompare, maxCores);
-                        sortCycles += timer.elapsedCycles();
+                        statSortCycles.fastAdd(timer.elapsedCycles());
                     }
 
                     if ((rc_allDiskOrAllMem == diskMemMix) || // must supply allMemRows, only here if no spilling (see above)
@@ -1829,9 +1832,6 @@ protected:
         spillFiles.kill();
         totalRows = 0;
         overflowCount = outStreams = 0;
-        sizeSpill = 0;
-        spillCycles = 0;
-        sortCycles = 0;
     }
 public:
     CThorRowCollectorBase(CActivityBase &_activity, IThorRowInterfaces *_rowIf, ICompare *_iCompare, StableSortFlag _stableSort, RowCollectorSpillFlags _diskMemMix, unsigned _spillPriority)
@@ -1896,7 +1896,7 @@ public:
         {
             CCycleTimer timer;
             spillableRows.sort(*iCompare, maxCores);
-            sortCycles += timer.elapsedCycles();
+            statSortCycles.fastAdd(timer.elapsedCycles());
         }
         out.transferFrom(spillableRows);
     }
@@ -1946,17 +1946,17 @@ public:
         switch (kind)
         {
         case StCycleSpillElapsedCycles:
-            return spillCycles;
+            return statSpillCycles;
         case StCycleSortElapsedCycles:
-            return sortCycles;
+            return statSortCycles;
         case StTimeSpillElapsed:
-            return cycle_to_nanosec(spillCycles);
+            return cycle_to_nanosec(statSpillCycles);
         case StTimeSortElapsed:
-            return cycle_to_nanosec(sortCycles);
+            return cycle_to_nanosec(statSortCycles);
         case StNumSpills:
-            return overflowCount;
+            return statOverflowCount;
         case StSizeSpillFile:
-            return sizeSpill;
+            return statSizeSpill;
         default:
             break;
         }
@@ -2032,6 +2032,7 @@ public:
     virtual unsigned __int64 getStatistic(StatisticKind kind) override { return CThorRowCollectorBase::getStatistic(kind); }
     virtual bool hasSpilt() const override { return CThorRowCollectorBase::hasSpilt(); }
     virtual void setTracingPrefix(const char *tracing) override { CThorRowCollectorBase::setTracingPrefix(tracing); }
+    virtual void reset() override { CThorRowCollectorBase::reset(); }
 
 // IThorArrayLock
     virtual void lock() const override { CThorRowCollectorBase::lock(); }
@@ -2182,7 +2183,7 @@ public:
         nodeComm.set(&queryNodeComm());
         if (nodeComm->queryGroup().rank(queryMyNode())==0) { // master so start thread
             thread.setown(new cMultiThorResourceMutexThread(*this));
-            thread->start();
+            thread->start(false);
             StringBuffer mname("thorres:");
             mname.append(groupname);
             mutex.setown(createDaliMutex(mname.str()));

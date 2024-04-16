@@ -34,7 +34,12 @@
   role="bold">] , </emphasis><emphasis role="bold">[</emphasis>
   <emphasis>dfuServerQueue</emphasis><emphasis role="bold">] ,
   </emphasis><emphasis role="bold">[</emphasis>
-  <emphasis>noSplit</emphasis><emphasis role="bold">])</emphasis></para>
+  <emphasis>noSplit</emphasis><emphasis role="bold">], </emphasis><emphasis
+  role="bold">[</emphasis><emphasis>noCommon</emphasis> <emphasis
+  role="bold">],[</emphasis> <emphasis>sourcePlane</emphasis> <emphasis
+  role="bold">]<emphasis role="bold">,[</emphasis>
+  <emphasis>destinationNumParts</emphasis> <emphasis
+  role="bold">]</emphasis>)</emphasis></para>
 
   <para><emphasis>dfuwuid</emphasis> <emphasis role="bold"> :=
   STD.File.fSprayXML<indexterm>
@@ -66,11 +71,16 @@
   role="bold">] , </emphasis><emphasis role="bold">[</emphasis>
   <emphasis>dfuServerQueue</emphasis><emphasis role="bold">] ,
   </emphasis><emphasis role="bold">[</emphasis>
-  <emphasis>noSplit</emphasis><emphasis role="bold">])</emphasis></para>
+  <emphasis>noSplit</emphasis><emphasis role="bold">], </emphasis><emphasis
+  role="bold">[</emphasis><emphasis>noCommon</emphasis> <emphasis
+  role="bold">],[</emphasis> <emphasis>sourcePlane</emphasis> <emphasis
+  role="bold">]<emphasis role="bold">,[</emphasis>
+  <emphasis>destinationNumParts</emphasis> <emphasis
+  role="bold">]</emphasis>)</emphasis></para>
 
   <informaltable colsep="1" frame="all" rowsep="1">
     <tgroup cols="2">
-      <colspec colwidth="80.50pt" />
+      <colspec colwidth="130.5 pt" />
 
       <colspec />
 
@@ -136,18 +146,21 @@
         <row>
           <entry><emphasis>espserverIPport</emphasis></entry>
 
-          <entry>Optional. A null-terminated string containing the protocol,
-          IP, port, and directory, or the DNS equivalent, of the ESP server
-          program. This is usually the same IP and port as ECL Watch, with
-          "/FileSpray" appended. If omitted, the default is the value
-          contained in the lib_system.ws_fs_server attribute.</entry>
+          <entry>Optional. This should almost always be omitted, which then
+          defaults to the value contained in the lib_system.ws_fs_server
+          attribute. When not omitted, it should be a null-terminated string
+          containing the protocol, IP, port, and directory, or the DNS
+          equivalent, of the ESP server program. This is usually the same IP
+          and port as ECL Watch, with "/FileSpray" appended.</entry>
         </row>
 
         <row>
           <entry><emphasis>maxConnections</emphasis></entry>
 
           <entry>Optional. An integer specifying the maximum number of
-          connections. If omitted, the default is one (1).</entry>
+          connections. If omitted, the default is -1, which indicates the
+          system chooses a suitable default based on the size of the
+          cluster.</entry>
         </row>
 
         <row>
@@ -204,6 +217,31 @@
           <entry>Optional. A boolean TRUE or FALSE flag indicating to not
           split a file part to multiple target parts. Default is
           FALSE.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis>noCommon</emphasis></entry>
+
+          <entry>Optional. A boolean TRUE or FALSE flag for "commoning up" of
+          pull or push processes on same host. Set to FALSE to "common up" the
+          operation on same host. Default can be set in configuration. Use
+          <link linkend="GetNoCommonDefault">GetNoCommonDefault</link> to
+          retrieve default setting. The value of this parameter can have a
+          significant impact on performance.</entry>
+        </row>
+
+        <row>
+          <entry><emphasis>sourcePlane</emphasis></entry>
+
+          <entry>The name of the landing zone containing the file</entry>
+        </row>
+
+        <row>
+          <entry><emphasis>destinationNumParts</emphasis></entry>
+
+          <entry>Override the number of parts to be created when spraying. The
+          default is 0 which means it will create the same number of parts as
+          the target cluster. </entry>
         </row>
 
         <row>

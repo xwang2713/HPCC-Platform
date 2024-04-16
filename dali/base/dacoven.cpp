@@ -15,7 +15,8 @@
     limitations under the License.
 ############################################################################## */
 
-#define da_decl DECL_EXPORT
+#include <string>
+#include <utility>
 #include "platform.h"
 #include <time.h>
 #include "jlib.hpp"
@@ -37,7 +38,7 @@ extern void closedownDFS();
 // base is saved in store whenever block exhausted, so replacement coven servers can restart 
 
 // server side versioning.
-#define ServerVersion    "3.16"
+#define ServerVersion    "3.17"
 #define MinClientVersion "1.5"
 
 
@@ -155,6 +156,77 @@ public:
 
 };
 
+static void checkDaliVersionInfo(ICommunicator *comm, CDaliVersion &serverVersion, CDaliVersion &minClientVersion)
+{
+    CMessageBuffer mb;
+    mb.append(MCR_GET_VERSION_INFO);
+    mb.append(ClientVersion);
+    mb.append(MinServerVersion);
+    StringBuffer daliEpStr;
+    comm->queryGroup().queryNode(0).endpoint().getEndpointHostText(daliEpStr); // NB: there's always exactly 1 node
+    if (!comm->sendRecv(mb, RANK_RANDOM, MPTAG_DALI_COVEN_REQUEST, VERSION_REQUEST_TIMEOUT))
+        throw makeStringExceptionV(-1, "Failed retrieving version information from server [%s], legacy server?", daliEpStr.str());
+    if (!mb.length())
+        throw makeStringExceptionV(-1, "Failed to receive server [%s] information (probably communicating to legacy server)", daliEpStr.str());
+    StringAttr serverVersionStr, minClientVersionStr;
+    mb.read(serverVersionStr);
+    serverVersion.set(serverVersionStr), 
+    mb.read(minClientVersionStr);
+
+    CDaliVersion clientV(ClientVersion);
+    minClientVersion.set(minClientVersionStr);
+    if (clientV.compare(minClientVersion) < 0)
+    {
+        StringBuffer s("Client version ");
+        s.append(ClientVersion).append(", server [").append(daliEpStr).append("] requires minimum client version ").append(minClientVersionStr);
+        throw createClientException(DCERR_version_incompatibility, s.str());
+    }
+    CDaliVersion minServerV(MinServerVersion);
+    if (serverVersion.compare(minServerV) < 0)
+    {
+        StringBuffer s("Server [");
+        s.append(daliEpStr).append("] version ");
+        s.append(serverVersionStr).append(", client requires minimum server version ").append(MinServerVersion);
+        throw createClientException(DCERR_version_incompatibility, s.str());
+    }
+}
+
+static CTimeLimitedCache<std::string, std::pair<CDaliVersion, CDaliVersion>> *foreignDaliVersionCache = nullptr;
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    foreignDaliVersionCache = new CTimeLimitedCache<std::string, std::pair<CDaliVersion, CDaliVersion>>(1000*60*5); // 5mins
+    return true;
+}
+MODULE_EXIT()
+{
+    delete foreignDaliVersionCache;
+}
+
+static CriticalSection foreignDaliVersionCacheCrit;
+void checkForeignDaliVersionInfo(const INode *foreignDali, CDaliVersion &serverVersion, CDaliVersion &minClientVersion)
+{
+    StringBuffer foreignDaliStr;
+    foreignDali->endpoint().getEndpointHostText(foreignDaliStr);
+
+    CriticalBlock b(foreignDaliVersionCacheCrit);
+    std::pair<CDaliVersion, CDaliVersion> result;
+    if (foreignDaliVersionCache->get(foreignDaliStr.str(), result))
+    {
+        serverVersion = result.first;
+        minClientVersion = result.second;
+    }
+    else
+    {
+        SocketEndpoint ep = foreignDali->endpoint();
+        if (ep.port==0)
+            ep.port = DALI_SERVER_PORT;
+        Owned<IGroup> grp = createIGroup(1, &ep);
+        Owned<ICommunicator> comm = createCommunicator(grp, true);
+
+        checkDaliVersionInfo(comm, serverVersion, minClientVersion);
+        foreignDaliVersionCache->add(foreignDaliStr.str(), { serverVersion, minClientVersion });
+    }
+}
 
 class CCovenBase: implements ICoven, public CInterface
 {
@@ -182,37 +254,12 @@ public:
         if (server)
         {
             _ServerVersion.set(ServerVersion);
-            LOG(MCdebugProgress, unknownJob, "Server Version = %s, required minimum client version %s", ServerVersion, MinClientVersion);
+            LOG(MCdebugProgress, "Server Version = %s, required minimum client version %s", ServerVersion, MinClientVersion);
         }
         else
         {
-            CMessageBuffer mb;
-            mb.append(MCR_GET_VERSION_INFO);
-            mb.append(ClientVersion);
-            mb.append(MinServerVersion);
-            if (!comm->sendRecv(mb, RANK_RANDOM, MPTAG_DALI_COVEN_REQUEST, VERSION_REQUEST_TIMEOUT))
-                throw MakeStringException(-1, "failed retrieving version information from server, legacy server?");
-            if (!mb.length())
-                throw MakeStringException(-1, "Failed to receive server information (probably communicating to legacy server)");
-            StringAttr serverVersion, minClientVersion;
-            mb.read(serverVersion);
-            _ServerVersion.set(serverVersion), 
-            mb.read(minClientVersion);
-
-            CDaliVersion clientV(ClientVersion), minClientV(minClientVersion);
-            if (clientV.compare(minClientV) < 0)
-            {
-                StringBuffer s("Client version ");
-                s.append(ClientVersion).append(", server requires minimum client version ").append(minClientVersion);
-                throw createClientException(DCERR_version_incompatibility, s.str());
-            }
-            CDaliVersion minServerV(MinServerVersion);
-            if (_ServerVersion.compare(minServerV) < 0)
-            {
-                StringBuffer s("Server version ");
-                s.append(serverVersion).append(", client requires minimum server version ").append(MinServerVersion);
-                throw createClientException(DCERR_version_incompatibility, s.str());
-            }
+            CDaliVersion minClientV;
+            checkDaliVersionInfo(comm, _ServerVersion, minClientV);
         }
     }
     ~CCovenBase()
@@ -284,10 +331,10 @@ public:
         return comm->barrier();
     }
 
-    virtual bool verifyConnection(rank_t rank, unsigned timeout=1000*60*5)
+    virtual bool verifyConnection(rank_t rank, unsigned timeout=1000*60*5, bool allowConnect=true)
     {
         assertex(comm);
-        return comm->verifyConnection(rank,timeout);
+        return comm->verifyConnection(rank,timeout, allowConnect);
     }
 
 
@@ -348,7 +395,7 @@ CDaliUidAllocator &CDaliUidAllocator::find(CIArrayOf<CDaliUidAllocator> &uidallo
         uidallocators.append(*ret);
     }
     StringBuffer eps;
-    DBGLOG("Added foreign UID allocator for %s", ret->node.getUrlStr(eps).str());
+    DBGLOG("Added foreign UID allocator for %s", ret->node.getEndpointHostText(eps).str());
     return *ret;
 }
 
@@ -451,7 +498,7 @@ public:
                 store->serialize(mb.clear());
                 if (!sendRecv(mb,r,MPTAG_DALI_COVEN_REQUEST, COVEN_SERVER_TIMEOUT)) {
                     StringBuffer str;
-                    throw MakeStringException(-1,"Could not connect to %s",grp->queryNode(r).endpoint().getUrlStr(str).str());
+                    throw MakeStringException(-1,"Could not connect to %s",grp->queryNode(r).endpoint().getEndpointHostText(str).str());
                 }   
                 mergeStore(store,mb,true);
             }
@@ -461,7 +508,7 @@ public:
                 for (;;)
                 {
                     if (!recv(mb,r,MPTAG_DALI_COVEN_REQUEST,&sender,COVEN_SERVER_TIMEOUT)) {
-                        throw MakeStringException(-1,"Could not connect to %s",grp->queryNode(r).endpoint().getUrlStr(str).str());
+                        throw MakeStringException(-1,"Could not connect to %s",grp->queryNode(r).endpoint().getEndpointHostText(str).str());
                     }
                     if (RANK_NULL==sender)
                         processMessage(mb);
@@ -936,6 +983,7 @@ ICoven &queryCoven()
 {
     if (coven==NULL)
     {
+        PrintStackReport();
         Owned<IException> e = MakeStringException(-1, "No access to Dali - this normally means a plugin call is being called from a thorslave");
         EXCLOG(e, NULL);
         throw e.getClear();

@@ -32,6 +32,7 @@
 #include "thorplugin.hpp"
 #include "workflow.hpp"
 #include "mpcomm.hpp"
+#include "ws_dfsclient.hpp"
 
 #ifndef _CONTAINERIZED
 #define ROXIE_DALI_CACHE
@@ -67,7 +68,7 @@ public:
         CriticalBlock b(crit);
         try
         {
-            if (traceLevel > 5)
+            if (doTrace(traceSubscriptions))
                 DBGLOG("Subscribing to %s, %p", xpath.get(), this);
             if (exact && queryDaliServerVersion().compare(SDS_SVER_MIN_NODESUBSCRIBE) >= 0)
             {
@@ -92,7 +93,7 @@ public:
         notifier = NULL;
         try
         {
-            if (traceLevel > 5)
+            if (doTrace(traceSubscriptions))
                 DBGLOG("unsubscribing from %s, %p", xpath.get(), this);
             if (change)
             {
@@ -119,7 +120,7 @@ public:
         // Despite the danger of deadlocks (that requires careful code in the notifier to avoid), I think it is neccessary to hold the lock during the call,
         // as otherwise notifier may point to a deleted object.
         CriticalBlock b(crit);
-        if (traceLevel > 5)
+        if (doTrace(traceSubscriptions))
             DBGLOG("resubscribing to %s, %p", xpath.get(), this);
         change = querySDS().subscribe(xpath, *this, true);
         if (notifier)
@@ -135,7 +136,7 @@ public:
         Linked<ISafeSDSSubscription> myNotifier;
         {
             CriticalBlock b(crit);
-            if (traceLevel > 5)
+            if (doTrace(traceSubscriptions))
                 DBGLOG("Notification on %s (%s), %p", xpath.get(), daliXpath ? daliXpath : "", this);
             myNotifier.setown(notifier ? notifier->linkIfAlive() : nullptr);
             // allow crit to be released, allowing this to be unsubscribed, to avoid deadlocking when other threads via notify call unsubscribe
@@ -167,7 +168,7 @@ public:
 class CRoxieDaliHelper : implements IRoxieDaliHelper, public CInterface
 {
 private:
-    static bool isConnected;
+    static std::atomic<bool> isConnected;
     static CRoxieDaliHelper *daliHelper;  // Note - this does not own the helper
     static CriticalSection daliHelperCrit;
     CriticalSection daliConnectionCrit;
@@ -181,11 +182,14 @@ private:
     {
     private:
         CRoxieDaliHelper *owner;
+        Semaphore abortSem;
         bool aborted;
+        bool wasConnected;
     public:
         CRoxieDaliConnectWatcher(CRoxieDaliHelper *_owner) : owner(_owner)
         {
             aborted = false;
+            wasConnected = owner->isConnected;
         }
 
         virtual int run()
@@ -194,34 +198,23 @@ private:
             {
                 if (topology && topology->getPropBool("@lockDali", false))
                 {
-                    Sleep(ROXIE_DALI_CONNECT_TIMEOUT);
                 }
-                else if (owner->connect(ROXIE_DALI_CONNECT_TIMEOUT))
+                else
                 {
-                    if (traceLevel)
+                    wasConnected = owner->checkDaliConnectionValid();
+                    bool connected = owner->connect(ROXIE_DALI_CONNECT_TIMEOUT);
+                    if (connected && !wasConnected && traceLevel)
                         DBGLOG("CRoxieDaliConnectWatcher reconnected");
-                    try
-                    {
-                        owner->disconnectSem.wait();
-                        Sleep(5000);   // Don't retry immediately, give Dali a chance to recover.
-                    }
-                    catch (IException *E)
-                    {
-                        if (!aborted)
-                            EXCLOG(E, "roxie: Unexpected exception in CRoxieDaliConnectWatcher");
-                        E->Release();
-                    }
+                    wasConnected = connected;
                 }
+                abortSem.wait(ROXIE_DALI_CONNECT_TIMEOUT);
             }
             return 0;
         }
         void stop()
         {
             aborted = true;
-        }
-        virtual void start()
-        {
-            Thread::start();
+            abortSem.signal();
         }
         virtual void join()
         {
@@ -229,6 +222,26 @@ private:
                 Thread::join();
         }
     } connectWatcher;
+
+    bool checkDaliConnectionValid()
+    {
+        CriticalBlock b(daliConnectionCrit);
+        if (!isConnected)
+            return false;
+        try
+        {
+            Owned<INode> res = querySessionManager().getProcessSessionNode(myProcessSession());
+            if (!res)
+                disconnect();
+        }
+        catch (IException *E)
+        {
+            EXCLOG(E);
+            ::Release(E);
+            disconnect();
+        }
+        return isConnected;
+    }
 
     virtual void beforeDispose()
     {
@@ -337,8 +350,15 @@ private:
         return localTree.getClear();
     }
 
-    IFileDescriptor *recreateCloneSource(IFileDescriptor *srcfdesc, const char *destfilename)
+    IFileDescriptor *recreateCloneForeignSource(const char *cloneFrom, IFileDescriptor *srcfdesc, const char *destfilename)
     {
+        IPropertyTree *clonedFDescTree = srcfdesc->queryProperties().queryPropTree("cloneFromFDesc");
+        if (clonedFDescTree)
+        {
+            Owned<IFileDescriptor> srcFDesc = deserializeFileDescriptorTree(clonedFDescTree);
+            return srcFDesc.getClear();
+        }
+
         Owned<IFileDescriptor> dstfdesc = createFileDescriptor(srcfdesc->getProperties());
         // calculate dest dir
 
@@ -362,7 +382,6 @@ private:
                 dstfdesc->queryPart(pn)->queryProperties().setProp("@modified",dates.str());
         }
 
-        const char *cloneFrom = srcfdesc->queryProperties().queryProp("@cloneFrom");
         Owned<IPropertyTreeIterator> groups = srcfdesc->queryProperties().getElements("cloneFromGroup");
         ForEach(*groups)
         {
@@ -387,8 +406,7 @@ private:
                     // Due to the really weird code in dadfs, this MUST be set to match the leading portion of cloneFromDir
                     // in order to properly handle remote systems with different default directory locations
                     StringBuffer tail;
-                    DFD_OS os = (getPathSepChar(srcfdesc->queryDefaultDir())=='\\')?DFD_OSwindows:DFD_OSunix;
-                    makePhysicalPartName(dstlfn.get(),0,0,tail,0,os,PATHSEPSTR);  // if lfn is a::b::c, tail will be /a/b/
+                    getLFNDirectoryUsingBaseDir(tail, dstlfn.get(), PATHSEPSTR); // if lfn is a::b::c, tail will be /a/b/
                     assertex(tail.length() > 1);
                     tail.setLength(tail.length()-1);   // strip off the trailing /
                     StringBuffer head(srcfdesc->queryProperties().queryProp("@cloneFromDir")); // Will end with /a/b
@@ -436,23 +454,46 @@ public:
     IMPLEMENT_IINTERFACE;
     CRoxieDaliHelper() : serverStatus(NULL), connectWatcher(this)
     {
-        userdesc.setown(createUserDescriptor());
-        const char *roxieUser = NULL;
-        const char *roxiePassword = NULL;
-        if (topology)
+        if (oneShotRoxie && topology && topology->hasProp("@workunit"))
         {
-            roxieUser = topology->queryProp("@ldapUser");
-            roxiePassword = topology->queryProp("@ldapPassword");
+            if (!connect(ROXIE_DALI_CONNECT_TIMEOUT))
+                throw MakeStringException(ROXIE_DALI_ERROR, "Failed to connect to dali");
+            Owned<IWorkUnitFactory> wuFactory = getWorkUnitFactory();
+            Owned<IWorkUnit> w = wuFactory->updateWorkUnit(topology->queryProp("@workunit"));
+            if (!w)
+                throw MakeStringException(ROXIE_DALI_ERROR, "Failed to locate dll workunit info");
+            w->setAgentSession(myProcessSession());
+            if(topology->getPropBool("@resetWorkflow", false))
+                w->resetWorkflow();
+            userdesc.set(w->queryUserDescriptor());
+            w->commit();
+            w.clear();
         }
-        if (!roxieUser)
-            roxieUser = "roxie";
-        if (!roxiePassword)
-            roxiePassword = "";
-        StringBuffer password;
-        decrypt(password, roxiePassword);
-        userdesc->set(roxieUser, password.str());
+        else
+        {
+            userdesc.setown(createUserDescriptor());
+#ifdef _CONTAINERIZED
+            const char *ldapUser = topology->queryProp("@ldapUser");
+            userdesc->set(isEmptyString(ldapUser) ? "roxie" : ldapUser, "");
+#else
+            const char *roxieUser = NULL;
+            const char *roxiePassword = NULL;
+            if (topology)
+            {
+                roxieUser = topology->queryProp("@ldapUser");
+                roxiePassword = topology->queryProp("@ldapPassword");
+            }
+            if (!roxieUser)
+                roxieUser = "roxie";
+            if (!roxiePassword)
+                roxiePassword = "";
+            StringBuffer password;
+            decrypt(password, roxiePassword);
+            userdesc->set(roxieUser, password.str());
+#endif
+        }
         if (fileNameServiceDali.length())
-            connectWatcher.start();
+            connectWatcher.start(false);
         else
             initMyNode(1); // Hack
     }
@@ -460,6 +501,30 @@ public:
     virtual IUserDescriptor *queryUserDescriptor()
     {
         return userdesc;
+    }
+
+    virtual IConstWorkUnit *createStatsWorkUnit(const char *wuid, const char *dllname) const override
+    {
+        Owned<IWorkUnitFactory> wuFactory = getWorkUnitFactory();
+        Owned<IWorkUnit> wu;
+        if (!wuid || streq(wuid, "*"))
+        {
+            wu.setown(wuFactory->createWorkUnit("roxie", ""));  // MORE - What about security parms?
+            StringBuffer dllFileName;
+            splitFilename(dllname, nullptr, nullptr, &dllFileName, nullptr, false);
+            if (strlen(SharedObjectPrefix))
+                dllFileName.replaceString(SharedObjectPrefix, "");
+            queryExtendedWU(wu)->queryPTree()->setProp("@clonedFromWorkunit", dllFileName);
+            addTimeStamp(wu, SSTglobal, NULL, StWhenStarted);
+            wu->setState(WUStateRunning);
+        }
+        else
+        {
+            wu.setown(wuFactory->updateWorkUnit(wuid));
+            if (!wu)
+                throw makeStringExceptionV(ROXIE_CONTROL_MSG_ERROR, "Can't open stats WU %s", wuid);
+        }
+        return wu->unlock();
     }
 
     static const char *getQuerySetPath(StringBuffer &buf, const char *id)
@@ -513,38 +578,70 @@ public:
         return ret.getClear();
     }
 
-    IFileDescriptor *checkClonedFromRemote(const char *_lfn, IFileDescriptor *fdesc, bool cacheIt, bool isPrivilegedUser)
+    IFileDescriptor *checkClonedFromRemoteStorage(const char *cloneRemote, const char *_lfn, IFileDescriptor *fdesc, bool cacheIt, bool isPrivilegedUser)
     {
-        // NOTE - we rely on the fact that  queryNamedGroupStore().lookup caches results,to avoid excessive load on remote dali
-        if (_lfn && !strnicmp(_lfn, "foreign", 7)) //if need to support dali hopping should add each remote location
-            return NULL;
-        if (!fdesc)
-            return NULL;
-        const char *cloneFrom = fdesc->queryProperties().queryProp("@cloneFrom");
-        if (!cloneFrom)
-            return NULL;
-        StringBuffer foreignLfn("foreign::");
-        foreignLfn.append(cloneFrom);
+        StringBuffer remoteLfn;
+        remoteLfn.append("remote::").append(cloneRemote);
+        const char *cloneFromPrefix = fdesc->queryProperties().queryProp("@cloneFromPrefix");
+        if (cloneFromPrefix && *cloneFromPrefix)
+            remoteLfn.append("::").append(cloneFromPrefix);
+        remoteLfn.append("::").append(_lfn);
+        const char *cloneRemoteCluster = fdesc->queryProperties().queryProp("@cloneRemoteCluster");
+        if (!isEmptyString(cloneRemoteCluster))
+            remoteLfn.append("@").append(cloneRemoteCluster);
+
+        try
+        {
+            //Treat remote storage files a bit differently then foreign DALI files for now.  For foreign DALI, we try to recreate the DistributedFile without contacting DALI.
+            //  This is to prevent DALI traffic. We may want to optimize remote storage access differently over time.  For example improved caching in the DFS service which may
+            //  scale better than DALI.  Anyway, just go through DFS for now, and we can optimize once you understand the usage pattern better
+
+            if (traceLevel > 1)
+                DBGLOG("checkClonedFromRemoteStorage: Resolving %s from remote storage", _lfn);
+            Owned<IDistributedFile> cloneFile = resolveLFN(remoteLfn, cacheIt, AccessMode::readRandom, isPrivilegedUser);
+            if (cloneFile)
+            {
+                Owned<IFileDescriptor> cloneFDesc = cloneFile->getFileDescriptor();
+                if (cloneFDesc->numParts()==fdesc->numParts())
+                    return cloneFDesc.getClear();
+
+                DBGLOG(ROXIE_MISMATCH, "File local metadata (%s numParts %d) vs cloneRemote(%s numParts %d) mismatch", _lfn, fdesc->numParts(), cloneRemote, cloneFDesc->numParts());
+            }
+        }
+        catch (IException *E)
+        {
+            if (traceLevel > 3)
+                EXCLOG(E);
+            E->Release();  // Any failure means act as if no remote info
+        }
+        return NULL;
+    }
+
+    IFileDescriptor *checkClonedFromForeignDali(const char *cloneFrom, const char *_lfn, IFileDescriptor *fdesc, bool cacheIt, bool isPrivilegedUser)
+    {
+        StringBuffer foreignLfn;
+        foreignLfn.append("foreign::").append(cloneFrom);
         const char *cloneFromPrefix = fdesc->queryProperties().queryProp("@cloneFromPrefix");
         if (cloneFromPrefix && *cloneFromPrefix)
             foreignLfn.append("::").append(cloneFromPrefix);
         foreignLfn.append("::").append(_lfn);
+
         if (!connected())
             return resolveCachedLFN(foreignLfn);  // Note - cache only used when no dali connection available
         try
         {
-            if (fdesc->queryProperties().hasProp("cloneFromGroup") && fdesc->queryProperties().hasProp("@cloneFromDir"))
+            if (fdesc->queryProperties().hasProp("cloneFromFDesc") || (fdesc->queryProperties().hasProp("cloneFromGroup") && fdesc->queryProperties().hasProp("@cloneFromDir")))
             {
-                Owned<IFileDescriptor> ret = recreateCloneSource(fdesc, _lfn);
+                Owned<IFileDescriptor> ret = recreateCloneForeignSource(cloneFrom, fdesc, _lfn);
                 if (cacheIt)
                     cacheFileDescriptor(foreignLfn, ret);
                 return ret.getClear();
             }
             else // Legacy mode - recently cloned files should have the extra info
             {
-                if (traceLevel > 1)
-                    DBGLOG("checkClonedFromRemote: Resolving %s in legacy mode", _lfn);
-                Owned<IDistributedFile> cloneFile = resolveLFN(foreignLfn, cacheIt, false, isPrivilegedUser);
+                if (doTrace(traceRoxieFiles))
+                    DBGLOG("checkClonedFromForeignDali: Resolving %s in legacy mode", _lfn);
+                Owned<IDistributedFile> cloneFile = resolveLFN(foreignLfn, cacheIt, AccessMode::readRandom, isPrivilegedUser);
                 if (cloneFile)
                 {
                     Owned<IFileDescriptor> cloneFDesc = cloneFile->getFileDescriptor();
@@ -557,21 +654,37 @@ public:
         }
         catch (IException *E)
         {
-            if (traceLevel > 3)
+            if (doTrace(traceRoxieFiles))
                 EXCLOG(E);
             E->Release();  // Any failure means act as if no remote info
         }
         return NULL;
     }
 
-    virtual IDistributedFile *resolveLFN(const char *logicalName, bool cacheIt, bool writeAccess, bool isPrivilegedUser)
+    IFileDescriptor *checkClonedFromRemote(const char *_lfn, IFileDescriptor *fdesc, bool cacheIt, bool isPrivilegedUser)
+    {
+        if (!fdesc)
+            return NULL;
+        if (_lfn && (strnicmp(_lfn, "foreign", 7)==0 || strnicmp(_lfn, "remote", 6)==0)) //if need to support dali hopping should add each remote location
+            return NULL;
+
+        const char *cloneRemote = fdesc->queryProperties().queryProp("@cloneRemote");
+        if (!isEmptyString(cloneRemote))
+            return checkClonedFromRemoteStorage(cloneRemote, _lfn, fdesc, cacheIt, isPrivilegedUser);
+        const char *cloneFrom = fdesc->queryProperties().queryProp("@cloneFrom");
+        if (!isEmptyString(cloneFrom))
+           return checkClonedFromForeignDali(cloneFrom, _lfn, fdesc, cacheIt, isPrivilegedUser);
+        return nullptr;
+    }
+
+    virtual IDistributedFile *resolveLFN(const char *logicalName, bool cacheIt, AccessMode accessMode, bool isPrivilegedUser)
     {
         if (isConnected)
         {
             unsigned start = msTick();
             CDfsLogicalFileName lfn;
             lfn.set(logicalName);
-            Owned<IDistributedFile> dfsFile = queryDistributedFileDirectory().lookup(lfn, userdesc.get(), writeAccess, cacheIt,false,nullptr,isPrivilegedUser);
+            Owned<IDistributedFile> dfsFile = wsdfs::lookup(lfn, userdesc.get(), accessMode, cacheIt,false,nullptr,isPrivilegedUser,INFINITE);
             if (dfsFile)
             {
                 IDistributedSuperFile *super = dfsFile->querySuperFile();
@@ -580,7 +693,7 @@ public:
             }
             if (cacheIt)
                 cacheDistributedFile(logicalName, dfsFile);
-            if (traceLevel > 1)
+            if (doTrace(traceRoxieFiles))
                 DBGLOG("Dali lookup %s returned %s in %u ms", logicalName, dfsFile != NULL ? "match" : "NO match", msTick()-start);
             return dfsFile.getClear();
         }
@@ -625,31 +738,10 @@ public:
 #endif
     }
 
-    virtual IConstWorkUnit *attachWorkunit(const char *wuid, ILoadedDllEntry *source)
+    virtual IConstWorkUnit *attachWorkunit(const char *wuid)
     {
         assertex(isConnected);
         Owned<IWorkUnitFactory> wuFactory = getWorkUnitFactory();
-        Owned<IWorkUnit> w = wuFactory->updateWorkUnit(wuid);
-        if (!w)
-            return NULL;
-        w->setAgentSession(myProcessSession());
-        if(topology->getPropBool("@resetWorkflow", false))
-            w->resetWorkflow();
-        if (source)
-        {
-            StringBuffer wuXML;
-            if (getEmbeddedWorkUnitXML(source, wuXML))
-            {
-                Owned<ILocalWorkUnit> localWU = createLocalWorkUnit(wuXML);
-                queryExtendedWU(w)->copyWorkUnit(localWU, true, true);
-            }
-            else
-                throw MakeStringException(ROXIE_DALI_ERROR, "Failed to locate dll workunit info");
-        }
-        if (topology->hasProp("@workunit"))    // This really only works properly in one-shot mode
-            userdesc.set(w->queryUserDescriptor());
-        w->commit();
-        w.clear();
         return wuFactory->openWorkUnit(wuid);
     }
 
@@ -692,7 +784,7 @@ public:
                 first = false;
             else
                 ret.append(',');
-            coven->query().endpoint().getUrlStr(ret);
+            coven->query().endpoint().getEndpointHostText(ret);
         }
         return ret;
     }
@@ -932,7 +1024,7 @@ public:
     }
 } roxieDllServer;
 
-bool CRoxieDaliHelper::isConnected = false;
+std::atomic<bool> CRoxieDaliHelper::isConnected(false);
 CRoxieDaliHelper * CRoxieDaliHelper::daliHelper;
 CriticalSection CRoxieDaliHelper::daliHelperCrit;
 #ifdef ROXIE_DALI_CACHE

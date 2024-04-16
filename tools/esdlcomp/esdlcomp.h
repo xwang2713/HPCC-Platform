@@ -105,9 +105,6 @@ typedef struct esp_xlate_info_
 
 esp_xlate_info *esp_xlat(const char *from, bool defaultToString=true);
 
-
-enum  clarion_special_type_enum { cte_normal,cte_longref,cte_constcstr,cte_cstr };
-
 void out(const char*, size_t);
 void outs(const char*);
 void outf(const char*,...) __attribute__((format(printf, 1, 2)));
@@ -418,10 +415,6 @@ public:
     char *bytesize(int deref=0);
     bool simpleneedsswap();
     void cat_type(char *s,int deref=0,int var=0);
-    clarion_special_type_enum clarion_special_type();
-    void out_clarion_parameter();
-    void out_clarion_type(bool ret);
-    void out_parameter(const char *pfx,int forclarion=0);
     void out_type(int deref=0,int var=0);
     void typesizeacc(char *accstr,size_t &acc);
     size_t typesizealign(size_t &ofs);
@@ -464,8 +457,6 @@ public:
     const char* getArrayImplType();
 
     bool hasNameTag(){return (typname && !stricmp(typname, "EspTextFile"));}
-
-    void write_clarion_attr_method(bool isSet);
 
     bool hasMapInfo();
     bool write_mapinfo_check(int indents, const char* ctxvar);
@@ -559,67 +550,7 @@ public:
         }
     }
 
-    void toString(StringBuffer & out)
-    {
-        const char *xsd_type = getMetaString("xsd_type", NULL);
-        if (xsd_type && *xsd_type=='\"')
-           xsd_type++;
-        unsigned pcl = strlen("tns:ArrayOf");
-        //purely for compatability with scapps ESDL processing... ESDL should never have relied on interpreting the xsd_type which is for external use
-        if (xsd_type && !strncmp("tns:ArrayOf", xsd_type, pcl))
-        {
-            out.appendf("\t\t<EsdlArray name='%s' ", name);
-            toStringXmlAttr(out);
-            for (MetaTagInfo *mtag=tags; mtag; mtag=mtag->next)
-            {
-                mtag->toStringXmlAttr(out);
-            }
-        }
-        else if (flags & PF_TEMPLATE && !strcmp(templ, "ESParray"))
-        {
-            out.appendf("\t\t<EsdlArray name='%s' ", name);
-            toStringXmlAttr(out);
-            for (MetaTagInfo *mtag=tags; mtag; mtag=mtag->next)
-            {
-                mtag->toStringXmlAttr(out);
-            }
-        }
-        else if (flags & PF_TEMPLATE && !strcmp(templ, "ESPlist"))
-        {
-            out.appendf("\t\t<EsdlList name='%s' ", name);
-            toStringXmlAttr(out);
-            for (MetaTagInfo *mtag=tags; mtag; mtag=mtag->next)
-            {
-                mtag->toStringXmlAttr(out);
-            }
-        }
-        else if (kind==TK_ENUM)
-        {
-            out.appendf("\t\t<EsdlEnumItem name='%s'", name);
-            for (MetaTagInfo *mtag=tags; mtag; mtag=mtag->next)
-            {
-                mtag->toStringXmlAttr(out);
-            }
-        }
-        else if (kind==TK_ESPENUM)
-        {
-            out.appendf("\t\t<EsdlEnum name='%s' enum_type='%s'", name, typname);
-            for (MetaTagInfo *mtag=tags; mtag; mtag=mtag->next)
-            {
-                mtag->toStringXmlAttr(out);
-            }
-        }
-        else
-        {
-            out.appendf("\t\t<EsdlElement name='%s'", name);
-            toStringXmlAttr(out);
-            for (MetaTagInfo *mtag=tags; mtag; mtag=mtag->next)
-            {
-                mtag->toStringXmlAttr(out);
-            }
-        }
-        out.append("/>\n");
-    };
+    void toString(StringBuffer & out);
 
     bool checkDup(StringArray& ErrMsgs, ParamInfo* attrlist)
     {
@@ -717,7 +648,6 @@ public:
 
 
    void write_header_method();
-   void write_clarion_include_method();
 
     char        *group;
     char        *name;
@@ -1380,6 +1310,10 @@ public:
     {
         return packagename;
     }
+
+    const void setExtendedAttributes(bool mode);
+
+    const bool getExtendedAttributes();
 
     char* filename;
     StringBuffer name;

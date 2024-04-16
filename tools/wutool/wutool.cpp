@@ -88,17 +88,30 @@ void usage(const char * action = nullptr)
                "   results <workunits> - Dump results from specified workunits\n"
                "   info <workunits> <filter>\n"
                "                       - Display information from a workunit\n"
-               "   analyze <workunit>  - Analyse the workunit to highlight performance issues\n"
+               "   analyze <workunit>  - Analyse the workunit to highlight potential cost savings\n"
                "\n"
                "   archive <workunits> - Archive to xml files [TO=<directory>] [DEL=1] [DELETERESULTS=1] [INCLUDEFILES=1]\n"
                "   restore <filenames> - Restore from xml files [INCLUDEFILES=1]\n"
                "   importzap <zapreport-filename> <output-helper-directory> [<zapreport-password>]\n"
+               "   postmortem <workunit> PMD=<dir> - Add post-mortem info\n"
                 "\n"
                "   orphans             - Delete orphaned information from store\n"
                "   cleanup [days=NN]   - Delete workunits older than NN days\n"
                "   validate [fix=1]    - Check contents of workunit repository for errors\n"
                "   clear               - Delete entire workunit repository (requires entire=1 repository=1)\n"
                "   initialize          - Initialize new workunit repository\n"
+               "\n"
+               "   graph <wu>          - Generate an alternative representation of the graph with execution details\n"
+               "   activity <wu> [\">scope|mintime\"] [\"<scope|maxtime\"] [threshold=n%%]\n"
+               "                       - What activities are executed between a range of times (in time order)\n"
+               "   hotspot <wu> [<activity>]\n"
+               "                       - Find the hotspots for workunit (or one particular activity)\n"
+               "   critical <wu> <activity>\n"
+               "                       - What activities are executed in order to execute activity\n"
+               "   depend <wu> <activity> <activity>\n"
+               "                       - Find the common paths between two activities\n"
+               "   depend <wu> ?<activity>:startTime\n"
+               "                       - Which dependencies take a large %% of the start time for this activity\n"
                "\n"
                "   help <command>      - More help on a command\n"
                "\n"
@@ -201,7 +214,7 @@ public:
 
 static void process(IConstWorkUnit &w, IProperties *globals, const StringArray & args)
 {
-    const char *action = globals->queryProp("#action");
+    const char *action = globals->queryProp("action");
     if (!action || stricmp(action, "list")==0)
     {
         printf("%-20s %-10s %-10s %-10s %-10s\n", w.queryWuid(), w.queryClusterName(), w.queryUser(), w.queryJobName(), w.queryStateDesc());
@@ -219,9 +232,28 @@ static void process(IConstWorkUnit &w, IProperties *globals, const StringArray &
             printf("%s\n", schema.str());
         }
     }
-    else if (stricmp(action, "analyze")==0)
+    else if (stricmp(action, "activity")==0)
     {
-        analyseAndPrintIssues(&w, globals->getPropBool("UPDATEWU"));
+        Owned<IPropertyTree> options = createPTree();
+        applyProperties(options, globals);
+        analyseActivity(&w, options, args);
+    }
+    else if (stricmp(action, "analyze")==0 || stricmp(action, "analyse")==0)
+    {
+        // can't calculate cost in terms of money (pricing table not available and size of cluster not known here)
+        analyseAndPrintIssues(&w, 0, globals->getPropBool("UPDATEWU"));
+    }
+    else if (stricmp(action, "critical")==0)
+    {
+        Owned<IPropertyTree> options = createPTree();
+        applyProperties(options, globals);
+        analyseCriticalPath(&w, options, args);
+    }
+    else if (stricmp(action, "depend")==0)
+    {
+        Owned<IPropertyTree> options = createPTree();
+        applyProperties(options, globals);
+        analyseDependencies(&w, options, args);
     }
     else if (stricmp(action, "dump")==0)
     {
@@ -238,6 +270,28 @@ static void process(IConstWorkUnit &w, IProperties *globals, const StringArray &
             factory->deleteWorkUnit(wuid.str());
         }
         printf("deleted %s\n", wuid.str());
+    }
+    else if (stricmp(action, "graph")==0)
+    {
+        Owned<IPropertyTree> options = createPTree();
+        applyProperties(options, globals);
+        analyseOutputDependencyGraph(&w, options);
+    }
+    else if (stricmp(action, "hotspot")==0)
+    {
+        Owned<IPropertyTree> options = createPTree();
+        applyProperties(options, globals);
+        analyseHotspots(&w, options, args);
+    }
+    else if (stricmp(action, "postmortem")==0)
+    {
+        Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
+        StringBuffer postMortemDirectory;
+        globals->getProp("PMD", postMortemDirectory);
+        StringAttr wuid(w.queryWuid());
+        Owned<IWorkUnit> lw = factory->updateWorkUnit(wuid);
+        Owned<IWUQuery> query = lw->updateQuery();
+        associateLocalFile(query, FileTypePostMortem, postMortemDirectory, "PostMortem", 0);
     }
     else if (stricmp(action, "archive")==0)
     {
@@ -306,10 +360,17 @@ bool looksLikeWuid(const char * arg)
     return false;
 }
 
+static constexpr const char * defaultYaml = R"!!(
+version: "1.0"
+wutool:
+    name: wutool
+)!!";
+
 int main(int argc, const char *argv[])
 {
     int ret = 0;
     InitModuleObjects();
+    Owned<IPropertyTree> dummyconfig = loadConfiguration(defaultYaml, argv, "wutool", "WUTOOL", "wutool.xml", nullptr, nullptr, false);
     unsigned count=0;
     globals.setown(createProperties("wutool.ini", true));
     const char *action = NULL;
@@ -329,7 +390,7 @@ int main(int argc, const char *argv[])
         else
         {
             action = argv[i];
-            globals->setProp("#action", argv[i]);
+            globals->setProp("action", argv[i]);
         }
     }
     if (!action || !*action)
@@ -395,10 +456,16 @@ int main(int argc, const char *argv[])
         }
 
         StringBuffer daliServers;
+        bool hasFactory = true;
         if (globals->getProp("DALISERVER", daliServers))
         {
-            Owned<IGroup> serverGroup = createIGroup(daliServers.str(), DALI_SERVER_PORT);
-            initClientProcess(serverGroup, DCR_Testing);
+            if (!daliServers.isEmpty())
+            {
+                Owned<IGroup> serverGroup = createIGroup(daliServers.str(), DALI_SERVER_PORT);
+                initClientProcess(serverGroup, DCR_Testing);
+            }
+            else
+                hasFactory = false;
         }
         else if (!serverSpecified)
         {
@@ -418,7 +485,7 @@ int main(int argc, const char *argv[])
             if (since)
                 cutoff.setDateString(since, NULL);
         }
-        Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
+        Owned<IWorkUnitFactory> factory = hasFactory ? getWorkUnitFactory() : createUnexpectedWorkUnitFactory();
 #ifdef _USE_CPPUNIT
         if (stricmp(action, "-selftest")==0)
         {
@@ -615,7 +682,10 @@ int main(int argc, const char *argv[])
         {
             usage();
         }
-        else if (strieq(action, "list") || strieq(action, "dump") || strieq(action, "results") || strieq(action, "delete") || strieq(action, "archive") || strieq(action, "info") || strieq(action, "analyze"))
+        else if (strieq(action, "list") || strieq(action, "dump") || strieq(action, "results") || strieq(action, "delete") ||
+                 strieq(action, "archive") || strieq(action, "info") || strieq(action, "analyze") || strieq(action, "analyse") ||
+                 strieq(action, "depend") || strieq(action, "hotspot") || strieq(action, "critical") || strieq(action, "activity") || strieq(action, "graph") ||
+                 strieq(action, "postmortem"))
         {
             if (strieq(action, "info") && args.empty())
                 args.append("source[all],properties[all]");
@@ -650,6 +720,30 @@ int main(int argc, const char *argv[])
                     }
                 }
             }
+            else if (args.ordinality() && checkFileExists(args.item(0)))
+            {
+                const char * filename = args.item(0);
+                StringBuffer xml;
+                xml.loadFile(filename);
+
+                //If the file has come from a roxie control:queryStats call, extract the part that coresponds to the query
+                const char * start = strstr(xml, "<Query");
+                if (!start)
+                    throw MakeStringException(errno, "File %s does not contain a query", filename);
+
+                args.remove(0);
+                if (start != xml.str())
+                {
+                    xml.remove(0, start-xml.str());
+                    const char * end = strstr(xml, "</Query>");
+                    if (end)
+                        xml.setLength(end + strlen("</Query>") -xml.str());
+                }
+
+                Owned<IConstWorkUnit> workunit = createLocalWorkUnitFromXml(xml);
+                if (workunit)
+                    process(*workunit, globals, args);
+            }
             else
             {
                 if (strieq(action, "delete") && !globals->getPropBool(("FORCE")))
@@ -665,6 +759,7 @@ int main(int argc, const char *argv[])
                     Owned<IConstWorkUnit> w = factory->openWorkUnit(wi.queryWuid());
                     if (w)
                     {
+                        DBGLOG("Processing %s", w->queryWuid());
                         process(*w, globals, args);
                         ret = 0; // There was at least one match
                     }
@@ -799,7 +894,7 @@ protected:
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         Owned<IWorkUnit> createWu = factory->createWorkUnit("WuTest", NULL, NULL, NULL);
         StringBuffer wuid(createWu->queryWuid());
-        Owned<ILocalWorkUnit> embeddedWU = createLocalWorkUnit(
+        Owned<ILocalWorkUnit> embeddedWU = createLocalWorkUnitFromXml(
                 // Note - generated by compiling the following ecl:
                 //
                 //   integer one := 1 : stored('one');
@@ -1139,7 +1234,7 @@ protected:
         ASSERT(graph->getType() == GraphTypeActivities);
         ASSERT(streq(graph->getName(s).str(),"Graph1"));
         ASSERT(streq(graph->getLabel(s).str(),"graphLabel"));
-        ASSERT(streq(graph->getXGMML(s, false).str(), "<graph/>\n"));
+        ASSERT(streq(graph->getXGMML(s, false, false).str(), "<graph/>\n"));
 
         // Then the lightweight meta....
         wu.setown(factory->openWorkUnit(wuid));
@@ -1174,7 +1269,7 @@ protected:
         {
             ASSERT(it2->query().getType() == GraphTypeActivities);
             ASSERT(streq(it2->query().getLabel(s).str(),"graphLabel"));
-            ASSERT(streq(it2->query().getXGMML(s, false).str(), "<graph/>\n"));
+            ASSERT(streq(it2->query().getXGMML(s, false, false).str(), "<graph/>\n"));
             numIterated++;
         }
         ASSERT(numIterated==2);
@@ -1186,7 +1281,7 @@ protected:
         ForEach (*it2)
         {
             ASSERT(streq(it2->query().getLabel(s).str(),"graphLabel"));
-            ASSERT(streq(it2->query().getXGMML(s, false).str(), "<graph/>\n"));
+            ASSERT(streq(it2->query().getXGMML(s, false, false).str(), "<graph/>\n"));
             numIterated++;
         }
         ASSERT(numIterated==3);
@@ -1210,7 +1305,7 @@ protected:
         {
             ASSERT(it2->query().getType() == GraphTypeActivities);
             ASSERT(streq(it2->query().getLabel(s).str(),"graphLabel"));
-            ASSERT(streq(it2->query().getXGMML(s, false).str(), "<graph/>\n"));
+            ASSERT(streq(it2->query().getXGMML(s, false, false).str(), "<graph/>\n"));
             numIterated++;
         }
         ASSERT(numIterated==2);
@@ -1224,7 +1319,7 @@ protected:
         {
             ASSERT(it2->query().getType() == GraphTypeActivities);
             ASSERT(streq(it2->query().getLabel(s).str(),"graphLabel"));
-            ASSERT(streq(it2->query().getXGMML(s, false).str(), "<graph/>\n"));
+            ASSERT(streq(it2->query().getXGMML(s, false, false).str(), "<graph/>\n"));
             numIterated++;
         }
         ASSERT(numIterated==2);
@@ -1276,7 +1371,7 @@ protected:
         ret = wu->getRunningGraph(s, subid);
         ASSERT(!ret);
 
-        Owned<IWUGraphStats> progress = wu->updateStats("graph1", SCThthor, queryStatisticsComponentName(), 1, 1);
+        Owned<IWUGraphStats> progress = wu->updateStats("graph1", SCThthor, queryStatisticsComponentName(), 1, 1, false);
         IStatisticGatherer & stats = progress->queryStatsBuilder();
         {
             StatsSubgraphScope subgraph(stats, 1);
@@ -2055,6 +2150,7 @@ protected:
             virtual char *getPlatform() { throwUnexpected(); } // caller frees return string.
             virtual unsigned getPriority() const { throwUnexpected(); }
             virtual char *getWuid() { throwUnexpected(); } // caller frees return string.
+            virtual unsigned getWorkflowId() const { throwUnexpected(); }
 
             // Exception handling
 
@@ -2112,6 +2208,8 @@ protected:
             virtual IWorkUnit* updateWorkUnit() const { throwUnexpected(); }
             virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) { throwUnexpected(); }
             virtual void addWuExceptionEx(const char*, unsigned int, unsigned int, unsigned int, const char*) override { throwUnexpected(); }
+            virtual unsigned getElapsedMs() const override { throwUnexpected(); }
+
         } ctx;
 
  #if 0

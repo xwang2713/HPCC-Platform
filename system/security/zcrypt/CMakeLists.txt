@@ -25,23 +25,20 @@
 
 project( zcrypt ) 
 
+SET(CMAKE_UNITY_BUILD FALSE)
+
+find_package(unofficial-minizip CONFIG REQUIRED)
+
 set ( SRCS
       aes.cpp
       base64.cpp
       mutex.cpp
-      ioapi.c
-      zip.c
-      unzip.c
       zcrypt.cpp
     )
 
-IF (WIN32)
-  set ( SRCS ${SRCS} iowin32.c )
-ENDIF()
-
 include_directories ( 
-         ${ZLIB_INCLUDE_DIR}
          ${OPENSSL_INCLUDE_DIR}
+         ./../../security/shared
          ./../../include 
          ./../../jlib
     )
@@ -49,11 +46,9 @@ include_directories (
 ADD_DEFINITIONS ( -D_USRDLL -DZCRYPT_EXPORTS )
 
 HPCC_ADD_LIBRARY( zcrypt SHARED ${SRCS} )
-install ( TARGETS zcrypt RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
+install ( TARGETS zcrypt RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} CALC_DEPS )
 target_link_libraries ( zcrypt
          jlib
-         ${ZLIB_LIBRARIES} 
          ${OPENSSL_LIBRARIES} 
+         unofficial::minizip::minizip
     )
-
-

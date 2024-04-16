@@ -22,6 +22,7 @@
 #include "authmap.ipp"
 #include "digisign.hpp"
 #include "caching.hpp"
+#include "dautils.hpp"
 
 using namespace cryptohelper;
 
@@ -41,8 +42,6 @@ CLdapSecUser::CLdapSecUser(const char *name, const char *pw) :
     setName(name);
     setUserID(0);
     setPosixenabled(false);
-    setSudoersEnabled(false);
-    setInSudoers(false);
     setSessionToken(0);
     setSignature(nullptr);
 }
@@ -537,7 +536,7 @@ void CLdapSecResourceList::clear()
     m_rlist.kill();
 }
 
-int CLdapSecResourceList::count()
+unsigned CLdapSecResourceList::count()
 {
     return m_rlist.length();
 }
@@ -633,6 +632,7 @@ void CLdapSecManager::init(const char *serviceName, IPropertyTree* cfg)
     m_permissionsCache->setSecManager(this);
     m_passwordExpirationWarningDays = cfg->getPropInt(".//@passwordExpirationWarningDays", 10); //Default to 10 days
     m_checkViewPermissions = cfg->getPropBool(".//@checkViewPermissions", false);
+    m_hpccInternalScope.set(queryDfsXmlBranchName(DXB_Internal)).append("::");//HpccInternal::
 };
 
 
@@ -1015,6 +1015,19 @@ SecAccessFlags CLdapSecManager::authorizeFileScope(ISecUser & user, const char *
 {
     if(filescope == 0 || filescope[0] == '\0')
         return SecAccess_Full;
+
+    //Preprocess "HpccInternal::" scopes, since they are not managed by LDAP
+    //Grant user access to their own hpccinternal::<user> scope, deny if anything else
+    if(startsWithIgnoreCase(filescope, m_hpccInternalScope.str()))
+    {
+        StringBuffer userName;
+        for (const char * p = &filescope[m_hpccInternalScope.length()]; *p && *p != ':'; p++)//extract scope username
+            userName.append(*p);
+        if(strieq(userName.str(), user.getName()) || isSuperUser(&user))
+            return SecAccess_Full;
+        PROGLOG("Access denied to scope %s for user %s", filescope, user.getName());
+        return SecAccess_None;
+    }
 
     StringBuffer managedFilescope;
     if(m_permissionsCache->isCacheEnabled() && !m_usercache_off)
@@ -1404,6 +1417,11 @@ void CLdapSecManager::addGroup(const char* groupname, const char * groupOwner, c
     m_ldap_client->addGroup(groupname, groupOwner, groupDesc);
 }
 
+void CLdapSecManager::addGroup(const char* groupname, const char * groupOwner, const char * groupDesc, const char* basedn)
+{
+    m_ldap_client->addGroup(groupname, groupOwner, groupDesc, basedn);
+}
+
 void CLdapSecManager::deleteGroup(const char* groupname)
 {
     m_ldap_client->deleteGroup(groupname);
@@ -1411,7 +1429,13 @@ void CLdapSecManager::deleteGroup(const char* groupname)
 
 bool CLdapSecManager::changePermission(CPermissionAction& action)
 {
-    return m_ldap_client->changePermission(action);
+    bool ret = m_ldap_client->changePermission(action);
+    if (ret)
+    {
+        if (m_permissionsCache->isCacheEnabled())
+            m_permissionsCache->remove(action.m_rtype, action.m_rname.str());
+    }
+    return ret;
 }
 
 void CLdapSecManager::getGroups(const char* username, StringArray & groups)
@@ -1422,6 +1446,11 @@ void CLdapSecManager::getGroups(const char* username, StringArray & groups)
 void CLdapSecManager::changeUserGroup(const char* action, const char* username, const char* groupname)
 {
     m_ldap_client->changeUserGroup(action, username, groupname);
+}
+
+void CLdapSecManager::changeGroupMember(const char* action, const char* groupdn, const char* userdn)
+{
+    m_ldap_client->changeGroupMember(action, groupdn, userdn);
 }
 
 bool CLdapSecManager::deleteUser(ISecUser* user)
@@ -1496,25 +1525,6 @@ bool CLdapSecManager::getUserInfo(ISecUser& user, const char* infotype)
     return m_ldap_client->getUserInfo(user, infotype);
 }
 
-bool CLdapSecManager::createUserScopes(IEspSecureContext* secureContext)
-{
-    Owned<ISecUserIterator> it = getAllUsers(secureContext);
-    it->first();
-    bool rc = true;
-    while(it->isValid())
-    {
-        ISecUser &user = it->get();
-        if (!m_ldap_client->createUserScope(user))
-        {
-            PROGLOG("CLdapSecManager::createUserScopes Error creating user scope for user '%s'", user.getName());
-            rc = false;
-        }
-        it->next();
-    }
-    return rc;
-}
-
-
 aindex_t CLdapSecManager::getManagedScopeTree(SecResourceType rtype, const char * basedn, IArrayOf<ISecResource>& scopes, IEspSecureContext* secureContext)
 {
     return m_ldap_client->getManagedScopeTree(nullptr, rtype, basedn, scopes);
@@ -1540,6 +1550,7 @@ bool CLdapSecManager::clearPermissionsCache(ISecUser& user, IEspSecureContext* s
             return false;
         }
         m_permissionsCache->flush();
+        PROGLOG("Permissions cache cleared by admin user %s", user.getName());
     }
     return true;
 }
@@ -1613,6 +1624,21 @@ void CLdapSecManager::queryViewMembers(const char* viewName, StringArray & viewU
 bool CLdapSecManager::userInView(const char * user, const char* viewName)
 {
     return m_ldap_client->userInView(user, viewName);
+}
+
+void CLdapSecManager::createLdapBasedn(ISecUser* user, const char* basedn, SecPermissionType ptype, const char* description)
+{
+    m_ldap_client->createLdapBasedn(user, basedn, ptype, description);
+}
+
+const bool CLdapSecManager::organizationalUnitExists(const char * ou) const
+{
+    return m_ldap_client->organizationalUnitExists(ou);
+}
+
+bool CLdapSecManager::addUser(ISecUser & user, const char* basedn)
+{
+    return m_ldap_client->addUser(user, basedn);
 }
 
 extern "C"

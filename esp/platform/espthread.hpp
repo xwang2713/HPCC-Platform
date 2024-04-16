@@ -42,13 +42,12 @@ protected:
     bool keepAlive = false;
     bool m_socketReturned = false;
 public:
-    IMPLEMENT_IINTERFACE;
-    
+    IMPLEMENT_IINTERFACE_USING(Thread);
+
    CEspProtocolThread(const char *name = "Unknown service type");
    CEspProtocolThread(ISocket *sock, const char *name = "Unknown service type");
 
    virtual ~CEspProtocolThread();
-   virtual void start();
    void setSocket(ISocket *sock);
     void stop(bool wait);
    

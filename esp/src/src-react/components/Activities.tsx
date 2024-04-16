@@ -4,11 +4,15 @@ import { useConst } from "@fluentui/react-hooks";
 import * as ESPActivity from "src/ESPActivity";
 import * as Utility from "src/Utility";
 import nlsHPCC from "src/nlsHPCC";
+import { useGrid } from "../hooks/grid";
+import { useBuildInfo } from "../hooks/platform";
 import { ReflexContainer, ReflexElement, ReflexSplitter, classNames, styles } from "../layouts/react-reflex";
 import { HolyGrail } from "../layouts/HolyGrail";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid, selector, tree } from "./DojoGrid";
+import { ShortVerticalDivider } from "./Common";
+import { selector, tree } from "./DojoGrid";
 import { Summary } from "./DiskUsage";
+
+declare const dojoConfig;
 
 class DelayedRefresh {
     _promises: Promise<any>[] = [];
@@ -49,15 +53,16 @@ interface ActivitiesProps {
 export const Activities: React.FunctionComponent<ActivitiesProps> = ({
 }) => {
 
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [selection, setSelection] = React.useState([]);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
 
+    const [, { isContainer }] = useBuildInfo();
+
     //  Grid ---
-    const activity = useConst(ESPActivity.Get());
-    const gridParams = useConst({
+    const activity = useConst(() => ESPActivity.Get());
+    const { Grid, selection, refreshTable, copyButtons } = useGrid({
         store: activity.getStore({}),
-        query: {},
+        sort: { attribute: "idx", descending: false },
+        filename: "activities",
         columns: {
             col1: selector({
                 width: 27,
@@ -65,12 +70,12 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
                 sortable: false
             }),
             Priority: {
-                renderHeaderCell: function (node) {
+                renderHeaderCell: React.useCallback(function (node) {
                     node.innerHTML = Utility.getImageHTML("priority.png", nlsHPCC.Priority);
-                },
+                }, []),
                 width: 25,
                 sortable: false,
-                formatter: function (Priority) {
+                formatter: React.useCallback(function (Priority) {
                     switch (Priority) {
                         case "high":
                             return Utility.getImageHTML("priority_high.png");
@@ -78,7 +83,7 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
                             return Utility.getImageHTML("priority_low.png");
                     }
                     return "";
-                }
+                }, [])
             },
             DisplayName: tree({
                 label: nlsHPCC.TargetWuid,
@@ -93,8 +98,8 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
                 formatter: function (_name, row) {
                     const img = row.getStateImage();
                     if (activity.isInstanceOfQueue(row)) {
-                        if (row.ClusterType === 3) {
-                            return `<img src='${img}'/>&nbsp;<a href='#/clusters/${row.ClusterName}' class='dgrid-row-url'>${_name}</a>`;
+                        if (row.ClusterType === 3 && !isContainer) {
+                            return `<img src='${img}'/>&nbsp;<a href='#/operations/clusters/${row.ClusterName}' class='dgrid-row-url'>${_name}</a>`;
                         } else {
                             return `<img src='${img}'/>&nbsp;${_name}`;
                         }
@@ -104,19 +109,19 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
             }),
             GID: {
                 label: nlsHPCC.Graph, width: 90, sortable: true,
-                formatter: function (_gid, row) {
+                formatter: React.useCallback(function (_gid, row) {
                     if (activity.isInstanceOfWorkunit(row)) {
                         if (row.GraphName) {
-                            return `<a href='#/graphs/${row.GraphName}/${row.GID}' class='dgrid-row-url2'>${row.GraphName}-${row.GID}</a>`;
+                            return `<a href='#/workunits/${row.Wuid}/metrics/${row.GraphName}'>${row.GraphName}-${row.GID}</a>`;
                         }
                     }
                     return "";
-                }
+                }, [activity])
             },
             State: {
                 label: nlsHPCC.State,
                 sortable: false,
-                formatter: function (state, row) {
+                formatter: React.useCallback(function (state, row) {
                     if (activity.isInstanceOfQueue(row)) {
                         return row.isNormal() ? "" : row.StatusDetails;
                     }
@@ -126,7 +131,7 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
                         return state + " [" + row.Instance + "]";
                     }
                     return state;
-                }
+                }, [activity])
             },
             Owner: { label: nlsHPCC.Owner, width: 90, sortable: false },
             Jobname: { label: nlsHPCC.JobName, sortable: false }
@@ -143,20 +148,13 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
         }
     });
 
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", {});
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [grid]);
-
     React.useEffect(() => {
         refreshTable();
         const handle = activity.watch("__hpcc_changedCount", function (item, oldValue, newValue) {
             refreshTable();
         });
         return () => handle.unwatch();
-    }, [activity, grid, refreshTable]);
+    }, [activity, refreshTable]);
 
     //  Command Bar  ---
     const wuPriority = React.useCallback((priority) => {
@@ -180,10 +178,10 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
             key: "open", text: nlsHPCC.Open, disabled: !uiState.wuSelected && !uiState.thorClusterSelected, iconProps: { iconName: "WindowEdit" },
             onClick: () => {
                 if (selection.length === 1) {
-                    window.location.href = `#/clusters/${selection[0].ClusterName}`;
+                    window.location.href = `#/operations/clusters/${selection[0].ClusterName}`;
                 } else {
                     for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open(`#/clusters/${selection[i].ClusterName}`, "_blank");
+                        window.open(`#/operations/clusters/${selection[i].ClusterName}`, "_blank");
                     }
                 }
             }
@@ -352,10 +350,6 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
         },
     ], [activity, refreshTable, selection, uiState.clusterNotPausedSelected, uiState.clusterPausedSelected, uiState.thorClusterSelected, uiState.wuCanDown, uiState.wuCanHigh, uiState.wuCanLow, uiState.wuCanNormal, uiState.wuCanUp, uiState.wuSelected, wuPriority]);
 
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "activities.csv")
-    ], [grid, selection]);
-
     //  Selection  ---
     React.useEffect(() => {
         const state = { ...defaultUIState };
@@ -399,20 +393,28 @@ export const Activities: React.FunctionComponent<ActivitiesProps> = ({
         setUIState(state);
     }, [activity, selection]);
 
+    if (isContainer) {
+        return <HolyGrail key="activities"
+            header={<CommandBar items={buttons} farItems={copyButtons} />}
+            main={
+                <Grid />
+            }
+        />;
+    }
     return <ReflexContainer orientation="horizontal">
-        <ReflexElement minSize={100} size={100}>
+        <ReflexElement size={100} minSize={100} style={{ overflow: "hidden" }}>
             <Summary />
         </ReflexElement>
         <ReflexSplitter style={styles.reflexSplitter}>
             <div className={classNames.reflexSplitterDiv}></div>
         </ReflexSplitter>
         <ReflexElement>
-            <HolyGrail
-                header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
+            <HolyGrail key="activities"
+                header={<CommandBar items={buttons} farItems={copyButtons} />}
                 main={
-                    <DojoGrid type="Sel" store={gridParams.store} query={gridParams.query} columns={gridParams.columns} setGrid={setGrid} setSelection={setSelection} />
+                    <Grid />
                 }
             />
         </ReflexElement>
-    </ReflexContainer >;
+    </ReflexContainer>;
 };

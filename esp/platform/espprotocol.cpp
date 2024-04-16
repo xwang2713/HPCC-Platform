@@ -29,7 +29,10 @@
 
 static RelaxedAtomic<unsigned> gActiveRequests;
 
-static auto pActiveRequests = hpccMetrics::createCustomMetricAndAddToReporter("activerequests", "Number of active requests", hpccMetrics::METRICS_GAUGE, gActiveRequests);
+#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
+static auto pActiveRequests = hpccMetrics::registerCustomMetric("esp.requests.active", "Number of active requests",
+                                                                hpccMetrics::METRICS_GAUGE, gActiveRequests, SMeasureCount);
+#endif
 
 typedef IXslProcessor * (*getXslProcessor_func)();
 
@@ -610,6 +613,13 @@ unsigned CEspApplicationPort::updatePassword(IEspContext &context, IHttpMessage*
     if(streq(oldpass, newpass1))
     {
         message.append("New password can't be the same as current password.");
+        return 1;
+    }
+
+    SecFeatureSet sfs = secmgr->queryImplementedFeatures();
+    if (!(sfs & SMF_UpdateUserPassword))
+    {
+        message.append("Changing password is not supported.");
         return 1;
     }
 

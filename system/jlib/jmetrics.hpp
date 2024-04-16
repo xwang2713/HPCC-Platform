@@ -26,13 +26,17 @@
 #include "jiface.hpp"
 #include "jptree.hpp"
 #include "platform.h"
+#include "jstatcodes.h"
+#include "jatomic.hpp"
+#include <regex>
+
 
 
 namespace hpccMetrics {
 
-class MetricsReporter;
+class MetricsManager;
 
-MetricsReporter jlib_decl &queryMetricsReporter();
+MetricsManager jlib_decl &queryMetricsManager();
 
 /*
  * Enumerates the metric type.
@@ -40,9 +44,21 @@ MetricsReporter jlib_decl &queryMetricsReporter();
 enum MetricType
 {
     METRICS_COUNTER,
-    METRICS_GAUGE
+    METRICS_GAUGE,
+    METRICS_HISTOGRAM
 };
 
+
+struct MetricMetaDataItem
+{
+    MetricMetaDataItem(const char *_key, const char *_value)
+        : key{_key}, value{_value} {}
+    std::string key;
+    std::string value;
+};
+
+
+typedef std::vector<MetricMetaDataItem> MetricMetaData;
 
 /*
  * IMetric
@@ -51,6 +67,8 @@ enum MetricType
  */
 interface IMetric
 {
+    virtual ~IMetric() = default;
+
     /*
      * Returns the metric name
      */
@@ -70,6 +88,26 @@ interface IMetric
      * Get current measurement
      */
     virtual __uint64 queryValue() const = 0;
+
+    /*
+     * Query the meta data for the metric
+     */
+    virtual const MetricMetaData &queryMetaData() const = 0;
+
+    /*
+     * Get the units for the metric
+     */
+    virtual StatisticMeasure queryUnits() const = 0;
+
+    /*
+     * Query histogram values (for histogram metrics)
+     */
+    virtual std::vector<__uint64> queryHistogramValues() const = 0;
+
+    /*
+     * Query histogram bucket limits
+     */
+    virtual std::vector<__uint64> queryHistogramBucketLimits() const = 0;
 };
 
 
@@ -84,18 +122,27 @@ public:
     virtual const std::string &queryName() const override { return name; }
     virtual const std::string &queryDescription() const override { return description; }
     virtual MetricType queryMetricType() const override { return metricType; }
+    const MetricMetaData &queryMetaData() const override { return metaData; }
+    StatisticMeasure queryUnits() const override { return units; }
+    virtual std::vector<__uint64> queryHistogramValues() const override { return {}; }
+    virtual std::vector<__uint64> queryHistogramBucketLimits() const override { return {}; }
+
 
 protected:
     // No one should be able to create one of these
-    MetricBase(const char *_name, const char *_desc, MetricType _metricType) :
+    MetricBase(const char *_name, const char *_desc, MetricType _metricType, StatisticMeasure _units, const MetricMetaData &_metaData) :
         name{_name},
         description{_desc},
-        metricType{_metricType} { }
+        metricType{_metricType},
+        units{_units},
+        metaData{_metaData} { }
 
 protected:
     std::string name;
     std::string description;
     MetricType metricType;
+    StatisticMeasure units;
+    MetricMetaData metaData;
 };
 
 
@@ -105,10 +152,10 @@ public:
     virtual __uint64 queryValue() const override { return value; }
 
 protected:
-    MetricVal(const char *name, const char *desc, MetricType metricType) :
-        MetricBase(name, desc, metricType) {}
+    MetricVal(const char *_name, const char *_desc, MetricType _metricType, StatisticMeasure _units, const MetricMetaData &_metaData) :
+        MetricBase(_name, _desc, _metricType, _units, _metaData) {}
 
-    std::atomic<__uint64> value{0};
+    RelaxedAtomic<__uint64> value{0};
 };
 
 
@@ -118,11 +165,16 @@ protected:
 class jlib_decl CounterMetric : public MetricVal
 {
 public:
-    CounterMetric(const char *name, const char *description) :
-        MetricVal{name, description, MetricType::METRICS_COUNTER}  { }
+    CounterMetric(const char *_name, const char *_description, StatisticMeasure _units, const MetricMetaData &_metaData = MetricMetaData()) :
+        MetricVal{_name, _description, MetricType::METRICS_COUNTER, _units, _metaData}  { }
     void inc(uint64_t val)
     {
         value.fetch_add(val);
+    }
+
+    void fastInc(uint16_t val)
+    {
+        value.fastAdd(val);
     }
 };
 
@@ -133,15 +185,17 @@ public:
 class jlib_decl GaugeMetric : public MetricVal
 {
 public:
-    GaugeMetric(const char *name, const char *description) :
-        MetricVal{name, description, MetricType::METRICS_GAUGE}  { }
+    GaugeMetric(const char *_name, const char *_description, StatisticMeasure _units, const MetricMetaData &_metaData = MetricMetaData()) :
+        MetricVal{_name, _description, MetricType::METRICS_GAUGE, _units, _metaData}  { }
 
-    /*
-     * Update the value as indicated
-     */
-    void add(int64_t delta)
+    void adjust(int64_t delta)
     {
         value += delta;
+    }
+
+    void fastAdjust(int64_t delta)
+    {
+        value.fastAdd(delta);
     }
 
     /*
@@ -153,12 +207,38 @@ public:
     }
 };
 
+
+class jlib_decl GaugeMetricFromCounters : public MetricVal
+{
+public:
+    GaugeMetricFromCounters(const char *_name, const char *_description, StatisticMeasure _units,
+                            const std::shared_ptr<CounterMetric> &_pBeginCounter, const std::shared_ptr<CounterMetric> &_pEndCounter,
+                            const MetricMetaData &_metaData = MetricMetaData()) :
+        MetricVal{_name, _description, MetricType::METRICS_GAUGE, _units, _metaData},
+        pBeginCounter{_pBeginCounter},
+        pEndCounter{_pEndCounter}
+    {
+        assert(pBeginCounter->queryUnits() == pEndCounter->queryUnits());
+    }
+
+    virtual __uint64 queryValue() const override
+    {
+        auto endValue = pEndCounter->queryValue();
+        return pBeginCounter->queryValue() - endValue;
+    }
+
+protected:
+    std::shared_ptr<CounterMetric> pBeginCounter;
+    std::shared_ptr<CounterMetric> pEndCounter;
+};
+
+
 template<typename T>
 class CustomMetric : public MetricBase
 {
 public:
-    CustomMetric(const char *name, const char *desc, MetricType metricType, T &_value) :
-        MetricBase(name, desc, metricType),
+    CustomMetric(const char *_name, const char *_desc, MetricType _metricType, T &_value, StatisticMeasure _units, const MetricMetaData &_metaData = MetricMetaData()) :
+        MetricBase(_name, _desc, _metricType, _units, _metaData),
         value{_value} { }
 
     virtual __uint64 queryValue() const override
@@ -171,11 +251,63 @@ protected:
 };
 
 
+
+class jlib_decl HistogramMetric : public MetricBase
+{
+public:
+    HistogramMetric(const char *_name, const char *_desc, StatisticMeasure _units, const std::vector<__uint64> &_bucketLimits, const MetricMetaData &_metaData = MetricMetaData());
+
+    virtual __uint64 queryValue() const override
+    {
+        return sum;
+    }
+
+    void recordMeasurement(__uint64 measurement);
+    virtual std::vector<__uint64> queryHistogramValues() const override;
+    virtual std::vector<__uint64> queryHistogramBucketLimits() const override;
+
+protected:
+    struct Bucket
+    {
+        Bucket(__uint64 _limit) :
+                limit{_limit}, count{0} {}
+        __uint64 limit;
+        __uint64 count;
+    };
+    Bucket &findBucket(__uint64 measurement);
+
+protected:
+    std::vector<Bucket> buckets;
+    mutable CriticalSection cs;
+    Bucket inf{0};
+    __uint64 sum{0};
+};
+
+
+class jlib_decl ScaledHistogramMetric : public HistogramMetric
+{
+public:
+    ScaledHistogramMetric(const char *_name, const char *_desc, StatisticMeasure _units, const std::vector<__uint64> &_bucketLimits, double _limitsToMeasurementUnitsScaleFactor, const MetricMetaData &_metaData = MetricMetaData());
+
+    virtual std::vector<__uint64> queryHistogramBucketLimits() const override;
+    virtual __uint64 queryValue() const override
+    {
+        CriticalBlock block(cs);
+        {
+            return (__uint64)((double)sum * outputScaleFactor);
+        }
+    }
+
+protected:
+    double outputScaleFactor;
+};
+
+
 class jlib_decl MetricSink
 {
 public:
     virtual ~MetricSink() = default;
-    virtual void startCollection(MetricsReporter *pReporter) = 0;
+    virtual void startCollection(MetricsManager *pManager) = 0;
     virtual void stopCollection() = 0;
     const std::string &queryName() const { return name; }
     const std::string &queryType() const { return type; }
@@ -188,7 +320,7 @@ protected:
 protected:
     std::string name;
     std::string type;
-    MetricsReporter *pReporter = nullptr;
+    MetricsManager *pManager = nullptr;
 };
 
 
@@ -196,11 +328,11 @@ class jlib_decl PeriodicMetricSink : public MetricSink
 {
 public:
     virtual ~PeriodicMetricSink() override;
-    virtual void startCollection(MetricsReporter *pReporter) override;
+    virtual void startCollection(MetricsManager *pManager) override;
     virtual void stopCollection() override;
 
 protected:
-    explicit PeriodicMetricSink(const char *name, const char *type, const IPropertyTree *pSettingsTree);
+    explicit PeriodicMetricSink(const char *_name, const char *_type, const IPropertyTree *_pSettingsTree);
     virtual void prepareToStartCollecting() = 0;
     virtual void collectingHasStopped() = 0;
     virtual void doCollection() = 0;
@@ -218,18 +350,25 @@ protected:
 
 extern "C" { typedef hpccMetrics::MetricSink* (*getSinkInstance)(const char *, const IPropertyTree *pSettingsTree); }
 
-struct SinkInfo;
+struct SinkInfo
+{
+    explicit SinkInfo(MetricSink *_pSink) : pSink{_pSink} {}
+    MetricSink *pSink = nullptr;             // ptr to the sink
+    std::vector<std::string> reportMetrics;   // vector of metrics to report (empty for none)
+};
 
-class jlib_decl MetricsReporter
+class jlib_decl MetricsManager
 {
 public:
-    MetricsReporter() = default;
-    ~MetricsReporter();
+    MetricsManager();
+    ~MetricsManager();
     void init(IPropertyTree *pMetricsTree);
-    void addMetric(const std::shared_ptr<IMetric> &pMetric);
+    void addSink(MetricSink *pSink, const char *name);  // for use by unit tests
+    bool addMetric(const std::shared_ptr<IMetric> &pMetric);
     void startCollecting();
     void stopCollecting();
     std::vector<std::shared_ptr<IMetric>> queryMetricsForReport(const std::string &sinkName);
+    const char * queryUnitsString(StatisticMeasure units) const;
 
 protected:
     void initializeSinks(IPropertyTreeIterator *pSinkIt);
@@ -241,25 +380,116 @@ protected:
     std::map<std::string, std::unique_ptr<SinkInfo>> sinks;
     std::map<std::string, std::weak_ptr<IMetric>> metrics;
     std::mutex metricVectorMutex;
+    std::regex nameValidator;
+};
+
+jlib_decl std::shared_ptr<CounterMetric> registerCounterMetric(const char *name, const char* desc, StatisticMeasure units, const MetricMetaData &metaData = MetricMetaData());
+jlib_decl std::shared_ptr<GaugeMetric> registerGaugeMetric(const char *name, const char* desc, StatisticMeasure units, const MetricMetaData &metaData = MetricMetaData());
+jlib_decl std::shared_ptr<GaugeMetricFromCounters> registerGaugeFromCountersMetric(const char *name, const char* desc, StatisticMeasure units,
+                                                                         const std::shared_ptr<CounterMetric> &pBeginCounter, const std::shared_ptr<CounterMetric> &pEndCounter,
+                                                                         const MetricMetaData &metaData = MetricMetaData());
+
+jlib_decl std::shared_ptr<HistogramMetric> registerHistogramMetric(const char *name, const char* desc, StatisticMeasure units, const std::vector<__uint64> &bucketLimits, const MetricMetaData &metaData = MetricMetaData());
+jlib_decl std::shared_ptr<ScaledHistogramMetric> registerScaledHistogramMetric(const char *name, const char* desc, StatisticMeasure units, const std::vector<__uint64> &bucketLimits,
+                                                                               double limitsToMeasurementUnitsScaleFactor, const MetricMetaData &metaData = MetricMetaData());
+
+jlib_decl std::shared_ptr<ScaledHistogramMetric> registerCyclesToNsScaledHistogramMetric(const char *name, const char* desc, const std::vector<__uint64> &bucketLimits, const MetricMetaData &metaData = MetricMetaData());
+
+//
+// Convenience function templates to create metrics and add to the manager
+template <typename T>
+std::shared_ptr<T> createMetricAndAddToManager(const char *name, const char* desc, StatisticMeasure units, const MetricMetaData &metaData = MetricMetaData())
+{
+    //
+    // std::make_shared is not used so that there are separate memory allocations for the object (metric) and the shared pointer control structure. This ensures
+    // the vmt for the control structure does not live in memory allocated by a shared object (dll) that could be unloaded. If make_shared is used and a shared
+    // object is unloaded, the vmt is also deleted which causes unpredictable results during weak pointer access.
+    std::shared_ptr<T> pMetric = std::shared_ptr<T>(new T(name, desc, units, metaData));
+    queryMetricsManager().addMetric(pMetric);
+    return pMetric;
+}
+
+template <typename T>
+std::shared_ptr<CustomMetric<T>> registerCustomMetric(const char *name, const char *desc, MetricType metricType, T &value, StatisticMeasure units, const MetricMetaData &metaData = MetricMetaData())
+{
+    //
+    // std::make_shared is not used so that there are separate memory allocations for the object (metric) and the shared pointer control structure. This ensures
+    // the vmt for the control structure does not live in memory allocated by a shared object (dll) that could be unloaded. If make_shared is used and a shared
+    // object is unloaded, the vmt is also deleted which causes unpredictable results during weak pointer access.
+    std::shared_ptr<CustomMetric<T>> pMetric = std::shared_ptr<CustomMetric<T>>(new CustomMetric<T>(name, desc, metricType, value, units, metaData));
+    queryMetricsManager().addMetric(pMetric);
+    return pMetric;
+}
+
+
+class jlib_decl ScopedGaugeUpdater
+{
+public:
+    explicit ScopedGaugeUpdater(GaugeMetric &_pGauge, int64_t _amount=1)
+        : gauge{_pGauge}, amount{_amount}
+    {
+        gauge.adjust(amount);
+    }
+    ScopedGaugeUpdater(const ScopedGaugeUpdater&) = delete;
+    ScopedGaugeUpdater(ScopedGaugeUpdater&) = delete;
+    ScopedGaugeUpdater& operator=(const ScopedGaugeUpdater&) = delete;
+    ScopedGaugeUpdater& operator=(ScopedGaugeUpdater&) = delete;
+    ~ScopedGaugeUpdater()
+    {
+        gauge.adjust(-amount);
+    }
+
+protected:
+    GaugeMetric &gauge;
+    int64_t amount;
 };
 
 
-//
-// Convenience function templates to create metrics and add to the reporter
-template <typename T>
-std::shared_ptr<T> createMetricAndAddToReporter(const char *name, const char* desc)
+class jlib_decl ScopedGaugeDecrementer
 {
-    std::shared_ptr<T> pMetric = std::make_shared<T>(name, desc);
-    queryMetricsReporter().addMetric(pMetric);
-    return pMetric;
-}
+public:
+    explicit ScopedGaugeDecrementer(GaugeMetric &_pGauge, int64_t _amount=1)
+        : gauge{_pGauge}, amount{_amount}
+    { }
+    ScopedGaugeDecrementer(const ScopedGaugeDecrementer&) = delete;
+    ScopedGaugeDecrementer(ScopedGaugeDecrementer&&) = delete;
+    ScopedGaugeDecrementer& operator=(const ScopedGaugeDecrementer&) = delete;
+    ScopedGaugeDecrementer& operator=(ScopedGaugeDecrementer&&) = delete;
 
-template <typename T>
-std::shared_ptr<CustomMetric<T>> createCustomMetricAndAddToReporter(const char *name, const char *desc, MetricType metricType, T &value)
+    ~ScopedGaugeDecrementer()
+    {
+        gauge.adjust(-amount);
+    }
+
+protected:
+    GaugeMetric &gauge;
+    int64_t amount;
+};
+
+
+
+class jlib_decl HistogramExecutionTimer
 {
-    std::shared_ptr<CustomMetric<T>> pMetric = std::make_shared<CustomMetric<T>>(name, desc, metricType, value);
-    queryMetricsReporter().addMetric(pMetric);
-    return pMetric;
-}
+public:
+    HistogramExecutionTimer(std::shared_ptr<ScaledHistogramMetric> &_pHistogram) :
+        pHistogram{_pHistogram}
+    {
+        startCycles = get_cycles_now();
+    }
+    HistogramExecutionTimer(const HistogramExecutionTimer&) = delete;
+    HistogramExecutionTimer(HistogramExecutionTimer&&) = delete;
+    HistogramExecutionTimer& operator=(const HistogramExecutionTimer&) = delete;
+    HistogramExecutionTimer& operator=(HistogramExecutionTimer&&) = delete;
+
+    ~HistogramExecutionTimer()
+    {
+        cycle_t elapsedCycles = get_cycles_now() - startCycles;
+        pHistogram->recordMeasurement(elapsedCycles);
+    }
+
+protected:
+    std::shared_ptr<ScaledHistogramMetric> &pHistogram;
+    cycle_t startCycles;
+};
 
 }

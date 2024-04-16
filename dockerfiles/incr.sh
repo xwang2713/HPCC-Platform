@@ -26,7 +26,10 @@
 
 # NB: INPUT_* may be pre-set as environment variables.
 
-while getopts “d:fhlpt:n:u:b:” opt; do
+#The name of your "upstream" git remote
+UPSTREAM=upstream
+
+while getopts “d:fhvlpt:n:u:b:r:a:” opt; do
   case $opt in
     l) TAGLATEST=1 ;;
     n) CUSTOM_TAG_NAME=$OPTARG ;;
@@ -34,9 +37,12 @@ while getopts “d:fhlpt:n:u:b:” opt; do
     t) INPUT_BUILD_THREADS=$OPTARG ;;
     d) INPUT_DOCKER_REPO=$OPTARG ;;
     u) INPUT_BUILD_USER=$OPTARG ;;
+    a) INPUT_GITHUB_TOKEN=$OPTARG ;;
     b) INPUT_BUILD_TYPE=$OPTARG ;;
+    r) UPSTREAM=$OPTARG ;;
     f) FORCE=1 ;;
-    h) echo "Usage: incr.sh [options]"
+    v) BUILDKIT_PROGRESS=plain ;;
+    h) echo "Usage: incr.sh [options] [prev]"
        echo "    -d <docker-repo>   Specify the repo to publish images to"
        echo "    -f                 Force build from scratch"
        echo "    -b                 Build type (e.g. Debug / Release)"
@@ -44,8 +50,14 @@ while getopts “d:fhlpt:n:u:b:” opt; do
        echo "    -l                 Tag the images as the latest"
        echo "    -n                 Tag the image with a custom name (e.g. -n HPCC-25285)"
        echo "    -p                 Push images to docker repo"
+       echo "    -r                 Override git upstream repo name (default is 'upstream')"
        echo "    -t <num-threads>   Override the number of build threads"
        echo "    -u <user>          Specify the build user"
+       echo "    -a <pat>           Personal access token for github packages"
+       echo "    -v                 use verbose buildkit mode"
+       echo "The optional prev argument indicates a remote base image that will be pulled as the starting point."
+       echo "If not specified, will use the most recent local image, or attempt to deduce the best remote base"
+       echo "from the git history. prev should be in the form (e.g.) 9.0.0-rc1"
        exit
        ;;
   esac
@@ -68,6 +80,10 @@ BUILD_THREADS=$INPUT_BUILD_THREADS # If not set, picks up default based on nproc
 BUILD_USER=hpccsystems
 [[ -n ${INPUT_BUILD_USER} ]] && BUILD_USER=${INPUT_BUILD_USER}
 
+# GITHUB_TOKEN used when building from scatch with force option (-f)
+GITHUB_TOKEN=none
+[[ -n ${INPUT_GITHUB_TOKEN} ]] && GITHUB_TOKEN=${INPUT_GITHUB_TOKEN}
+
 HEAD=$(git rev-parse --short HEAD)
 BUILD_LABEL="${HEAD}-${BUILD_TYPE}"
 
@@ -80,9 +96,24 @@ if [[ -z "$FORCE" ]] ; then
     PREV_COMMIT=$(echo "${PREV}" | sed -e "s/-${BUILD_TYPE}.*$//")
   fi
 
+# Work out which candidate branch this one was probably forked from
+
+
   # If not found above, look for latest tagged
   if [[ -z ${PREV} ]] ; then
-    PREV=$(git log --oneline --no-merges | grep "^[0-9a-f]* Split off " | head -1 | sed "s/.*Split off //" | head -1)-rc1
+    best=1000000
+    for candidate in `git branch -r -l ${UPSTREAM}/candidate-9* | sed 's/\*//' | sed s/.*candidate-// | egrep -v [.]x$ | sort | uniq` ; do
+      delta=$(git rev-list --count --no-merges ${UPSTREAM}/candidate-$candidate...HEAD)
+      # echo $candidate : $delta
+      if [ $delta -lt $best ] ; then
+        best=$delta
+        PREV=`git tag -l | grep ${candidate} | tail -1 | sed s/.*_//`
+      fi
+    done
+    if [[ -z ${PREV} ]] ; then
+      echo "Could not locate version to base from - please specify manually"
+      exit
+    fi
     if [[ ! "${BUILD_TYPE}" =~ "Release" ]] ; then
       PREV=${PREV}-${BUILD_TYPE}
     fi
@@ -93,10 +124,22 @@ if [[ -z "$FORCE" ]] ; then
       echo "Could not locate docker image based on PREV tag: ${PREV} for docker user: ${DOCKER_REPO}"
       exit
     fi
+  else
+    if [[ ! "${BUILD_TYPE}" =~ "Release" ]] ; then
+      if [[ ! "${PREV}" =~ "-${BUILD_TYPE}" ]] ; then
+        PREV=${PREV}-${BUILD_TYPE}
+      fi
+    fi
   fi
 
   if [[ -z ${PREV_COMMIT} ]] ; then
     PREV_COMMIT=community_$(echo "${PREV}" | sed -e "s/-${BUILD_TYPE}.*$//")
+    # check if manually specified base (PREV) was gold release. Gold if no trailing -<release>
+    # if gold, add "-1" to match git tagging.
+    pat=".+-.+$"
+    if [[ ! ${PREV_COMMIT} =~ ${pat} ]] ; then
+      PREV_COMMIT=${PREV_COMMIT}-1
+    fi
   fi
 
   # create empty patch file
@@ -167,7 +210,7 @@ build_image() {
 
 if [[ -n "$FORCE" ]] ; then
   echo Building local forced build images [ BUILD_LABEL=${BUILD_LABEL} ]
-  build_image platform-build platform-build --build-arg BUILD_USER=${BUILD_USER} --build-arg BUILD_TAG=${HEAD} --build-arg BUILD_THREADS=${BUILD_THREADS}
+  build_image platform-build platform-build --build-arg BUILD_USER=${BUILD_USER} --build-arg GITHUB_ACTOR=${BUILD_USER} --build-arg GITHUB_TOKEN=${GITHUB_TOKEN} --build-arg BUILD_TAG=${HEAD} --build-arg BUILD_THREADS=${BUILD_THREADS}
 else
   echo Building local incremental images [ BUILD_LABEL=${BUILD_LABEL} ] based on ${PREV}
   build_image platform-build platform-build-incremental --build-arg DOCKER_REPO=${INCR_DOCKER_REPO} --build-arg PREV_LABEL=${PREV} --build-arg PATCH_MD5=${PATCH_MD5} --build-arg BUILD_THREADS=${BUILD_THREADS}

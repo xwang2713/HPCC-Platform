@@ -64,7 +64,7 @@ void getPartsMetaInfo(ThorDataLinkMetaInfo &metaInfo, unsigned nparts, IPartDesc
 //////////////////////////////////////////////
 
 CDiskPartHandlerBase::CDiskPartHandlerBase(CDiskReadSlaveActivityBase &_activity) 
-    : activity(_activity), fileStats(diskReadRemoteStatistics)
+    : activity(_activity), closedPartFileStats(diskReadPartStatistics)
 {
     checkFileCrc = activity.checkFileCrc;
     which = 0;
@@ -115,7 +115,7 @@ void CDiskPartHandlerBase::open()
 {
     unsigned location;
     StringBuffer filePath;
-    if (!(globals->getPropBool("@autoCopyBackup", true)?ensurePrimary(&activity, *partDesc, iFile, location, filePath):getBestFilePart(&activity, *partDesc, iFile, location, filePath, &activity)))
+    if (!(globals->getPropBool("@autoCopyBackup", !isContainerized())?ensurePrimary(&activity, *partDesc, iFile, location, filePath):getBestFilePart(&activity, *partDesc, iFile, location, filePath, &activity)))
     {
         StringBuffer locations;
         IException *e = MakeActivityException(&activity, TE_FileNotFound, "No physical file part for logical file %s, found at given locations: %s (Error = %d)", activity.logicalFilename.get(), getFilePartLocations(*partDesc, locations).str(), GetLastError());
@@ -209,7 +209,7 @@ CDiskReadSlaveActivityBase::CDiskReadSlaveActivityBase(CGraphElementBase *_conta
     reInit = 0 != (helper->getFlags() & (TDXvarfilename|TDXdynamicfilename));
     crcCheckCompressed = getOptBool(THOROPT_READCOMPRESSED_CRC, false);
     markStart = gotMeta = false;
-    checkFileCrc = !globals->getPropBool("Debug/@fileCrcDisabled", false);
+    checkFileCrc = !getExpertOptBool("fileCrcDisabled", false);
     checkFileCrc = getOptBool(THOROPT_READ_CRC, checkFileCrc);
 }
 
@@ -228,6 +228,7 @@ void CDiskReadSlaveActivityBase::init(MemoryBuffer &data, MemoryBuffer &slaveDat
         data.read(subfile);
         subfileLogicalFilenames.append(subfile);
     }
+    data.read(fileTableStart);
     unsigned parts;
     data.read(parts);
     if (parts)
@@ -236,34 +237,37 @@ void CDiskReadSlaveActivityBase::init(MemoryBuffer &data, MemoryBuffer &slaveDat
 
         if (helper->getFlags() & TDXtemporary)
         {
-            // put temp files in individual slave temp dirs (incl port)
+            // put temp files in temp dir
             if (!container.queryJob().queryUseCheckpoints())
                 partDescs.item(0).queryOwner().setDefaultDir(queryTempDir());
         }
         else
         {
-            ISuperFileDescriptor *super = partDescs.item(0).queryOwner().querySuperFileDescriptor();
-            if (super)
+            if ((TDXjobtemp & helper->getFlags())==0)
             {
-                unsigned numSubFiles = super->querySubFiles();
-                for (unsigned i=0; i<numSubFiles; i++)
-                    subFileStats.push_back(new CRuntimeStatisticCollection(diskReadRemoteStatistics));
+                ISuperFileDescriptor *super = partDescs.item(0).queryOwner().querySuperFileDescriptor();
+                setupSpace4FileStats(fileTableStart, reInit, super!=nullptr, super?super->querySubFiles():0, diskReadRemoteStatistics);
             }
         }
     }
     gotMeta = false; // if variable filename and inside loop, need to invalidate cached meta
 }
-void CDiskReadSlaveActivityBase::mergeSubFileStats(IPartDescriptor *partDesc, IExtRowStream *partStream)
+void CDiskReadSlaveActivityBase::mergeFileStats(IPartDescriptor *partDesc, IExtRowStream *partStream)
 {
-    if (subFileStats.size()>0)
+    if (fileStats.size()>0)
     {
         ISuperFileDescriptor * superFDesc = partDesc->queryOwner().querySuperFileDescriptor();
-        dbgassertex(superFDesc);
-        unsigned subfile, lnum;
-        if(superFDesc->mapSubPart(partDesc->queryPartIndex(), subfile, lnum))
-            mergeStats(*subFileStats[subfile], partStream);
+        if (superFDesc)
+        {
+            unsigned subfile, lnum;
+            if(superFDesc->mapSubPart(partDesc->queryPartIndex(), subfile, lnum))
+                mergeStats(*fileStats[subfile+fileTableStart], partStream);
+        }
+        else
+            mergeStats(*fileStats[fileTableStart], partStream);
     }
 }
+
 const char *CDiskReadSlaveActivityBase::queryLogicalFilename(unsigned index)
 {
     return subfileLogicalFilenames.item(index);
@@ -273,7 +277,6 @@ void CDiskReadSlaveActivityBase::start()
 {
     PARENT::start();
     markStart = true;
-    diskProgress = 0;
     unsigned encryptedKeyLen;
     void *encryptedKey;
     helper->getEncryptKey(encryptedKeyLen, encryptedKey);
@@ -312,18 +315,23 @@ IThorRowInterfaces * CDiskReadSlaveActivityBase::queryProjectedDiskRowInterfaces
     return projectedDiskRowIf;
 }
 
+
+void CDiskReadSlaveActivityBase::gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
+{
+    PARENT::gatherActiveStats(activeStats);
+    if (partHandler)
+        partHandler->gatherStats(activeStats);
+}
+
 void CDiskReadSlaveActivityBase::serializeStats(MemoryBuffer &mb)
 {
-    CRuntimeStatisticCollection activeStats(diskReadRemoteStatistics);
-    if (partHandler)
-    {
-        partHandler->gatherStats(activeStats);
-        stats.merge(activeStats);
-    }
-    stats.setStatistic(StNumDiskRowsRead, diskProgress);
     PARENT::serializeStats(mb);
-    for (auto &stats: subFileStats)
-        stats->serialize(mb);
+    if (partDescs.ordinality())
+    {
+        mb.append((unsigned)fileStats.size());
+        for (auto &stats: fileStats)
+            stats->serialize(mb);
+    }
 }
 
 
@@ -337,7 +345,7 @@ void CDiskWriteSlaveActivityBase::open()
         if (hasLookAhead(0))
             startLookAhead(0);
         else
-            setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), PROCESS_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, NULL, &container.queryJob().queryIDiskUsage()), false);
+            setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), PROCESS_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, NULL), false);
         if (!rfsQueryParallel)
         {
             ActPrintLog("Blocked, waiting for previous part to complete write");
@@ -391,7 +399,7 @@ void CDiskWriteSlaveActivityBase::open()
     Owned<IFileIO> partOutputIO = createMultipleWrite(this, *partDesc, diskRowMinSz, twFlags, compress, ecomp, this, &abortSoon, (external&&!query) ? &tempExternalName : NULL);
 
     {
-        CriticalBlock block(outputCs);
+        CriticalBlock block(statsCs);
         outputIO.setown(partOutputIO.getClear());
     }
 
@@ -465,11 +473,13 @@ void CDiskWriteSlaveActivityBase::close()
 
             Owned<IFileIO> tmpFileIO;
             {
-                CriticalBlock block(outputCs);
+                CriticalBlock block(statsCs);
                 // ensure it is released/destroyed after releasing crit, since the IFileIO might involve a final copy and take considerable time.
                 tmpFileIO.setown(outputIO.getClear());
+                mergeStats(inactiveStats, tmpFileIO, diskWriteRemoteStatistics);
+                if (tmpUsage)
+                    tmpUsage->setSize(tmpFileIO->getStatistic(StSizeDiskWrite));
             }
-            mergeStats(stats, tmpFileIO, diskWriteRemoteStatistics);
             tmpFileIO->close(); // NB: close now, do not rely on close in dtor
         }
 
@@ -522,7 +532,7 @@ void CDiskWriteSlaveActivityBase::init(MemoryBuffer &data, MemoryBuffer &slaveDa
     }
     partDesc.setown(deserializePartFileDescriptor(data));
 
-    // put temp files in individual slave temp dirs (incl port)
+    // put temp files in temp dir
     if ((diskHelperBase->getFlags() & TDXtemporary) && (!container.queryJob().queryUseCheckpoints()))
         partDesc->queryOwner().setDefaultDir(queryTempDir());
 
@@ -543,15 +553,19 @@ void CDiskWriteSlaveActivityBase::abort()
         cancelReceiveMsg(queryJobChannel().queryMyRank()-1, mpTag);
 }
 
-void CDiskWriteSlaveActivityBase::serializeStats(MemoryBuffer &mb)
+// NB: always called within statsCs crit
+void CDiskWriteSlaveActivityBase::gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
 {
+    PARENT::gatherActiveStats(activeStats);
+    if (outputIO)
     {
-        CriticalBlock block(outputCs);
-        mergeStats(stats, outputIO, diskWriteRemoteStatistics);
+        mergeStats(activeStats, outputIO, diskWriteRemoteStatistics);
+        if (tmpUsage) // Update tmpUsage file size (Needed to calc inter-graph spill stats)
+            tmpUsage->setSize(outputIO->getStatistic(StSizeDiskWrite));
     }
-    stats.setStatistic(StPerReplicated, replicateDone);
-    PARENT::serializeStats(mb);
+    activeStats.setStatistic(StPerReplicated, replicateDone);
 }
+
 
 // ICopyFileProgress
 CFPmode CDiskWriteSlaveActivityBase::onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize)
@@ -587,7 +601,7 @@ void CDiskWriteSlaveActivityBase::process()
     StringBuffer tmpStr;
     fName.set(getPartFilename(*partDesc, 0, tmpStr).str());
     if (diskHelperBase->getFlags() & TDXtemporary && !container.queryJob().queryUseCheckpoints())
-        container.queryTempHandler()->registerFile(fName, container.queryOwner().queryGraphId(), usageCount, true);
+        tmpUsage = container.queryTempHandler()->registerFile(fName, container.queryOwner().queryGraphId(), usageCount, true);
     try
     {
         ActPrintLog("handling fname : %s", fName.get());
@@ -652,8 +666,6 @@ void CDiskWriteSlaveActivityBase::processDone(MemoryBuffer &mb)
     rowcount_t _processed = processed & THORDATALINK_COUNT_MASK;
     Owned<IFile> ifile = createIFile(fName);
     offset_t sz = ifile->size();
-    if ((offset_t)-1 != sz)
-        container.queryJob().queryIDiskUsage().increase(sz);
     mb.append(_processed).append(compress?uncompressedBytesWritten:sz).append(sz);
     // NB: block compressed output has implicit crc of 0.
     unsigned crc = compress?~0:fileCRC.get();

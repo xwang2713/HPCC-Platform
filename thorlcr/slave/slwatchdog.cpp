@@ -44,7 +44,7 @@ class CGraphProgressHandlerBase : public CInterfaceOf<ISlaveWatchdog>, implement
         hb.sender = self;
         hb.tick++;
         size32_t progressSizePos = (byte *)&hb.progressSize - (byte *)&hb;
-        sendMb.append(sizeof(HeartBeatPacketHeader), &hb);
+        hb.serialize(sendMb);
 
         hb.progressSize = gatherData(progressMb);
         sendMb.writeDirect(progressSizePos, sizeof(hb.progressSize), &hb.progressSize);
@@ -68,7 +68,7 @@ public:
     void start()
     {
         stopped = false;
-        threaded.start();
+        threaded.start(false);
     }
     virtual void beforeDispose() override
     {
@@ -106,15 +106,20 @@ public:
         CriticalBlock b(crit);
         activeGraphs.append(*LINK(&graph));
         StringBuffer str("Watchdog: Start Job ");
-        LOG(MCthorDetailedDebugInfo, thorJob, "%s", str.append(graph.queryGraphId()).str());
+        LOG(MCthorDetailedDebugInfo, "%s", str.append(graph.queryGraphId()).str());
     }
     virtual void stopGraph(CGraphBase &graph, MemoryBuffer *mb) override
     {
         CriticalBlock b(crit);
-        if (NotFound != activeGraphs.find(graph))
+        if (NotFound == activeGraphs.find(graph))
+        {
+            if (mb)
+                mb->append((size32_t)0);
+        }
+        else
         {
             StringBuffer str("Watchdog: Stop Job ");
-            LOG(MCthorDetailedDebugInfo, thorJob, "%s", str.append(graph.queryGraphId()).str());
+            LOG(MCthorDetailedDebugInfo, "%s", str.append(graph.queryGraphId()).str());
             if (mb)
             {
                 DelayedSizeMarker sizeMark(*mb);
@@ -133,7 +138,7 @@ public:
 #endif
             stopped = true;
             threaded.join();
-            LOG(MCdebugProgress, thorJob, "Stopped watchdog");
+            LOG(MCdebugProgress, "Stopped watchdog");
         }
     }
     virtual void debugRequest(MemoryBuffer &msg, const char *request) const override
@@ -168,7 +173,7 @@ public:
 // IThreaded
     virtual void threadmain() override
     {
-        LOG(MCthorDetailedDebugInfo, thorJob, "Watchdog: thread running");
+        LOG(MCthorDetailedDebugInfo, "Watchdog: thread running");
         gatherAndSend(); // send initial data
         assertex(HEARTBEAT_INTERVAL>=8);
         unsigned count = HEARTBEAT_INTERVAL+getRandom()%8-4;
@@ -194,7 +199,7 @@ public:
     CGraphProgressUDPHandler()
     {
         StringBuffer ipStr;
-        queryMasterNode().endpoint().getIpText(ipStr);
+        queryMasterNode().endpoint().getHostText(ipStr);
         sock.setown(ISocket::udp_connect(getFixedPort(getMasterPortBase(), TPORT_watchdog),ipStr.str()));
         start();
     }

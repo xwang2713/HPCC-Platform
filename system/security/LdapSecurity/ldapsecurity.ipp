@@ -63,11 +63,6 @@ private:
     StringAttr   m_homedirectory;
     StringAttr   m_loginshell;
 
-    bool         m_sudoersenabled;
-    bool         m_insudoers;
-    StringAttr   m_sudoHost;
-    StringAttr   m_sudoCommand;
-    StringAttr   m_sudoOption;
     unsigned     m_sessionToken;//User's ESP session token
     StringBuffer m_signature;//User's digital signature
 
@@ -161,6 +156,7 @@ public:
     IPropertyTree* getDataElement(const char* xpath = ".") const override { return nullptr; }
     IPropertyTreeIterator* getDataElements(const char* xpath = ".") const override { return nullptr; }
     bool setData(IPropertyTree* data) override { return false; }
+    virtual bool isCanonicalMatch(const char* name) const override { return (name && strieq(m_name.str(), name)); }
 
 //interface ISecCredentials
     bool setPassword(const char * pw);
@@ -211,48 +207,6 @@ public:
     virtual bool getPosixenabled()
     {
         return m_posixenabled;
-    }
-
-// Sudoers specific fields  
-    virtual void setSudoersEnabled(bool enabled)
-    {
-        m_sudoersenabled = enabled;
-    }
-    virtual bool getSudoersEnabled()
-    {
-        return m_sudoersenabled;
-    }
-    virtual void setInSudoers(bool in)
-    {
-        m_insudoers = in;
-    }
-    virtual bool getInSudoers()
-    {
-        return m_insudoers;
-    }
-    virtual void setSudoHost(const char* host)
-    {
-        m_sudoHost.set(host);
-    }
-    virtual const char* getSudoHost()
-    {
-        return m_sudoHost.get();
-    }
-    virtual void setSudoCommand(const char* cmd)
-    {
-         m_sudoCommand.set(cmd);
-    }
-    virtual const char* getSudoCommand()
-    {
-        return m_sudoCommand.get();
-    }
-    virtual void setSudoOption(const char* option)
-    {
-        m_sudoOption.set(option);
-    }
-    virtual const char* getSudoOption()
-    {
-        return m_sudoOption.get();
     }
 };
 
@@ -330,15 +284,15 @@ public:
     virtual void addResource(ISecResource * resource);
     bool addCustomResource(const char * name, const char * config);
     ISecResource * getResource(const char * Resource);
-    virtual int count();
+    virtual unsigned count();
     virtual const char* getName();
     virtual ISecResource * queryResource(unsigned seq);
     virtual ISecPropertyIterator * getPropertyItr();
     virtual ISecProperty* findProperty(const char* name);
     virtual StringBuffer& toString(StringBuffer& s) 
     { 
-        s.appendf("name=%s, count=%d.", m_name.get(), count()); 
-        for (int i=0; i<count(); i++) 
+        s.appendf("name=%s, count=%u.", m_name.get(), count()); 
+        for (unsigned i=0; i<count(); i++) 
         { 
             s.appendf("\nItem %d: ",i+1); 
             queryResource(i)->toString(s); 
@@ -368,6 +322,7 @@ private:
     bool m_checkViewPermissions;
     static const SecFeatureSet s_safeFeatures = SMF_ALL_FEATURES;
     static const SecFeatureSet s_implementedFeatures = s_safeFeatures & ~(SMF_RetrieveUserData | SMF_RemoveResources);
+    StringBuffer m_hpccInternalScope;
 
 public:
     IMPLEMENT_IINTERFACE
@@ -427,8 +382,10 @@ public:
     virtual void getGroups(const char* username, StringArray & groups);
     virtual bool changePermission(CPermissionAction& action);
     virtual void changeUserGroup(const char* action, const char* username, const char* groupname);
+    virtual void changeGroupMember(const char* action, const char* groupdn, const char* userdn);
     virtual bool deleteUser(ISecUser* user);
     virtual void addGroup(const char* groupname, const char * groupOwner, const char * groupDesc);
+    virtual void addGroup(const char* groupname, const char * groupOwner, const char * groupDesc, const char* basedn);
     virtual void deleteGroup(const char* groupname);
     virtual void getGroupMembers(const char* groupname, StringArray & users);
     void deleteResource(SecResourceType rtype, const char * name, const char * basedn, IEspSecureContext* secureContext = nullptr) override;
@@ -479,7 +436,6 @@ public:
         return m_checkViewPermissions;
     }
 
-    bool createUserScopes(IEspSecureContext* secureContext = nullptr) override;
     aindex_t getManagedScopeTree(SecResourceType rtype, const char * basedn, IArrayOf<ISecResource>& scopes, IEspSecureContext* secureContext = nullptr) override;
     SecAccessFlags queryDefaultPermission(ISecUser& user, IEspSecureContext* secureContext = nullptr) override;
     bool clearPermissionsCache(ISecUser &user, IEspSecureContext* secureContext = nullptr) override;
@@ -489,7 +445,10 @@ public:
     bool logoutUser(ISecUser & user, IEspSecureContext* secureContext = nullptr) override;
     bool retrieveUserData(ISecUser& requestedUser, ISecUser* requestingUser = nullptr, IEspSecureContext* secureContext = nullptr) override;
     bool removeResources(ISecUser& sec_user, ISecResourceList * resources, IEspSecureContext* secureContext = nullptr) override { return false; }
-
+    virtual void createLdapBasedn(ISecUser* user, const char* basedn, SecPermissionType ptype, const char* description);
+    virtual const bool organizationalUnitExists(const char * ou) const;
+    virtual bool addUser(ISecUser & user, const char* basedn);
+    
     //Data View related interfaces
     virtual void createView(const char * viewName, const char * viewDescription);
     virtual void deleteView(const char * viewName);

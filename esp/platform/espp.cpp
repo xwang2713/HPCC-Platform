@@ -313,7 +313,6 @@ static constexpr const char * defaultYaml = R"!!(
 version: "1.0"
 esp:
   name: myesp
-  daliServers: dali
 )!!";
 
 static Owned<IPropertyTree> espConfig;
@@ -365,13 +364,42 @@ void initializeMetrics(CEspConfig* config)
         pMetricsTree.setown(getComponentConfigSP()->getPropTree("metrics"));
     }
 
+#ifdef _DEBUG
+    if (!pMetricsTree)
+    {
+        const char * defaultMetricsYaml = R"!!(
+sinks:
+  - type: log
+    name: loggingsink
+    settings:
+      period: 60
+)!!";
+        pMetricsTree.setown(createPTreeFromYAMLString(defaultMetricsYaml));
+    }
+#endif
+
     if (pMetricsTree != nullptr)
     {
         PROGLOG("Metrics initializing...");
-        MetricsReporter &metricsReporter = queryMetricsReporter();
-        metricsReporter.init(pMetricsTree);
-        metricsReporter.startCollecting();
+        MetricsManager &metricsManager = queryMetricsManager();
+        metricsManager.init(pMetricsTree);
+        metricsManager.startCollecting();
     }
+}
+
+static void copyTree(IPropertyTree * to, const IPropertyTree * from, const char * xpath)
+{
+    IPropertyTree * match = from->queryPropTree(xpath);
+    if (match)
+        to->setPropTree(xpath, LINK(match));
+}
+
+static IPropertyTree * extractLegacyOptions(IPropertyTree * legacyOptions)
+{
+    IPropertyTree * legacyProcessConfig = legacyOptions->queryPropTree("Software/EspProcess[1]");
+    Owned<IPropertyTree> extractedOptions = createPTree();
+    copyTree(extractedOptions, legacyProcessConfig, "tracing");
+    return extractedOptions.getClear();
 }
 
 int init_main(int argc, const char* argv[])
@@ -453,7 +481,9 @@ int init_main(int argc, const char* argv[])
         else
         {
             envpt.setown(createPTreeFromXMLFile(cfgfile, ipt_caseInsensitive));
-            espConfig.setown(loadConfiguration(defaultYaml, argv, "esp", "ESP", nullptr, nullptr));
+
+            // NB: esp has no standard component config in bare-metal, this is loading defaultYaml only
+            espConfig.setown(loadConfiguration(defaultYaml, argv, "esp", "ESP", cfgfile, extractLegacyOptions));
         }
         Owned<IPropertyTree> procpt = NULL;
         if (envpt)
@@ -544,7 +574,8 @@ int init_main(int argc, const char* argv[])
             config->bindServer(*server.get(), *server.get());
             config->checkESPCache(*server.get());
 
-            initializeMetrics(config);
+            initializeMetrics(config);        
+            initializeStorageGroups(daliClientActive());
         }
         catch(IException* e)
         {
@@ -580,7 +611,7 @@ int init_main(int argc, const char* argv[])
 int main(int argc, const char* argv[])
 {
     start_init_main(argc, argv, init_main);
-    queryMetricsReporter().stopCollecting();
+    queryMetricsManager().stopCollecting();
     stopPerformanceMonitor();
     UseSysLogForOperatorMessages(false);
     releaseAtoms();

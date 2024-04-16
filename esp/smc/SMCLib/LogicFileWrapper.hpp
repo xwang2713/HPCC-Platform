@@ -44,7 +44,6 @@ public:
     LogicFileWrapper();
     virtual ~LogicFileWrapper();
     bool doDeleteFile(const char* name, const char *cluster, StringBuffer& returnStr, IUserDescriptor* udesc = NULL);
-    bool doCompressFile(const char* name,StringBuffer& returnStr, IUserDescriptor* udesc = 0);
     void FindClusterName(const char* logicalName,StringBuffer& returnCluster, IUserDescriptor* udesc = 0);
 
 };
@@ -96,7 +95,7 @@ struct DeleteTask: public CInterface, implements ITask
                 {
                     StringBuffer e;
                     e.appendf("Failed to remove file part %s\n",file->queryFilename());
-                    LOG(MCerror, unknownJob, "%s", e.str());
+                    LOG(MCerror, "%s", e.str());
                     errs.append(e);
                 }
             }
@@ -125,42 +124,8 @@ struct DeleteTask: public CInterface, implements ITask
 
     Linked<IDistributedFilePart> part;
 };
-struct CompressTask: public CInterface, implements ITask
-{
-    IMPLEMENT_IINTERFACE;    
-    CompressTask(IDistributedFilePart* _part): part(_part)
-    {
-    }
 
-    virtual int run()
-    {
-        try
-        {
-            queryDistributedFileSystem().compress(part);
-        }
-        catch(IException* e)
-        {
-            StringBuffer err;
-            e->errorMessage(err);
-            LOG(MCerror, unknownJob, "%s", err.str());
-            e->Release();
-        }
-        catch(...)
-        {
-            IERRLOG("Unknown Exception thrown\n");
-        }
-        return 0;
-    }
-
-    virtual bool stop()
-    {
-        return false;
-    }
-
-    Linked<IDistributedFilePart> part;
-};
-
-extern LFWRAPPER_API IDistributedFile* lookupLogicalName(IEspContext& contcontext, const char* logicalName, bool writeattr,
+extern LFWRAPPER_API IDistributedFile* lookupLogicalName(IEspContext& contcontext, const char* logicalName, AccessMode accessMode,
     bool hold, bool lockSuperOwner, IDistributedFileTransaction* transaction, bool privilegedUser, unsigned timeout=INFINITE);
 extern LFWRAPPER_API void getNodeGroupFromLFN(IEspContext& context, const char* lfn, StringBuffer& nodeGroup);
 

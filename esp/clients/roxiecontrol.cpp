@@ -17,10 +17,12 @@
 
 #include "roxiecontrol.hpp"
 #include "jmisc.hpp"
+#include "securesocket.hpp"
 
 const unsigned roxieQueryRoxieTimeOut = 60000;
 
 #define EMPTY_RESULT_FAILURE 1200
+#define SECURE_CONNECTION_FAILURE 1201
 
 static void checkRoxieControlExceptions(IPropertyTree *response)
 {
@@ -77,6 +79,12 @@ IPropertyTree *sendRoxieControlQuery(ISocket *sock, const char *msg, unsigned wa
     return ret.getClear();
 }
 
+IPropertyTree *sendRoxieControlQuery(const SocketEndpoint &ep, const char *msg, unsigned wait)
+{
+    Owned<ISocket> sock = ISocket::connect_timeout(ep, wait);
+    return sendRoxieControlQuery(sock, msg, wait);
+}
+
 bool sendRoxieControlLock(ISocket *sock, bool allOrNothing, unsigned wait)
 {
     Owned<IPropertyTree> resp = sendRoxieControlQuery(sock, "<control:lock/>", wait);
@@ -90,7 +98,7 @@ bool sendRoxieControlLock(ISocket *sock, bool allOrNothing, unsigned wait)
     return resp->getPropInt("Lock", 0) != 0;
 }
 
-static inline unsigned remainingMsWait(unsigned wait, unsigned start)
+static inline unsigned remainingMsWaitX(unsigned wait, unsigned start)
 {
     if (wait==0 || wait==(unsigned)-1)
         return wait;
@@ -103,11 +111,55 @@ IPropertyTree *sendRoxieControlAllNodes(ISocket *sock, const char *msg, bool all
     unsigned start = msTick();
     if (!sendRoxieControlLock(sock, allOrNothing, wait))
         throw MakeStringException(-1, "Roxie is too busy (control:lock failed) - please try again later.");
-    return sendRoxieControlQuery(sock, msg, remainingMsWait(wait, start));
+    return sendRoxieControlQuery(sock, msg, remainingMsWaitX(wait, start));
 }
 
 IPropertyTree *sendRoxieControlAllNodes(const SocketEndpoint &ep, const char *msg, bool allOrNothing, unsigned wait)
 {
     Owned<ISocket> sock = ISocket::connect_timeout(ep, wait);
+    return sendRoxieControlAllNodes(sock, msg, allOrNothing, wait);
+}
+
+static ISocket *createRoxieControlSocket(ISmartSocketFactory *conn, unsigned wait, unsigned connect_wait)
+{
+    const SocketEndpoint &ep = conn->nextEndpoint();
+    Owned<ISocket> sock = ISocket::connect_timeout(ep, connect_wait);
+    if (conn->isTlsService())
+    {
+#ifndef _USE_OPENSSL
+        throw makeStringException(SECURE_CONNECTION_FAILURE, "failed creating secure context for roxie control message OPENSSL not supported");
+#else
+        Owned<ISecureSocketContext> ownedSC = createSecureSocketContextSSF(conn);
+        if (!ownedSC)
+            throw makeStringException(SECURE_CONNECTION_FAILURE, "failed creating secure context for roxie control message");
+
+        Owned<ISecureSocket> ssock = ownedSC->createSecureSocket(sock.getClear());
+        if (!ssock)
+            throw makeStringException(SECURE_CONNECTION_FAILURE, "failed creating secure socket for roxie control message");
+
+        int status = ssock->secure_connect();
+        if (status < 0)
+        {
+            StringBuffer err;
+            err.append("Failure to establish secure connection to ");
+            ep.getEndpointHostText(err);
+            err.append(": returned ").append(status);
+            throw makeStringException(SECURE_CONNECTION_FAILURE, err.str());
+        }
+        return ssock.getClear();
+#endif
+    }
+    return sock.getClear();
+}
+
+IPropertyTree *sendRoxieControlQuery(ISmartSocketFactory *conn, const char *msg, unsigned wait, unsigned connect_wait)
+{
+    Owned<ISocket> sock = createRoxieControlSocket(conn, wait, connect_wait);
+    return sendRoxieControlQuery(sock, msg, wait);
+}
+
+IPropertyTree *sendRoxieControlAllNodes(ISmartSocketFactory *conn, const char *msg, bool allOrNothing, unsigned wait, unsigned connect_wait)
+{
+    Owned<ISocket> sock = createRoxieControlSocket(conn, wait, connect_wait);
     return sendRoxieControlAllNodes(sock, msg, allOrNothing, wait);
 }

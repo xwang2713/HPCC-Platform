@@ -198,7 +198,7 @@ int COneServerHttpProxyThread::start()
         if(m_use_ssl && m_ssctx != NULL)
         {
 #ifdef _USE_OPENSSL
-            Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket2.getLink());
+            Owned<ISecureSocket> securesocket = m_ssctx->createSecureSocket(socket2.getLink(), SSLogNormal, m_host.str());
             int res = securesocket->secure_connect();
             if(res >= 0)
             {
@@ -212,7 +212,7 @@ int COneServerHttpProxyThread::start()
         if(socket2.get() == NULL)
         {
             StringBuffer urlstr;
-            OERRLOG("Can't connect to %s", ep.getUrlStr(urlstr).str());
+            OERRLOG("Can't connect to %s", ep.getEndpointHostText(urlstr).str());
             return -1;
         }
         
@@ -315,7 +315,7 @@ CHttpProxyThread::CHttpProxyThread(ISocket* client, FILE* ofile)
 
 void CHttpProxyThread::start()
 {
-    Thread::start();
+    Thread::start(false);
 }
 
 int CHttpProxyThread::run()
@@ -377,8 +377,8 @@ int CHttpProxyThread::run()
             m_remotesocket->set_nonblock(false);
             CReadWriteThread t1(m_client.get(), m_remotesocket.get(), m_ofile);
             CReadWriteThread t2(m_remotesocket.get(), m_client.get(), m_ofile);
-            t1.start();
-            t2.start();
+            t1.start(true);
+            t2.start(true);
             t1.join();
             t2.join();
             //printf("read/write threads returned\n");
@@ -582,10 +582,7 @@ HttpProxy::HttpProxy(int localport, const char* host, int port, FILE* ofile, boo
     if(use_ssl)
     {
 #ifdef _USE_OPENSSL
-        if(sslconfig != NULL)
-            m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ClientSocket));
-        else
-            m_ssctx.setown(createSecureSocketContext(ClientSocket));
+        m_ssctx.setown(createSecureSocketContextEx2(sslconfig, ClientSocket));
 #else
         throw MakeStringException(-1, "HttpProxy: failure to create SSL socket - OpenSSL not enabled in build");
 #endif
@@ -646,7 +643,7 @@ public:
 
     virtual void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     virtual int run()
@@ -676,7 +673,7 @@ public:
             ip.setNetAddress(4,inbuf+4);
 
             StringBuffer ipstr;
-            ip.getIpText(ipstr);
+            ip.getHostText(ipstr);
 
             char inbuf2[16];
             m_client->read(inbuf2, 0, 16, lenread);
@@ -719,8 +716,8 @@ public:
             m_remotesocket->set_nonblock(false);
             CReadWriteThread t1(m_client.get(), m_remotesocket.get(), m_ofile);
             CReadWriteThread t2(m_remotesocket.get(), m_client.get(), m_ofile);
-            t1.start();
-            t2.start();
+            t1.start(true);
+            t2.start(true);
             t1.join();
             t2.join();
             m_remotesocket->close();

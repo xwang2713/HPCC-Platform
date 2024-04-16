@@ -94,7 +94,7 @@ MyString2 := U'abcd\353';    // becomes 'abcdë'
     <para><emphasis role="bold">Unicode string<indexterm>
         <primary>Unicode string</primary>
       </indexterm> constants </emphasis>must begin with a leading "U"
-    character. Characters between the quotes are utf8-encoded and the type of
+    character. Characters between the quotes are utf16-encoded and the type of
     the constant is UNICODE.</para>
 
     <programlisting>MyUnicodeString1 := U'abcd';        // same as: (UNICODE)'abcd'
@@ -124,6 +124,41 @@ MyUnicodeString3 := U'abcd\u00EB'; // becomes 'abcdë'«'</programlisting>
     VARSTRING.</para>
 
     <programlisting>MyQString := Q'ABCD'; // same as: (QSTRING)'ABCD'</programlisting>
+
+    <sect3>
+      <title>Multiline Strings</title>
+
+      <para>A multiline string begins and ends with three single quotes
+      (''').</para>
+
+      <para>Any quotes, tabs, or newlines in between the triple quotes are
+      part of the string. While you can use the \ escape character inside a
+      multiline string, escaping is not necessary (except for the \
+      character). The \ character at the end of a line in a multiline string
+      removes the end of line and joins the two lines together.</para>
+
+      <para><emphasis role="bold">Examples:</emphasis></para>
+
+      <programlisting>'Single\n quotes'; 
+u'Can\'t be multiline and must escape embedded single quotes'; 
+u8'€'; 
+v'Can use various prefixes'; 
+d'7172737475'; 
+Q'ABCDE'; 
+
+'''Triple 
+quotes can have embedded newlines, but also \
+support \n escape sequence'''; 
+'''Single quotes inside a multiline string don't need escaping''';
+u'''Unicode triple quotes 
+should be the same, and also  \
+support \n escape sequence'''; 
+u'''Don't have to be multiline and need not escape embedded quotes (but \'can' if they want)'''; 
+u8'''€'''; 
+v'''Can use same prefixes as single'''; 
+d'''7172737475'''; 
+Q'''ABCDE''';</programlisting>
+    </sect3>
   </sect2>
 
   <sect2 id="Numeric">
@@ -254,9 +289,20 @@ MyDec2  := 3.14159265358979323846d // value of MyDec2 is the DECIMAL
             </row>
           </tbody>
         </tgroup>
-      </informaltable>Example:</para>
+      </informaltable>Examples:</para>
 
-    <para><programlisting>IMPORT STD;
+    <para><programlisting>// Any modules referenced inside the condition must be declared outside of the condition
+// This will avoid syntax errors 
+prod_thor_dali := _Control.IPAddress.prod_thor_dali;
+  #IF(_TARGET_PLATFORM_ in ['thorlcr'])
+    OUTPUT('thor');
+    prod_thor_dali;
+  #ELSE
+    OUTPUT('not thor');
+  #END
+
+//Second example
+IMPORT STD;
   STRING14 fGetDateTimeString() :=
   #IF(__ECL_VERSION_MAJOR__ &gt; 5) or ((__ECL_VERSION_MAJOR__ = 5) AND (__ECL_VERSION_MINOR__ &gt;= 2))
     STD.Date.SecondsToString(STD.Date.CurrentSeconds(true), '%Y%m%d%H%M%S');
@@ -276,6 +322,22 @@ MyDec2  := 3.14159265358979323846d // value of MyDec2 is the DECIMAL
       RETURN fGetDimeTime();
     END;
   #END;
+
+// Example using __CONTAINERIZED__
+over := 'overwrite=1 ';
+repl := 'replicate=1 ';
+action  := 'action=spray ';
+srcplane :='srcplane=mydropzone ';
+srcfile := 'srcfile=originalperson ';
+dstname:='dstname=JD::originalperson ' ;
+//dstcluster:= 'dstcluster=data '; // for containerized
+//dstcluster:= 'dstcluster=mythor '; // for bare-metal
+dstcluster := IF(__CONTAINERIZED__, 'dstcluster=data ','dstcluster=mythor '); 
+fmt:= 'format=fixed ';
+recsize:='recordsize=124 ';
+cmd := over + repl + action + srcplane + srcfile + dstname 
+       + dstcluster + fmt + recsize;
+STD.File.DfuPlusExec(cmd);
 </programlisting></para>
 
     <para><emphasis role="bold">Runtime Expressions</emphasis></para>

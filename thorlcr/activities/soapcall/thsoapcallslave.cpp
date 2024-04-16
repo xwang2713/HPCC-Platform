@@ -39,11 +39,13 @@ class CWscRowCallSlaveActivity : public CSlaveActivity, implements IWSCRowProvid
     bool eof;
     Owned<IWSCHelper> wscHelper;
     StringBuffer authToken;
+    CStatsContextLogger contextLogger;
+    CStatsCtxLoggerDeltaUpdater statsUpdater;
 
 public:
     IMPLEMENT_IINTERFACE_USING(CSlaveActivity);
 
-    CWscRowCallSlaveActivity(CGraphElementBase *_container) : CSlaveActivity(_container)
+    CWscRowCallSlaveActivity(CGraphElementBase *_container) : CSlaveActivity(_container, soapcallActivityStatistics), contextLogger(soapcallStatistics), statsUpdater(soapcallStatistics, *this, contextLogger)
     {
         buildAuthToken(queryJob().queryUserDescriptor(), authToken);
         setRequireInitData(false);
@@ -61,10 +63,10 @@ public:
             switch (container.getKind())
             {
                 case TAKsoap_rowdataset:
-                    wscHelper.setown(createSoapCallHelper(this, queryRowAllocator(), authToken.str(), SCrow, NULL, container.queryJob().queryContextLogger(), NULL));
+                    wscHelper.setown(createSoapCallHelper(this, queryRowAllocator(), authToken.str(), SCrow, NULL, contextLogger, NULL));
                     break;
                 case TAKhttp_rowdataset:
-                    wscHelper.setown(createHttpCallHelper(this, queryRowAllocator(), authToken.str(), SCrow, NULL, container.queryJob().queryContextLogger(), NULL));
+                    wscHelper.setown(createHttpCallHelper(this, queryRowAllocator(), authToken.str(), SCrow, NULL, contextLogger, NULL));
                     break;
                 default:
                     throwUnexpected();
@@ -74,6 +76,7 @@ public:
     }
     virtual void stop() override
     {
+        CStatsScopedDeltaUpdater scoped(statsUpdater);
         if (wscHelper)
         {
             wscHelper->waitUntilDone();
@@ -120,6 +123,7 @@ public:
     }
     virtual const void * getNextRow() override { return NULL; }
     virtual void releaseRow(const void *r) override { }
+    virtual unsigned queryActivityId() const override { return queryId(); }
 };
 
 //---------------------------------------------------------------------------
@@ -132,11 +136,13 @@ class SoapDatasetCallSlaveActivity : public CSlaveActivity, implements IWSCRowPr
     StringBuffer authToken;
     Owned<IWSCHelper> wscHelper;
     CriticalSection crit;
+    CStatsContextLogger contextLogger;
+    CStatsCtxLoggerDeltaUpdater statsUpdater;
 
 public:
     IMPLEMENT_IINTERFACE_USING(CSlaveActivity);
 
-    SoapDatasetCallSlaveActivity(CGraphElementBase *_container) : CSlaveActivity(_container)
+    SoapDatasetCallSlaveActivity(CGraphElementBase *_container) : CSlaveActivity(_container, soapcallActivityStatistics), contextLogger(soapcallStatistics), statsUpdater(soapcallStatistics, *this, contextLogger)
     {
         setRequireInitData(false);
         appendOutputLinked(this);
@@ -153,11 +159,12 @@ public:
         ActivityTimer s(slaveTimerStats, timeActivities);
         PARENT::start();
         eof = false;
-        wscHelper.setown(createSoapCallHelper(this, queryRowAllocator(), authToken.str(), SCdataset, NULL, container.queryJob().queryContextLogger(), NULL));
+        wscHelper.setown(createSoapCallHelper(this, queryRowAllocator(), authToken.str(), SCdataset, NULL, contextLogger, NULL));
         wscHelper->start();
     }
     virtual void stop() override
     {
+        CStatsScopedDeltaUpdater scoped(statsUpdater);
         if (wscHelper)
         {
             wscHelper->waitUntilDone();
@@ -214,6 +221,7 @@ public:
     {
         ReleaseThorRow(r);
     }
+    virtual unsigned queryActivityId() const override { return queryId(); }
 };
 
 //---------------------------------------------------------------------------
@@ -223,11 +231,13 @@ class SoapRowActionSlaveActivity : public ProcessSlaveActivity, implements IWSCR
     typedef ProcessSlaveActivity PARENT;
     StringBuffer authToken;
     Owned<IWSCHelper> wscHelper;
+    CStatsContextLogger contextLogger;
+    CStatsCtxLoggerDeltaUpdater statsUpdater;
 
 public:
     IMPLEMENT_IINTERFACE_USING(PARENT);
 
-    SoapRowActionSlaveActivity(CGraphElementBase *_container) : ProcessSlaveActivity(_container)
+    SoapRowActionSlaveActivity(CGraphElementBase *_container) : ProcessSlaveActivity(_container, soapcallActivityStatistics), contextLogger(soapcallStatistics), statsUpdater(soapcallStatistics, *this, contextLogger)
     {
         setRequireInitData(false);
     }
@@ -241,12 +251,14 @@ public:
     // IThorSlaveProcess overloaded methods
     virtual void process() override
     {
+        CStatsScopedDeltaUpdater scoped(statsUpdater);
         if (container.queryLocalOrGrouped() || firstNode())
         {
-            wscHelper.setown(createSoapCallHelper(this, NULL, authToken.str(), SCrow, NULL, container.queryJob().queryContextLogger(),NULL));
+            wscHelper.setown(createSoapCallHelper(this, NULL, authToken.str(), SCrow, NULL, contextLogger, NULL));
             wscHelper->start();
             wscHelper->waitUntilDone();
             IException *e = wscHelper->getError();
+            wscHelper.clear();
             if (e)
                 throw e;
         }
@@ -267,6 +279,7 @@ public:
     virtual IHThorWebServiceCallArg * queryCallHelper() override { return NULL; }
     virtual const void * getNextRow() override { return NULL; }
     virtual void releaseRow(const void *r) override { }
+    virtual unsigned queryActivityId() const override { return queryId(); }
 };
 
 //---------------------------------------------------------------------------
@@ -278,11 +291,13 @@ class SoapDatasetActionSlaveActivity : public ProcessSlaveActivity, implements I
     Owned<IWSCHelper> wscHelper;
     StringBuffer authToken;
     CriticalSection crit;
+    CStatsContextLogger contextLogger;
+    CStatsCtxLoggerDeltaUpdater statsUpdater;
 
 public:
     IMPLEMENT_IINTERFACE_USING(PARENT);
 
-    SoapDatasetActionSlaveActivity(CGraphElementBase *_container) : ProcessSlaveActivity(_container)
+    SoapDatasetActionSlaveActivity(CGraphElementBase *_container) : ProcessSlaveActivity(_container, soapcallActivityStatistics), contextLogger(soapcallStatistics), statsUpdater(soapcallStatistics, *this, contextLogger)
     {
         setRequireInitData(false);
     }
@@ -296,15 +311,17 @@ public:
     // IThorSlaveProcess overloaded methods
     virtual void process() override
     {
+        CStatsScopedDeltaUpdater scoped(statsUpdater);
         start();
         processed = 0;
 
         processed = THORDATALINK_STARTED;
 
-        wscHelper.setown(createSoapCallHelper(this, NULL, authToken.str(), SCdataset, NULL, container.queryJob().queryContextLogger(),NULL));
+        wscHelper.setown(createSoapCallHelper(this, NULL, authToken.str(), SCdataset, NULL, contextLogger, NULL));
         wscHelper->start();
         wscHelper->waitUntilDone();
         IException *e = wscHelper->getError();
+        wscHelper.clear();
         if (e)
             throw e;
     }
@@ -345,6 +362,7 @@ public:
     {
         ReleaseThorRow(r);
     }
+    virtual unsigned queryActivityId() const override { return queryId(); }
 };
 
 //---------------------------------------------------------------------------

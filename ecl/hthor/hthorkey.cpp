@@ -26,54 +26,15 @@
 #include "roxiedebug.hpp"
 #include "thorcommon.hpp"
 #include "rtldynfield.hpp"
+#include "thorfile.hpp"
+#include "jstats.h"
 
 #define MAX_FETCH_LOOKAHEAD 1000
-#define MAX_FILE_READ_FAIL_COUNT 3
 
 using roxiemem::IRowManager;
 using roxiemem::OwnedRoxieRow;
 using roxiemem::OwnedConstRoxieRow;
 using roxiemem::OwnedRoxieString;
-
-static IKeyIndex *openKeyFile(IDistributedFilePart & keyFile)
-{
-    unsigned failcount = 0;
-    unsigned numCopies = keyFile.numCopies();
-    assertex(numCopies);
-    Owned<IException> exc;
-    for (unsigned copy=0; copy < numCopies && failcount < MAX_FILE_READ_FAIL_COUNT; copy++)
-    {
-        RemoteFilename rfn;
-        try
-        {
-            OwnedIFile ifile = createIFile(keyFile.getFilename(rfn,copy));
-            offset_t thissize = ifile->size();
-            if (thissize != (offset_t)-1)
-            {
-                StringBuffer remotePath;
-                rfn.getPath(remotePath);
-                unsigned crc = 0;
-                keyFile.getCrc(crc);
-                return createKeyIndex(remotePath.str(), crc, false);
-            }
-        }
-        catch (IException *E)
-        {
-            EXCLOG(E, "While opening index file");
-            if (exc)
-                E->Release();
-            else
-                exc.setown(E);
-            failcount++;
-        }
-    }
-    if (exc)
-        throw exc.getClear();
-    StringBuffer url;
-    RemoteFilename rfn;
-    keyFile.getFilename(rfn).getRemotePath(url);
-    throw MakeStringException(1001, "Could not open key file at %s%s", url.str(), (numCopies > 1) ? " or any alternate location." : ".");
-}
 
 class TransformCallback : public CInterface, implements IThorIndexCallback 
 {
@@ -85,14 +46,15 @@ public:
     virtual const byte * lookupBlob(unsigned __int64 id) override
     { 
         size32_t dummy; 
-        return (byte *) keyManager->loadBlob(id, dummy); 
+        return (byte *) keyManager->loadBlob(id, dummy, ctx); 
     }
 
 public:
-    void setManager(IKeyManager * _manager)
+    void setManager(IKeyManager * _manager, IContextLogger * _ctx)
     {
         finishedRow();
         keyManager = _manager;
+        ctx = _ctx;
     }
 
     void finishedRow()
@@ -102,15 +64,16 @@ public:
     }
 
 protected:
-    IKeyManager * keyManager;
+    IKeyManager * keyManager = nullptr;
+    IContextLogger * ctx = nullptr;
 };
 
 
 //-------------------------------------------------------------------------------------------------------------
 
-ILocalOrDistributedFile *resolveLFNIndex(IAgentContext &agent, const char *logicalName, const char *errorTxt, bool optional, bool noteRead, bool write, bool isPrivilegedUser)
+static ILocalOrDistributedFile *resolveLFNIndex(IAgentContext &agent, const char *logicalName, const char *errorTxt, bool optional, bool noteRead, AccessMode accessMode, bool isPrivilegedUser)
 {
-    Owned<ILocalOrDistributedFile> ldFile = agent.resolveLFN(logicalName, errorTxt, optional, noteRead, write, nullptr, isPrivilegedUser);
+    Owned<ILocalOrDistributedFile> ldFile = agent.resolveLFN(logicalName, errorTxt, optional, noteRead, accessMode, nullptr, isPrivilegedUser);
     if (!ldFile)
         return nullptr;
     IDistributedFile *dFile = ldFile->queryDistributedFile();
@@ -238,24 +201,10 @@ public:
     {
         CHThorActivityBase::updateProgress(progress);
         StatsActivityScope scope(progress, activityId);
+        contextLogger.recordStatistics(progress);
         progress.addStatistic(StNumPostFiltered, queryPostFiltered());
-        progress.addStatistic(StNumIndexSeeks, querySeeks());
-        progress.addStatistic(StNumIndexScans, queryScans());
-        progress.addStatistic(StNumIndexWildSeeks, queryWildSeeks());
     }
 
-    virtual unsigned querySeeks() const
-    {
-        return seeks + (klManager ? klManager->querySeeks() : 0);
-    }
-    virtual unsigned queryScans() const
-    {
-        return scans + (klManager ? klManager->queryScans() : 0);
-    }
-    virtual unsigned queryWildSeeks() const
-    {
-        return wildseeks + (klManager ? klManager->queryWildSeeks() : 0);
-    }
     virtual unsigned queryPostFiltered() const
     {
         return postFiltered;
@@ -319,10 +268,8 @@ protected:
     UnsignedArray superIndexCache;
     unsigned keyIndexCacheIdx = 0;
 
-    unsigned seeks;
-    unsigned scans;
     unsigned postFiltered;
-    unsigned wildseeks;
+    CStatsContextLogger contextLogger;
     bool singlePart = false;                // a single part index, not part of a super file - optimize so never reload the part.
     bool localSortKey = false;
     bool initializedFileInfo = false;
@@ -344,16 +291,13 @@ protected:
 };
 
 CHThorIndexReadActivityBase::CHThorIndexReadActivityBase(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorIndexReadBaseArg &_arg, ThorActivityKind _kind, EclGraph & _graph, IPropertyTree *_node)
-    : CHThorActivityBase(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg)
+    : CHThorActivityBase(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg), contextLogger(jhtreeCacheStatistics)
 {
     nextPartNumber = 0;
 
     eclKeySize.set(helper.queryDiskRecordSize());
 
     postFiltered = 0;
-    seeks = 0;
-    scans = 0;
-    wildseeks = 0;
     helper.setCallback(&callback);
     limitTransformExtra = nullptr;
     if (_node)
@@ -385,7 +329,7 @@ void CHThorIndexReadActivityBase::resolveIndexFilename()
 {
     // A logical filename for the key should refer to a single physical file - either the TLK or a monolithic key
     OwnedRoxieString lfn(helper.getFileName());
-    Owned<ILocalOrDistributedFile> ldFile = resolveLFNIndex(agent, lfn, "IndexRead", 0 != (helper.getFlags() & TIRoptional),true, false, defaultPrivilegedUser);
+    Owned<ILocalOrDistributedFile> ldFile = resolveLFNIndex(agent, lfn, "IndexRead", 0 != (helper.getFlags() & TIRoptional),true, AccessMode::tbdRead, defaultPrivilegedUser);
     df.set(ldFile ? ldFile->queryDistributedFile() : NULL);
     if (!df)
     {
@@ -475,7 +419,7 @@ bool CHThorIndexReadActivityBase::doPreopenLimitFile(unsigned __int64 & count, u
         {
             Owned<IKeyIndex> tlk = openKeyFile(df->queryPart(num));
             verifyIndex(tlk);
-            Owned<IKeyManager> tlman = createLocalKeyManager(eclKeySize.queryRecordAccessor(true), tlk, NULL, helper.hasNewSegmentMonitors(), false);
+            Owned<IKeyManager> tlman = createLocalKeyManager(eclKeySize.queryRecordAccessor(true), tlk, &contextLogger, helper.hasNewSegmentMonitors(), false);
             initManager(tlman, true);
             while(tlman->lookup(false) && (count<=limit))
             {
@@ -511,7 +455,7 @@ IKeyIndex * CHThorIndexReadActivityBase::doPreopenLimitPart(unsigned __int64 & r
         verifyIndex(kidx);
     if (limit != (unsigned) -1)
     {
-        Owned<IKeyManager> kman = createLocalKeyManager(eclKeySize.queryRecordAccessor(true), kidx, NULL, helper.hasNewSegmentMonitors(), false);
+        Owned<IKeyManager> kman = createLocalKeyManager(eclKeySize.queryRecordAccessor(true), kidx, &contextLogger, helper.hasNewSegmentMonitors(), false);
         initManager(kman, false);
         result += kman->checkCount(limit-result);
     }
@@ -610,29 +554,32 @@ void CHThorIndexReadActivityBase::initManager(IKeyManager *manager, bool isTlk)
     manager->reset();
 }
 
-void CHThorIndexReadActivityBase::initPart()                                    
-{ 
+void CHThorIndexReadActivityBase::initPart()
+{
     assertex(!keyIndex->isTopLevelKey());
-    klManager.setown(createLocalKeyManager(eclKeySize.queryRecordAccessor(true), keyIndex, NULL, helper.hasNewSegmentMonitors(), false));
+    klManager.setown(createLocalKeyManager(eclKeySize.queryRecordAccessor(true), keyIndex, &contextLogger, helper.hasNewSegmentMonitors(), false));
     initManager(klManager, false);
-    callback.setManager(klManager);
+    callback.setManager(klManager, nullptr);
 }
 
 void CHThorIndexReadActivityBase::killPart()
 {
-    callback.setManager(NULL);
+    callback.setManager(nullptr, nullptr);
     if (klManager)
-    {
-        seeks += klManager->querySeeks();
-        scans += klManager->queryScans();
-        wildseeks += klManager->queryWildSeeks();
         klManager.clear();
-    }
 }
 
 bool CHThorIndexReadActivityBase::setCurrentPart(unsigned whichPart)
 {
-    keyIndex.setown(openKeyFile(df->queryPart(whichPart)));
+    IDistributedFilePart &part = df->queryPart(whichPart);
+    size32_t blockedSize = 0;
+    if (!helper.hasSegmentMonitors()) // unfiltered
+    {
+        StringBuffer planeName;
+        df->getClusterName(part.copyClusterNum(0), planeName);
+        blockedSize = getBlockedFileIOSize(planeName);
+    }
+    keyIndex.setown(openKeyFile(part, blockedSize));
     if(df->numParts() == 1)
         verifyIndex(keyIndex);
     initPart();
@@ -644,7 +591,7 @@ bool CHThorIndexReadActivityBase::firstMultiPart()
     if(!tlk)
         openTlk();
     verifyIndex(tlk);
-    tlManager.setown(createLocalKeyManager(eclKeySize.queryRecordAccessor(true), tlk, NULL, helper.hasNewSegmentMonitors(), false));
+    tlManager.setown(createLocalKeyManager(eclKeySize.queryRecordAccessor(true), tlk, &contextLogger, helper.hasNewSegmentMonitors(), false));
     initManager(tlManager, true);
     nextPartNumber = 0;
     return nextMultiPart();
@@ -734,7 +681,7 @@ const IDynamicTransform * CHThorIndexReadActivityBase::getLayoutTranslator(IDist
 
             //MORE: We could introduce a more efficient way of checking this that does not create a translator
             Owned<const IDynamicTransform> actualTranslator = createRecordTranslator(expectedFormat->queryRecordAccessor(true), actualFormat->queryRecordAccessor(true));
-            DBGLOG("Record layout translator created for %s",  f->queryLogicalName());
+            DBGLOG("Record layout translator created for %s", f->queryLogicalName());
             actualTranslator->describe();
             if (actualTranslator->keyedTranslated())
                 throw MakeStringException(0, "Untranslatable key layout mismatch reading index %s - keyed fields do not match", f->queryLogicalName());
@@ -774,7 +721,7 @@ void CHThorIndexReadActivityBase::verifyIndex(IKeyIndex * idx)
             keySize = idx->keySize();
             //The index rows always have the filepositions appended, but the ecl may not include a field
             unsigned fileposSize = idx->hasSpecialFileposition() && !hasTrailingFileposition(eclKeySize.queryTypeInfo()) ? sizeof(offset_t) : 0;
-            if (keySize != eclKeySize.getFixedSize() + fileposSize)
+            if (keySize != eclKeySize.getFixedSize() + fileposSize && !idx->isTopLevelKey())
                 throw MakeStringException(0, "Key size mismatch reading index %s: index indicates size %u, ECL indicates size %u", df->queryLogicalName(), keySize, eclKeySize.getFixedSize() + fileposSize);
         }
     }
@@ -893,7 +840,7 @@ bool CHThorIndexReadActivity::nextPart()
         klManager.setown(createKeyMerger(eclKeySize.queryRecordAccessor(true), keyIndexCache, seekGEOffset, NULL, helper.hasNewSegmentMonitors(), false));
         keyIndexCache.clear();
         initManager(klManager, false);
-        callback.setManager(klManager);
+        callback.setManager(klManager, nullptr);
         return true;
     }
     else if (seekGEOffset || localSortKey)
@@ -1234,7 +1181,6 @@ const void *CHThorIndexNormalizeActivity::nextRow()
                 }
             }
 
-            callback.finishedRow();
             while (!klManager->lookup(true))
             {
                 keyedProcessed++;
@@ -1247,6 +1193,7 @@ const void *CHThorIndexNormalizeActivity::nextRow()
 
             agent.reportProgress(NULL);
             expanding = helper.first(klManager->queryKeyBuffer());
+            callback.finishedRow(); // first() can lookup blobs
             if (expanding)
             {
                 const void * ret = createNextRow();
@@ -2258,7 +2205,7 @@ public:
             }
         }
         inputThread.setown(new InputHandler(this));
-        inputThread->start();
+        inputThread->start(true);
     }
 
 protected:
@@ -2289,7 +2236,7 @@ public:
 
     virtual void initializeThreadPool()
     {
-        threadPool.setown(createThreadPool("hthor fetch activity thread pool", &threadFactory));
+        threadPool.setown(createThreadPool("hthor fetch activity thread pool", &threadFactory, true, nullptr));
     }
 
     virtual void initParts(IDistributedFile * f)
@@ -2511,7 +2458,7 @@ protected:
                 if (actualDiskMeta)
                 {
                     translator.setown(createRecordTranslator(helper.queryProjectedDiskRecordSize()->queryRecordAccessor(true), actualDiskMeta->queryRecordAccessor(true)));
-                    DBGLOG("Record layout translator created for %s",  f->queryLogicalName());
+                    DBGLOG("Record layout translator created for %s", f->queryLogicalName());
                     translator->describe();
                     if (translator->canTranslate())
                     {
@@ -3074,11 +3021,11 @@ class KeyedLookupPartHandler : extends ThreadedPartHandler<MatchSet>, implements
     Owned<IKeyManager> manager;
     IAgentContext &agent;
     DistributedKeyLookupHandler * tlk;
-
+    IContextLogger &contextLogger;
 public:
     IMPLEMENT_IINTERFACE;
 
-    KeyedLookupPartHandler(IJoinProcessor &_owner, IDistributedFilePart *_part, DistributedKeyLookupHandler * _tlk, unsigned _subno, IThreadPool * _threadPool, IAgentContext &_agent);
+    KeyedLookupPartHandler(IJoinProcessor &_owner, IDistributedFilePart *_part, DistributedKeyLookupHandler * _tlk, unsigned _subno, IThreadPool * _threadPool, IAgentContext &_agent, IContextLogger & _contextLogger);
 
     ~KeyedLookupPartHandler()
     {
@@ -3128,6 +3075,7 @@ class DistributedKeyLookupHandler : public CInterface, implements IThreadedExcep
     Owned<IThreadPool> threadPool;
     IntArray subSizes;
     IAgentContext &agent;
+    IContextLogger &contextLogger;
 
     void addFile(IDistributedFile &f)
     {
@@ -3138,7 +3086,7 @@ class DistributedKeyLookupHandler : public CInterface, implements IThreadedExcep
         for (unsigned idx = 0; idx < numParts; idx++)
         {
             IDistributedFilePart *part = f.getPart(idx);
-            parts.append(*new KeyedLookupPartHandler(owner, part, this, tlks.ordinality(), threadPool, agent));
+            parts.append(*new KeyedLookupPartHandler(owner, part, this, tlks.ordinality(), threadPool, agent, contextLogger));
         }
         keyFiles.append(OLINK(f));
         tlks.append(*f.getPart(numParts));
@@ -3148,10 +3096,10 @@ class DistributedKeyLookupHandler : public CInterface, implements IThreadedExcep
 public:
     IMPLEMENT_IINTERFACE;
 
-    DistributedKeyLookupHandler(IDistributedFile *f, IJoinProcessor &_owner, IAgentContext &_agent)
-        : owner(_owner), file(f), agent(_agent)
+    DistributedKeyLookupHandler(IDistributedFile *f, IJoinProcessor &_owner, IAgentContext &_agent, IContextLogger & _contextLogger)
+        : owner(_owner), file(f), agent(_agent), contextLogger(_contextLogger)
     {
-        threadPool.setown(createThreadPool("hthor keyed join lookup thread pool", &threadFactory));
+        threadPool.setown(createThreadPool("hthor keyed join lookup thread pool", &threadFactory, true, nullptr));
         IDistributedSuperFile *super = f->querySuperFile();
         if (super)
         {
@@ -3214,7 +3162,7 @@ public:
             //Owned<IRecordLayoutTranslator> 
             trans.setown(owner.getLayoutTranslator(&f));
             owner.verifyIndex(&f, index, trans);
-            Owned<IKeyManager> manager = createLocalKeyManager(owner.queryIndexRecord(), index, NULL, owner.hasNewSegmentMonitors(), false);
+            Owned<IKeyManager> manager = createLocalKeyManager(owner.queryIndexRecord(), index, &contextLogger, owner.hasNewSegmentMonitors(), false);
             managers.append(*manager.getLink());
         }
         opened = true;
@@ -3243,8 +3191,8 @@ public:
     const IDynamicTransform * queryRecordLayoutTranslator() const { return trans; }
 };
 
-KeyedLookupPartHandler::KeyedLookupPartHandler(IJoinProcessor &_owner, IDistributedFilePart *_part, DistributedKeyLookupHandler * _tlk, unsigned _subno, IThreadPool * _threadPool, IAgentContext &_agent)
-    : ThreadedPartHandler<MatchSet>(_part, _tlk, _threadPool), owner(_owner), agent(_agent), tlk(_tlk)
+KeyedLookupPartHandler::KeyedLookupPartHandler(IJoinProcessor &_owner, IDistributedFilePart *_part, DistributedKeyLookupHandler * _tlk, unsigned _subno, IThreadPool * _threadPool, IAgentContext &_agent, IContextLogger & _contextLogger)
+    : ThreadedPartHandler<MatchSet>(_part, _tlk, _threadPool), owner(_owner), agent(_agent), tlk(_tlk), contextLogger(_contextLogger)
 {
 }
 
@@ -3253,7 +3201,7 @@ void KeyedLookupPartHandler::openPart()
     if(manager)
         return;
     Owned<IKeyIndex> index = openKeyFile(*part);
-    manager.setown(createLocalKeyManager(owner.queryIndexRecord(), index, NULL, owner.hasNewSegmentMonitors(), false));
+    manager.setown(createLocalKeyManager(owner.queryIndexRecord(), index, &contextLogger, owner.hasNewSegmentMonitors(), false));
     const IDynamicTransform * trans = tlk->queryRecordLayoutTranslator();
     if(trans && !index->isTopLevelKey())
         manager->setLayoutTranslator(trans);
@@ -3268,13 +3216,14 @@ class MonolithicKeyLookupHandler : public CInterface, implements IKeyLookupHandl
     IJoinProcessor &owner;
     IAgentContext &agent;
     bool opened;
+    IContextLogger &contextLogger;
 
 public:
     IMPLEMENT_IINTERFACE;
 
 
-    MonolithicKeyLookupHandler(IDistributedFile *f, IJoinProcessor &_owner, IAgentContext &_agent)
-        : file(f), owner(_owner), agent(_agent), opened(false)
+    MonolithicKeyLookupHandler(IDistributedFile *f, IJoinProcessor &_owner, IAgentContext &_agent, IContextLogger & _contextLogger)
+        : file(f), owner(_owner), agent(_agent), opened(false), contextLogger(_contextLogger)
     {
         super = f->querySuperFile();
         if (super)
@@ -3333,7 +3282,7 @@ public:
             {
                 Owned<IKeyIndex> index = openKeyFile(f.queryPart(0));
                 owner.verifyIndex(&f, index, trans);
-                manager.setown(createLocalKeyManager(owner.queryIndexRecord(), index, NULL, owner.hasNewSegmentMonitors(), false));
+                manager.setown(createLocalKeyManager(owner.queryIndexRecord(), index, &contextLogger, owner.hasNewSegmentMonitors(), false));
             }
             else
             {
@@ -3346,7 +3295,7 @@ public:
                     parts->addIndex(index.getLink());
                 }
                 owner.verifyIndex(&f, index, trans);
-                manager.setown(createKeyMerger(owner.queryIndexRecord(), parts, 0, nullptr, owner.hasNewSegmentMonitors(), false));
+                manager.setown(createKeyMerger(owner.queryIndexRecord(), parts, 0, &contextLogger, owner.hasNewSegmentMonitors(), false));
             }
             if(trans)
                 manager->setLayoutTranslator(trans);
@@ -3442,9 +3391,6 @@ class CHThorKeyedJoinActivity  : public CHThorThreadedActivityBase, implements I
     RelaxedAtomic<unsigned> prefiltered;
     RelaxedAtomic<unsigned> postfiltered;
     RelaxedAtomic<unsigned> skips;
-    unsigned seeks;
-    unsigned scans;
-    unsigned wildseeks;
     OwnedRowArray extractedRows;
     Owned <ILocalOrDistributedFile> ldFile;
     IDistributedFile * dFile;
@@ -3456,15 +3402,15 @@ class CHThorKeyedJoinActivity  : public CHThorThreadedActivityBase, implements I
     Owned<const IDynamicTransform> translator;
     RecordTranslationMode recordTranslationModeHint = RecordTranslationMode::Unspecified;
     bool isCodeSigned = false;
+    CStatsContextLogger contextLogger;
+
 public:
     CHThorKeyedJoinActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorKeyedJoinArg &_arg, ThorActivityKind _kind, EclGraph & _graph, IPropertyTree *_node)
-        : CHThorThreadedActivityBase(_agent, _activityId, _subgraphId, _arg, _arg, _kind, _graph, _arg.queryDiskRecordSize(), _node), helper(_arg)
+        : CHThorThreadedActivityBase(_agent, _activityId, _subgraphId, _arg, _arg, _kind, _graph, _arg.queryDiskRecordSize(), _node), helper(_arg), contextLogger(jhtreeCacheStatistics)
     {
         prefiltered = 0;
         postfiltered = 0;
         skips = 0;
-        seeks = 0;
-        scans = 0;
         eclKeySize.set(helper.queryIndexRecordSize());
         if (_node)
         {
@@ -3524,7 +3470,7 @@ public:
 
     virtual void initializeThreadPool()
     {
-        threadPool.setown(createThreadPool("hthor keyed join fetch thread pool", &threadFactory));
+        threadPool.setown(createThreadPool("hthor keyed join fetch thread pool", &threadFactory, true, nullptr));
     }
 
     virtual void initParts(IDistributedFile * f)
@@ -3999,7 +3945,7 @@ public:
     virtual void start()
     {
         OwnedRoxieString lfn(helper.getIndexFileName());
-        Owned<ILocalOrDistributedFile> ldFile = resolveLFNIndex(agent, lfn, "KeyedJoin", 0 != (helper.getJoinFlags() & JFindexoptional), true, false, isCodeSigned);
+        Owned<ILocalOrDistributedFile> ldFile = resolveLFNIndex(agent, lfn, "KeyedJoin", 0 != (helper.getJoinFlags() & JFindexoptional), true, AccessMode::tbdRead, isCodeSigned);
         dFile = ldFile ? ldFile->queryDistributedFile() : NULL;
         if (dFile)
         {
@@ -4020,9 +3966,9 @@ public:
                 mono = useMonolithic(*dFile);
             }
             if (mono)
-                lookup.setown(new MonolithicKeyLookupHandler(dFile, *this, agent));
+                lookup.setown(new MonolithicKeyLookupHandler(dFile, *this, agent, contextLogger));
             else
-                lookup.setown(new DistributedKeyLookupHandler(dFile, *this, agent));
+                lookup.setown(new DistributedKeyLookupHandler(dFile, *this, agent, contextLogger));
             agent.logFileAccess(dFile, "HThor", "READ", graph);
         }
         else
@@ -4039,16 +3985,11 @@ public:
         helper.createSegmentMonitors(manager, row);
         manager->finishSegmentMonitors();
         manager->reset();
-        manager->resetCounts();
     }
 
     virtual void doneManager(IKeyManager * manager)
     {
         manager->releaseSegmentMonitors();
-        CriticalBlock b(statsCrit);
-        seeks += manager->querySeeks();
-        scans += manager->queryScans();
-        wildseeks += manager->queryWildSeeks();
     }
 
     virtual bool addMatch(MatchSet * ms, IKeyManager * manager)
@@ -4061,7 +4002,8 @@ public:
                 agent.queryCodeContext()->queryDebugContext()->checkBreakpoint(DebugStateLimit, NULL, static_cast<IActivityBase *>(this));
             return true;
         }
-        KLBlobProviderAdapter adapter(manager);
+        IContextLogger * ctx = nullptr;
+        KLBlobProviderAdapter adapter(manager, ctx);
         byte const * rhs = manager->queryKeyBuffer();
         if(indexReadMatch(jg->queryLeft(), rhs, &adapter))
         {
@@ -4118,9 +4060,7 @@ public:
         progress.addStatistic(StNumPreFiltered, prefiltered);
         progress.addStatistic(StNumPostFiltered, postfiltered);
         progress.addStatistic(StNumIndexSkips, skips);
-        progress.addStatistic(StNumIndexSeeks, seeks);
-        progress.addStatistic(StNumIndexScans, scans);
-        progress.addStatistic(StNumIndexWildSeeks, wildseeks);
+        contextLogger.recordStatistics(progress);
     }
 
 protected:
@@ -4183,7 +4123,7 @@ protected:
             else
             {
                 unsigned fileposSize = idx->hasSpecialFileposition() && !hasTrailingFileposition(eclKeySize.queryTypeInfo()) ? sizeof(offset_t) : 0;
-                if(idx->keySize() != eclKeySize.getFixedSize() + fileposSize)
+                if(idx->keySize() != eclKeySize.getFixedSize() + fileposSize && !idx->isTopLevelKey())
                     throw MakeStringException(1002, "Key size mismatch on key %s: key file indicates record size should be %u, but ECL declaration was %u", f->queryLogicalName(), idx->keySize(), eclKeySize.getFixedSize() + fileposSize);
             }
         }

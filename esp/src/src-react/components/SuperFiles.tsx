@@ -1,13 +1,10 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
-import * as Observable from "dojo/store/Observable";
-import { Memory } from "src/Memory";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link, ScrollablePane, Sticky } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
-import { useFile } from "../hooks/File";
-import { HolyGrail } from "../layouts/HolyGrail";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid, selector } from "./DojoGrid";
+import { QuerySortItem } from "src/store/Store";
+import { useFile } from "../hooks/file";
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
+import { ShortVerticalDivider } from "./Common";
 
 const defaultUIState = {
     hasSelection: false
@@ -16,42 +13,47 @@ const defaultUIState = {
 interface SuperFilesProps {
     cluster: string;
     logicalFile: string;
+    sort?: QuerySortItem;
 }
+
+const defaultSort = { attribute: "Name", descending: false };
 
 export const SuperFiles: React.FunctionComponent<SuperFilesProps> = ({
     cluster,
-    logicalFile
+    logicalFile,
+    sort = defaultSort
 }) => {
 
-    const [file, , _refresh] = useFile(cluster, logicalFile);
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [selection, setSelection] = React.useState([]);
+    const [file, , , refreshData] = useFile(cluster, logicalFile);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
+    const [data, setData] = React.useState<any[]>([]);
+    const {
+        selection, setSelection,
+        setTotal,
+        refreshTable } = useFluentStoreState({});
 
     //  Grid ---
-    const gridStore = useConst(new Observable(new Memory("Name")));
-    const gridSort = useConst([{ attribute: "Name", "descending": false }]);
-    const gridQuery = useConst({});
-    const gridColumns = useConst({
-        col1: selector({
-            width: 27,
-            selectorType: "checkbox"
-        }),
-        Name: { label: nlsHPCC.Name, sortable: true, },
-    });
-
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", gridQuery);
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [grid, gridQuery]);
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            col1: {
+                width: 27,
+                selectorType: "checkbox"
+            },
+            Name: {
+                label: nlsHPCC.Name,
+                sortable: true,
+                formatter: (name, row) => {
+                    return <Link href={`#/files/${cluster}/${name}`}>{name}</Link>;
+                }
+            }
+        };
+    }, [cluster]);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -66,34 +68,38 @@ export const SuperFiles: React.FunctionComponent<SuperFilesProps> = ({
                 }
             }
         },
-    ], [cluster, refreshTable, selection, uiState.hasSelection]);
+    ], [cluster, refreshData, selection, uiState.hasSelection]);
 
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "syper_files.csv")
-    ], [grid, selection]);
+    const copyButtons = useCopyButtons(columns, selection, "superFiles");
 
     //  Selection  ---
     React.useEffect(() => {
         const state = { ...defaultUIState };
 
-        for (let i = 0; i < selection.length; ++i) {
+        if (selection.length) {
             state.hasSelection = true;
-            break;
         }
         setUIState(state);
     }, [selection]);
 
     React.useEffect(() => {
-        if (file) {
-            gridStore.setData(file?.Superfiles?.DFULogicalFile);
-            refreshTable();
+        if (file?.Superfiles?.DFULogicalFile) {
+            setData(file?.Superfiles?.DFULogicalFile);
         }
-    }, [file, gridStore, refreshTable]);
+    }, [file]);
 
-    return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
-        main={
-            <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
-        }
-    />;
+    return <ScrollablePane>
+        <Sticky>
+            <CommandBar items={buttons} farItems={copyButtons} />
+        </Sticky>
+        <FluentGrid
+            data={data}
+            primaryID={"Name"}
+            sort={sort}
+            columns={columns}
+            setSelection={setSelection}
+            setTotal={setTotal}
+            refresh={refreshTable}
+        ></FluentGrid>
+    </ScrollablePane>;
 };

@@ -55,12 +55,13 @@ public:
         *fpos = 0;
     }
 
-    bool getCursorNext(IKeyCursor * keyCursor, KeyStatsCollector &stats)
+    bool getCursorNext(IKeyCursor * keyCursor, IContextLogger *ctx)
     {
-        if(keyCursor->next(row, stats))
+        if(keyCursor->next(ctx))
         {
+            memcpy(row, keyCursor->queryRecordBuffer(), keyCursor->getSize());
             thisrowsize = keyCursor->getSize() - sizeof(offset_t);
-            *fpos = rtlReadBigUInt8(row + thisrowsize);
+            *fpos = keyCursor->getFPos();
             return true;
         }
         *fpos = 0;
@@ -215,7 +216,7 @@ private:
 class CKeyReader: public CInterface
 {
 public:
-    CKeyReader(char const * filename) : count(0), stats(nullptr)
+    CKeyReader(char const * filename) : count(0)
     {
         keyFile.setown(createIFile(filename));
         keyFileIO.setown(keyFile->open(IFOread));
@@ -259,7 +260,7 @@ public:
     {
         if(eof)
             return false;
-        if(buffer.getCursorNext(keyCursor, stats))
+        if(buffer.getCursorNext(keyCursor, ctx))
         {
             buffer.tally(crc);
             count++;
@@ -279,20 +280,18 @@ public:
 
     void getRawToEnd()
     {
-        char * buff = reinterpret_cast<char *>(malloc(rowsize));
         while(!eof)
         {
-            if(keyCursor->next(buff, stats))
+            if(keyCursor->next(ctx))
             {
-                size32_t offset = keyCursor->getSize() - sizeof(offset_t);
-                offset_t fpos = rtlReadBigUInt8(buff + offset);
-                crc.tally(rowsize, buff);
+                const byte *buff = keyCursor->queryRecordBuffer();
+                offset_t fpos = keyCursor->getFPos();
+                crc.tally(keyCursor->getSize(), buff);
                 crc.tally(sizeof(fpos), &fpos);
             }
             else
                 eof = true;
         }
-        free(buff);
     }
 
     size32_t queryKeyedSize() const { return keyedsize; }
@@ -331,7 +330,7 @@ private:
     Owned<IFileIO> keyFileIO;
     Owned<IKeyIndex> keyIndex;
     Owned<IKeyCursor> keyCursor;
-    KeyStatsCollector stats;
+    IContextLogger *ctx = nullptr;
     CRC32 crc;
     size32_t keyedsize;
     size32_t rowsize;
@@ -425,19 +424,22 @@ public:
             flags |= HTREE_VARSIZE;
         if (quickCompressed)
             flags |= HTREE_QUICK_COMPRESSED_KEY;
-        keyBuilder.setown(createKeyBuilder(keyStream, flags, rowsize, nodeSize, keyedsize, 0, nullptr, false, false)); // MORE - support for sequence other than 0...
+        // MORE - should we take compression options from somewhere?
+        keyBuilder.setown(createKeyBuilder(keyStream, flags, rowsize, nodeSize, keyedsize, 0, nullptr, nullptr, false, false)); // MORE - support for sequence other than 0...
     }
 
     ~CKeyWriter()
     {
         if (keyBuilder)
-            keyBuilder->finish(nullptr, nullptr);
+            keyBuilder->finish(nullptr, nullptr, maxRecordSizeSeen);
     }
 
     void put(RowBuffer & buffer)
     {
         buffer.tally(crc);
         buffer.putBuilder(keyBuilder, reccount++);
+        if (buffer.rowSize() > maxRecordSizeSeen)
+            maxRecordSizeSeen = buffer.rowSize();
     }
 
     void putNode(CNodeInfo & info)
@@ -445,6 +447,8 @@ public:
         crc.tally(rowsize, info.value);
         crc.tally(sizeof(info.pos), &(info.pos));
         keyBuilder->processKeyData(reinterpret_cast<char *>(info.value), info.pos, info.size);
+        if (info.size > maxRecordSizeSeen)
+            maxRecordSizeSeen = info.size;
     }
 
     unsigned __int64 queryCount()
@@ -470,6 +474,7 @@ private:
     CRC32 crc;
     size32_t keyedsize = 0;
     size32_t rowsize = 0;
+    size32_t maxRecordSizeSeen = 0;
     unsigned __int64 reccount = 0;
 };
 
@@ -710,13 +715,13 @@ public:
     void addDiffSize(size32_t sz) { diffSize += sz; }
     void log() const
     {
-        LOG(MCstats, "Matching rows: %u", stats[CKeyDiff::CMD_MATCH-1]);
-        LOG(MCstats, "Rows close to previous old row: %u", stats[CKeyDiff::CMD_DIFF_OLD_PREV-1]);
-        LOG(MCstats, "Rows close to current old row: %u", stats[CKeyDiff::CMD_DIFF_OLD_CURR-1]);
-        LOG(MCstats, "Rows close to previous new row: %u", stats[CKeyDiff::CMD_DIFF_NEW_PREV-1]);
+        LOG(MCoperatorProgress, "Matching rows: %u", stats[CKeyDiff::CMD_MATCH-1]);
+        LOG(MCoperatorProgress, "Rows close to previous old row: %u", stats[CKeyDiff::CMD_DIFF_OLD_PREV-1]);
+        LOG(MCoperatorProgress, "Rows close to current old row: %u", stats[CKeyDiff::CMD_DIFF_OLD_CURR-1]);
+        LOG(MCoperatorProgress, "Rows close to previous new row: %u", stats[CKeyDiff::CMD_DIFF_NEW_PREV-1]);
         unsigned diffNum = stats[CKeyDiff::CMD_DIFF_OLD_PREV-1] + stats[CKeyDiff::CMD_DIFF_OLD_CURR-1] + stats[CKeyDiff::CMD_DIFF_NEW_PREV-1];
         if(diffNum > 0)
-            LOG(MCstats, "Average diff size: %u", ((diffSize + diffNum/2) / diffNum));
+            LOG(MCoperatorProgress, "Average diff size: %u", ((diffSize + diffNum/2) / diffNum));
     }
 
 private:
@@ -1097,8 +1102,8 @@ public:
 
     virtual void logStats() const
     {
-        LOG(MCstats, "Rows in old index: %u", oldInput.queryCount());
-        LOG(MCstats, "Rows in new index: %u", newInput.queryCount());
+        LOG(MCoperatorProgress, "Rows in old index: %u", oldInput.queryCount());
+        LOG(MCoperatorProgress, "Rows in new index: %u", newInput.queryCount());
         keydiff.logStats();
     }
 
@@ -1433,7 +1438,7 @@ private:
         oldcurr.init(rowsize, oldInput->isVariableWidth());
         oldprev.init(rowsize, oldInput->isVariableWidth());
         if(tlkGen)
-            tlkGen->start();
+            tlkGen->start(false);
     }
 
     bool readOld(unsigned count)

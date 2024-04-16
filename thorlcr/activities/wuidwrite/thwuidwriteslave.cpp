@@ -93,7 +93,7 @@ public:
         processed = THORDATALINK_STARTED;
 
         if (ensureStartFTLookAhead(0))
-            setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), WORKUNITWRITE_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, NULL, &container.queryJob().queryIDiskUsage()), false);
+            setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), WORKUNITWRITE_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, NULL), false);
 
         ::ActPrintLog(this, thorDetailedLogLevel, "WORKUNITWRITE: processing first block");
 
@@ -155,7 +155,6 @@ public:
         reqMsg.append(container.queryOwner().queryGraphId());
         reqMsg.append(container.queryId());
 
-        unsigned totalNum = 0;
         CMessageBuffer msg;
         msg.append((unsigned)0);
         unsigned numGot;
@@ -166,7 +165,6 @@ public:
             {
                 msg.rewrite(sizeof(unsigned));
                 processBlock(numGot, msg);
-                totalNum += numGot;
                 msg.writeDirect(0, sizeof(numGot), &numGot);
             }
             catch(CATCHALL)

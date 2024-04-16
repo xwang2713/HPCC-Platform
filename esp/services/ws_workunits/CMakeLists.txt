@@ -25,6 +25,8 @@
 project( ws_workunits )
 
 include(${HPCC_SOURCE_DIR}/esp/scm/smcscm.cmake)
+include(${HPCC_SOURCE_DIR}/esp/scm/espscm.cmake)
+
 
 set (    SRCS
          ../../../dali/sasha/sacmd.cpp
@@ -34,12 +36,14 @@ set (    SRCS
          ${ESPSCM_GENERATED_DIR}/ws_workunits_req_resp_esp.cpp
          ${ESPSCM_GENERATED_DIR}/ws_workunits_queryset_req_resp_esp.cpp
          ${ESPSCM_GENERATED_DIR}/ws_workunits_esp.cpp
+         ${ESPSCM_GENERATED_DIR}/ws_logaccess_esp.cpp
          ${ESPSCM_GENERATED_DIR}/ws_fs_esp.cpp
          ${HPCC_SOURCE_DIR}/esp/scm/ws_workunits_struct.ecm
          ${HPCC_SOURCE_DIR}/esp/scm/ws_workunits_req_resp.ecm
          ${HPCC_SOURCE_DIR}/esp/scm/ws_workunits_queryset_req_resp.ecm
          ${HPCC_SOURCE_DIR}/esp/scm/ws_workunits.ecm
          ${HPCC_SOURCE_DIR}/esp/clients/roxiecontrol.cpp
+         ${HPCC_SOURCE_DIR}/esp/clients/ws_dfsclient
          ws_workunitsPlugin.cpp
          ws_workunitsService.cpp
          ws_workunitsService.hpp
@@ -47,7 +51,10 @@ set (    SRCS
          ws_workunitsHelpers.hpp
          ws_workunitsAuditLogs.cpp
          ws_workunitsQuerySets.cpp
+         ws_wudetails.hpp
          ws_wudetails.cpp
+         ws_wuhotspot.hpp
+         ws_wuhotspot.cpp
          ws_wuresult.cpp
     )
 
@@ -76,6 +83,7 @@ include_directories (
          ./../../../system/include
          ./../../../common/thorhelper
          ./../../../common/workunit
+         ./../../../common/pkgfiles
          ./../../../common/wuwebview
          ./../../../ecl/schedulectrl
          ./../../clients
@@ -88,12 +96,15 @@ include_directories (
          ./../../bindings/http/client
          ./../../smc/SMCLib
          ./../../bindings/SOAP/xpp
+         ${HPCC_SOURCE_DIR}/esp/bindings/http/platform
+         ${HPCC_SOURCE_DIR}/esp/clients/ws_dfsclient
          ${HPCC_SOURCE_DIR}/dali/dfu
          ${HPCC_SOURCE_DIR}/dali/ft
+         ${HPCC_SOURCE_DIR}/common/wuanalysis
          ./../../../testing/unittests
     )
 
-ADD_DEFINITIONS( -D_USRDLL -DWS_WORKUNITS_EXPORTS )
+ADD_DEFINITIONS( -D_USRDLL -DWS_WORKUNITS_EXPORTS -DWSWU_API_LOCAL -Dws_logaccess_API_LOCAL -DFileSpray_API_LOCAL -DESP_SERVICE_WsWorkunits)
 
 HPCC_ADD_LIBRARY( ws_workunits SHARED ${SRCS} )
 add_dependencies ( ws_workunits espscm )
@@ -107,7 +118,6 @@ target_link_libraries ( ws_workunits
          xmllib
          esphttp
          dalibase
-         dalift
          dllserver
          nbcd
          eclrtl
@@ -122,7 +132,11 @@ target_link_libraries ( ws_workunits
          jhtree
          fileview2
          thorhelper
+         pkgfiles
+         wuanalysis
+         ws_dfsclient
          ${CPPUNIT_LIBRARIES}
+         ${COMMON_ESP_SERVICE_LIBS}
     )
 
 if (NOT CONTAINERIZED)

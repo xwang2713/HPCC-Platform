@@ -25,11 +25,9 @@ project( dalift )
 
 set (    SRCS 
          daft.cpp 
-         daftdir.cpp 
          daftformat.cpp 
          daftmc.cpp 
          daftprogress.cpp 
-         daftsize.cpp 
          filecopy.cpp 
          ftbase.cpp 
          fttransform.cpp 
@@ -63,3 +61,4 @@ target_link_libraries ( dalift
 if (NOT CONTAINERIZED)
     target_link_libraries ( dalift environment )
 endif()
+

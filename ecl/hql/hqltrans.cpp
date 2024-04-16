@@ -166,18 +166,18 @@ void HqlTransformStats::add(const HqlTransformStats & other)
 void HqlTransformStats::gatherTransformStats(IStatisticTarget & target, const char * scope) const
 {
 #ifdef TRANSFORM_STATS_TIME
-    target.addStatistic(SSTcompilestage, scope, StTimeTotalExecute, nullptr, cycle_to_nanosec(totalTime), 1, 0, StatsMergeSum);
-    target.addStatistic(SSTcompilestage, scope, StTimeLocalExecute, nullptr, cycle_to_nanosec(totalTime-(childTime-recursiveTime)), 1, 0, StatsMergeSum);
+    target.addStatistic(SSToperation, scope, StTimeTotalExecute, nullptr, cycle_to_nanosec(totalTime), 1, 0, StatsMergeSum);
+    target.addStatistic(SSToperation, scope, StTimeLocalExecute, nullptr, cycle_to_nanosec(totalTime-(childTime-recursiveTime)), 1, 0, StatsMergeSum);
 #endif
 #ifdef TRANSFORM_STATS_DETAILS
     if (numAnalyseCalls)
-        target.addStatistic(SSTcompilestage, scope, StNumAnalyseExprs, nullptr, numAnalyseCalls, 1, 0, StatsMergeSum);
+        target.addStatistic(SSToperation, scope, StNumAnalyseExprs, nullptr, numAnalyseCalls, 1, 0, StatsMergeSum);
     if (numAnalyse)
-        target.addStatistic(SSTcompilestage, scope, StNumUniqueAnalyseExprs, nullptr, numAnalyse, 1, 0, StatsMergeSum);
+        target.addStatistic(SSToperation, scope, StNumUniqueAnalyseExprs, nullptr, numAnalyse, 1, 0, StatsMergeSum);
     if (numTransformCalls)
-        target.addStatistic(SSTcompilestage, scope, StNumTransformExprs, nullptr, numTransformCalls, 1, 0, StatsMergeSum);
+        target.addStatistic(SSToperation, scope, StNumTransformExprs, nullptr, numTransformCalls, 1, 0, StatsMergeSum);
     if (numTransforms)
-        target.addStatistic(SSTcompilestage, scope, StNumUniqueTransformExprs, nullptr, numTransforms, 1, 0, StatsMergeSum);
+        target.addStatistic(SSToperation, scope, StNumUniqueTransformExprs, nullptr, numTransforms, 1, 0, StatsMergeSum);
 #endif
 }
 
@@ -247,8 +247,8 @@ void HqlTransformerInfo::gatherTransformStats(IStatisticTarget & target) const
     if (numInstances)
     {
         StringBuffer scope;
-        scope.append("compile:transform:").append(name);
-        target.addStatistic(SSTcompilestage, scope, StNumStarts, nullptr, numInstances, 1, 0, StatsMergeSum);
+        scope.append(">compile:>transform:>").append(name);
+        target.addStatistic(SSToperation, scope, StNumStarts, nullptr, numInstances, 1, 0, StatsMergeSum);
         stats.gatherTransformStats(target, scope);
     }
 #endif
@@ -925,7 +925,7 @@ IHqlExpression * QuickHqlTransformer::createTransformedBody(IHqlExpression * exp
             if (type != newType)
             {
                 transformChildren(expr, children);
-                return createValue(op, newType.getClear(), children);
+                return createWrapper(op, newType, children);
             }
             break;
         }
@@ -1141,13 +1141,49 @@ void DebugDifferenceAnalyser::doAnalyse(IHqlExpression * expr)
     {
         if (prev && prev->queryBody() != expr->queryBody())
         {
-            debugFindFirstDifference(expr, prev);
+            traceFindFirstDifference(expr, prev);
             return;
         }
         else
             prev = expr;
     }
     QuickHqlTransformer::doAnalyse(expr);
+}
+
+
+//-------------------------------------------------------------------------------------------------
+
+static HqlTransformerInfo matchExprTracerInfo("MatchExprTracer");
+MatchExprTracer::MatchExprTracer(callback _matches) : QuickHqlTransformer(matchExprTracerInfo, NULL), matches(_matches)
+{
+}
+
+void MatchExprTracer::reportMatches(const char * title)
+{
+    if (matchedExprs.ordinality() < 2)
+        return;
+
+    DBGLOG("Matches for %s", title);
+//    EclIR::dbglogIR(matchedExprs);
+
+    for (unsigned i= 1; i < matchedExprs.ordinality(); i++)
+        traceFindFirstDifference(&matchedExprs.item(i-1), &matchedExprs.item(i));
+}
+
+
+void MatchExprTracer::doAnalyse(IHqlExpression * expr)
+{
+    if (matches(expr))
+        matchedExprs.append(*LINK(expr));
+    QuickHqlTransformer::doAnalyse(expr);
+}
+
+
+void traceMatchExpr(const char * title, const HqlExprArray & exprs, std::function<bool(IHqlExpression *)> matches)
+{
+    MatchExprTracer tracer(matches);
+    tracer.analyseArray(exprs);
+    tracer.reportMatches(title);
 }
 
 
@@ -2651,6 +2687,7 @@ bool onlyTransformOnce(IHqlExpression * expr)
     case no_csv:
     case no_xml:
     case no_json:
+    case no_filetype:
     case no_list:
         return (expr->numChildren() == 0);
     case no_select:

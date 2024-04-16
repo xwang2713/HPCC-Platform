@@ -18,7 +18,9 @@
 #ifndef DFUWU_INCL
 #define DFUWU_INCL
 
-#ifndef dfuwu_decl
+#ifdef DFUWU_EXPORTS
+#define dfuwu_decl DECL_EXPORT
+#else
 #define dfuwu_decl DECL_IMPORT
 #endif
 
@@ -65,7 +67,8 @@ enum DFUcmd
     DFUcmd_server,              // Cmd line only
     DFUcmd_monitor,
     DFUcmd_copymerge,
-    DFUcmd_supercopy
+    DFUcmd_supercopy,
+    DFUcmd_publish
 };
 
 enum DFUreplicateMode
@@ -150,6 +153,7 @@ interface IConstDFUoptions : extends IInterface
     virtual size32_t getTransferBufferSize() const = 0;
     virtual bool getVerify() const = 0;
     virtual bool getOverwrite() const = 0;
+    virtual bool getEnsure() const = 0;
     virtual DFUreplicateMode getReplicateMode(StringBuffer &cluster, bool &repeatlast,bool &onlyrepeated) const = 0;
     virtual const char *queryPartFilter() const = 0;
     virtual bool getKeepHeader() const = 0;
@@ -192,6 +196,7 @@ interface IDFUoptions : extends IConstDFUoptions
     virtual void setTransferBufferSize(size32_t val) = 0;
     virtual void setVerify(bool val=true) = 0;
     virtual void setOverwrite(bool val=true) = 0;
+    virtual void setEnsure(bool val=true) = 0;
     virtual void setReplicateMode(DFUreplicateMode val,const char *cluster=NULL,bool repeatlast=false,bool onlyrepeated=false) = 0;
     virtual void setPartFilter(const char *filter) = 0;             // format n,n-n,n etc
     virtual void setKeepHeader(bool val=true) = 0;
@@ -243,12 +248,12 @@ interface IConstDFUfileSpec: extends IInterface
     virtual bool getWrap() const = 0;
     virtual StringBuffer &getDiffKey(StringBuffer &keyname) const = 0;
     virtual bool getMultiCopy() const = 0;
-    virtual void setNumPartsOverride(unsigned num)=0; // internal use for wrap
+    virtual unsigned getNumPartsOverride() const = 0;
     virtual unsigned numClusters() const = 0;                 // minimum 1
     virtual bool getClusterPartDiskMapSpec(const char* clustername,ClusterPartDiskMapSpec &spec) const = 0;
     virtual StringBuffer &getClusterPartDefaultBaseDir(const char *clustername,StringBuffer &basedir) const = 0; // set by setClusterPartDiskMapping
     virtual IGroup *getGroup(unsigned clustnum) const = 0;
-    virtual void setWindowsOS(bool iswin) =0;
+    virtual void setWindowsOS(bool iswin) = 0;
     virtual bool getWindowsOS(bool &iswin) const =0;
     virtual StringBuffer &getRoxiePrefix(StringBuffer &str) const = 0;   // extra prefix to add to roxie file name
     virtual StringBuffer &getRawDirectory(StringBuffer &str) const = 0;
@@ -276,6 +281,8 @@ interface IDFUfileSpec: extends IConstDFUfileSpec
     virtual void setFromXML(const char *xml) = 0;
     virtual void setCompressed(bool set) = 0;
     virtual void setWrap(bool val) = 0;
+    virtual void setNumParts(unsigned val) = 0;
+    virtual void setNumPartsOverride(unsigned num) = 0;
     virtual void setReplicateOffset(int val) = 0;           // sets for all clusters
     virtual void setDiffKey(const char *keyname) = 0;
     virtual void setMultiCopy(bool val) = 0;
@@ -310,6 +317,8 @@ interface IConstDFUprogress: extends IInterface
     virtual unsigned getTotalNodes() const = 0;
     virtual StringBuffer &getSubInProgress(StringBuffer &str) const = 0;    // sub-DFUWUs in progress
     virtual StringBuffer &getSubDone(StringBuffer &str) const = 0;          // sub-DFUWUs done (list)
+    virtual cost_type getFileAccessCost() const = 0;
+    virtual unsigned getPublisherTaskCount() const = 0;
 };
 
 interface IDFUprogress: extends IConstDFUprogress
@@ -317,7 +326,7 @@ interface IDFUprogress: extends IConstDFUprogress
     virtual void setProgress(unsigned percentDone, unsigned secsLeft, const char * timeLeft,
                              unsigned __int64 scaledDone, unsigned __int64 scaledTotal, const char * scale,
                              unsigned kbPerSecondAve, unsigned kbPerSecondRate,
-                             unsigned slavesDone, bool replicating)=0;
+                             unsigned slavesDone, bool replicating, unsigned __int64 numReads, unsigned __int64 numWrites)=0;
     virtual void setDone(const char * timeTaken, unsigned kbPerSecond, bool set100pc) = 0;
     virtual void setState(DFUstate state) = 0;
     virtual void setTotalNodes(unsigned val) = 0;
@@ -325,6 +334,8 @@ interface IDFUprogress: extends IConstDFUprogress
     virtual void setSubInProgress(const char *str) = 0;     // set sub-DFUWUs in progress
     virtual void setSubDone(const char *str) = 0;           // set sub-DFUWUs done
     virtual void clearProgress() = 0;
+    virtual void setFileAccessCost(cost_type fileAccessCost) = 0;
+    virtual unsigned incPublisherTaskCount() = 0;
 };
 
 interface IDFUprogressSubscriber: extends IInterface
@@ -392,6 +403,7 @@ interface IConstDFUWorkUnit : extends IInterface
     virtual int getApplicationValueInt(const char * application, const char * propname, int defVal) const = 0;
     virtual StringBuffer &getDebugValue(const char *propname, StringBuffer &str) const = 0;
     virtual StringBuffer &toXML(StringBuffer &buf) = 0;
+    virtual DFUstate pollForCompletion(unsigned timeout) = 0;
 };
 
 
@@ -436,10 +448,11 @@ interface IConstDFUWorkUnitIterator : extends IInterface
     virtual IConstDFUWorkUnit * get() = 0;
 };
 
-
 interface IDFUWorkUnitFactory : extends IInterface
 {
     virtual IDFUWorkUnit * createWorkUnit() = 0;    // opened in exclusive
+    virtual IDFUWorkUnit * createPublisherWorkUnit() = 0;
+    virtual IDFUWorkUnit * createPublisherSubTask(IDFUWorkUnit *publisherWu) = 0;
     virtual bool deleteWorkUnit(const char * wuid) = 0;
     virtual IConstDFUWorkUnit * openWorkUnit(const char * wuid, bool lock) = 0;
     virtual IConstDFUWorkUnitIterator * getWorkUnitsByXPath(const char *xpath) = 0;
@@ -454,7 +467,8 @@ interface IDFUWorkUnitFactory : extends IInterface
                                                         unsigned maxnum,
                                                         const char *queryowner,
                                                         __int64 *cachehint,         // set to NULL if caching not required
-                                                        unsigned *total) = 0;       // set to NULL if caching not required
+                                                        unsigned *total,
+                                                        const char *publisherWuid) = 0;
     virtual unsigned numWorkUnits()=0;
     virtual __int64  subscribe(const char *xpath,void *iface) =0;       // internal use
 };
@@ -468,6 +482,10 @@ extern dfuwu_decl DFUcmd decodeDFUcommand(const char * str);
 extern dfuwu_decl StringBuffer &encodeDFUcommand(DFUcmd cmd,StringBuffer &str);
 extern dfuwu_decl DFUstate decodeDFUstate(const char * str);
 extern dfuwu_decl StringBuffer &encodeDFUstate(DFUstate state,StringBuffer &str);
+
+extern dfuwu_decl bool DfuParseLogicalPath(const IPropertyTree *directories, const char * pLogicalPath, const char* groupName,
+                            StringBuffer &folder, StringBuffer &title, StringBuffer &defaultFolder, StringBuffer &defaultReplicateFolder);
+
 
 class CDFUfileformat
 {

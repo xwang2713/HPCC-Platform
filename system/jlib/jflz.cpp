@@ -598,7 +598,7 @@ static FASTLZ_INLINE size32_t FASTLZ_DECOMPRESSOR(const void* input, size32_t le
     size32_t trailsize; bytes traildata;    // unexpanded
 */
 
-class jlib_decl CFastLZCompressor : public CFcmpCompressor
+class CFastLZCompressor final : public CFcmpCompressor
 {
     HTAB_T ht;
 
@@ -612,6 +612,21 @@ class jlib_decl CFastLZCompressor : public CFcmpCompressor
             trailing = false;
             inmax -= (fastlzSlack(inmax) + sizeof(size32_t));
         }
+    }
+
+    virtual bool adjustLimit(size32_t newLimit) override
+    {
+        assertex(bufalloc == 0 && !outBufMb);       // Only supported when a fixed size buffer is provided
+        assertex(inlenblk == COMMITTED);            // not inside a transaction
+        assertex(newLimit <= originalMax);
+
+        //Reject the limit change if it is too small for the data already committed.
+        if (newLimit < inlen + outlen + sizeof(size32_t))
+            return false;
+
+        blksz = newLimit;
+        setinmax();
+        return true;
     }
 
     virtual void flushcommitted()
@@ -654,13 +669,25 @@ class jlib_decl CFastLZCompressor : public CFcmpCompressor
         trailing = true;
     }
 
+    size32_t buflen() override
+    {
+        if (inbuf)
+        {
+            //calling flushcommitted() would mean everything is serialized as trailing
+            size32_t toflush = (inlenblk==COMMITTED)?inlen:inlenblk;
+            return outlen+sizeof(size32_t)*2+toflush+fastlzSlack(toflush);
+        }
+        return outlen;
+    }
+
+    virtual CompressionMethod getCompressionMethod() const override { return COMPRESS_METHOD_FASTLZ; }
 };
 
 
 class jlib_decl CFastLZExpander : public CFcmpExpander
 {
 public:
-    virtual void expand(void *buf)
+    virtual void expand(void *buf) override
     {
         if (!outlen)
             return;
@@ -710,7 +737,7 @@ void fastLZCompressToBuffer(MemoryBuffer & out, size32_t len, const void * src)
     if (sz>=len)
     {
         sz = len;
-        memcpy(cmpData, src, len);
+        memcpy_iflen(cmpData, src, len);
     }
     cmpSzMarker.write(sz);
     out.setLength(outbase+sz+sizeof(size32_t)*2);
@@ -728,7 +755,7 @@ void fastLZDecompressToBuffer(MemoryBuffer & out, const void * src)
             throw MakeStringException(0, "fastLZDecompressToBuffer - corrupt data(1) %d %d",written,expsz);
     }
     else
-        memcpy(o,sz,expsz);
+        memcpy_iflen(o,sz,expsz);
 }
 
 void fastLZDecompressToBuffer(MemoryBuffer & out, MemoryBuffer & in)

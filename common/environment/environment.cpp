@@ -1072,7 +1072,6 @@ extern ENVIRONMENT_API unsigned __int64 readSizeSetting(const char * sizeStr, co
     return size;
 }
 
-
 class CConstInstanceInfo : public CConstEnvBase, implements IConstInstanceInfo
 {
 public:
@@ -1878,7 +1877,7 @@ bool CLocalEnvironment::getRunInfo(IStringVal & path, IStringVal & dir, const ch
         Owned<IConstMachineInfo> machine = getMachineByAddress(machineaddr);
         if (!machine)
         {
-            LOG(MCdebugInfo, unknownJob, "Unable to find machine for %s", machineaddr);
+            LOG(MCdebugInfo, "Unable to find machine for %s", machineaddr);
             return false;
         }
 
@@ -1886,7 +1885,7 @@ bool CLocalEnvironment::getRunInfo(IStringVal & path, IStringVal & dir, const ch
         Owned<IConstDomainInfo> domain = machine->getDomain();
         if (!domain)
         {
-            LOG(MCdebugInfo, unknownJob, "Unable to find domain for %s", machineaddr);
+            LOG(MCdebugInfo, "Unable to find domain for %s", machineaddr);
             return false;
         }
 
@@ -1897,7 +1896,7 @@ bool CLocalEnvironment::getRunInfo(IStringVal & path, IStringVal & dir, const ch
         Owned<IConstInstanceInfo> instance = getInstance(tag, version, targetdomain);
         if (!instance)
         {
-            LOG(MCdebugInfo, unknownJob, "Unable to find process %s for domain %s", tag, targetdomain.get());
+            LOG(MCdebugInfo, "Unable to find process %s for domain %s", tag, targetdomain.get());
             return false;
         }
         return instance->getRunInfo(path,dir,defprogname);
@@ -1945,7 +1944,7 @@ IConstDropZoneInfo * CLocalEnvironment::getDropZoneByAddressPath(const char * ne
     unsigned dropzonePathLen = _MAX_PATH + 1;
 
 #ifdef _DEBUG
-    LOG(MCdebugInfo, unknownJob, "Netaddress: '%s', targetFilePath: '%s'", netaddress, targetFilePath);
+    LOG(MCdebugInfo, "Netaddress: '%s', targetFilePath: '%s'", netaddress, targetFilePath);
 #endif
     // Check the directory path first
 
@@ -1973,8 +1972,8 @@ IConstDropZoneInfo * CLocalEnvironment::getDropZoneByAddressPath(const char * ne
 
 #ifdef _DEBUG
                 StringBuffer serverIpString;
-                serverIP.getIpText(serverIpString);
-                LOG(MCdebugInfo, unknownJob, "Listed server: '%s', IP: '%s'", dropzoneServer.str(), serverIpString.str());
+                serverIP.getHostText(serverIpString);
+                LOG(MCdebugInfo, "Listed server: '%s', IP: '%s'", dropzoneServer.str(), serverIpString.str());
 #endif
                 if (strisame(netaddress, dropzoneServer) || targetIp.ipequals(serverIP))
                 {
@@ -2552,7 +2551,7 @@ unsigned getAccessibleServiceURLList(const char *serviceType, std::vector<std::s
             Owned<IPropertyTreeIterator> espBindingIter = espProcessIter->query().getElements("EspBinding");
             ForEach(*espBindingIter)
             {
-                xpath.setf("Software/EspService[@name=\"%s\"]/Properties/@type",  espBindingIter->query().queryProp("@service"));
+                xpath.setf("Software/EspService[@name=\"%s\"]/Properties/@type", espBindingIter->query().queryProp("@service"));
 
                 if (strisame(env->queryProp(xpath), serviceType))
                 {
@@ -2615,6 +2614,44 @@ void getRoxieProcessServers(const char *process, SocketEndpointArray &servers)
     getRoxieProcessServers(queryRoxieProcessTree(root, process), servers);
 }
 
+extern ENVIRONMENT_API RoxieTargetType readRoxieTargetType(const char *roxieName)
+{
+    RoxieTargetType roxieTargetType = RTTUnknown;
+    if (isEmptyString(roxieName))
+        return roxieTargetType;
+
+    bool hasPortZero = false, hasNonZeroPort = false;
+    Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
+    Owned<IConstEnvironment> environment = factory->openEnvironment();
+    Owned<IPropertyTree> envRoot = &environment->getPTree();
+
+    VStringBuffer xpath("Software/RoxieCluster[@name='%s'][1]", roxieName);
+    IPropertyTree *cluster = envRoot->queryPropTree(xpath.str());
+    if (!cluster)
+        return roxieTargetType;
+    Owned<IPropertyTreeIterator> farmers = cluster->getElements("RoxieFarmProcess");
+    ForEach(*farmers)
+    {
+        IPropertyTree &farmer = farmers->query();
+        const char *port = farmer.queryProp("@port");
+        if (!port)
+            continue;
+        if (streq(port, "0"))
+            hasPortZero = true;
+        else
+            hasNonZeroPort = true;
+        if (hasNonZeroPort && hasPortZero)
+            break;
+    }
+    if (hasPortZero && hasNonZeroPort)
+        roxieTargetType = RTTBoth;
+    else if (hasPortZero)
+        roxieTargetType = RTTQueued;
+    else if (hasNonZeroPort)
+        roxieTargetType = RTTPublished;
+    return roxieTargetType;
+}
+
 #define WUERR_MismatchClusterSize               5008
 
 class CEnvironmentClusterInfo: implements IConstWUClusterInfo, public CInterface
@@ -2641,6 +2678,7 @@ class CEnvironmentClusterInfo: implements IConstWUClusterInfo, public CInterface
     unsigned channelsPerNode;
     unsigned numberOfSlaveLogs;
     int roxieReplicateOffset;
+    RoxieTargetType roxieTargetType = RTTUnknown;
 
 public:
     IMPLEMENT_IINTERFACE;
@@ -2706,6 +2744,7 @@ public:
                     roxieReplicateOffset = roxie->getPropInt("@cyclicOffset", 1);
                 }
             }
+            roxieTargetType = readRoxieTargetType(roxieProcess);
         }
         else
         {
@@ -2838,6 +2877,18 @@ public:
     virtual const char *getLdapPassword() const
     {
         return ldapPassword.str();
+    }
+    virtual RoxieTargetType getRoxieTargetType() const override
+    {
+        return roxieTargetType;
+    }
+    virtual bool canPublishQueries() const override
+    {
+        return roxieTargetType & RTTPublished;
+    }
+    virtual bool onlyPublishedQueries() const override
+    {
+        return roxieTargetType == RTTPublished;
     }
 };
 

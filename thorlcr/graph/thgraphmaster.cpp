@@ -17,6 +17,9 @@
 
 #include <limits.h>
 #include <stdlib.h>
+#include <future>
+#include <vector>
+#include <iterator>
 #include "jprop.hpp"
 #include "jexcept.hpp"
 #include "jiter.ipp"
@@ -75,7 +78,7 @@ public:
     virtual bool action() override
     {
         StringBuffer s("FAILED TO RECOVER FROM EXCEPTION, STOPPING THOR");
-        FLLOG(MCoperatorWarning, thorJob, exception, s.str());
+        FLLOG(MCoperatorWarning, exception, s.str());
         Owned<IJobManager> jobManager = getJobManager();
         if (jobManager)
         {
@@ -100,7 +103,7 @@ public:
 CSlaveMessageHandler::CSlaveMessageHandler(CJobMaster &_job, mptag_t _mptag) : threaded("CSlaveMessageHandler"), job(_job), mptag(_mptag)
 {
     stopped = false;
-    threaded.init(this);
+    threaded.init(this, false);
     childGraphInitTimeout = job.getOptUInt(THOROPT_CHILD_GRAPH_INIT_TIMEOUT, 5*60) * 1000; // default 5 minutes
 }
 
@@ -138,7 +141,15 @@ void CSlaveMessageHandler::threadmain()
                     unsigned slave;
                     msg.read(slave);
                     Owned<IThorException> e = deserializeThorException(msg);
-                    e->setSlave(slave+1);
+                    if (slave==0) // slave # unknown
+                    {
+                        if (job.queryChannelsPerSlave()>1) // we don't know which slave, but we know node (sender)
+                            e->setSlave(-sender); // -ve number used by reporting to flag that it is a known node vs slave #
+                        else
+                            e->setSlave(sender);
+                    }
+                    else
+                        e->setSlave(slave);
                     Owned<CGraphBase> graph = job.queryJobChannel(0).getGraph(e->queryGraphId());
                     if (graph)
                     {
@@ -279,7 +290,7 @@ void CSlaveMessageHandler::threadmain()
                         Owned<IThorException> e = deserializeThorException(msg);
                         e->setSlave(slave);
                         StringBuffer tmpStr("Slave ");
-                        job.queryJobGroup().queryNode(slave).endpoint().getUrlStr(tmpStr);
+                        job.queryJobGroup().queryNode(slave).endpoint().getEndpointHostText(tmpStr);
                         GraphPrintLog(graph, e, "%s", tmpStr.append(": slave initialization error").str());
                         throw e.getClear();
                     }
@@ -287,7 +298,7 @@ void CSlaveMessageHandler::threadmain()
                 }
                 case smt_getPhysicalName:
                 {
-                    LOG(MCdebugProgress, thorJob, "getPhysicalName called from node %d", sender-1);
+                    LOG(MCdebugProgress, "getPhysicalName called from node %d", sender-1);
                     StringAttr logicalName;
                     unsigned partNo;
                     bool create;
@@ -306,7 +317,7 @@ void CSlaveMessageHandler::threadmain()
                 }
                 case smt_getFileOffset:
                 {
-                    LOG(MCdebugProgress, thorJob, "getFileOffset called from node %d", sender-1);
+                    LOG(MCdebugProgress, "getFileOffset called from node %d", sender-1);
                     StringAttr logicalName;
                     unsigned partNo;
                     msg.read(logicalName);
@@ -319,7 +330,7 @@ void CSlaveMessageHandler::threadmain()
                 }
                 case smt_actMsg:
                 {
-                    LOG(MCdebugProgress, thorJob, "smt_actMsg called from node %d", sender-1);
+                    LOG(MCdebugProgress, "smt_actMsg called from node %d", sender-1);
                     graph_id gid;
                     msg.read(gid);
                     activity_id id;
@@ -337,7 +348,7 @@ void CSlaveMessageHandler::threadmain()
                 {
                     unsigned slave;
                     msg.read(slave);
-                    LOG(MCdebugProgress, thorJob, "smt_getresult called from slave %d", slave);
+                    LOG(MCdebugProgress, "smt_getresult called from slave %d", slave);
                     graph_id gid;
                     msg.read(gid);
                     activity_id ownerId;
@@ -388,34 +399,94 @@ CMasterActivity::~CMasterActivity()
     delete [] data;
 }
 
-void CMasterActivity::addReadFile(IDistributedFile *file, bool temp)
-{
-    readFiles.append(*LINK(file));
-    if (!temp) // NB: Temps not listed in workunit
-        queryThorFileManager().noteFileRead(container.queryJob(), file);
-}
-
 IDistributedFile *CMasterActivity::queryReadFile(unsigned f)
 {
-    if (f>=readFiles.ordinality())
-        return NULL;
-    return &readFiles.item(f);
+    if (f>=readFiles.size())
+        return nullptr;
+    return readFiles[f];
 }
 
-void CMasterActivity::preStart(size32_t parentExtractSz, const byte *parentExtract)
+unsigned CMasterActivity::queryReadFileId(const char *normalizedFileName)
 {
-    CActivityBase::preStart(parentExtractSz, parentExtract);
-    IArrayOf<IDistributedFile> tmpFiles;
-    tmpFiles.swapWith(readFiles);
-    ForEachItemIn(f, tmpFiles)
+    auto it = readFilesMap.find(normalizedFileName);
+    if (it != readFilesMap.end())
+        return (int)(it->second);
+    return NotFound;
+}
+
+IDistributedFile *CMasterActivity::findReadFile(const char *normalizedFileName)
+{
+    auto it = readFilesMap.find(normalizedFileName);
+    if (it != readFilesMap.end())
+        return LINK(readFiles[it->second]);
+    return nullptr;
+}
+
+IDistributedFile *CMasterActivity::lookupReadFile(const char *lfnName, AccessMode mode, bool jobTemp, bool temp, bool opt, bool statsForMultipleFiles, const StatisticsMapping & statsMapping, unsigned * fileStatsStartEntry)
+{
+    StringBuffer normalizedFileName;
+    queryThorFileManager().addScope(container.queryJob(), lfnName, normalizedFileName, jobTemp|temp);
+    Owned<IDistributedFile> file;
+    unsigned fileId = queryReadFileId(normalizedFileName.str());
+    if (fileId==NotFound)
     {
-        IDistributedFile &file = tmpFiles.item(f);
-        IDistributedSuperFile *super = file.querySuperFile();
-        if (super)
-            getSuperFileSubs(super, readFiles, true);
-        else
-            readFiles.append(*LINK(&file));
+        file.setown(queryThorFileManager().lookup(container.queryJob(), lfnName, mode, jobTemp|temp, opt, true, container.activityIsCodeSigned()));
+        if (file)
+        {
+            fileId = readFiles.size();
+            readFiles.push_back(LINK(file));
+            readFilesMap[normalizedFileName.str()] = fileId;
+            if (!temp) // NB: Temps not listed in workunit
+                queryThorFileManager().noteFileRead(container.queryJob(), file);
+            if (!jobTemp && !temp && fileStatsStartEntry!=nullptr)
+            {
+                unsigned fileStatsSizeExtend = 0; // how many entries need to be added to fileStats vector
+                IDistributedSuperFile *super = file->querySuperFile();
+                bool isSuper = super!=nullptr;
+                unsigned numSubs = isSuper ? super->numSubFiles(true) : 0;
+                if (statsForMultipleFiles)
+                {
+                    // fileStats[] will need to track stats from multiple files.  To do this, fileStatsTable[] vector
+                    // will be used to map from file id to the starting point of the stats in fileStats.
+                    // e.g.
+                    // Given that file id for 'child::super' is 0
+                    //            file id for 'child::f1' is 1
+                    //            file id for 'child::f2' is 2
+                    //       and child::super has 2 subfiles
+                    //
+                    // Then the following table will be generated (through multiple calls to this function)
+                    // fileStatsTable[0] = 0;
+                    // fileStatsTable[1] = 2;
+                    // fileStatsTable[2] = 3;
+                    //
+                    // fileStats[0] = stats for 'child::super' - stats for child::super and subfile 1
+                    // fileStats[1] = stats for 'child::super' - stats for child::super and subfile 2
+                    // fileStats[2] = stats for 'child::f1' - stats for child::f1
+                    // fileStats[3] = stats for 'child::f2' - stats for child::f2
+                    *fileStatsStartEntry = (unsigned) fileStats.size(); // index of the first stats entry for this file
+                    fileStatsTable.push_back(*fileStatsStartEntry);
+                    assertex(fileId==fileStatsTable.size()-1);
+                    fileStatsSizeExtend = isSuper?numSubs:1;
+                }
+                else  // Use entire fileStats to track stats for a superfile (fileStats is not used if not a superfile)
+                {
+                    assertex(fileStats.size() == 0);
+                    *fileStatsStartEntry = 0;
+                    // Super files will use fileStats to track stats.  Non-super file stats tracked in graph stats
+                    fileStatsSizeExtend = isSuper?numSubs:0;
+                }
+                for (unsigned i=0; i<fileStatsSizeExtend; i++)
+                    fileStats.push_back(new CThorStatsCollection(statsMapping));
+            }
+        }
     }
+    else
+    {
+        file.setown(LINK(queryReadFile(fileId)));
+        if (!jobTemp && !temp && !fileStatsTable.empty())
+            *fileStatsStartEntry = fileStatsTable[fileId];
+    }
+    return file.getClear();
 }
 
 MemoryBuffer &CMasterActivity::queryInitializationData(unsigned slave) const
@@ -455,7 +526,18 @@ void CMasterActivity::threadmain()
 
 void CMasterActivity::init()
 {
-    readFiles.kill();
+    // Files are added to readFiles during initialization,
+    // If this is a CQ query act., then it will be repeatedly re-initialized if it depends on master context,
+    // e.g. due to a variable filename.
+    // Therefore, do not clear readFiles on reinitialization, to avoid repeatedly [expensively] looking them up.
+    bool inCQ = container.queryOwner().queryOwner() && !container.queryOwner().isGlobal();
+    if (!inCQ)
+    {
+        readFiles.clear();
+        readFilesMap.clear();
+        fileStatsTable.clear();
+        fileStats.clear();
+    }
 }
 
 void CMasterActivity::startProcess(bool async)
@@ -463,7 +545,7 @@ void CMasterActivity::startProcess(bool async)
     if (async)
     {
         asyncStart = true;
-        threaded.start();
+        threaded.start(true);
     }
     else
         threadmain();
@@ -479,7 +561,8 @@ bool CMasterActivity::wait(unsigned timeout)
 void CMasterActivity::kill()
 {
     CActivityBase::kill();
-    readFiles.kill();
+    readFiles.clear();
+    readFilesMap.clear();
 }
 
 bool CMasterActivity::fireException(IException *_e)
@@ -540,11 +623,108 @@ void CMasterActivity::getEdgeStats(IStatisticGatherer & stats, unsigned idx)
 void CMasterActivity::done()
 {
     CActivityBase::done();
-    ForEachItemIn(s, readFiles)
+    if (readFiles.size())
     {
-        IDistributedFile &file = readFiles.item(s);
-        file.setAccessed();
+        IArrayOf<IDistributedFile> tmpFiles;
+        for (IDistributedFile * file: readFiles)
+        {
+            IDistributedSuperFile *super = file->querySuperFile();
+            if (super)
+            {
+                getSuperFileSubs(super, tmpFiles, true);
+                tmpFiles.append(*LINK(file));
+            }
+            else
+                tmpFiles.append(*LINK(file));
+        }
+        ForEachItemIn(s, tmpFiles)
+        {
+            IDistributedFile &file = tmpFiles.item(s);
+            file.setAccessed();
+        }
     }
+}
+
+// calcFileReadCostStats calculates and returns the read costs for all files read by the activity
+// In addition, if updateFileProps==true, it updates the file attributes with @readCost and @numDiskReads
+// Note: should be called once per activity with "updateFileProps==true" to avoid double counting
+cost_type CMasterActivity::calcFileReadCostStats(bool updateFileProps)
+{
+    // 1) Returns readCost 2) if updateFilePros==true, updates file attributes with @readCost and @numDiskReads
+    auto updateReadCosts = [updateFileProps](bool useJhtreeCacheStats, IDistributedFile *file, CThorStatsCollection &stats)
+    {
+        StringBuffer clusterName;
+        file->getClusterName(0, clusterName);
+        IPropertyTree & fileAttr = file->queryAttributes();
+        cost_type curReadCost = 0;
+        stat_type curDiskReads = stats.getStatisticSum(StNumDiskReads);
+        if(useJhtreeCacheStats)
+        {
+            stat_type numActualReads = stats.getStatisticSum(StNumNodeDiskFetches)
+                                    + stats.getStatisticSum(StNumLeafDiskFetches)
+                                    + stats.getStatisticSum(StNumBlobDiskFetches);
+            curReadCost = calcFileAccessCost(clusterName, 0, numActualReads);
+        }
+        else
+            curReadCost = calcFileAccessCost(clusterName, 0, curDiskReads);
+
+        if (updateFileProps)
+        {
+            cost_type legacyReadCost = 0;
+            // Legacy files will not have the readCost stored as an attribute
+            if (!hasReadWriteCostFields(fileAttr) && fileAttr.hasProp(getDFUQResultFieldName(DFUQRFnumDiskReads)))
+            {
+                // Legacy file: calculate readCost using prev disk reads and new disk reads
+                stat_type prevDiskReads = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
+                legacyReadCost = calcFileAccessCost(clusterName, 0, prevDiskReads);
+            }
+            file->addAttrValue(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + curReadCost);
+            file->addAttrValue(getDFUQResultFieldName(DFUQRFnumDiskReads), curDiskReads);
+        }
+        return curReadCost;
+    };
+    cost_type readCost = 0;
+    if (fileStats.size()>0)
+    {
+        ThorActivityKind activityKind = container.getKind();
+        unsigned fileIndex = 0;
+        diskAccessCost = 0;
+        for (unsigned i=0; i<readFiles.size(); i++)
+        {
+            IDistributedFile *file = queryReadFile(i);
+            bool useJhtreeCache = false;
+            // Index uses jhtree caches, so use actual fetches to calculate cost
+            // To determine entry is an index file entry, use the test (i==0) because index file is always the first file
+            if ((TAKindexread == activityKind) || ((TAKkeyedjoin == activityKind) && (0 == i)))
+                useJhtreeCache = true;
+            if (file)
+            {
+                IDistributedSuperFile *super = file->querySuperFile();
+                if (super)
+                {
+                    unsigned numSubFiles = super->numSubFiles(true);
+                    for (unsigned i=0; i<numSubFiles; i++)
+                    {
+                        IDistributedFile &subFile = super->querySubFile(i, true);
+                        readCost += updateReadCosts(useJhtreeCache, &subFile, *fileStats[fileIndex]);
+                        fileIndex++;
+                    }
+                }
+                else
+                {
+                    readCost += updateReadCosts(useJhtreeCache, file, *fileStats[fileIndex]);
+                    fileIndex++;
+                }
+            }
+        }
+    }
+    else
+    {
+        IDistributedFile *file = queryReadFile(0);
+        if (file)
+            readCost = updateReadCosts(true, file, statsCollection);
+    }
+    return readCost;
 }
 
 //////////////////////
@@ -600,14 +780,14 @@ bool CMasterGraphElement::checkUpdate()
     if (doCheckUpdate)
     {
         StringAttr lfn;
-        Owned<IDistributedFile> file = queryThorFileManager().lookup(queryJob(), filename, temporary, true, false, defaultPrivilegedUser);
+        Owned<IDistributedFile> file = queryThorFileManager().lookup(queryJob(), filename, AccessMode::readMeta, temporary, true, false, defaultPrivilegedUser);
         if (file)
         {
             IPropertyTree &props = file->queryAttributes();
             if ((eclCRC == (unsigned)props.getPropInt("@eclCRC")) && (totalCRC == (unsigned __int64)props.getPropInt64("@totalCRC")))
             {
                 // so this needs pruning
-                Owned<IThorException> e = MakeActivityWarning(this, TE_UpToDate, "output file = '%s' - is up to date - it will not be rebuilt", file->queryLogicalName());
+                Owned<IThorException> e = MakeActivityWarning(this, ENGINEERR_FILE_UPTODATE, "output file = '%s' - is up to date - it will not be rebuilt", file->queryLogicalName());
                 queryOwner().fireException(e);
                 return true;
             }
@@ -757,15 +937,16 @@ public:
         queryThorFileManager().clearCacheEntry(name);
         return true;
     }
-    virtual void registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters)
+    virtual CFileUsageEntry * registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters)
     {
         if (!temp || job.queryUseCheckpoints())
         {
             Owned<IWorkUnit> wu = &job.queryWorkUnit().lock();
             wu->addFile(name, clusters, usageCount, fileKind, job.queryGraphName());
+            return nullptr;
         }
         else
-            CGraphTempHandler::registerFile(name, graphId, usageCount, temp, fileKind, clusters);
+            return CGraphTempHandler::registerFile(name, graphId, usageCount, temp, fileKind, clusters);
     }
     virtual void deregisterFile(const char *name, bool kept) // NB: only called for temp files
     {
@@ -820,7 +1001,7 @@ class CThorCodeContextMaster : public CThorCodeContextBase
         return getWorkUnitResult(workunit, name, sequence);
     }
     #define PROTECTED_GETRESULT(STEPNAME, SEQUENCE, KIND, KINDTEXT, ACTION) \
-        LOG(MCdebugProgress, thorJob, "getResult%s(%s,%d)", KIND, STEPNAME?STEPNAME:"", SEQUENCE); \
+        LOG(MCdebugProgress, "getResult%s(%s,%d)", KIND, STEPNAME?STEPNAME:"", SEQUENCE); \
         Owned<IConstWUResult> r = getResultForGet(STEPNAME, SEQUENCE); \
         try \
         { \
@@ -1085,7 +1266,7 @@ public:
     {
         try
         {
-            LOG(MCdebugProgress, thorJob, "getExternalResultRaw %s", stepname);
+            LOG(MCdebugProgress, "getExternalResultRaw %s", stepname);
 
             Owned<IConstWUResult> r = getExternalResult(wuid, stepname, sequence);
             return r->getResultHash();
@@ -1127,7 +1308,7 @@ public:
         tgt = NULL;
         try
         {
-            LOG(MCdebugProgress, thorJob, "getExternalResultRaw %s", stepname);
+            LOG(MCdebugProgress, "getExternalResultRaw %s", stepname);
 
             Variable2IDataVal result(&tlen, &tgt);
             Owned<IConstWUResult> r = getExternalResult(wuid, stepname, sequence);
@@ -1173,19 +1354,35 @@ public:
     virtual char *getFilePart(const char *logicalName, bool create=false) override { assertex(false); return NULL; }
     virtual unsigned __int64 getDatasetHash(const char * name, unsigned __int64 hash) override
     {
-        unsigned checkSum = 0;
-        Owned<IDistributedFile> iDfsFile = queryThorFileManager().lookup(jobChannel.queryJob(), name, false, true, false, defaultPrivilegedUser); // NB: do not update accessed
+        StringBuffer fullname('~');
+        expandLogicalName(fullname, name);
+        Owned<IDistributedFile> iDfsFile = queryThorFileManager().lookup(jobChannel.queryJob(), fullname, AccessMode::readMeta, false, true, false, defaultPrivilegedUser); // NB: do not update accessed
         if (iDfsFile.get())
         {
-            if (iDfsFile->getFileCheckSum(checkSum))
+            // NB: if the file or any of the subfiles are compressed, then we cannot rely on the checksum
+            // use the hash of the modified time instead (which is what roxie and hthor do for all files).
+            bool useModifiedTime = false;
+            IDistributedSuperFile * super = iDfsFile->querySuperFile();
+            if (super)
+            {
+                Owned<IDistributedFileIterator> iter = super->getSubFileIterator(true);
+                ForEach(*iter)
+                {
+                    if (iter->query().isCompressed())
+                    {
+                        useModifiedTime = true;
+                        break;
+                    }
+                }
+            }
+            else if (iDfsFile->isCompressed())
+                useModifiedTime = true;
+
+            unsigned checkSum = 0;
+            if (!useModifiedTime && iDfsFile->getFileCheckSum(checkSum))
                 hash ^= checkSum;
             else
-            {
-                StringBuffer modifiedStr;
-                if (iDfsFile->queryAttributes().getProp("@modified", modifiedStr))
-                    hash = rtlHash64Data(modifiedStr.length(), modifiedStr.str(), hash);
-                // JCS->GH - what's the best thing to do here, if [for some reason] neither are available..
-            }
+                hash = crcLogicalFileTime(iDfsFile, hash, fullname);
         }
         return hash;
     }
@@ -1301,39 +1498,18 @@ CJobMaster::CJobMaster(IConstWorkUnit &_workunit, const char *graphName, ILoaded
     user.set(workunit->queryUser());
     token.append(_token.str());
     scope.append(_scope.str());
-    globalMemoryMB = globals->getPropInt("@masterMemorySize", globals->getPropInt("@globalMemorySize")); // in MB
     numChannels = 1;
     init();
 
-    if (workunit->hasDebugValue("GlobalId"))
-    {
-        SCMStringBuffer txId;
-        workunit->getDebugValue("GlobalId", txId);
-        if (txId.length())
-        {
-            SocketEndpoint thorEp;
-            thorEp.setLocalHost(getMachinePortBase());
-            logctx->setGlobalId(txId.str(), thorEp, 0);
+    Owned<IProperties> traceHeaders = extractTraceDebugOptions(workunit);
+    OwnedSpanScope requestSpan = queryTraceManager().createServerSpan("run_graph", traceHeaders);
+    ContextSpanScope spanScope(*logctx, requestSpan);
+    requestSpan->setSpanAttribute("hpcc.wuid", workunit->queryWuid());
+    requestSpan->setSpanAttribute("hpcc.graph", graphName);
 
-            SCMStringBuffer callerId;
-            workunit->getDebugValue("CallerId", callerId);
-            if (callerId.length())
-                logctx->setCallerId(callerId.str());
-
-            VStringBuffer msg("GlobalId: %s", txId.str());
-            workunit->getDebugValue("CallerId", txId);
-            if (txId.length())
-                msg.append(", CallerId: ").append(txId.str());
-            txId.set(logctx->queryLocalId());
-            if (txId.length())
-                msg.append(", LocalId: ").append(txId.str());
-            logctx->CTXLOG("%s", msg.str());
-        }
-    }
     resumed = WUActionResume == workunit->getAction();
     fatalHandler.setown(new CFatalHandler(globals->getPropInt("@fatal_timeout", FATAL_TIMEOUT)));
     querySent = spillsSaved = false;
-    nodeDiskUsageCached = false;
 
     StringBuffer pluginsDir;
     globals->getProp("@pluginsPath", pluginsDir);
@@ -1347,7 +1523,9 @@ CJobMaster::CJobMaster(IConstWorkUnit &_workunit, const char *graphName, ILoaded
         plugin.getPluginName(name);
         loadPlugin(pluginMap, pluginsDir.str(), name.str());
     }
-    sharedAllocator.setown(::createThorAllocator(globalMemoryMB, 0, 1, memorySpillAtPercentage, *logctx, crcChecking, usePackedAllocator));
+
+    applyMemorySettings("manager");
+    sharedAllocator.setown(::createThorAllocator(queryMemoryMB, 0, 1, memorySpillAtPercentage, *logctx, crcChecking, usePackedAllocator));
     Owned<IMPServer> mpServer = getMPServer();
     CJobChannel *channel = addChannel(mpServer);
     channel->reservePortKind(TPORT_mp); 
@@ -1358,6 +1536,18 @@ CJobMaster::CJobMaster(IConstWorkUnit &_workunit, const char *graphName, ILoaded
     slaveMsgHandler.setown(new CSlaveMessageHandler(*this, slavemptag));
     tmpHandler.setown(createTempHandler(true));
     xgmml.set(graphXGMML);
+
+    StringBuffer tempDir(globals->queryProp("@thorTempDirectory"));
+#ifdef _CONTAINERIZED
+    // multiple thor jobs can be running on same node, sharing same local disk for temp storage.
+    // make unique by adding wuid+graphName+worker-num
+    VStringBuffer uniqueSubDir("%s_%s_0", workunit->queryWuid(), graphName); // 0 denotes master (workers = 1..N)
+    SetTempDir(tempDir, uniqueSubDir, "thtmp", false); // no point in clearing as dir. is unique per job+graph
+#else
+    // in bare-metal where only 1 Thor instance of each name, re-use same dir, in order to guarantee it will be cleared on startup
+    VStringBuffer uniqueSubDir("%s_0", globals->queryProp("@name")); // 0 denotes master (workers = 1..N)
+    SetTempDir(tempDir, uniqueSubDir, "thtmp", true);
+#endif
 }
 
 void CJobMaster::endJob()
@@ -1396,7 +1586,7 @@ mptag_t CJobMaster::allocateMPTag()
 {
     mptag_t tag = allocateClusterMPTag();
     queryJobChannel(0).queryJobComm().flush(tag);
-    LOG(MCthorDetailedDebugInfo, thorJob, "allocateMPTag: tag = %d", (int)tag);
+    LOG(MCthorDetailedDebugInfo, "allocateMPTag: tag = %d", (int)tag);
     return tag;
 }
 
@@ -1405,12 +1595,12 @@ void CJobMaster::freeMPTag(mptag_t tag)
     if (TAG_NULL != tag)
     {
         freeClusterMPTag(tag);
-        LOG(MCthorDetailedDebugInfo, thorJob, "freeMPTag: tag = %d", (int)tag);
+        LOG(MCthorDetailedDebugInfo, "freeMPTag: tag = %d", (int)tag);
         queryJobChannel(0).queryJobComm().flush(tag);
     }
 }
 
-void CJobMaster::broadcast(ICommunicator &comm, CMessageBuffer &msg, mptag_t mptag, unsigned timeout, const char *errorMsg, CReplyCancelHandler *msgHandler, bool sendOnly)
+void CJobMaster::broadcast(ICommunicator &comm, CMessageBuffer &msg, mptag_t mptag, unsigned timeout, const char *errorMsg, CReplyCancelHandler *msgHandler, bool sendOnly, bool aborting)
 {
     unsigned groupSizeExcludingMaster = comm.queryGroup().ordinality() - 1;
 
@@ -1420,44 +1610,40 @@ void CJobMaster::broadcast(ICommunicator &comm, CMessageBuffer &msg, mptag_t mpt
         replyTag = queryJobChannel(0).queryMPServer().createReplyTag();
         msg.setReplyTag(replyTag);
     }
-    if (globals->getPropBool("@broadcastSendAsync", true)) // only here in case of problems/debugging.
+    auto f = [&](unsigned r) -> bool
     {
-        class CSendAsyncfor : public CAsyncFor
+        if (!aborting || comm.verifyConnection(r, (unsigned)-1, false))
         {
-            CMessageBuffer &msg;
-            mptag_t mptag;
-            unsigned timeout;
-            StringAttr errorMsg;
-            ICommunicator &comm;
-        public:
-            CSendAsyncfor(ICommunicator &_comm, CMessageBuffer &_msg, mptag_t _mptag, unsigned _timeout, const char *_errorMsg)
-                : comm(_comm), msg(_msg), mptag(_mptag), timeout(_timeout), errorMsg(_errorMsg)
-            {
-            }
-            void Do(unsigned i)
-            {
-                if (!comm.send(msg, i+1, mptag, timeout))
-                    throw createBCastException(i+1, errorMsg);
-            }
-        } afor(comm, msg, mptag, timeout, errorMsg);
+            if (!comm.send(msg, r, mptag, timeout))
+                throw createBCastException(r, errorMsg);
+            return true;
+        }
+        return false;
+    };
+    std::vector<std::future<bool>> sendResultsFuture;
+    Owned<IException> sendExcept;
+    for (unsigned dstrank=1; dstrank<=groupSizeExcludingMaster; ++dstrank)
+        sendResultsFuture.push_back(std::async(f, dstrank));
+    unsigned numberMsgSent = 0;
+    for (auto & sendResultFuture: sendResultsFuture)
+    {
         try
         {
-            afor.For(groupSizeExcludingMaster, groupSizeExcludingMaster);
+            if (sendResultFuture.get())
+                ++numberMsgSent;
         }
         catch (IException *e)
         {
-            EXCLOG(e, "broadcastSendAsync");
-            abort(e);
-            throw;
+            sendExcept.setownIfNull(e);
         }
     }
-    else if (!comm.send(msg, RANK_ALL_OTHER, mptag, timeout))
+    if (sendExcept)
     {
-        Owned<IException> e = createBCastException(0, errorMsg);
-        EXCLOG(e, NULL);
-        abort(e);
-        throw e.getClear();
+        EXCLOG(sendExcept, "broadcastSendAsync");
+        abort(sendExcept);
+        throw sendExcept.getClear();
     }
+
     if (sendOnly) return;
     unsigned respondents = 0;
     Owned<IBitSet> bitSet = createThreadSafeBitSet();
@@ -1498,37 +1684,8 @@ void CJobMaster::broadcast(ICommunicator &comm, CMessageBuffer &msg, mptag_t mpt
         }
         ++respondents;
         bitSet->set((unsigned)sender-1);
-        if (respondents == groupSizeExcludingMaster)
+        if (respondents == numberMsgSent)
             break;
-    }
-}
-
-void CJobMaster::initNodeDUCache()
-{
-    if (!nodeDiskUsageCached)
-    {
-        nodeDiskUsageCached = true;
-        Owned<IPropertyTreeIterator> fileIter = &workunit->getFileIterator();
-        ForEach (*fileIter)
-        {
-            Owned<IDistributedFile> f = queryDistributedFileDirectory().lookup(fileIter->query().queryProp("@name"), userDesc, false, false, false, nullptr, defaultPrivilegedUser);
-            if (f)
-            {
-                unsigned n = f->numParts();
-                for (unsigned i=0;i<n;i++)
-                {
-                    Owned<IDistributedFilePart> part = f->getPart(i);
-                    offset_t sz = part->getFileSize(false, false);
-                    if (i>=nodeDiskUsage.ordinality())
-                        nodeDiskUsage.append(sz);
-                    else
-                    {
-                        sz += nodeDiskUsage.item(i);
-                        nodeDiskUsage.add(sz, i);
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1575,16 +1732,20 @@ void CJobMaster::sendQuery()
     const char *soName = queryDllEntry().queryName();
     PROGLOG("Query dll: %s", soName);
     tmp.append(soName);
-    tmp.append(sendSo);
-    if (sendSo)
+    if (getExpertOptBool("saveQueryDlls"))
     {
-        CTimeMon atimer;
-        OwnedIFile iFile = createIFile(soName);
-        OwnedIFileIO iFileIO = iFile->open(IFOread);
-        size32_t sz = (size32_t)iFileIO->size();
-        tmp.append(sz);
-        read(iFileIO, 0, sz, tmp);
-        PROGLOG("Loading query for serialization to slaves took %d ms", atimer.elapsed());
+        tmp.append(sendSo);
+        if (sendSo)
+        {
+            CTimeMon atimer;
+            OwnedIFile iFile = createIFile(soName);
+            OwnedIFileIO iFileIO = iFile->open(IFOread);
+            size32_t sz = (size32_t)iFileIO->size();
+            tmp.append(sz);
+            read(iFileIO, 0, sz, tmp);
+            PROGLOG("Loading query for serialization to slaves took %d ms", atimer.elapsed());
+        }
+        queryJobManager().addCachedSo(soName);
     }
     Owned<IPropertyTree> deps = createPTree(queryXGMML()->queryName());
     Owned<IPropertyTreeIterator> edgeIter = queryXGMML()->getElements("edge"); // JCSMORE trim to those actually needed
@@ -1602,10 +1763,9 @@ void CJobMaster::sendQuery()
     compressToBuffer(msg, tmp.length(), tmp.toByteArray());
 
     CTimeMon queryToSlavesTimer;
+    querySent = true;
     broadcast(queryNodeComm(), msg, masterSlaveMpTag, LONGTIMEOUT, "sendQuery");
     PROGLOG("Serialization of query init info (%d bytes) to slaves took %d ms", msg.length(), queryToSlavesTimer.elapsed());
-    queryJobManager().addCachedSo(soName);
-    querySent = true;
 }
 
 void CJobMaster::jobDone()
@@ -1709,7 +1869,7 @@ bool CJobMaster::go()
                 Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
                 if (factory->isAborting(wu.queryWuid()))
                 {
-                    LOG(MCwarning, thorJob, "ABORT detected from user");
+                    LOG(MCwarning, "ABORT detected from user");
 
                     unsigned code = TE_WorkUnitAborting; // default
                     if (job.getOptBool("dumpInfoOnUserAbort", false))
@@ -1856,7 +2016,7 @@ void CJobMaster::pause(bool doAbort)
         public:
             CAbortThread(CJobMaster &_owner, IException *_exception) : owner(_owner), exception(_exception), threaded("SaveSpillThread", this)
             {
-                threaded.start();
+                threaded.start(true);
             }
             ~CAbortThread()
             {
@@ -1871,28 +2031,6 @@ void CJobMaster::pause(bool doAbort)
         saveSpills();
         fatalHandler->inform(e.getClear());
     }
-}
-
-__int64 CJobMaster::queryNodeDiskUsage(unsigned node)
-{
-    initNodeDUCache();
-    if (!nodeDiskUsage.isItem(node)) return 0;
-    return nodeDiskUsage.item(node);
-}
-
-void CJobMaster::setNodeDiskUsage(unsigned node, __int64 sz)
-{
-    initNodeDUCache();
-    while (nodeDiskUsage.ordinality() <= node)
-        nodeDiskUsage.append(0);
-    nodeDiskUsage.replace(sz, node);
-}
-
-__int64 CJobMaster::addNodeDiskUsage(unsigned node, __int64 sz)
-{
-    sz += queryNodeDiskUsage(node);
-    setNodeDiskUsage(node, sz);
-    return sz;
 }
 
 bool CJobMaster::queryCreatedFile(const char *file)
@@ -1917,6 +2055,11 @@ __int64 CJobMaster::getWorkUnitValueInt(const char *prop, __int64 defVal) const
 bool CJobMaster::getWorkUnitValueBool(const char *prop, bool defVal) const
 {
     return queryWorkUnit().getDebugValueBool(prop, defVal);
+}
+
+double CJobMaster::getWorkUnitValueReal(const char *prop, double defVal) const
+{
+    return queryWorkUnit().getDebugValueReal(prop, defVal);
 }
 
 StringBuffer &CJobMaster::getWorkUnitValue(const char *prop, StringBuffer &str) const
@@ -1946,13 +2089,13 @@ bool CJobMaster::fireException(IException *e)
     {
         case tea_warning:
         {
-            LOG(MCwarning, thorJob, e);
+            LOG(MCwarning, e);
             reportExceptionToWorkunitCheckIgnore(*workunit, e);
             break;
         }
         default:
         {
-            LOG(MCerror, thorJob, e);
+            LOG(MCerror, e);
             queryJobManager().replyException(*this, e); 
             fatalHandler->inform(LINK(e));
             try { abort(e); }
@@ -2198,13 +2341,13 @@ bool CMasterGraph::fireException(IException *e)
     {
         case tea_warning:
         {
-            LOG(MCwarning, thorJob, e);
+            LOG(MCwarning, e);
             reportExceptionToWorkunitCheckIgnore(job.queryWorkUnit(), e);
             break;
         }
         default:
         {
-            LOG(MCerror, thorJob, e);
+            LOG(MCerror, e);
             if (NULL != fatalHandler)
                 fatalHandler->inform(LINK(e));
             if (owner)
@@ -2227,6 +2370,8 @@ void CMasterGraph::reset()
 void CMasterGraph::abort(IException *e)
 {
     if (aborted) return;
+    if (initialized) // if aborted before initialized, there will be no slave activity to collect
+        getFinalProgress(true);
     bool _graphDone = graphDone; // aborting master activities can trigger master graphDone, but want to fire GraphAbort to slaves if graphDone=false at start.
     bool dumpInfo = TE_WorkUnitAbortingDumpInfo == e->errorCode() || job.getOptBool("dumpInfoOnAbort");
     if (dumpInfo)
@@ -2326,18 +2471,23 @@ void CMasterGraph::execute(size32_t _parentExtractSz, const byte *parentExtract,
 {
     if (isComplete())
         return;
+    CThorPerfTracer perf;
+    double perfinterval = 0.0;
     if (!queryOwner()) // owning graph sends query+child graphs
+    {
+        perfinterval = job.getOptReal("perfInterval");
+        if (perfinterval)
+            perf.start(job.queryWuid(), graphId, perfinterval);
+
         jobM->sendQuery(); // if not previously sent
+    }
     CGraphBase::execute(parentExtractSz, parentExtract, checkDependencies, async);
+    if (perfinterval)
+        perf.stop();
 }
 
 void CMasterGraph::start()
 {
-    if (!queryOwner())
-    {
-        if (globals->getPropBool("@watchdogProgressEnabled"))
-            queryJobManager().queryDeMonServer()->startGraph(this);
-    }
     Owned<IThorActivityIterator> iter = getConnectedIterator();
     ForEach (*iter)
         iter->query().queryActivity()->startProcess();
@@ -2379,7 +2529,7 @@ void CMasterGraph::sendActivityInitData()
             if (!queryJobChannel().queryJobComm().send(msg, w+1, mpTag, LONGTIMEOUT))
             {
                 StringBuffer epStr;
-                throw MakeStringException(0, "Timeout sending to slave %s", job.querySlaveGroup().queryNode(w).endpoint().getUrlStr(epStr).str());
+                throw MakeStringException(0, "Timeout sending to slave %s", job.querySlaveGroup().queryNode(w).endpoint().getEndpointHostText(epStr).str());
             }
             ++sentTo;
         }
@@ -2406,7 +2556,7 @@ void CMasterGraph::sendActivityInitData()
                 if (!e.get())
                 {
                     StringBuffer tmpStr("Slave ");
-                    queryJob().queryJobGroup().queryNode(sender).endpoint().getUrlStr(tmpStr);
+                    queryJob().queryJobGroup().queryNode(sender).endpoint().getEndpointHostText(tmpStr);
                     GraphPrintLog(se, "%s", tmpStr.append(": slave initialization error").str());
                     e.setown(se.getClear());
                 }
@@ -2546,6 +2696,11 @@ void CMasterGraph::sendGraph()
 bool CMasterGraph::preStart(size32_t parentExtractSz, const byte *parentExtract)
 {
     GraphPrintLog("Processing graph");
+    if (!queryOwner())
+    {
+        if (globals->getPropBool("@watchdogProgressEnabled"))
+            queryJobManager().queryDeMonServer()->startGraph(this);
+    }
     if (syncInitData())
     {
         sendActivityInitData(); // has to be done at least once
@@ -2583,26 +2738,24 @@ void CMasterGraph::handleSlaveDone(unsigned node, MemoryBuffer &mb)
     }
 }
 
-void CMasterGraph::getFinalProgress()
+void CMasterGraph::getFinalProgress(bool aborting)
 {
-    offset_t totalDiskUsage = 0;
-    offset_t minNodeDiskUsage = 0, maxNodeDiskUsage = 0;
-    unsigned maxNode = (unsigned)-1, minNode = (unsigned)-1;
-
     CMessageBuffer msg;
     mptag_t replyTag = queryJobChannel().queryMPServer().createReplyTag();
     msg.setReplyTag(replyTag);
     msg.append((unsigned)GraphEnd);
     msg.append(job.queryKey());
     msg.append(queryGraphId());
-    jobM->broadcast(queryNodeComm(), msg, masterSlaveMpTag, LONGTIMEOUT, "graphEnd", NULL, true);
+    // If aborted, some slaves may have disconnnected/aborted so don't wait so long
+    unsigned timeOutPeriod = aborting ? SHORTTIMEOUT : LONGTIMEOUT;
+    jobM->broadcast(queryNodeComm(), msg, masterSlaveMpTag, timeOutPeriod, "graphEnd", NULL, true, aborting);
 
     Owned<IBitSet> respondedBitSet = createBitSet();
     unsigned n=queryJob().queryNodes();
     while (n--)
     {
         rank_t sender;
-        if (!queryNodeComm().recv(msg, RANK_ALL, replyTag, &sender, LONGTIMEOUT))
+        if (!queryNodeComm().recv(msg, RANK_ALL, replyTag, &sender, timeOutPeriod))
         {
             StringBuffer slaveList;
             n=queryJob().queryNodes();
@@ -2623,7 +2776,13 @@ void CMasterGraph::getFinalProgress()
                 if (s>=n)
                     break;
             }
-            throw MakeGraphException(this, 0, "Timeout receiving final progress from slaves - these slaves failed to respond: %s", slaveList.str());
+            if (aborting)
+            {
+                WARNLOG("Timeout receiving final progress from slaves - these slaves failed to respond: %s", slaveList.str());
+                return;
+            }
+            else
+                throw MakeGraphException(this, 0, "Timeout receiving final progress from slaves - these slaves failed to respond: %s", slaveList.str());
         }
         bool error;
         msg.read(error);
@@ -2642,6 +2801,8 @@ void CMasterGraph::getFinalProgress()
         {
             unsigned slave;
             msg.read(slave);
+            if (RANK_NULL == slave) // worker no longer had graph registered
+                continue;
             handleSlaveDone(slave, msg);
             if (!queryOwner())
             {
@@ -2651,9 +2812,12 @@ void CMasterGraph::getFinalProgress()
                     {
                         size32_t progressLen;
                         msg.read(progressLen);
-                        MemoryBuffer progressData;
-                        progressData.setBuffer(progressLen, (void *)msg.readDirect(progressLen));
-                        queryJobManager().queryDeMonServer()->takeHeartBeat(progressData);
+                        if (progressLen)
+                        {
+                            MemoryBuffer progressData;
+                            progressData.setBuffer(progressLen, (void *)msg.readDirect(progressLen));
+                            queryJobManager().queryDeMonServer()->takeHeartBeat(progressData);
+                        }
                     }
                     catch (IException *e)
                     {
@@ -2662,26 +2826,7 @@ void CMasterGraph::getFinalProgress()
                     }
                 }
             }
-            offset_t nodeDiskUsage;
-            msg.read(nodeDiskUsage);
-            jobM->setNodeDiskUsage(n, nodeDiskUsage);
-            if (nodeDiskUsage > maxNodeDiskUsage)
-            {
-                maxNodeDiskUsage = nodeDiskUsage;
-                maxNode = n;
-            }
-            if ((unsigned)-1 == minNode || nodeDiskUsage < minNodeDiskUsage)
-            {
-                minNodeDiskUsage = nodeDiskUsage;
-                minNode = n;
-            }
-            totalDiskUsage += nodeDiskUsage;
         }
-    }
-    if (totalDiskUsage)
-    {
-        Owned<IWorkUnit> wu = &job.queryWorkUnit().lock();
-        wu->addDiskUsageStats(totalDiskUsage/queryJob().querySlaves(), minNode, minNodeDiskUsage, maxNode, maxNodeDiskUsage, queryGraphId());
     }
 }
 
@@ -2780,9 +2925,7 @@ bool CMasterGraph::deserializeStats(unsigned node, MemoryBuffer &mb)
 void CMasterGraph::getStats(IStatisticGatherer &stats)
 {
     stats.addStatistic(StNumSlaves, queryClusterWidth());
-
     // graph specific stats
-
     graphStats.getStats(stats);
 
     Owned<IThorActivityIterator> iter;
@@ -2810,6 +2953,34 @@ void CMasterGraph::getStats(IStatisticGatherer &stats)
             activity->getActivityStats(stats);
         }
     }
+    cost_type costDiskAccess = getDiskAccessCost();
+    if (costDiskAccess)
+        stats.addStatistic(StCostFileAccess, costDiskAccess);
+}
+
+cost_type CMasterGraph::getDiskAccessCost()
+{
+    cost_type totalDiskAccessCost = 0;
+    Owned<IThorGraphIterator> iterChildGraph = getChildGraphIterator();
+    ForEach(*iterChildGraph)
+    {
+        CGraphBase &graph = iterChildGraph->query();
+        totalDiskAccessCost += graph.getDiskAccessCost();
+    }
+
+    Owned<IThorActivityIterator> iter;
+    if (queryOwner() && !isGlobal())
+        iter.setown(getIterator()); // Local child graphs still send progress, but aren't connected in master
+    else
+        iter.setown(getConnectedIterator());
+    ForEach (*iter)
+    {
+        CMasterGraphElement &container = (CMasterGraphElement &)iter->query();
+        CMasterActivity *activity = (CMasterActivity *)container.queryActivity();
+        if (activity) // may not be created (if within child query)
+            totalDiskAccessCost += activity->getDiskAccessCost();
+    }
+    return totalDiskAccessCost;
 }
 
 IThorResult *CMasterGraph::createResult(CActivityBase &activity, unsigned id, IThorGraphResults *results, IThorRowInterfaces *rowIf, ThorGraphResultType resultType, unsigned spillPriority)

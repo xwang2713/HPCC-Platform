@@ -1,4 +1,10 @@
+build/
+build-*/
+node_modules/
+vcpkg_installed/
 externals/
+devdoc/.vitepress/cache/
+devdoc/.vitepress/dist/
 .project
 .svn/
 ln/
@@ -8,3 +14,8 @@ ln/
 !esp/src/.vscode
 eclcc.log
 *.pyc
+./helm/examples/azure/sa/env-sa
+./dockerfiles/platform-build-incremental/hpcc.gitpatch
+dockerfiles/platform-build-incremental/hpcc.gitpatch
+.env
+/vcpkg.json

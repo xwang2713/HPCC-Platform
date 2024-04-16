@@ -177,6 +177,14 @@
                     </xs:appinfo>
                 </xs:annotation>
             </xs:attribute>
+            <xs:attribute name="ldapCipherSuite" type="xs:string" use="optional" default="">
+                <xs:annotation>
+                    <xs:appinfo>
+                        <required>false</required>
+                        <tooltip>The optional Cipher Suite string to be applied to LDAPS calls.</tooltip>
+                    </xs:appinfo>
+                </xs:annotation>
+            </xs:attribute>
             <xs:attribute name="cacheTimeout" type="xs:nonNegativeInteger" use="optional" default="60">
                 <xs:annotation>
                     <xs:appinfo>
@@ -262,13 +270,6 @@
                     <xs:appinfo>
                         <required>true</required>
                         <tooltip>The ldap "base distinguished name"  that ecl server should use when looking up file scopes in the ldap (Active Directory) server.</tooltip>
-                    </xs:appinfo>
-                </xs:annotation>
-            </xs:attribute>
-            <xs:attribute name="sudoersBasedn" type="xs:string" use="optional" default="ou=SUDOers">
-                <xs:annotation>
-                    <xs:appinfo>
-                        <tooltip>The place to hold the sudoers entries.</tooltip>
                     </xs:appinfo>
                 </xs:annotation>
             </xs:attribute>

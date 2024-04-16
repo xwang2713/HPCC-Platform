@@ -442,6 +442,10 @@
 #define ERR_INVALID_PROBABILITY     2403
 #define ERR_DEFAULT_VIRTUAL_CLASH   2404
 #define ERR_EMBEDERROR              2405
+#define ERR_FAIL_CLONE_REPO         2406
+#define ERR_FAIL_UPDATE_REPO        2407
+#define ERR_CANNOT_RESOLVE_BRANCH   2408
+#define ERR_UNKNOWN_EXCEPTION       2409
 
 #define ERR_CPP_COMPILE_ERROR       2999
 
@@ -523,6 +527,8 @@
 #define HQLWRN_MergeInputPartiallyOrdered       3162
 #define HQLWRN_MergeInputIncompatible           3163
 #define HQLWRN_MergeInputLastMissing            3164
+#define HQLERR_MissingDelayedMember             3165
+#define HQLERR_InvalidRegex                     3166
 
 #define HQLERR_DedupFieldNotFound_Text          "Field removed from dedup could not be found"
 #define HQLERR_CycleWithModuleDefinition_Text   "Module definition contains an illegal cycle/recursive definition %s"
@@ -577,6 +583,8 @@
 #define HQLERR_UnnamedOutputInLibrary_Text      "OUTPUT within a library must be NAMED"
 #define HQLERR_AlienUseData_Text                "More efficient to use a DATA field than this custom alien type"
 #define HQLERR_LibraryParamNoFunctions_Text     "Library parameter '%s' cannot be a function"
+#define HQLERR_MissingDelayedMember_Text        "Module %s does not contain a member %s"
+#define HQLERR_InvalidRegex_Text                "%s"
 
 /* parser error */
 #define ERR_PARSER_CANNOTRECOVER    3005  /* The parser can not recover from previous error(s) */

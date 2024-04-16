@@ -2,7 +2,7 @@ define([
     "dojo/_base/declare",
     "dojo/_base/lang",
     "src/nlsHPCC",
-    "src/Memory",
+    "src/store/Memory",
     "dojo/store/Observable",
 
     "dijit/registry",
@@ -20,10 +20,12 @@ define([
     "dijit/layout/BorderContainer",
     "dijit/Toolbar",
     "dijit/form/Button",
+    "dijit/form/TextBox",
     "dijit/form/ToggleButton",
     "dijit/ToolbarSeparator",
-    "dijit/layout/ContentPane"
+    "dijit/layout/ContentPane",
 
+    "hpcc/TableContainer"
 ], function (declare, lang, nlsHPCCMod, MemoryMod, Observable,
     registry, Menu, MenuItem, MenuSeparator,
     _TabContainerWidget, Utility, ESPUtil,
@@ -37,6 +39,8 @@ define([
 
         gridTitle: "Change Me",
         idProperty: "Change Me",
+
+        displayOpenButton: true,
 
         store: null,
         toolbar: null,
@@ -52,17 +56,29 @@ define([
             this.inherited(arguments);
             this.toolbar = registry.byId(this.id + "Toolbar");
             this.gridTab = registry.byId(this.id + "_Grid");
+            this.downloadDialog = registry.byId(this.id + "DownloadToListDialog");
         },
 
         startup: function (args) {
             this.inherited(arguments);
             this.initGrid();
             this.initContextMenu();
+
+            if (!this.displayOpenButton) {
+                dojo.destroy(this.id + "Open");
+                dojo.destroy(this.id + "ContainerNode");
+                dojo.destroy(this.id + "RemovableSeperator2");
+            }
         },
 
         //  Hitched actions  ---
         _onRefresh: function (event) {
             this.refreshGrid();
+        },
+
+        destroy: function (args) {
+            this.downloadDialog.destroyRecursive();
+            this.inherited(arguments);
         },
 
         _onOpen: function (event, params) {
@@ -98,7 +114,7 @@ define([
 
         initGrid: function () {
             var context = this;
-            var store = new MemoryMod.AlphaNumSortMemory(this.idProperty, this.alphanumSort);
+            var store = new MemoryMod.Memory(this.idProperty, this.alphanumSort);
             this.store = new Observable(store);
             this.grid = this.createGrid(this.id + "Grid");
             this.setGridNoDataMessage(this.i18n.noDataMessage);
@@ -210,6 +226,9 @@ define([
             if (openWidget) {
                 openWidget.set("disabled", !selection.length);
             }
-        }
+        },
+
+        _buildCSV: function () { },
+        _onDownloadToListCancelDialog: function () { }
     });
 });

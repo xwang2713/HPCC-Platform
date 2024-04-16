@@ -58,6 +58,8 @@ set (    INCLUDES
          dautils.hpp
     )   
 
+set_source_files_properties(dasds.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+
 include_directories ( 
          ${HPCC_SOURCE_DIR}/common/deftype 
          ${HPCC_SOURCE_DIR}/fs/dafsclient
@@ -70,7 +72,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/system/security/cryptohelper
     )
 
-ADD_DEFINITIONS( -DLOGMSGCOMPONENT=3 -D_USRDLL -DDALI_EXPORTS )
+ADD_DEFINITIONS( -D_USRDLL -DDALI_EXPORTS -DNULL_DALIUSER_STACKTRACE)
 
 HPCC_ADD_LIBRARY( dalibase SHARED ${SRCS} ${INCLUDES} )
 

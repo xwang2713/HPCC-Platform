@@ -19,107 +19,8 @@
 #define JHUTIL_HPP
 
 #include "jlib.hpp"
-#include "jqueue.tpp"
+#include "jqueue.hpp"
 #include "jhtree.hpp"
-
-//Implementation of a queue using a doubly linked list.  Should possibly move to jlib if it would be generally useful.
-//Currently assumes next and prev fields in the element can be used to maintain the list
-template <class ELEMENT>
-class DListOf
-{
-    typedef DListOf<ELEMENT> SELF;
-    ELEMENT * pHead = nullptr;
-    ELEMENT * pTail = nullptr;
-    unsigned numEntries = 0;
-
-public:
-    void enqueueHead(ELEMENT * element)
-    {
-        assertex(!element->next && !element->prev);
-        if (pHead)
-        {
-            pHead->prev = element;
-            element->next = pHead;
-            pHead = element;
-        }
-        else
-        {
-            pHead = pTail = element;
-        }
-        numEntries++;
-    }
-    void enqueue(ELEMENT * element)
-    {
-        assertex(!element->next && !element->prev);
-        if (pTail)
-        {
-            pTail->next = element;
-            element->prev = pTail;
-            pTail = element;
-        }
-        else
-        {
-            pHead = pTail = element;
-        }
-        numEntries++;
-    }
-    ELEMENT *head() const { return pHead; }
-    ELEMENT *tail() const { return pTail; }
-    void remove(ELEMENT *element)
-    {
-        ELEMENT * next = element->next;
-        ELEMENT * prev = element->prev;
-        assertex(prev || next || element == pHead);
-        if (element == pHead)
-            pHead = next;
-        if (element == pTail)
-            pTail = prev;
-        if (next)
-            next->prev = prev;
-        if (prev)
-            prev->next = next;
-        element->next = nullptr;
-        element->prev = nullptr;
-        numEntries--;
-    }
-    ELEMENT *dequeue()
-    {
-        if (!pHead)
-            return nullptr;
-        ELEMENT * element = pHead;
-        ELEMENT * next = element->next;
-        pHead = next;
-        if (element == pTail)
-            pTail = nullptr;
-        if (next)
-            next->prev = nullptr;
-        element->next = nullptr;
-        numEntries--;
-        return element;
-    }
-    ELEMENT *dequeueTail()
-    {
-        if (!pTail)
-            return nullptr;
-        ELEMENT * element = pTail;
-        ELEMENT * prev = element->prev;
-        pTail = prev;
-        if (element == pHead)
-            pHead = nullptr;
-        if (prev)
-            prev->next = nullptr;
-        element->prev = nullptr;
-        numEntries--;
-        return element;
-    }
-    void dequeue(ELEMENT *element)
-    {
-        remove(element);
-    }
-    inline unsigned ordinality() const { return numEntries; }
-};
-
-
 
 // TABLE should be SuperHashTable derivative to contain MAPPING's
 // MAPPING should be something that constructs with (KEY, ENTRY) and impl. query returning ref. to ENTRY
@@ -153,27 +54,31 @@ public:
     typedef SuperHashIteratorOf<MAPPING> CMRUIterator;
 
     CMRUCacheOf<KEY, ENTRY, MAPPING, TABLE>() : table(*this) { }
-    void add(KEY key, ENTRY &entry, bool promoteIfAlreadyPresent=true)
+    void replace(KEY key, ENTRY &entry)
     {
         if (full())
             makeSpace();
 
-        MAPPING *mapping = table.find(key);
-        if (mapping)
-        {
-            if (promoteIfAlreadyPresent)
-                promote(mapping);
-        }
-        else
-        {
-            mapping = new MAPPING(key, entry); // owns entry
-            table.replace(*mapping);
-            mruList.enqueueHead(mapping);
-        }
+        MAPPING * mapping = new MAPPING(key, entry); // owns entry
+        table.replace(*mapping);
+        mruList.enqueueHead(mapping);
+    }
+    unsigned getKeyHash(KEY & key) const
+    {
+        return table.getHashFromFindParam(&key);
     }
     ENTRY *query(KEY key, bool doPromote=true)
     {
         MAPPING *mapping = table.find(key);
+        if (!mapping) return NULL;
+
+        if (doPromote)
+            promote(mapping);
+        return &mapping->query(); // MAPPING must impl. query()
+    }
+    ENTRY *query(unsigned hashcode, KEY * key, bool doPromote=true)
+    {
+        MAPPING *mapping = table.find(hashcode, *key);
         if (!mapping) return NULL;
 
         if (doPromote)
@@ -204,11 +109,7 @@ public:
     void kill() { clear(-1); }
     void promote(MAPPING *mapping)
     {
-        if (mruList.head() != mapping)
-        {
-            mruList.dequeue(mapping); // will still be linked in table
-            mruList.enqueueHead(mapping);
-        }
+        mruList.moveToHead(mapping);
     }
     CMRUIterator *getIterator()
     {

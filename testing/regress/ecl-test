@@ -102,6 +102,7 @@ class RegressMain:
                 if len(eclfiles) :
                     #Execute multiple ECL files like RUN to generates summary results and diff report.
                     self.regress.bootstrap(engine, cluster, self.args,  eclfiles)
+                    logger.debug("self.args.pq:'%s', self.regress.maxtasks:'%s', self.regress.maxthreads:'%s" % ( self.args.pq, self.regress.maxtasks, self.regress.maxthreads))
                     if (self.args.pq in (0, 1)) or (self.regress.maxtasks == 1):
                         self.regress.runSuite(engine, cluster, self.regress.suites[engine])
                     else:
@@ -312,7 +313,8 @@ class RegressMain:
         self.config = Config(self.args.config).configObj
         if ('server' in self.args) and (self.args.server != None):
             if ':' in self.args.server:
-                ip, port = self.args.server.split(':')
+                ipAndPort =  self.args.server.split('//')[-1]     #Remove any prefix like 'http://' if the seerver address is something like tthis: 'http://192.168.1.54:30521'
+                ip, port =ipAndPort.split(':')
                 if isPositiveIntNum(port):
                     self.config.set('espSocket', port)
                 else:
@@ -368,10 +370,13 @@ class RegressMain:
         self.config.set('preAbort', self.args.preAbort)
 
         if not self.config.has('wuStatusTimeout'):
-            self.config.set('wuStatusTimeout', 30)
+            self.config.set('wuStatusTimeout', "30")
 
         if not self.config.has('wuAbortTimeout'):
-            self.config.set('wuAbortTimeout', 30)
+            self.config.set('wuAbortTimeout', "30")
+
+        if not self.config.has('usePoll'):
+            self.config.set('usePoll', "False")
 
         self.config.set('log',  self.log)
         setConfig(self.config)

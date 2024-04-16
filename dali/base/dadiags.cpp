@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#define da_decl DECL_EXPORT
 #include "platform.h"
 #include "jlib.hpp"
 #include "dacoven.hpp"
@@ -45,7 +44,7 @@ class CDaliDiagnosticsServer: public IDaliServer, public Thread
     bool stopped;
 public:
 
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CDaliDiagnosticsServer()
         : Thread("CDaliDiagnosticsServer")
@@ -59,7 +58,7 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
@@ -116,10 +115,7 @@ public:
                 StringAttr id;
                 StringBuffer buf;
                 params.read(id);
-                if (0 == stricmp(id,"threads")) {
-                    mb.append(getThreadList(buf).str());
-                }
-                else if (0 == stricmp(id, "mpqueue")) {
+                if (0 == stricmp(id, "mpqueue")) {
                     mb.append(getReceiveQueueDetails(buf).str());
                 }
                 else if (0 == stricmp(id, "locks")) { // Legacy - newer diag clients should use querySDS().getLocks() directly

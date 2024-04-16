@@ -2,6 +2,9 @@ eclwatch:
    WsSMC:
       ActivityInfoCacheSeconds: 10
       ActivityInfoCacheAutoRebuildSeconds: 120
+   WsCloud:
+      PODInfoCacheSeconds: 10
+      PODInfoCacheAutoRebuildSeconds: 120
    WsWorkunits:
       ViewTimeout: 1000
       LayoutProgram: dot/dot -Tsvg -Gordering=out
@@ -58,8 +61,8 @@ eclwatch:
          -  name: HPCCApps
             description: Generic KeyVal store for HPCC Applications
             default: true
-         Store:
          -  name: JWTAuth
             description: JWT token cache
             default: false
             maxValSize: 32768
+   ws_logaccess:

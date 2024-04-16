@@ -122,7 +122,7 @@ enum SecResourceType : int
     RT_SERVICE = 2,
     RT_FILE_SCOPE = 3,
     RT_WORKUNIT_SCOPE = 4,
-    RT_SUDOERS = 5,
+//no longer supported    RT_SUDOERS = 5,
     RT_TRIAL = 6,
     RT_VIEW_SCOPE = 7,
     RT_SCOPE_MAX = 8
@@ -229,6 +229,7 @@ enum authStatus : int
     AS_ACCOUNT_DISABLED = 6,//valid username and password/credential are supplied but the account has been disabled
     AS_ACCOUNT_EXPIRED = 7,//valid username and password/credential supplied but the account has expired
     AS_ACCOUNT_LOCKED = 8,//valid username is supplied, but the account is locked out
+    AS_ACCOUNT_ROOT_ACCESS_DENIED = 9,//valid username and password/credential supplied but the user does not have the root access to the service.
 };
 
 static const SecFeatureBit SUF_NO_FEATURES                 = 0x00;
@@ -271,7 +272,8 @@ static const SecFeatureBit SUF_Clone                       = 0x0800000000;
 static const SecFeatureBit SUF_GetDataElement              = 0x1000000000;
 static const SecFeatureBit SUF_GetDataElements             = 0x2000000000;
 static const SecFeatureBit SUF_SetData                     = 0x4000000000;
-static const SecFeatureSet SUF_ALL_FEATURES                = 0x7FFFFFFFFF; // update to include all added feature bits
+static const SecFeatureBit SUF_IsCanonicalMatch            = 0x8000000000;
+static const SecFeatureSet SUF_ALL_FEATURES                = 0xFFFFFFFFFF; // update to include all added feature bits
 
 class CDateTime;
 interface IPropertyIterator;
@@ -317,6 +319,17 @@ interface ISecUser : implements ISecObject
     virtual IPropertyTree* getDataElement(const char* xpath = ".") const = 0;
     virtual IPropertyTreeIterator* getDataElements(const char* xpath = ".") const = 0;
     virtual bool setData(IPropertyTree* data) = 0;
+    /**
+     * @brief Determine if the input value is equivalent to an instance's name.
+     *
+     * Most user names are case-insensitive. Instead of the ESP assuming this is true for all
+     * names when matching names, each implementation can enforce its own comparison rules.
+     *
+     * @param name potential alternate acceptable name for the instance
+     * @return true the input value and instance name are interchangeable 
+     * @return false the input value and instance name are not interchangeable
+     */
+    virtual bool isCanonicalMatch(const char* name) const = 0;
 };
 
 
@@ -384,7 +397,7 @@ interface ISecResourceList : extends ISecPropertyList
     virtual bool addCustomResource(const char * name, const char * config) = 0;
     virtual ISecResource * getResource(const char * feature) = 0;
     virtual ISecResource * queryResource(unsigned seq) = 0;
-    virtual int count() = 0;
+    virtual unsigned count() = 0;
     virtual const char * getName() = 0;
     virtual StringBuffer & toString(StringBuffer & s) = 0;
 };
@@ -419,7 +432,9 @@ enum secManagerType : int
     SMT_HTPasswd,
     SMT_SingleUser,
     SMT_HTPluggable,
-    SMT_JWTAuth
+    SMT_JWTAuth,
+    SMT_TestAuth,
+    SMT_Other // for use by plugins not included in the platform
 };
 
 static const SecFeatureBit SMF_NO_FEATURES                    = 0x00;
@@ -459,7 +474,7 @@ static const SecFeatureBit SMF_AuthorizeWorkUnitScope_List    = 0x0100000000;
 static const SecFeatureBit SMF_AuthorizeWorkUnitScope_Named   = 0x0200000000;
 static const SecFeatureBit SMF_GetDescription                 = 0x0400000000;
 static const SecFeatureBit SMF_GetPasswordExpirationDays      = 0x0800000000;
-static const SecFeatureBit SMF_CreateUserScopes               = 0x1000000000;
+//static const SecFeatureBit SMF_CreateUserScopes               = 0x1000000000;//feature removed in 9.x
 static const SecFeatureBit SMF_GetManagedScopeTree            = 0x2000000000;
 static const SecFeatureBit SMF_QueryDefaultPermission         = 0x4000000000;
 static const SecFeatureBit SMF_ClearPermissionsCache          = 0x8000000000;
@@ -509,7 +524,6 @@ interface ISecManager : extends ISecObject
     virtual bool authorizeWorkunitScope(ISecUser & user, ISecResourceList * resources, IEspSecureContext* secureContext = nullptr) = 0;
     virtual const char * getDescription() = 0;
     virtual unsigned getPasswordExpirationWarningDays(IEspSecureContext* secureContext = nullptr) = 0;
-    virtual bool createUserScopes(IEspSecureContext* secureContext = nullptr) = 0;
     virtual aindex_t getManagedScopeTree(SecResourceType rtype, const char * basedn, IArrayOf<ISecResource>& scopes, IEspSecureContext* secureContext = nullptr) = 0;
     virtual SecAccessFlags queryDefaultPermission(ISecUser& user, IEspSecureContext* secureContext = nullptr) = 0;
     virtual bool clearPermissionsCache(ISecUser & user, IEspSecureContext* secureContext = nullptr) = 0;

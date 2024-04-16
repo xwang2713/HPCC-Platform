@@ -33,6 +33,7 @@ using namespace cryptohelper;
 #ifndef _NO_LDAP
 #include "seclib.hpp"
 #include "secloader.hpp"
+#include "ldapsecurity.ipp"
 #include "ldapsecurity.hpp"
 
 static void ignoreSigPipe()
@@ -55,28 +56,6 @@ class CDaliLdapConnection: implements IDaliLdapConnection, public CInterface
     StringAttr              filesdefaultpassword;
     unsigned                ldapflags;
     IDigitalSignatureManager * pDSM = nullptr;
-
-    void createDefaultScopes()
-    {
-        try {
-            ISecUser* user = NULL;
-            if (ldapsecurity->addResourceEx(RT_FILE_SCOPE, *user, "file",PT_ADMINISTRATORS_ONLY, NULL))
-                PROGLOG("LDAP: Created default 'file' scope");
-            else
-                throw MakeStringException(-1, "Error adding LDAP resource 'file'");
-
-            StringBuffer userTempFileScope(queryDfsXmlBranchName(DXB_Internal));
-            if (ldapsecurity->addResourceEx(RT_FILE_SCOPE, *user, userTempFileScope.str(),PT_ADMINISTRATORS_ONLY, NULL))
-                PROGLOG("LDAP: Created default '%s' scope", userTempFileScope.str());
-            else
-                throw MakeStringException(-1, "Error adding LDAP resource '%s'",userTempFileScope.str());
-        }
-        catch (IException *e) {
-            EXCLOG(e,"LDAP createDefaultScopes");
-            throw;
-        }
-    }
-
 
 public:
     IMPLEMENT_IINTERFACE;
@@ -117,7 +96,6 @@ public:
                     EXCLOG(e,"LDAP server");
                     throw;
                 }
-                createDefaultScopes();
             }
         }
     }
@@ -127,6 +105,16 @@ public:
     {
         if (!ldapsecurity||((getLDAPflags()&DLF_ENABLED)==0))
             return SecAccess_Full;
+
+        bool filescope = key && stricmp(key,"Scope")==0;
+        bool wuscope = key && stricmp(key,"workunit")==0;
+
+        //
+        // Missing scopes get full access
+        if (!filescope && !wuscope)
+            return SecAccess_Full;
+
+
         StringBuffer username;
         StringBuffer password;
         if (udesc)
@@ -136,56 +124,58 @@ public:
         }
         else
         {
-            DBGLOG("NULL UserDescriptor in daldap.cpp getPermissions('%s')",key ? key : "NULL");
+            DBGLOG("NULL UserDescriptor in daldap.cpp getPermissions('%s')", key);
         }
 
         if (0 == username.length())
         {
             username.append(filesdefaultuser);
             decrypt(password, filesdefaultpassword);
-            OWARNLOG("Missing credentials, injecting deprecated filesdefaultuser");
+            OWARNLOG("Missing credentials, injecting deprecated filesdefaultuser for request %s %s", key, nullText(obj));
+            logNullUser(nullptr);
         }
 
         Owned<ISecUser> user = ldapsecurity->createUser(username);
         user->setAuthenticateStatus(AS_AUTHENTICATED);
 
-        bool filescope = key && stricmp(key,"Scope")==0;
-        bool wuscope = key && stricmp(key,"workunit")==0;
-
-        if (filescope || wuscope) {
-            SecAccessFlags perm = SecAccess_None;
-            unsigned start = msTick();
-            if (filescope)
-                perm=ldapsecurity->authorizeFileScope(*user, obj);
-            else if (wuscope)
-                perm=ldapsecurity->authorizeWorkunitScope(*user, obj);
-            if (perm == SecAccess_Unavailable)
-                perm = SecAccess_None;
-
-            unsigned taken = msTick()-start;
-#ifndef _DEBUG
-            if (taken>100)
-#endif
-            {
-                PROGLOG("LDAP: getPermissions(%s) scope=%s user=%s returns %d in %d ms",key?key:"NULL",obj?obj:"NULL",username.str(),perm,taken);
-            }
-            if (auditflags&DALI_LDAP_AUDIT_REPORT) {
-                StringBuffer auditstr;
-                if ((auditflags&DALI_LDAP_READ_WANTED)&&!HASREADPERMISSION(perm))
-                    auditstr.append("Lookup Access Denied");
-                else if ((auditflags&DALI_LDAP_WRITE_WANTED)&&!HASWRITEPERMISSION(perm))
-                    auditstr.append("Create Access Denied");
-                if (auditstr.length()) {
-                    auditstr.append(":\n\tProcess:\tdaserver");
-                    auditstr.appendf("\n\tUser:\t%s",username.str());
-                    auditstr.appendf("\n\tScope:\t%s\n",obj?obj:"");
-                    SYSLOG(AUDIT_TYPE_ACCESS_FAILURE,auditstr.str());
-                }
-            }
-            return perm;
+        SecAccessFlags perm = SecAccess_None;
+        unsigned start = msTick();
+        if (filescope)
+            perm = ldapsecurity->authorizeFileScope(*user, obj);
+        else if (wuscope)
+            perm = ldapsecurity->authorizeWorkunitScope(*user, obj);
+        if (perm == SecAccess_Unavailable)
+        {
+            OWARNLOG("LDAP: getPermissions(%s) Unable to get perms for scope=%s user=%s, setting 'SecAccess_None'",
+                     key, nullText(obj), username.str());
+            perm = SecAccess_None;
         }
-        return SecAccess_Full;
+        unsigned taken = msTick() - start;
+#ifndef _DEBUG
+        if (taken>100)
+#endif
+        {
+            PROGLOG("LDAP: getPermissions(%s) scope=%s user=%s returns %d in %d ms", key, nullText(obj),
+                    username.str(), perm, taken);
+        }
+        if (auditflags & DALI_LDAP_AUDIT_REPORT)
+        {
+            StringBuffer auditstr;
+            if ((auditflags & DALI_LDAP_READ_WANTED) && !HASREADPERMISSION(perm))
+                auditstr.append("Lookup Access Denied");
+            else if ((auditflags & DALI_LDAP_WRITE_WANTED) && !HASWRITEPERMISSION(perm))
+                auditstr.append("Create Access Denied");
+            if (auditstr.length())
+            {
+                auditstr.append(":\n\tProcess:\tdaserver");
+                auditstr.appendf("\n\tUser:\t%s", username.str());
+                auditstr.appendf("\n\tScope:\t%s\n", obj ? obj : "");
+                SYSLOG(AUDIT_TYPE_ACCESS_FAILURE, auditstr.str());
+            }
+        }
+        return perm;
     }
+
     bool clearPermissionsCache(IUserDescriptor *udesc)
     {
         if (!ldapsecurity || ((getLDAPflags() & DLF_ENABLED) == 0))
@@ -230,9 +220,10 @@ public:
 
         if (!authenticated)
         {
-            user->credentials().setPassword(password);
-            if (!ldapsecurity->authenticateUser(*user, &superUser) || !superUser)
+            CLdapSecManager* ldapSecMgr = dynamic_cast<CLdapSecManager*>(ldapsecurity.get());
+            if (!ldapSecMgr || !ldapSecMgr->isSuperUser(user))
             {
+                DBGLOG("LDAP: EnableScopeScans caller %s must be an LDAP HPCC Admin", username.str());
                 *err = -1;
                 return false;
             }

@@ -31,8 +31,9 @@ interface IMultiException;
 
 interface IDaftProgress
 {
-    virtual void onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize, unsigned numNodes) = 0;          // how much has been done
+    virtual void onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize, unsigned numNodes, unsigned __int64 numReads, unsigned __int64 numWrites) = 0;          // how much has been done
     virtual void setRange(unsigned __int64 sizeReadBefore, unsigned __int64 totalSize, unsigned totalNodes) = 0;          // how much has been done
+    virtual void setFileAccessCost(cost_type fileAccessCost) = 0;
 };
 
 interface IDaftCopyProgress
@@ -59,10 +60,6 @@ interface IDistributedFileSystem : public IInterface
     virtual void replicate(IDistributedFile * from, IGroup *destgroup, IPropertyTree * recovery, IRemoteConnection * recoveryConnection, IDFPartFilter *filter, IPropertyTree * options, IDaftProgress * progress , IAbortRequestCallback * abort=NULL , const char *wuid=NULL) = 0;        // create new set of copies assumes partname and dir location same as src (only nodes differ) will raise exception if nodes clash
     virtual void replicate(IFileDescriptor * fd, DaftReplicateMode mode, IPropertyTree * recovery, IRemoteConnection * recoveryConnection, IDFPartFilter *filter, IPropertyTree * options, IDaftProgress * progress , IAbortRequestCallback * abort=NULL , const char *wuid=NULL) = 0;  // create new set of copies (between copy 0 to copy 1 depending on the mode) @crc set in options to copy if crc differs @sizedate if size/date differ.
     virtual void transfer(IFileDescriptor * from, IFileDescriptor * to, IPropertyTree * recovery, IRemoteConnection * recoveryConnection, IDFPartFilter *filter, IPropertyTree * options, IDaftProgress * progress , IAbortRequestCallback * abort=NULL , const char *wuid=NULL) = 0;       // copy between external files, must have 
-
-    virtual void directory(const char * directory, IGroup * machines, IPropertyTree * options, IPropertyTree * result) = 0;                 // @recurse=false @time=true @crc=false
-    virtual void physicalCopy(const char * source, const char * target, IPropertyTree * options, IDaftCopyProgress * progress = NULL) = 0;      // options can include @recurse @copyMissing @copyExisting @preserveTimes @preserveIfNewer @verboseFull @verbose
-    virtual void physicalCopy(IPropertyTree * source, const char * target, IPropertyTree * options, IDaftCopyProgress * progress = NULL) = 0;   // property tree is same structure as result of directory
 
 //operations on a single file.
     virtual offset_t getSize(IDistributedFile * file,

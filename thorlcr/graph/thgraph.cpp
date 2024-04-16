@@ -29,6 +29,8 @@
 #include "thorsoapcall.hpp"
 #include "thorport.hpp"
 #include "roxiehelper.hpp"
+#include "hpccconfig.hpp"
+#include "jtrace.hpp"
 
 
 
@@ -471,6 +473,13 @@ __int64 CGraphElementBase::getOptInt64(const char *prop, __int64 defVal) const
     return queryXGMML().getPropInt64(path.toLowerCase().str(), def);
 }
 
+double CGraphElementBase::getOptReal(const char *prop, double defVal) const
+{
+    double def = queryJob().getOptReal(prop, defVal);
+    VStringBuffer path("hint[@name=\"%s\"]/@value", prop);
+    return queryXGMML().getPropReal(path.toLowerCase().str(), def);
+}
+
 IThorGraphDependencyIterator *CGraphElementBase::getDependsIterator() const
 {
     return new ArrayIIteratorOf<const CGraphDependencyArray, CGraphDependency, IThorGraphDependencyIterator>(dependsOn);
@@ -634,10 +643,15 @@ bool CGraphElementBase::prepareContext(size32_t parentExtractSz, const byte *par
         {
             if (prepared)
                 return true;
+
             ForEachItemIn(i, inputs)
             {
-                if (!queryInput(i)->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
-                    return false;
+                CGraphElementBase *input = queryInput(i);
+                if (input)
+                {
+                    if (!input->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
+                        return false;
+                }
             }
         }
         else
@@ -762,17 +776,22 @@ bool CGraphElementBase::prepareContext(size32_t parentExtractSz, const byte *par
             }
             if (checkDependencies && ((unsigned)-1 != whichBranch))
             {
-                if (inputs.queryItem(whichBranch))
+                CGraphElementBase *whichInput = queryInput(whichBranch);
+                if (whichInput)
                 {
-                    if (!queryInput(whichBranch)->prepareContext(parentExtractSz, parentExtract, true, false, async, connectOnly))
+                    if (!whichInput->prepareContext(parentExtractSz, parentExtract, true, false, async, connectOnly))
                         return false;
                 }
                 ForEachItemIn(i, inputs)
                 {
                     if (i != whichBranch)
                     {
-                        if (!queryInput(i)->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
-                            return false;
+                        CGraphElementBase *input = queryInput(i);
+                        if (input)
+                        {
+                            if (!input->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
+                                return false;
+                        }
                     }
                 }
             }
@@ -780,8 +799,12 @@ bool CGraphElementBase::prepareContext(size32_t parentExtractSz, const byte *par
             {
                 ForEachItemIn(i, inputs)
                 {
-                    if (!queryInput(i)->prepareContext(parentExtractSz, parentExtract, checkDependencies, false, async, connectOnly))
-                        return false;
+                    CGraphElementBase *input = queryInput(i);
+                    if (input)
+                    {
+                        if (!input->prepareContext(parentExtractSz, parentExtract, checkDependencies, false, async, connectOnly))
+                            return false;
+                    }
                 }
             }
         }
@@ -827,7 +850,7 @@ void CGraphElementBase::createActivity()
     if (activity)
         return;
     activity.setown(factory());
-    activityCodeContext.setStats(&activity->queryStats());
+    activityCodeContext.setStats(activity->queryStatsMapping());
     if (isSink())
         owner->addActiveSink(*this);
 }
@@ -1177,12 +1200,12 @@ void traceMemUsage()
 {
     StringBuffer memStatsStr;
     roxiemem::memstats(memStatsStr);
-    LOG(MCthorDetailedDebugInfo, thorJob, "Roxiemem stats: %s", memStatsStr.str());
+    LOG(MCthorDetailedDebugInfo, "Roxiemem stats: %s", memStatsStr.str());
     memsize_t heapUsage = getMapInfo("heap");
     if (heapUsage) // if 0, assumed to be unavailable
     {
         memsize_t rmtotal = roxiemem::getTotalMemoryLimit();
-        LOG(MCthorDetailedDebugInfo, thorJob, "Heap usage (excluding Roxiemem) : %" I64F "d bytes", (unsigned __int64)(heapUsage-rmtotal));
+        LOG(MCthorDetailedDebugInfo, "Heap usage (excluding Roxiemem) : %" I64F "d bytes", (unsigned __int64)(heapUsage-rmtotal));
     }
 }
 
@@ -1270,6 +1293,9 @@ void CGraphBase::deserializeCreateContexts(MemoryBuffer &mb)
 
 void CGraphBase::reset()
 {
+    if (!started)
+        return;
+
     setCompleteEx(false);
     clearProgressUpdated();
     graphCancelHandler.reset();
@@ -1386,7 +1412,7 @@ void CGraphBase::executeSubGraph(size32_t parentExtractSz, const byte *parentExt
             {
                 StringBuffer s;
                 toXML(&queryXGMML(), s, 2);
-                MLOG(MCthorDetailedDebugInfo, thorJob, "Running graph [%s] : %s", isGlobal()?"global":"local", s.str());
+                MLOG(MCthorDetailedDebugInfo, "Running graph [%s] : %s", isGlobal()?"global":"local", s.str());
             }
         }
         if (localResults)
@@ -1453,10 +1479,7 @@ void CGraphBase::doExecute(size32_t parentExtractSz, const byte *parentExtract, 
     Owned<IException> exception;
     try
     {
-        if (started)
-            reset();
-        else
-            started = true;
+        started = true;
         ++numExecuted;
         Owned<IThorActivityIterator> iter = getConnectedIterator();
         ForEach(*iter)
@@ -2053,6 +2076,7 @@ void CGraphBase::createFromXGMML(IPropertyTree *_node, CGraphBase *_owner, CGrap
 
 void CGraphBase::executeChildGraphs(size32_t parentExtractSz, const byte *parentExtract)
 {
+    started = true;
     if (sequential)
     {
         // JCSMORE - would need to re-think how this is done if these sibling child queries could be executed in parallel
@@ -2085,27 +2109,6 @@ void CGraphBase::doExecuteChild(size32_t parentExtractSz, const byte *parentExtr
     IGraphTempHandler *tempHandler = queryTempHandler(false);
     if (tempHandler)
         tempHandler->clearTemps();
-}
-
-void CGraphBase::executeChild(size32_t & retSize, void * &ret, size32_t parentExtractSz, const byte *parentExtract)
-{
-    reset();
-    doExecute(parentExtractSz, parentExtract, false);
-
-    UNIMPLEMENTED;
-
-/*
-    ForEachItemIn(idx1, elements)
-    {
-        EclGraphElement & cur = elements.item(idx1);
-        if (cur.isResult)
-        {
-            cur.extractResult(retSize, ret);
-            return;
-        }
-    }
-*/
-    throwUnexpected();
 }
 
 void CGraphBase::setResults(IThorGraphResults *results) // used by master only
@@ -2290,19 +2293,21 @@ IThorGraphResults *CGraphBase::createThorGraphResults(unsigned num)
 
 ////
 
-void CGraphTempHandler::registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters)
+CFileUsageEntry * CGraphTempHandler::registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters)
 {
     assertex(temp);
-    LOG(MCdebugProgress, thorJob, "registerTmpFile name=%s, usageCount=%d", name, usageCount);
+    LOG(MCdebugProgress, "registerTmpFile name=%s, usageCount=%d", name, usageCount);
     CriticalBlock b(crit);
     if (tmpFiles.find(name))
         throw MakeThorException(TE_FileAlreadyUsedAsTempFile, "File already used as temp file (%s)", name);
-    tmpFiles.replace(* new CFileUsageEntry(name, graphId, fileKind, usageCount));
+    CFileUsageEntry *fileEntry = new CFileUsageEntry(name, graphId, fileKind, usageCount);
+    tmpFiles.replace(*fileEntry);
+    return fileEntry;
 }
 
 void CGraphTempHandler::deregisterFile(const char *name, bool kept)
 {
-    LOG(MCdebugProgress, thorJob, "deregisterTmpFile name=%s", name);
+    LOG(MCdebugProgress, "deregisterTmpFile name=%s", name);
     CriticalBlock b(crit);
     CFileUsageEntry *fileUsage = tmpFiles.find(name);
     if (!fileUsage)
@@ -2319,9 +2324,9 @@ void CGraphTempHandler::deregisterFile(const char *name, bool kept)
         try
         {
             if (!removeTemp(name))
-                LOG(MCwarning, thorJob, "Failed to delete tmp file : %s (not found)", name);
+                LOG(MCwarning, "Failed to delete tmp file : %s (not found)", name);
         }
-        catch (IException *e) { StringBuffer s("Failed to delete tmp file : "); FLLOG(MCwarning, thorJob, e, s.append(name).str()); }
+        catch (IException *e) { StringBuffer s("Failed to delete tmp file : "); FLLOG(MCwarning, e, s.append(name).str()); }
     }
     else
         fileUsage->decUsage();
@@ -2338,14 +2343,26 @@ void CGraphTempHandler::clearTemps()
         try
         {
             if (!removeTemp(tmpname))
-                LOG(MCwarning, thorJob, "Failed to delete tmp file : %s (not found)", tmpname);
+                LOG(MCwarning, "Failed to delete tmp file : %s (not found)", tmpname);
         }
-        catch (IException *e) { StringBuffer s("Failed to delete tmp file : "); FLLOG(MCwarning, thorJob, e, s.append(tmpname).str()); }
+        catch (IException *e) { StringBuffer s("Failed to delete tmp file : "); FLLOG(MCwarning, e, s.append(tmpname).str()); }
     }
     iter.clear();
     tmpFiles.kill();
 }
 
+offset_t CGraphTempHandler::getActiveUsageSize()
+{
+    CriticalBlock b(crit);
+    Owned<IFileUsageIterator> iter = getIterator();
+    offset_t activeSpillSize = 0;
+    ForEach(*iter)
+    {
+        CFileUsageEntry &entry = iter->query();
+        activeSpillSize += entry.getSize();
+    }
+    return activeSpillSize;
+}
 /////
 
 class CGraphExecutor;
@@ -2455,7 +2472,7 @@ public:
         waitOnRunning = 0;
         stopped = false;
         factory = new CGraphExecutorFactory();
-        graphPool.setown(createThreadPool("CGraphExecutor pool", factory, &jobChannel, limit));
+        graphPool.setown(createThreadPool("CGraphExecutor pool", factory, true, &jobChannel, limit));
     }
     ~CGraphExecutor()
     {
@@ -2618,100 +2635,12 @@ public:
 };
 
 ////
-// IContextLogger
-class CThorContextLogger : implements IContextLogger, public CSimpleInterface
-{
-    unsigned traceLevel = 1;
-    StringAttr globalIdHeader;
-    StringAttr callerIdHeader;
-    StringAttr globalId;
-    StringAttr callerId;
-    StringBuffer localId;
-public:
-    IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
-
-    CThorContextLogger()
-    {
-        if (globals->hasProp("@httpGlobalIdHeader"))
-            setHttpIdHeaders(globals->queryProp("@httpGlobalIdHeader"), globals->queryProp("@httpCallerIdHeader"));
-    }
-    virtual void CTXLOGva(const char *format, va_list args) const __attribute__((format(printf,2,0)))
-    {
-        StringBuffer ss;
-        ss.valist_appendf(format, args);
-        LOG(MCdebugProgress, thorJob, "%s", ss.str());
-    }
-    virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const __attribute__((format(printf,5,0)))
-    {
-        StringBuffer ss;
-        ss.append("ERROR");
-        if (E)
-            ss.append(": ").append(E->errorCode());
-        if (file)
-            ss.appendf(": %s(%d) ", file, line);
-        if (E)
-            E->errorMessage(ss.append(": "));
-        if (format)
-            ss.append(": ").valist_appendf(format, args);
-        LOG(MCoperatorProgress, thorJob, "%s", ss.str());
-    }
-    virtual void noteStatistic(StatisticKind kind, unsigned __int64 value) const
-    {
-    }
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const
-    {
-    }
-    virtual unsigned queryTraceLevel() const
-    {
-        return traceLevel;
-    }
-    virtual void setGlobalId(const char *id, SocketEndpoint &ep, unsigned pid) override
-    {
-        globalId.set(id);
-        appendGloballyUniqueId(localId.clear());
-    }
-    virtual void setCallerId(const char *id) override
-    {
-        callerId.set(id);
-    }
-    virtual const char *queryGlobalId() const
-    {
-        return globalId.get();
-    }
-    virtual const char *queryLocalId() const
-    {
-        return localId.str();
-    }
-    virtual const char *queryCallerId() const override
-    {
-        return callerId.str();
-    }
-    virtual void setHttpIdHeaders(const char *global, const char *caller)
-    {
-        if (global && *global)
-            globalIdHeader.set(global);
-        if (caller && *caller)
-            callerIdHeader.set(caller);
-    }
-    virtual const char *queryGlobalIdHttpHeader() const
-    {
-        return globalIdHeader.str();
-    }
-    virtual const char *queryCallerIdHttpHeader() const
-    {
-        return callerIdHeader.str();
-    }
-
-};
-
-////
 
 CJobBase::CJobBase(ILoadedDllEntry *_querySo, const char *_graphName) : querySo(_querySo), graphName(_graphName)
 {
-    maxDiskUsage = diskUsage = 0;
     dirty = true;
     aborted = false;
-    globalMemoryMB = globals->getPropInt("@globalMemorySize"); // in MB
+    queryMemoryMB = 0;
     channelsPerSlave = globals->getPropInt("@channelsPerSlave", 1);
     numChannels = channelsPerSlave;
     pluginMap = new SafePluginMap(&pluginCtx, true);
@@ -2727,14 +2656,51 @@ CJobBase::CJobBase(ILoadedDllEntry *_querySo, const char *_graphName) : querySo(
     jobSlaveChannelNum.allocateN(querySlaves()); // filled when channels are added.
     for (unsigned s=0; s<querySlaves(); s++)
         jobSlaveChannelNum[s] = NotFound;
-    StringBuffer wuXML;
-    if (!getEmbeddedWorkUnitXML(querySo, wuXML))
+    Owned<ILocalWorkUnit> localWU = createLocalWorkUnit(querySo);
+    if (!localWU)
         throw MakeStringException(0, "Failed to locate workunit info in query : %s", querySo->queryName());
-    Owned<ILocalWorkUnit> localWU = createLocalWorkUnit(wuXML);
     Owned<IConstWUGraph> graph = localWU->getGraph(graphName);
-    graphXGMML.setown(graph->getXGMMLTree(false));
+    graphXGMML.setown(graph->getXGMMLTree(false, false));
     if (!graphXGMML)
         throwUnexpected();
+}
+
+void CJobBase::applyMemorySettings(const char *context)
+{
+    // NB: 'total' memory has been calculated in advance from either resource settings or from system memory.
+    VStringBuffer memoryContext("%sMemory", context);
+    unsigned totalMemoryMB = globals->getPropInt(VStringBuffer("%s/@total", memoryContext.str()));
+    dbgassertex(totalMemoryMB);
+
+    auto getWorkUnitValueFunc = [this](const char *prop, StringBuffer &result) { getWorkUnitValue(prop, result); return result.length()>0;};
+    std::unordered_map<std::string, __uint64> memorySpecifications;
+    getMemorySpecifications(memorySpecifications, globals, memoryContext, totalMemoryMB, getWorkUnitValueFunc);
+    queryMemoryMB = (unsigned)(memorySpecifications["query"] / 0x100000);
+    if (0 == queryMemoryMB)
+    {
+        unsigned totalRequirementsMB = (unsigned)(memorySpecifications["total"] / 0x100000);
+        unsigned recommendedMaxMB = (unsigned)(memorySpecifications["recommendedMaxMemory"] / 0x100000);
+        queryMemoryMB = recommendedMaxMB - totalRequirementsMB;
+    }
+
+    // a simple helper used below, to fetch bool from workunit, or the memory settings (either managerMemory or workerMemory) or legacy location
+    auto getBoolSetting = [&](const char *setting, bool defaultValue)
+    {
+        VStringBuffer attrSetting("@%s", setting);
+        return getWorkUnitValueBool(setting,
+            globals->getPropBool(VStringBuffer("%s/%s", memoryContext.str(), attrSetting.str()),
+            globals->getPropBool(attrSetting,
+            defaultValue
+                                 )));
+    };
+    bool gmemAllowHugePages = getBoolSetting("heapUseHugePages", false);
+    gmemAllowHugePages = getBoolSetting("heapMasterUseHugePages", gmemAllowHugePages);
+    bool gmemAllowTransparentHugePages = getBoolSetting("heapUseTransparentHugePages", true);
+    bool gmemRetainMemory = getBoolSetting("heapRetainMemory", false);
+    bool gmemLockMemory = getBoolSetting("heapLockMemory", false);
+    roxiemem::setTotalMemoryLimit(gmemAllowHugePages, gmemAllowTransparentHugePages, gmemRetainMemory, gmemLockMemory, ((memsize_t)queryMemoryMB) * 0x100000, 0, thorAllocSizes, NULL);
+
+    PROGLOG("Total memory = %u MB, query memory = %u MB, memory spill at = %u", totalMemoryMB, queryMemoryMB, memorySpillAtPercentage);
 }
 
 void CJobBase::init()
@@ -2752,26 +2718,36 @@ void CJobBase::init()
     forceLogGraphIdMin = (graph_id)getWorkUnitValueInt("forceLogGraphIdMin", 0);
     forceLogGraphIdMax = (graph_id)getWorkUnitValueInt("forceLogGraphIdMax", 0);
 
-    logctx.setown(new CThorContextLogger());
+    logctx.setown(new CStatsContextLogger(noStatistics));
+
+    // helpers to preserve legacy behaviour of a few 'expert' properties that could be set as attributes directly under ThorCluster
+    auto getLegacyExpertSettingBool = [this](const char *property, bool dft)
+    {
+        VStringBuffer globalProp("@%s", property);
+        return getOptBool(property, globals->getPropBool(globalProp, dft));
+    };
+    auto getLegacyExpertSettingUInt = [this](const char *property, unsigned dft)
+    {
+        VStringBuffer globalProp("@%s", property);
+        return getOptUInt(property, (unsigned)globals->getPropInt(globalProp, dft));
+    };
 
     // global setting default on, can be overridden by #option
-    timeActivities = 0 != getWorkUnitValueInt("timeActivities", globals->getPropBool("@timeActivities", true));
-    maxActivityCores = (unsigned)getWorkUnitValueInt("maxActivityCores", 0); // NB: 0 means system decides
+    timeActivities = getLegacyExpertSettingBool(THOROPT_TIME_ACTIVITIES, true);
+    maxActivityCores = getOptUInt(THOROPT_MAX_ACTIVITY_CORES, 0); // NB: 0 means system decides
     if (0 == maxActivityCores)
         maxActivityCores = getAffinityCpus();
     pausing = false;
     resumed = false;
 
-    crcChecking = 0 != getWorkUnitValueInt("THOR_ROWCRC", globals->getPropBool("@THOR_ROWCRC", false));
-    usePackedAllocator = 0 != getWorkUnitValueInt("THOR_PACKEDALLOCATOR", globals->getPropBool("@THOR_PACKEDALLOCATOR", true));
-    memorySpillAtPercentage = (unsigned)getWorkUnitValueInt("memorySpillAt", globals->getPropInt("@memorySpillAt", 80));
-    sharedMemoryLimitPercentage = (unsigned)getWorkUnitValueInt("globalMemoryLimitPC", globals->getPropInt("@sharedMemoryLimit", 90));
-    sharedMemoryMB = globalMemoryMB*sharedMemoryLimitPercentage/100;
-    failOnLeaks = getOptBool("failOnLeaks");
-    maxLfnBlockTimeMins = getOptInt(THOROPT_MAXLFN_BLOCKTIME_MINS, DEFAULT_MAXLFN_BLOCKTIME_MINS);
-    soapTraceLevel = getOptInt("soapTraceLevel", 1);
+    crcChecking = getLegacyExpertSettingBool(THOROPT_THOR_ROWCRC, false);
+    usePackedAllocator = getLegacyExpertSettingBool(THOROPT_THOR_PACKEDALLOCATOR, true);
+    memorySpillAtPercentage = getLegacyExpertSettingUInt(THOROPT_MEMORY_SPILL_AT, 80);
 
-    PROGLOG("Global memory size = %d MB, shared memory = %d%%, memory spill at = %d%%", globalMemoryMB, sharedMemoryLimitPercentage, memorySpillAtPercentage);
+    failOnLeaks = getOptBool(THOROPT_FAIL_ON_LEAKS);
+    maxLfnBlockTimeMins = getOptInt(THOROPT_MAXLFN_BLOCKTIME_MINS, DEFAULT_MAXLFN_BLOCKTIME_MINS);
+    soapTraceLevel = getOptInt(THOROPT_SOAP_TRACE_LEVEL, 1);
+
     StringBuffer tracing("maxActivityCores = ");
     if (maxActivityCores)
         tracing.append(maxActivityCores);
@@ -2802,8 +2778,7 @@ CActivityBase &CJobBase::queryChannelActivity(unsigned c, graph_id gid, activity
 
 void CJobBase::startJob()
 {
-    LOG(MCdebugProgress, thorJob, "New Graph started : %s", graphName.get());
-    ClearTempDirs();
+    LOG(MCdebugProgress, "New Graph started : %s", graphName.get());
     perfmonhook.setown(createThorMemStatsPerfMonHook(*this, getOptInt(THOROPT_MAX_KERNLOG, 3)));
     setPerformanceMonitorHook(perfmonhook);
     PrintMemoryStatusLog();
@@ -2811,14 +2786,12 @@ void CJobBase::startJob()
     unsigned keyNodeCacheMB = getWorkUnitValueInt("keyNodeCacheMB", DEFAULT_KEYNODECACHEMB * queryJobChannels());
     unsigned keyLeafCacheMB = getWorkUnitValueInt("keyLeafCacheMB", DEFAULT_KEYLEAFCACHEMB * queryJobChannels());
     unsigned keyBlobCacheMB = getWorkUnitValueInt("keyBlobCacheMB", DEFAULT_KEYBLOBCACHEMB * queryJobChannels());
-    bool legacyNodeCache = getWorkUnitValueBool("legacyNodeCache", false);
     keyNodeCacheBytes = ((memsize_t)0x100000) * keyNodeCacheMB;
     keyLeafCacheBytes = ((memsize_t)0x100000) * keyLeafCacheMB;
     keyBlobCacheBytes = ((memsize_t)0x100000) * keyBlobCacheMB;
     setNodeCacheMem(keyNodeCacheBytes);
     setLeafCacheMem(keyLeafCacheBytes);
     setBlobCacheMem(keyBlobCacheBytes);
-    setLegacyNodeCache(legacyNodeCache);
     PROGLOG("Key node caching setting: node=%u MB, leaf=%u MB, blob=%u MB", keyNodeCacheMB, keyLeafCacheMB, keyBlobCacheMB);
 
     unsigned keyFileCacheLimit = (unsigned)getWorkUnitValueInt("keyFileCacheLimit", 0);
@@ -2836,6 +2809,13 @@ void CJobBase::startJob()
         else
             IWARNLOG("Failed to capture process stacks: %s", output.str());
     }
+
+    // NB: these defaults match defaults in jfile rename retry mechanism
+    constexpr unsigned defaultNumRenameRetries = 4;
+    constexpr bool defaultManualRenameChk = true;
+    unsigned numRenameRetries = getOptInt64("numRenameRetries", getGlobalConfigSP()->getPropInt("expert/@numRenameRetries", defaultNumRenameRetries));
+    unsigned manualRenameChk = getOptBool("manualRenameChk", getGlobalConfigSP()->getPropBool("expert/@manualRenameChk", defaultManualRenameChk));
+    setRenameRetries(numRenameRetries, manualRenameChk);
 }
 
 void CJobBase::endJob()
@@ -2845,7 +2825,7 @@ void CJobBase::endJob()
 
     jobEnded = true;
     setPerformanceMonitorHook(nullptr);
-    LOG(MCdebugProgress, thorJob, "Job ended : %s", graphName.get());
+    LOG(MCdebugProgress, "Job ended : %s", graphName.get());
     clearKeyStoreCache(true);
     PrintMemoryStatusLog();
 
@@ -2883,6 +2863,7 @@ void CJobBase::endJob()
             exceptions.setown(makeMultiException());
         exceptions->append(*LINK(e));
     }
+    ClearTempDir();
     if (exceptions && exceptions->ordinality())
         throw exceptions.getClear();
 }
@@ -2929,7 +2910,13 @@ void CJobBase::addDependencies(IPropertyTree *xgmml, bool failIfMissing)
 
 bool CJobBase::queryUseCheckpoints() const
 {
-    return globals->getPropBool("@checkPointRecovery") || 0 != getWorkUnitValueInt("checkPointRecovery", 0);
+    bool configured = globals->getPropBool("@checkPointRecovery") || 0 != getWorkUnitValueInt("checkPointRecovery", 0);
+    if (configured && isContainerized())
+    {
+        WARNLOG("Containerized Thor does not support checkpoint recovery");
+        return false;
+    }
+    return configured;
 }
 
 void CJobBase::abort(IException *e)
@@ -2942,26 +2929,6 @@ void CJobBase::abort(IException *e)
     }
 }
 
-void CJobBase::increase(offset_t usage, const char *key)
-{
-    diskUsage += usage;
-    if (diskUsage > maxDiskUsage) maxDiskUsage = diskUsage;
-}
-
-void CJobBase::decrease(offset_t usage, const char *key)
-{
-    diskUsage -= usage;
-}
-
-static inline StringBuffer &getExpertOptPath(const char *opt, StringBuffer &out)
-{
-#ifdef _CONTAINERIZED
-    return out.append("expert/@").append(opt);
-#else
-    return out.append("Debug/@").append(opt);
-#endif
-}
-
 // these getX methods for property in workunit settings, then global setting, defaulting to provided 'dft' if not present
 StringBuffer &CJobBase::getOpt(const char *opt, StringBuffer &out)
 {
@@ -2969,11 +2936,7 @@ StringBuffer &CJobBase::getOpt(const char *opt, StringBuffer &out)
         return out; // probably error
     getWorkUnitValue(opt, out);
     if (0 == out.length())
-    {
-        StringBuffer gOpt;
-        getExpertOptPath(opt, gOpt);
-        globals->getProp(gOpt, out);
-    }
+        getExpertOptString(opt, out);
     return out;
 }
 
@@ -2981,27 +2944,26 @@ bool CJobBase::getOptBool(const char *opt, bool dft)
 {
     if (!opt || !*opt)
         return dft; // probably error
-    StringBuffer gOpt;
-    getExpertOptPath(opt, gOpt);    
-    return getWorkUnitValueBool(opt, globals->getPropBool(gOpt, dft));
+    return getWorkUnitValueBool(opt, getExpertOptBool(opt, dft));
 }
 
 int CJobBase::getOptInt(const char *opt, int dft)
 {
-    if (!opt || !*opt)
-        return dft; // probably error
-    StringBuffer gOpt;
-    getExpertOptPath(opt, gOpt);    
-    return (int)getWorkUnitValueInt(opt, globals->getPropInt(gOpt, dft));
+    return (int)getOptInt64(opt, dft);
 }
 
 __int64 CJobBase::getOptInt64(const char *opt, __int64 dft)
 {
     if (!opt || !*opt)
         return dft; // probably error
-    StringBuffer gOpt;
-    getExpertOptPath(opt, gOpt);    
-    return getWorkUnitValueInt(opt, globals->getPropInt64(gOpt, dft));
+    return getWorkUnitValueInt(opt, getExpertOptInt64(opt, dft));
+}
+
+double CJobBase::getOptReal(const char *opt, double dft)
+{
+    if (!opt || !*opt)
+        return dft; // probably error
+    return getWorkUnitValueReal(opt, getExpertOptReal(opt, dft));
 }
 
 IThorAllocator *CJobBase::getThorAllocator(unsigned channel)
@@ -3056,7 +3018,7 @@ mptag_t CJobChannel::deserializeMPTag(MemoryBuffer &mb)
     deserializeMPtag(mb, tag);
     if (TAG_NULL != tag)
     {
-        LOG(MCthorDetailedDebugInfo, thorJob, "deserializeMPTag: tag = %d", (int)tag);
+        LOG(MCthorDetailedDebugInfo, "deserializeMPTag: tag = %d", (int)tag);
         jobComm->flush(tag);
     }
     return tag;
@@ -3095,7 +3057,7 @@ void CJobChannel::clean()
     if (!REJECTLOG(MCthorDetailedDebugInfo))
     {
         queryRowManager()->reportMemoryUsage(false);
-        LOG(MCthorDetailedDebugInfo, thorJob, "CJobBase resetting memory manager");
+        LOG(MCthorDetailedDebugInfo, "CJobBase resetting memory manager");
     }
 
     if (graphExecutor)
@@ -3224,8 +3186,8 @@ IThorResource &queryThor()
 //
 //
 
-CActivityBase::CActivityBase(CGraphElementBase *_container, const StatisticsMapping &statsMapping)
-    : container(*_container), timeActivities(_container->queryJob().queryTimeActivities()), stats(statsMapping)
+CActivityBase::CActivityBase(CGraphElementBase *_container, const StatisticsMapping &_statsMapping)
+    : container(*_container), timeActivities(_container->queryJob().queryTimeActivities()), statsMapping(_statsMapping)
 {
     mpTag = TAG_NULL;
     abortSoon = receiving = cancelledReceive = initialized = reInit = false;

@@ -1,6 +1,8 @@
 import { BreakdownTable } from "@hpcc-js/html";
 import { config } from "./config";
 
+const maxRowCount = 64;
+
 export class PopularPatterns extends BreakdownTable {
     constructor(rows, showTitle: boolean = true) {
         super();
@@ -8,6 +10,7 @@ export class PopularPatterns extends BreakdownTable {
             this.columns(["Popular Patterns", ""]);
         }
         this
+            .fontColor("inherit")
             .theadColumnStyles([{
                 "font-size": config.secondaryFontSize + "px",
                 "text-align": "left",
@@ -24,10 +27,15 @@ export class PopularPatterns extends BreakdownTable {
                 "font-weight": "normal",
                 "text-align": "right"
             }])
-            .data(rows.map(row => [
-                row.data_pattern.trim(),
-                row.rec_count
-            ]))
+            .useCalculatedRowCount(false)
+            .rowCount(6)
+            .data(rows
+                .filter((row, idx) => idx < maxRowCount)
+                .map(row => [
+                    row.data_pattern.trim(),
+                    row.rec_count
+                ])
+            )
             ;
     }
 }

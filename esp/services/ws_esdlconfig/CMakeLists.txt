@@ -39,6 +39,7 @@ include_directories (
          ${HPCC_SOURCE_DIR}/common/environment
          ${HPCC_SOURCE_DIR}/common/dllserver
          ${HPCC_SOURCE_DIR}/system/include
+         ${HPCC_SOURCE_DIR}/system/masking/include
          ${HPCC_SOURCE_DIR}/system/jlib
          ${HPCC_SOURCE_DIR}/system/security/shared
          ${HPCC_SOURCE_DIR}/system/security/securesocket
@@ -49,18 +50,20 @@ include_directories (
          ${HPCC_SOURCE_DIR}/rtl/include
          ${HPCC_SOURCE_DIR}/esp/platform
          ${HPCC_SOURCE_DIR}/esp/clients
+         ${HPCC_SOURCE_DIR}/esp/clients/wsecl
          ${HPCC_SOURCE_DIR}/esp/bindings
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp
          ${HPCC_SOURCE_DIR}/esp/bindings/http/platform
          ${HPCC_SOURCE_DIR}/esp/smc/SMCLib
          ${HPCC_SOURCE_DIR}/esp/services/esdl_svc_engine
          ${HPCC_SOURCE_DIR}/esp/esdllib
+         ${HPCC_SOURCE_DIR}/esp/esdlscriptlib
          ${HPCC_SOURCE_DIR}/esp/logging/logginglib
          ${HPCC_SOURCE_DIR}/esp/logging/loggingmanager
          ${HPCC_SOURCE_DIR}/common/thorhelper
     )
 
-ADD_DEFINITIONS( -D_USRDLL )
+ADD_DEFINITIONS( -D_USRDLL -DWsESDLConfig_API_LOCAL -DESP_SERVICE_WsESDLConfig)
 
 HPCC_ADD_LIBRARY( ws_esdlconfig SHARED ${SRCS} )
 install ( TARGETS ws_esdlconfig RUNTIME DESTINATION bin LIBRARY DESTINATION lib )
@@ -71,6 +74,7 @@ target_link_libraries ( ws_esdlconfig
          SMCLib
          esdl_svc_engine
          dalibase
+         ${COMMON_ESP_SERVICE_LIBS}
     )
 
 if (NOT CONTAINERIZED)

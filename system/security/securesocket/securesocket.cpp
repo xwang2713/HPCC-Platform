@@ -40,6 +40,7 @@
 #include <signal.h>
 
 //openssl
+#include <opensslcommon.hpp>
 #include <openssl/rsa.h>
 #include <openssl/crypto.h>
 #ifndef _WIN32
@@ -57,21 +58,20 @@
 #include <openssl/err.h>
 #include <openssl/conf.h>
 #include <openssl/x509v3.h>
+#include <openssl/bn.h>
+#include <openssl/x509.h>
 
 #include "jsmartsock.ipp"
+#include "cryptocommon.hpp"
 #include "securesocket.hpp"
 
-static JSocketStatistics *SSTATS;
+using namespace cryptohelper;
 
-bool accept_selfsigned = false;
+static JSocketStatistics *SSTATS;
 
 #define CHK_NULL(x) if((x)==NULL) exit(1)
 #define CHK_ERR(err, s) if((err)==-1){perror(s);exit(1);}
 #define CHK_SSL(err) if((err) ==-1){ERR_print_errors_fp(stderr); exit(2);}
-
-#define THROWSECURESOCKETEXCEPTION(err) \
-    throw MakeStringException(-1, "SecureSocket Exception Raised in: %s, line %d - %s", sanitizeSourceFile(__FILE__), __LINE__, err);
-
 
 static int pem_passwd_cb(char* buf, int size, int rwflag, void* password)
 {
@@ -90,6 +90,13 @@ static void readBio(BIO* bio, StringBuffer& buf)
         buf.append(len, readbuf);
     }
 }
+
+
+interface ISecureSocketContextCallback : implements IInterface
+{
+    virtual unsigned getVersion() = 0; // Check the version of the context to see if the SSL context needs to be recreated
+    virtual SSL * createActiveSSL() = 0; // Must be called after getVersion()
+};
 
 //Use a namespace to prevent clashes with a class of the same name in jhtree
 namespace securesocket
@@ -130,16 +137,28 @@ public:
 class CSecureSocket : implements ISecureSocket, public CInterface
 {
 private:
+    struct ScopedNonBlockingMode
+    {
+        CSecureSocket *socket = nullptr;
+        bool prevMode = false;
+        void init(CSecureSocket *_socket) { socket = _socket; prevMode = socket->set_nonblock(true); }
+        ~ScopedNonBlockingMode() { if (socket) socket->set_nonblock(prevMode); }
+    };
+
     SSL*        m_ssl;
+    Linked<ISecureSocketContextCallback> contextCallback;
     Owned<ISocket> m_socket;
+    bool        nonBlocking;
     bool        m_verify;
     bool        m_address_match;
     CStringSet* m_peers;
     int         m_loglevel;
     bool        m_isSecure;
+    StringBuffer m_fqdn;
     size32_t    nextblocksize = 0;
     unsigned    blockflags = BF_ASYNC_TRANSFER;
     unsigned    blocktimeoutms = WAIT_FOREVER;
+    unsigned    contextVersion;
 #ifdef USERECVSEM
     static Semaphore receiveblocksem;
     bool             receiveblocksemowned; // owned by this socket
@@ -151,8 +170,7 @@ private:
 public:
     IMPLEMENT_IINTERFACE;
 
-    CSecureSocket(ISocket* sock, SSL_CTX* ctx, bool verify = false, bool addres_match = false, CStringSet* m_peers = NULL, int loglevel=SSLogNormal);
-    CSecureSocket(int sockfd, SSL_CTX* ctx, bool verify = false, bool addres_match = false, CStringSet* m_peers = NULL, int loglevel=SSLogNormal);
+    CSecureSocket(ISocket* sock, int sockfd, ISecureSocketContextCallback * callback, bool verify = false, bool addres_match = false, CStringSet* m_peers = NULL, int loglevel=SSLogNormal, const char *fqdn = nullptr);
     ~CSecureSocket();
 
     virtual int secure_accept(int logLevel);
@@ -163,9 +181,24 @@ public:
     virtual void read(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read,unsigned timeoutsecs);
     virtual void readtms(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeoutms);
     virtual size32_t write(void const* buf, size32_t size);
-    virtual size32_t writetms(void const* buf, size32_t size, unsigned timeoutms=WAIT_FOREVER);
+    virtual size32_t writetms(void const* buf, size32_t minSize, size32_t size, unsigned timeoutms=WAIT_FOREVER);
 
-    void readTimeout(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeout, bool useSeconds);
+    void checkForUpdatedContext()
+    {
+        //Check if a new ssl context should be created.
+        //No need for a critical section because the socket functions are never accessed by multiple threads at the same time
+        //It is possible that createActiveSSL() may be for a later version - but that will only mean that the same context
+        //is recreated when the version number is seen to have changed.
+        unsigned activeVersion = contextCallback->getVersion();
+        if (activeVersion != contextVersion)
+        {
+            DBGLOG("CSecureSocket: Updating secure socket context from version %u to %u", contextVersion, activeVersion);
+            contextVersion = activeVersion;
+            SSL_free(m_ssl);
+            m_ssl = contextCallback->createActiveSSL();
+        }
+    }
+
 
     virtual StringBuffer& get_ssl_version(StringBuffer& ver)
     {
@@ -176,14 +209,14 @@ public:
     //The following are the functions from ISocket that haven't been implemented.
 
 
-    virtual void   read(void* buf, size32_t size)
+    virtual void read(void* buf, size32_t size)
     {
         size32_t size_read;
         // MCK - this was:
         // readTimeout(buf, size, size, size_read, 0, false);
         // but that is essentially a non-blocking read() and we want a blocking read() ...
         // read() is always expecting size bytes so min_size should be size
-        readTimeout(buf, size, size, size_read, WAIT_FOREVER, false);
+        readtms(buf, size, size, size_read, WAIT_FOREVER);
     }
 
     virtual size32_t get_max_send_size()
@@ -213,7 +246,13 @@ public:
     //
     virtual bool set_nonblock(bool on) // returns old state
     {
-        throw MakeStringException(-1, "CSecureSocket::set_nonblock: not implemented");
+        if (on == nonBlocking)
+            return nonBlocking;
+        if (on == m_socket->set_nonblock(on)) // this call should return opposite state, if it doesn't it failed
+            return nonBlocking;
+
+        nonBlocking = on;
+        return !nonBlocking; // previous state
     }
 
     // enable 'nagling' - small packet coalescing (implies delayed transmission)
@@ -246,6 +285,12 @@ public:
         m_socket->shutdown(mode);
     }
 
+    // Same as shutdown, but never throws an exception (to call from closedown destructors)
+    virtual void  shutdownNoThrow(unsigned mode)
+    {
+        m_socket->shutdownNoThrow(mode);
+    }
+
     // Get local name of accepted (or connected) socket and returns port
     virtual int name(char *name,size32_t namemax)
     {
@@ -274,6 +319,11 @@ public:
     virtual SocketEndpoint &getEndpoint(SocketEndpoint &ep) const override
     {
         return m_socket->getEndpoint(ep);
+    }
+
+    virtual unsigned __int64 getStatistic(StatisticKind kind) const override
+    {
+        return m_socket->getStatistic(kind);
     }
 
     //
@@ -449,10 +499,14 @@ Semaphore CSecureSocket::receiveblocksem(2);
 /**************************************************************************
  *  CSecureSocket -- secure socket layer implementation using openssl     *
  **************************************************************************/
-CSecureSocket::CSecureSocket(ISocket* sock, SSL_CTX* ctx, bool verify, bool address_match, CStringSet* peers, int loglevel)
+CSecureSocket::CSecureSocket(ISocket* sock, int sockfd, ISecureSocketContextCallback * callback, bool verify, bool address_match, CStringSet* peers, int loglevel, const char *fqdn)
+    : contextCallback(callback)
 {
+    if (sock)
+        sockfd = sock->OShandle();
     m_socket.setown(sock);
-    m_ssl = SSL_new(ctx);
+    contextVersion = callback->getVersion();
+    m_ssl = callback->createActiveSSL();
 
     m_verify = verify;
     m_address_match = address_match;
@@ -460,31 +514,26 @@ CSecureSocket::CSecureSocket(ISocket* sock, SSL_CTX* ctx, bool verify, bool addr
     m_loglevel = loglevel;
     m_isSecure = false;
 
-    if(m_ssl == NULL)
+    nonBlocking = false;
+#if defined(O_NONBLOCK) 
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (-1 != flags)
+        nonBlocking = 0 != (flags & O_NONBLOCK);
+#elif defined(_WIN32)
+    u_long flags;
+    if (ioctlsocket(sockfd, FIONBIO, &flags)==0)
     {
-        throw MakeStringException(-1, "Can't create ssl");
+        if (flags)
+            nonBlocking = true;
     }
-
-    // there is no MSG_NOSIGNAL or SO_NOSIGPIPE for SSL_write() ...
-#ifndef _WIN32
-    signal(SIGPIPE, SIG_IGN);
+#else
+    int flags;
+    if (ioctl(sock, FIONBIO, &flags)==0)
+    {
+        if (flags)
+            nonBlocking = true;
+    }
 #endif
-
-    SSL_set_fd(m_ssl, sock->OShandle());
-}
-
-CSecureSocket::CSecureSocket(int sockfd, SSL_CTX* ctx, bool verify, bool address_match, CStringSet* peers, int loglevel)
-{
-    //m_socket.setown(sock);
-    //m_socket.setown(ISocket::attach(sockfd));
-    m_ssl = SSL_new(ctx);
-
-    m_verify = verify;
-    m_address_match = address_match;
-    m_peers = peers;;
-    m_loglevel = loglevel;
-    m_isSecure = false;
-
     if(m_ssl == NULL)
     {
         throw MakeStringException(-1, "Can't create ssl");
@@ -496,6 +545,9 @@ CSecureSocket::CSecureSocket(int sockfd, SSL_CTX* ctx, bool verify, bool address
 #endif
 
     SSL_set_fd(m_ssl, sockfd);
+
+    if (fqdn)
+        m_fqdn.set(fqdn);
 }
 
 CSecureSocket::~CSecureSocket()
@@ -588,21 +640,11 @@ StringBuffer& CSecureSocket::get_cn(X509* cert, StringBuffer& cn)
 
 bool CSecureSocket::verify_cert(X509* cert)
 {
-    DBGLOG ("peer's certificate:\n");
-
     char *s, oneline[1024];
 
     s = X509_NAME_oneline (X509_get_subject_name (cert), oneline, 1024);
-    if(s != NULL)
-    {
-        DBGLOG ("\t subject: %s", oneline);
-    }
 
     s = X509_NAME_oneline (X509_get_issuer_name  (cert), oneline, 1024);
-    if(s != NULL)
-    {
-        DBGLOG ("\t issuer: %s", oneline);
-    }
 
     StringBuffer cn;
     get_cn(cert, cn);
@@ -615,10 +657,10 @@ bool CSecureSocket::verify_cert(X509* cert)
         SocketEndpoint ep;
         m_socket->getPeerEndpoint(ep);
         StringBuffer iptxt;
-        ep.getIpText(iptxt);
+        ep.getHostText(iptxt);
         SocketEndpoint cnep(cn.str());
         StringBuffer cniptxt;
-        cnep.getIpText(cniptxt);
+        cnep.getHostText(cniptxt);
         DBGLOG("peer ip=%s, certificate ip=%s", iptxt.str(), cniptxt.str());
         if(!(cniptxt.length() > 0 && stricmp(iptxt.str(), cniptxt.str()) == 0))
         {
@@ -628,10 +670,7 @@ bool CSecureSocket::verify_cert(X509* cert)
     }
     
     if (m_peers->contains("anyone") || m_peers->contains(cn.str()))
-    {
-        DBGLOG("%s among trusted peers", cn.str());
         return true;
-    }
     else
     {
         DBGLOG("%s not among trusted peers, verification failed", cn.str());
@@ -641,6 +680,7 @@ bool CSecureSocket::verify_cert(X509* cert)
 
 int CSecureSocket::secure_accept(int logLevel)
 {
+    checkForUpdatedContext();
     int err;
     err = SSL_accept(m_ssl);
     if(err == 0)
@@ -651,19 +691,40 @@ int CSecureSocket::secure_accept(int logLevel)
         // which can happen with port scan / VIP ...
         // NOTE: ret could also be SSL_ERROR_ZERO_RETURN if client closed
         // gracefully after ssl neg initiated ...
-        if ( (logLevel >= SSLogNormal) || (ret != SSL_ERROR_SYSCALL) )
+        if ( (logLevel > SSLogNormal) || (ret != SSL_ERROR_SYSCALL) )
         {
             char errbuf[512];
             ERR_error_string_n(ERR_get_error(), errbuf, 512);
             DBGLOG("SSL_accept returned 0, error - %s", errbuf);
         }
+        if (ret == SSL_ERROR_SYSCALL)
+            return PORT_CHECK_SSL_ACCEPT_ERROR;
         return -1;
     }
     else if(err < 0)
     {
         int ret = SSL_get_error(m_ssl, err);
+        unsigned long errnum = ERR_get_error();
+        // Since err < 0 we call ERR_get_error() for additional info
+        // if ret == SSL_ERROR_SYSCALL and ERR_get_error() == 0 then
+        // its most likely a port scan / load balancer check so do not log
+        // with SSL 1.1.1e and 3.0 if ret == SSL_ERROR_SSL and ERR_get_error reason is EOF
+        // its also most likely a port scan / load balancer check so do not log
+        int srtn = err;
+        if ( (ret == SSL_ERROR_SYSCALL) && (errnum == 0) )
+            srtn = PORT_CHECK_SSL_ACCEPT_ERROR;
+        // if ctx option SSL_OP_IGNORE_UNEXPECTED_EOF is set then will get SSL_ERROR_ZERO_RETURN ...
+        if ( (ret == SSL_ERROR_ZERO_RETURN) && (errnum == 0) )
+            srtn = PORT_CHECK_SSL_ACCEPT_ERROR;
+        // otherwise will get SSL_ERROR_SSL and unexpected eof ...
+#if defined(SSL_R_UNEXPECTED_EOF_WHILE_READING)
+        if ( (ret == SSL_ERROR_SSL) && (ERR_GET_REASON(errnum) == SSL_R_UNEXPECTED_EOF_WHILE_READING) )
+            srtn = PORT_CHECK_SSL_ACCEPT_ERROR;
+#endif
+        if ((logLevel <= SSLogNormal) && (srtn == PORT_CHECK_SSL_ACCEPT_ERROR))
+            return srtn;
         char errbuf[512];
-        ERR_error_string_n(ERR_get_error(), errbuf, 512);
+        ERR_error_string_n(errnum, errbuf, 512);
         errbuf[511] = '\0';
         DBGLOG("SSL_accept returned %d, SSL_get_error=%d, error - %s", err, ret, errbuf);
         if(strstr(errbuf, "error:1408F455:") != NULL)
@@ -671,7 +732,7 @@ int CSecureSocket::secure_accept(int logLevel)
             DBGLOG("Unrecoverable SSL library error.");
             _exit(0);
         }
-        return err;
+        return srtn;
     }
 
     if (logLevel > SSLogNormal)
@@ -701,6 +762,12 @@ int CSecureSocket::secure_accept(int logLevel)
 
 int CSecureSocket::secure_connect(int logLevel)
 {
+    if (m_fqdn.length() > 0)
+    {
+        if (!streq(m_fqdn.str(), "."))
+            SSL_set_tlsext_host_name(m_ssl, m_fqdn.str());
+    }
+
     int err = SSL_connect (m_ssl);                     
     if(err <= 0)
     {
@@ -762,132 +829,128 @@ int CSecureSocket::wait_read(unsigned timeoutms)
     return m_socket->wait_read(timeoutms);
 }
 
-inline unsigned socketTime(bool useSeconds)
+void CSecureSocket::readtms(void* buf, size32_t min_size, size32_t max_size, size32_t &sizeRead, unsigned timeoutMs)
 {
-    if (useSeconds)
+    sizeRead = 0;
+    CCycleTimer timer;
+
+    ScopedNonBlockingMode scopedNonBlockingMode;
+    if (WAIT_FOREVER != timeoutMs)
+        scopedNonBlockingMode.init(this);
+
+    int ssl_err = SSL_ERROR_WANT_READ; // initially call will be wait_read
+    while (true)
     {
-        time_t timenow;
-        return (unsigned) time(&timenow);
-    }
-    return msTick();
-}
-
-inline unsigned socketTimeRemaining(bool useSeconds, unsigned start, unsigned timeout)
-{
-    unsigned elapsed = socketTime(useSeconds) - start;
-    if (elapsed < timeout)
-    {
-        unsigned timeleft = timeout - elapsed;
-        if (useSeconds)
-            timeleft *= 1000;
-        return timeleft;
-    }
-    return 0;
-}
-
-void CSecureSocket::readTimeout(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeout, bool useSeconds)
-{
-    size_read = 0;
-    unsigned start;
-    unsigned timeleft;
-
-    if (timeout != WAIT_FOREVER) {
-        start = socketTime(useSeconds);
-        timeleft = timeout;
-        if (useSeconds)
-            timeleft *= 1000;
-    }
-
-    do {
         int rc;
-        if (timeout != WAIT_FOREVER) {
-            rc = wait_read(timeleft);
-            if (rc < 0) {
-                THROWSECURESOCKETEXCEPTION("wait_read error"); 
-            }
-            if (rc == 0) {
-                THROWSECURESOCKETEXCEPTION("timeout expired"); 
-            }
-            timeleft = socketTimeRemaining(useSeconds, start, timeout);
-        }
+        unsigned remainingMs = timer.remainingMs(timeoutMs);
+        if (ssl_err == SSL_ERROR_WANT_READ)
+            rc = wait_read(remainingMs);
+        else // SSL_ERROR_WANT_WRITE
+            rc = wait_write(remainingMs);
+        if (rc < 0)
+            THROWJSOCKEXCEPTION_MSG(SOCKETERRNO(), "wait_read error");
+        if (rc == 0)
+            THROWJSOCKEXCEPTION_MSG(JSOCKERR_timeout_expired, "timeout expired");
 
         ERR_clear_error();
-        rc = SSL_read(m_ssl, (char*)buf + size_read, max_size - size_read);
+        rc = SSL_read(m_ssl, (char*)buf + sizeRead, max_size - sizeRead);
+
         if (rc > 0)
         {
-            size_read += rc;
+            sizeRead += rc;
+            if (sizeRead >= min_size)
+                break;
+        }
+        else if (0 == rc)
+        {
+            if (sizeRead >= min_size)
+                break; // suppress graceful close exception if have already read minimum
+            THROWJSOCKEXCEPTION(JSOCKERR_graceful_close);
         }
         else
         {
-            int err = SSL_get_error(m_ssl, rc);
-            char errbuf[512];
-            ERR_error_string_n(err, errbuf, 512);
-            ERR_clear_error();
-            VStringBuffer errmsg("SSL_read error %d - %s", err, errbuf);
-            if (m_loglevel >= SSLogMax)
-                DBGLOG("Warning: %s", errmsg.str());
-            if (min_size > 0)
-                throw createJSocketException(JSOCKERR_graceful_close, errmsg);
+            ssl_err = SSL_get_error(m_ssl, rc);
+            if (nonBlocking && (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE)) // NB: SSL_read can cause SSL_ERROR_WANT_WRITE
+            {
+                if (0 == min_size) // if here, implies nothing read, since it would have exited already in (rc > 0) block.
+                    break;
+            }
+            else
+            {
+                char errbuf[512];
+                ERR_error_string_n(ssl_err, errbuf, 512);
+                ERR_clear_error();
+                VStringBuffer errmsg("SSL_read error %d - %s", ssl_err, errbuf);
+                if (m_loglevel >= SSLogMax)
+                    DBGLOG("Warning: %s", errmsg.str());
+                THROWJSOCKEXCEPTION_MSG(ssl_err, errmsg);
+            }
+            // here only if nonBlocking && WANT_READ or WANT_WRITE
+            // since we do not have size_min yet, loop around and wait for more.
         }
-    } while (size_read < min_size);
-}
-
-
-void CSecureSocket::readtms(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read, unsigned timeoutms)
-{
-    readTimeout(buf, min_size, max_size, size_read, timeoutms, false);
+    }
 }
 
 void CSecureSocket::read(void* buf, size32_t min_size, size32_t max_size, size32_t &size_read,unsigned timeoutsecs)
 {
-    readTimeout(buf, min_size, max_size, size_read, timeoutsecs, true);
+    unsigned timeoutMs = (timeoutsecs==WAIT_FOREVER) ? WAIT_FOREVER : (timeoutsecs * 1000);
+    readtms(buf, min_size, max_size, size_read, timeoutMs);
+}
+
+size32_t CSecureSocket::writetms(void const* buf, size32_t minSize, size32_t size, unsigned timeoutMs)
+{
+    if (size == 0)
+        return 0;
+
+    CCycleTimer timer;
+
+    ScopedNonBlockingMode scopedNonBlockingMode;
+    if (WAIT_FOREVER != timeoutMs)
+        scopedNonBlockingMode.init(this);
+
+    while (true)
+    {
+        int rc = SSL_write(m_ssl, buf, size);
+        if (rc > 0)
+        {
+            // NB: minSize not used here, because not using SSL_MODE_ENABLE_PARTIAL_WRITE
+            dbgassertex(size == rc);
+            return rc;
+        }
+        int ssl_err = SSL_get_error(m_ssl, rc);
+        if (nonBlocking && (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE)) // NB: SSL_write can cause SSL_ERROR_WANT_READ
+        {
+            unsigned remainingMs = timer.remainingMs(timeoutMs);
+            if (ssl_err == SSL_ERROR_WANT_READ)
+                rc = wait_read(remainingMs);
+            else // SSL_ERROR_WANT_WRITE
+                rc = wait_write(remainingMs);
+            if (rc < 0)
+            {
+                const char *msg = (ssl_err == SSL_ERROR_WANT_READ) ? "wait_read error" : "wait_write error";
+                THROWJSOCKEXCEPTION_MSG(SOCKETERRNO(), msg);
+            }
+            if (rc == 0)
+                THROWJSOCKEXCEPTION_MSG(JSOCKERR_timeout_expired, "timeout expired");
+        }
+        else
+        {
+            char errbuf[512];
+            ERR_error_string_n(ssl_err, errbuf, 512);
+            ERR_clear_error();
+            VStringBuffer errmsg("SSL_write error %d - %s", ssl_err, errbuf);
+            if (ssl_err == SSL_ERROR_ZERO_RETURN)
+                THROWJSOCKEXCEPTION(JSOCKERR_graceful_close);
+            else
+                THROWJSOCKEXCEPTION_MSG(JSOCKERR_broken_pipe, errmsg);
+        }
+    }
+    throwUnexpected(); // should never get here
 }
 
 size32_t CSecureSocket::write(void const* buf, size32_t size)
 {
-    if (size == 0)
-        return 0;
-    int numwritten = SSL_write(m_ssl, buf, size);
-    // 0 is an error
-    if (numwritten <= 0)
-    {
-        int err = SSL_get_error(m_ssl, numwritten);
-        // SSL_ERROR_WANT_READ/WRITE errors and retry should not be required
-        // b/c of blocking bio and SSL_MODE_ENABLE_PARTIAL_WRITE is not set
-        char errbuf[512];
-        ERR_error_string_n(err, errbuf, 512);
-        ERR_clear_error();
-        VStringBuffer errmsg("SSL_write error %d - %s", err, errbuf);
-        if (err == SSL_ERROR_ZERO_RETURN)
-            throw createJSocketException(JSOCKERR_graceful_close, errmsg);
-        else
-            throw createJSocketException(JSOCKERR_broken_pipe, errmsg);
-    }
-    return numwritten;
-}
-
-size32_t CSecureSocket::writetms(void const* buf, size32_t size, unsigned timeoutms)
-{
-    // timeoutms not implemented yet ...
-    if (size == 0)
-        return 0;
-    int numwritten = SSL_write(m_ssl, buf, size);
-    // 0 is an error
-    if (numwritten <= 0)
-    {
-        int err = SSL_get_error(m_ssl, numwritten);
-        // SSL_ERROR_WANT_READ/WRITE errors and retry should not be required
-        // b/c of blocking bio and SSL_MODE_ENABLE_PARTIAL_WRITE is not set
-        char errbuf[512];
-        ERR_error_string_n(err, errbuf, 512);
-        ERR_clear_error();
-        VStringBuffer errmsg("SSL_write (tms) error %d - %s", err, errbuf);
-        if (err == SSL_ERROR_ZERO_RETURN)
-            throw createJSocketException(JSOCKERR_graceful_close, errmsg);
-        else
-            throw createJSocketException(JSOCKERR_broken_pipe, errmsg);
-    }
-    return numwritten;
+    return writetms(buf, size, size, WAIT_FOREVER);
 }
 
 // ----------------------------
@@ -1072,7 +1135,7 @@ bool CSecureSocket::send_block(const void *blk, size32_t sz)
 
 // ----------------------------
 
-int verify_callback(int ok, X509_STORE_CTX *store)
+int verify_callback(int ok, X509_STORE_CTX *store, bool accept_selfsigned)
 {
     if(!ok)
     {
@@ -1094,6 +1157,16 @@ int verify_callback(int ok, X509_STORE_CTX *store)
     return ok;
 }
 
+int verify_callback_allow_selfSigned(int ok, X509_STORE_CTX *store)
+{
+    return verify_callback(ok, store, true);
+}
+
+int verify_callback_reject_selfSigned(int ok, X509_STORE_CTX *store)
+{
+    return verify_callback(ok, store, false);
+}
+
 const char* strtok__(const char* s, const char* d, StringBuffer& tok)
 {
     if(!s || !*s || !d || !*d)
@@ -1111,233 +1184,349 @@ const char* strtok__(const char* s, const char* d, StringBuffer& tok)
     return s;
 }
 
-class CSecureSocketContext : implements ISecureSocketContext, public CInterface
+static bool usePrivateKeyPEMBuffer(SSL_CTX *ctx, const char *privKeyBuf, int privKeyLen=-1)
+{
+    // single RSA key in buffer
+
+    OwnedEVPBio cbio(BIO_new_mem_buf(privKeyBuf, privKeyLen));
+    if (!cbio)
+        return false;
+
+    OwnedEVPRSA rsa(PEM_read_bio_RSAPrivateKey(cbio, NULL, 0, NULL));
+    if (!rsa)
+        return false;
+
+    if (!SSL_CTX_use_RSAPrivateKey(ctx, rsa))
+        return false;
+
+    return true;
+}
+
+static bool useCertificateChainPEMBuffer(SSL_CTX *ctx, const char *certBuf, int certLen=-1)
+{
+    // this routine based on code originally from:
+    // https://stackoverflow.com/questions/3810058/read-certificate-files-from-memory-instead-of-a-file-using-openssl
+
+    // can have multiple certs in buffer
+
+    OwnedEVPBio cbio(BIO_new_mem_buf(certBuf, certLen));
+    if (!cbio)
+        return false;
+
+    OwnedX509StkPtr infoStk(PEM_X509_INFO_read_bio(cbio, NULL, NULL, NULL));
+    if (!infoStk)
+        return false;
+
+    bool first = true;
+    X509_INFO *infoVal;
+    for (int i=0; i<sk_X509_INFO_num(infoStk); i++)
+    {
+        infoVal = sk_X509_INFO_value(infoStk, i);
+        if (infoVal->x509)
+        {
+            // First cert is server/main cert. Remaining, if any, are intermediate certs.
+            if (first)
+            {
+                first = false;
+
+                // Set server certificate. Note that this operation increments the
+                // reference count, which means that it is okay for cleanup to free it.
+                if (!SSL_CTX_use_certificate(ctx, infoVal->x509))
+                    return false;
+
+                if (ERR_peek_last_error() != 0)
+                    return false;
+
+                // Get ready to store intermediate certs, if any.
+                SSL_CTX_clear_chain_certs(ctx);
+            }
+            else
+            {
+                // Add intermediate cert to chain.
+                if (!SSL_CTX_add0_chain_cert(ctx, infoVal->x509))
+                    return false;
+
+                // Above function doesn't increment cert reference count. NULL the
+                // reference to it in order to prevent it from being freed during cleanup.
+                infoVal->x509 = NULL;
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool setVerifyCertsPEMBuffer(SSL_CTX *ctx, const char *caCertBuf, int caCertLen=-1)
+{
+    // this routine based on code originally from:
+    // https://stackoverflow.com/questions/5052563/c-openssl-use-root-ca-from-buffer-rather-than-file-ssl-ctx-load-verify-locat
+
+    // can have multiple certs in buffer
+
+    OwnedEVPBio cbio(BIO_new_mem_buf(caCertBuf, caCertLen));
+    if (!cbio)
+        return false;
+
+    OwnedX509Store store(X509_STORE_new());
+    if (!store)
+        return false;
+
+    OwnedX509StkPtr infoStk(PEM_X509_INFO_read_bio(cbio, NULL, NULL, NULL));
+    if (!infoStk)
+        return false;
+
+    X509_INFO *infoVal;
+    for (int i = 0; i < sk_X509_INFO_num(infoStk); i++)
+    {
+        infoVal = sk_X509_INFO_value(infoStk, i);
+        if (infoVal->x509)
+        {
+            if (!X509_STORE_add_cert(store, infoVal->x509))
+                return false;
+
+            infoVal->x509 = NULL;
+        }
+    }
+
+    SSL_CTX_set_cert_store(ctx, store.getClear());
+
+    return true;
+}
+
+class CSecureSocketContext : implements ISecureSocketContext, implements ISecureSocketContextCallback, public CInterface
 {
 private:
-    SSL_CTX*    m_ctx;
+    SecureSocketType sockettype;
+    OwnedSSLCTX m_ctx;
 #if (OPENSSL_VERSION_NUMBER > 0x00909000L) 
-    const SSL_METHOD* m_meth;
+    const SSL_METHOD* m_meth = nullptr;
 #else
     SSL_METHOD* m_meth;
 #endif 
 
-    bool m_verify;
-    bool m_address_match;
+    bool m_verify = false;
+    bool m_address_match = false;
     Owned<CStringSet> m_peers;
     StringAttr password;
+    CriticalSection cs;
+    Linked<const ISyncedPropertyTree> syncedConfig;
+    unsigned configVersion = 0;
 
     void setSessionIdContext()
     {
         SSL_CTX_set_session_id_context(m_ctx, (const unsigned char*)"hpccsystems", 11);
     }
 
-public:
-    IMPLEMENT_IINTERFACE;
-    CSecureSocketContext(SecureSocketType sockettype)
+    void initContext(SecureSocketType sockettype)
     {
-        m_verify = false;
-        m_address_match = false;
-
         if(sockettype == ClientSocket)
             m_meth = SSLv23_client_method();
         else
             m_meth = SSLv23_server_method();
 
-        m_ctx = SSL_CTX_new(m_meth);
+        m_ctx.setown(SSL_CTX_new(m_meth));
 
         if(!m_ctx)
-        {
-            throw MakeStringException(-1, "ctx can't be created");
-        }
+            throw makeStringException(-1, "ctx can't be created");
 
         if (sockettype == ServerSocket)
             setSessionIdContext();
-
-        SSL_CTX_set_mode(m_ctx, SSL_CTX_get_mode(m_ctx) | SSL_MODE_AUTO_RETRY);
     }
 
-    CSecureSocketContext(const char* certfile, const char* privkeyfile, const char* passphrase, SecureSocketType sockettype)
+    void setCertificate(const char *certFileOrBuf)
     {
-        m_verify = false;
-        m_address_match = false;
+        if (isEmptyString(certFileOrBuf))
+            return;
 
-        if(sockettype == ClientSocket)
-            m_meth = SSLv23_client_method();
-        else
-            m_meth = SSLv23_server_method();
-
-        m_ctx = SSL_CTX_new(m_meth);
-
-        if(!m_ctx)
+        if (containsEmbeddedKey(certFileOrBuf))
         {
-            throw MakeStringException(-1, "ctx can't be created");
+            // can have multiple certs in buffer
+            if (!useCertificateChainPEMBuffer(m_ctx, certFileOrBuf))
+                throw makeEVPException(-1, "error loading certificate chain");
         }
-
-        if (sockettype == ServerSocket)
-            setSessionIdContext();
-
-        password.set(passphrase);
-        SSL_CTX_set_default_passwd_cb_userdata(m_ctx, (void*)password.str());
-        SSL_CTX_set_default_passwd_cb(m_ctx, pem_passwd_cb);
-
-        if (SSL_CTX_use_certificate_chain_file(m_ctx, certfile)<=0)
-        {
-            char errbuf[512];
-            ERR_error_string_n(ERR_get_error(), errbuf, 512);
-            throw MakeStringException(-1, "error loading certificate chain file %s - %s", certfile, errbuf);
-        }
-
-        if(SSL_CTX_use_PrivateKey_file(m_ctx, privkeyfile, SSL_FILETYPE_PEM) <= 0)
-        {
-            char errbuf[512];
-            ERR_error_string_n(ERR_get_error(), errbuf, 512);
-            throw MakeStringException(-1, "error loading private key file %s - %s", privkeyfile, errbuf);
-        }
-
-        if(!SSL_CTX_check_private_key(m_ctx))
-        {
-            throw MakeStringException(-1, "Private key does not match the certificate public key");
-        }
-        
-        SSL_CTX_set_mode(m_ctx, SSL_CTX_get_mode(m_ctx) | SSL_MODE_AUTO_RETRY);
+        else if (SSL_CTX_use_certificate_chain_file(m_ctx, certFileOrBuf) <= 0)
+            throw makeEVPExceptionV(-1, "error loading certificate chain file %s", certFileOrBuf);
     }
 
-    CSecureSocketContext(IPropertyTree* config, SecureSocketType sockettype)
+    void setPrivateKey(const char *privKeyFileOrBuf)
     {
-        assertex(config);
-        m_verify = false;
-        m_address_match = false;
+        if (isEmptyString(privKeyFileOrBuf))
+            return;
 
-        if(sockettype == ClientSocket)
-            m_meth = SSLv23_client_method();
-        else
-            m_meth = SSLv23_server_method();
-
-        m_ctx = SSL_CTX_new(m_meth);
-
-        if(!m_ctx)
+        if (containsEmbeddedKey(privKeyFileOrBuf))
         {
-            throw MakeStringException(-1, "ctx can't be created");
+            // single RSA key in buffer
+            if (!usePrivateKeyPEMBuffer(m_ctx, privKeyFileOrBuf))
+                throw makeEVPException(-1, "error loading private key");
         }
+        else if (SSL_CTX_use_PrivateKey_file(m_ctx, privKeyFileOrBuf, SSL_FILETYPE_PEM) <= 0)
+            throw makeEVPExceptionV(-1, "error loading private key file %s", privKeyFileOrBuf);
 
-        if (sockettype == ServerSocket)
-            setSessionIdContext();
+        if (!SSL_CTX_check_private_key(m_ctx))
+            throw makeStringException(-1, "Private key does not match the certificate public key");
+    }
 
-        const char *cipherList = config->queryProp("cipherList");
-        if (!cipherList || !*cipherList)
-            cipherList = "ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+3DES:!aNULL:!MD5";
-        SSL_CTX_set_cipher_list(m_ctx, cipherList);
+    void setVerifyCerts(const char *caCertsPathOrBuf)
+    {
+        if (isEmptyString(caCertsPathOrBuf))
+            return;
 
-        const char* passphrase = config->queryProp("passphrase");
-        if(passphrase && *passphrase)
+        if (containsEmbeddedKey(caCertsPathOrBuf))
         {
-            StringBuffer pwd;
-            decrypt(pwd, passphrase);
-            password.set(pwd);
-            SSL_CTX_set_default_passwd_cb_userdata(m_ctx, (void*)password.str());
-            SSL_CTX_set_default_passwd_cb(m_ctx, pem_passwd_cb);
+            // can have multiple certs in buffer
+            if (!setVerifyCertsPEMBuffer(m_ctx, caCertsPathOrBuf))
+                throw makeStringException(-1, "Error loading CA certificates");
         }
+        else if (SSL_CTX_load_verify_locations(m_ctx, caCertsPathOrBuf, NULL) != 1)
+            throw makeStringExceptionV(-1, "Error loading CA certificates from %s", caCertsPathOrBuf);
+    }
 
-        const char* certfile = config->queryProp("certificate");
-        if(certfile && *certfile)
+    void createNewContext(const IPropertyTree* config)
+    {
+        initContext(sockettype);
+
+        if (config)
         {
-            if (SSL_CTX_use_certificate_chain_file(m_ctx, certfile) <= 0)
+            const char *cipherList = config->queryProp("cipherList");
+            if (!cipherList || !*cipherList)
+                cipherList = "ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+3DES:!aNULL:!MD5";
+            SSL_CTX_set_cipher_list(m_ctx, cipherList);
+
+            const char* passphrase = config->queryProp("passphrase");
+            if (passphrase && *passphrase)
             {
-                char errbuf[512];
-                ERR_error_string_n(ERR_get_error(), errbuf, 512);
-                throw MakeStringException(-1, "error loading certificate chain file %s - %s", certfile, errbuf);
+                StringBuffer pwd;
+                decrypt(pwd, passphrase);
+                password.set(pwd);
+                SSL_CTX_set_default_passwd_cb_userdata(m_ctx, (void*)password.str());
+                SSL_CTX_set_default_passwd_cb(m_ctx, pem_passwd_cb);
             }
-        }
 
-        const char* privkeyfile = config->queryProp("privatekey");
-        if(privkeyfile && *privkeyfile)
-        {
-            if(SSL_CTX_use_PrivateKey_file(m_ctx, privkeyfile, SSL_FILETYPE_PEM) <= 0)
-            {
-                char errbuf[512];
-                ERR_error_string_n(ERR_get_error(), errbuf, 512);
-                throw MakeStringException(-1, "error loading private key file %s - %s", privkeyfile, errbuf);
-            }
-            if(!SSL_CTX_check_private_key(m_ctx))
-            {
-                throw MakeStringException(-1, "Private key does not match the certificate public key");
-            }
-        }
-    
-        SSL_CTX_set_mode(m_ctx, SSL_CTX_get_mode(m_ctx) | SSL_MODE_AUTO_RETRY);
+            const char *certFileOrBuf = config->queryProp("certificate_pem");
+            if (!certFileOrBuf)
+                certFileOrBuf = config->queryProp("certificate");
+            if (certFileOrBuf && *certFileOrBuf)
+                setCertificate(certFileOrBuf);
 
-        m_verify = config->getPropBool("verify/@enable");
-        m_address_match = config->getPropBool("verify/@address_match");
-        accept_selfsigned = config->getPropBool("verify/@accept_selfsigned");
+            const char *privKeyFileOrBuf = config->queryProp("privatekey_pem");
+            if (!privKeyFileOrBuf)
+                privKeyFileOrBuf = config->queryProp("privatekey");
+            if (privKeyFileOrBuf && *privKeyFileOrBuf)
+                setPrivateKey(privKeyFileOrBuf);
 
-        if(m_verify)
-        {
-            const char* capath = config->queryProp("verify/ca_certificates/@path");
-            if(capath && *capath)
+            m_verify = config->getPropBool("verify/@enable");
+            m_address_match = config->getPropBool("verify/@address_match");
+
+            if(m_verify)
             {
-                if(SSL_CTX_load_verify_locations(m_ctx, capath, NULL) != 1)
+                const char *caCertPathOrBuf = config->queryProp("verify/ca_certificates/pem");
+                if (!caCertPathOrBuf)
+                    caCertPathOrBuf = config->queryProp("verify/ca_certificates/@path");
+                if (caCertPathOrBuf && *caCertPathOrBuf)
+                    setVerifyCerts(caCertPathOrBuf);
+
+                bool acceptSelfSigned = config->getPropBool("verify/@accept_selfsigned");
+                SSL_CTX_set_verify(m_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT | SSL_VERIFY_CLIENT_ONCE, (acceptSelfSigned) ? verify_callback_allow_selfSigned : verify_callback_reject_selfSigned);
+
+                m_peers.setown(new CStringSet());
+                const char* peersstr = config->queryProp("verify/trusted_peers");
+                while(peersstr && *peersstr)
                 {
-                    throw MakeStringException(-1, "Error loading CA certificates from %s", capath);
-                }
-            }
+                    StringBuffer onepeerbuf;
+                    peersstr = strtok__(peersstr, "|", onepeerbuf);
+                    if(onepeerbuf.length() == 0)
+                        break;
 
-            SSL_CTX_set_verify(m_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT | SSL_VERIFY_CLIENT_ONCE, verify_callback);
-
-            m_peers.setown(new CStringSet());
-            const char* peersstr = config->queryProp("verify/trusted_peers");
-            while(peersstr && *peersstr)
-            {
-                StringBuffer onepeerbuf;
-                peersstr = strtok__(peersstr, "|", onepeerbuf);
-                if(onepeerbuf.length() == 0)
-                    break;
-
-                char*  onepeer = onepeerbuf.detach();
-                if (isdigit(*onepeer))
-                {
-                    char *dash = strrchr(onepeer, '-');
-                    if (dash)
+                    const char * onepeer = onepeerbuf.str();
+                    if (isdigit(*onepeer))
                     {
-                        *dash = 0;
-                        int last = atoi(dash+1);
-                        char *dot = strrchr(onepeer, '.');
-                        *dot = 0;
-                        int first = atoi(dot+1);
-                        for (int i = first; i <= last; i++)
+                        const char *dash = strrchr(onepeer, '-');
+                        const char *dot = strrchr(onepeer, '.');
+                        //Allow a range in the form a.b.c.d-e
+                        if (dash && dot && dot < dash)
                         {
-                            StringBuffer t;
-                            t.append(onepeer).append('.').append(i);
-                            m_peers->add(t.str());
+                            int first = atoi(dot+1);
+                            int last = atoi(dash+1);
+                            for (int i = first; i <= last; i++)
+                            {
+                                StringBuffer t;
+                                t.append(dot-onepeer, onepeer).append('.').append(i);
+                                m_peers->add(t.str());
+                            }
                         }
+                        else
+                            m_peers->add(onepeer);
                     }
                     else
-                    {
                         m_peers->add(onepeer);
-                    }
                 }
-                else
-                {
-                    m_peers->add(onepeer);
-                }
-                free(onepeer);
+            }
+        }
+
+        SSL_CTX_set_mode(m_ctx, SSL_CTX_get_mode(m_ctx) | SSL_MODE_AUTO_RETRY);
+    }
+
+    void checkForUpdatedContext()
+    {
+        //Check if a new context should be created - it must be called within a critical section
+        //NOTE: The openssl ctx is reference counted internally, so any existing sockets will still be valid.
+        if (syncedConfig)
+        {
+            unsigned activeVersion = syncedConfig->getVersion();
+            if (activeVersion != configVersion)
+            {
+                DBGLOG("CSecureSocketContext: Updating secure socket context from version %u to %u", configVersion, activeVersion);
+                configVersion = activeVersion;
+                Owned<const IPropertyTree> config = syncedConfig->getTree();
+                createNewContext(config);
             }
         }
     }
 
-    ~CSecureSocketContext()
+public:
+    IMPLEMENT_IINTERFACE
+
+    CSecureSocketContext(const IPropertyTree* config, SecureSocketType _sockettype) : sockettype(_sockettype)
     {
-        SSL_CTX_free(m_ctx);
+        createNewContext(config);
     }
 
-    ISecureSocket* createSecureSocket(ISocket* sock, int loglevel)
+    CSecureSocketContext(const ISyncedPropertyTree* _syncedConfig, SecureSocketType _sockettype) : syncedConfig(_syncedConfig), sockettype(_sockettype)
     {
-        return new CSecureSocket(sock, m_ctx, m_verify, m_address_match, m_peers, loglevel);
+        Owned<const IPropertyTree> config;
+        if (syncedConfig)
+        {
+            configVersion = syncedConfig->getVersion();
+            config.setown(syncedConfig->getTree());
+        }
+        createNewContext(config);
     }
 
-    ISecureSocket* createSecureSocket(int sockfd, int loglevel)
+//interface ISecureSocketContext
+    ISecureSocket* createSecureSocket(ISocket* sock, int loglevel, const char *fqdn)
     {
-        return new CSecureSocket(sockfd, m_ctx, m_verify, m_address_match, m_peers, loglevel);
+        return new CSecureSocket(sock, 0, this, m_verify, m_address_match, m_peers, loglevel, fqdn);
     }
+
+    ISecureSocket* createSecureSocket(int sockfd, int loglevel, const char *fqdn)
+    {
+        return new CSecureSocket(nullptr, sockfd, this, m_verify, m_address_match, m_peers, loglevel, fqdn);
+    }
+
+//interface ISecureSocketContextCallback
+    virtual unsigned getVersion()
+    {
+        CriticalBlock block(cs);
+        checkForUpdatedContext();
+        return configVersion;
+    }
+    virtual SSL * createActiveSSL()
+    {
+        //If this function is called it is either a new socket or getVersion() has been called to check it is up to date
+        CriticalBlock block(cs);
+        return SSL_new(m_ctx);
+    }
+
 };
 
 class CRsaCertificate : implements ICertificate, public CInterface
@@ -1447,8 +1636,6 @@ public:
         X509 *x509=NULL;
         EVP_PKEY *pkey=NULL;
 
-        CRYPTO_mem_ctrl(CRYPTO_MEM_CHECK_ON);
-
         bio_err=BIO_new_fp(stderr, BIO_NOCLOSE);
 
         if ((pkey=EVP_PKEY_new()) == NULL)
@@ -1483,8 +1670,13 @@ public:
         X509_NAME *name=NULL;
         X509_set_version(x509,3);
         ASN1_INTEGER_set(X509_get_serialNumber(x509), 0); // serial number set to 0
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
         X509_gmtime_adj(X509_get_notBefore(x509),0);
         X509_gmtime_adj(X509_get_notAfter(x509),(long)60*60*24*m_days);
+#else
+        X509_gmtime_adj(X509_getm_notBefore(x509),0);
+        X509_gmtime_adj(X509_getm_notAfter(x509),(long)60*60*24*m_days);
+#endif
         X509_set_pubkey(x509, pkey);
 
         name=X509_get_subject_name(x509);
@@ -1596,12 +1788,12 @@ public:
         X509 *x509=NULL;
         EVP_PKEY *pkey=NULL;
 
-        CRYPTO_mem_ctrl(CRYPTO_MEM_CHECK_ON);
         bio_err=BIO_new_fp(stderr, BIO_NOCLOSE);
 
+# if OPENSSL_API_COMPAT < 0x10100000L
         OpenSSL_add_all_algorithms ();
         ERR_load_crypto_strings ();
-
+#endif
         pmem = BIO_new(BIO_s_mem());
         BIO_puts(pmem, privkey);
         if (!(pkey = PEM_read_bio_PrivateKey (pmem, NULL, NULL, (void*)m_passphrase.get())))
@@ -1613,8 +1805,13 @@ public:
         X509_NAME *name=NULL;
         X509_set_version(x509,3);
         ASN1_INTEGER_set(X509_get_serialNumber(x509), 0); // serial number set to 0
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
         X509_gmtime_adj(X509_get_notBefore(x509),0);
         X509_gmtime_adj(X509_get_notAfter(x509),(long)60*60*24*m_days);
+#else
+        X509_gmtime_adj(X509_getm_notBefore(x509),0);
+        X509_gmtime_adj(X509_getm_notAfter(x509),(long)60*60*24*m_days);
+#endif
         X509_set_pubkey(x509, pkey);
 
         name=X509_get_subject_name(x509);
@@ -1727,11 +1924,12 @@ public:
         const EVP_MD *digest;
         BIO *pmem;
 
-        CRYPTO_mem_ctrl(CRYPTO_MEM_CHECK_ON);
         bio_err=BIO_new_fp(stderr, BIO_NOCLOSE);
 
+# if OPENSSL_API_COMPAT < 0x10100000L
         OpenSSL_add_all_algorithms ();
         ERR_load_crypto_strings ();
+#endif
 
         pmem = BIO_new(BIO_s_mem());
         BIO_puts(pmem, privkey);
@@ -1815,43 +2013,62 @@ extern "C" {
 
 SECURESOCKET_API ISecureSocketContext* createSecureSocketContext(SecureSocketType sockettype)
 {
-    return new securesocket::CSecureSocketContext(sockettype);
+    return new securesocket::CSecureSocketContext((ISyncedPropertyTree *)nullptr, sockettype);
 }
 
-SECURESOCKET_API ISecureSocketContext* createSecureSocketContextEx(const char* certfile, const char* privkeyfile, const char* passphrase, SecureSocketType sockettype)
+SECURESOCKET_API ISecureSocketContext* createSecureSocketContextSynced(const ISyncedPropertyTree * config, SecureSocketType sockettype)
 {
-    return new securesocket::CSecureSocketContext(certfile, privkeyfile, passphrase, sockettype);
-}
-
-SECURESOCKET_API ISecureSocketContext* createSecureSocketContextEx2(IPropertyTree* config, SecureSocketType sockettype)
-{
-    if (config == NULL)
-        return createSecureSocketContext(sockettype);
-
     return new securesocket::CSecureSocketContext(config, sockettype);
-}       
-
-SECURESOCKET_API ISecureSocketContext* createSecureSocketContextSecret(const char *mtlsSecretName, SecureSocketType sockettype)
-{
-    IPropertyTree *info = queryMtlsSecretInfo(mtlsSecretName);
-    //if the secret doesn't exist doesn't exist just go on without it. IF it is required the tls connection will fail. 
-    //This is primarily for client side... server side would probably use the explict ptree config or explict cert param at least for now.
-    if (info)
-        return createSecureSocketContextEx2(info, sockettype);
-    else
-        return createSecureSocketContext(sockettype);
 }
 
-SECURESOCKET_API ISecureSocketContext* createSecureSocketContextSecretSrv(const char *mtlsSecretName)
-{
-    if (!queryMtls())
-        throw makeStringException(-100, "TLS secure communication requested but not configured");
 
-    IPropertyTree *info = queryMtlsSecretInfo(mtlsSecretName);
-    if (info)
-        return createSecureSocketContextEx2(info, ServerSocket);
-    else
-        throw makeStringException(-101, "TLS secure communication requested but not configured (2)");
+SECURESOCKET_API ISecureSocketContext* createSecureSocketContextSecret(const char *issuer, SecureSocketType sockettype)
+{
+    Owned<const ISyncedPropertyTree> info = getIssuerTlsSyncedConfig(issuer);
+    return createSecureSocketContextSynced(info, sockettype);
+}
+
+
+SECURESOCKET_API ISecureSocketContext* createSecureSocketContextSecretSrv(const char *issuer, const char *optTrustedPeers, bool requireMtlsFlag)
+{
+    if (requireMtlsFlag && !queryMtls())
+        throw makeStringException(-100, "MTLS secure context required but not configured");
+
+    Owned<const ISyncedPropertyTree> info = getIssuerTlsSyncedConfig(issuer, optTrustedPeers, false);
+
+    if (!info->isValid())
+        throw makeStringExceptionV(-101, "TLS issuer %s secure context requested but not configured (2)", issuer);
+
+    return createSecureSocketContextSynced(info, ServerSocket);
+}
+
+IPropertyTree * createSecureSocketConfig(const char* certFileOrBuf, const char* privKeyFileOrBuf, const char* passphrase)
+{
+    if (!certFileOrBuf && !privKeyFileOrBuf && !passphrase)
+        return nullptr;
+
+    Owned<IPropertyTree> config = createPTree("ssl");
+    if (certFileOrBuf)
+        config->setProp("certificate", certFileOrBuf);
+    if (privKeyFileOrBuf)
+        config->setProp("privatekey", privKeyFileOrBuf);
+    if (passphrase)
+        config->setProp("passphrase", passphrase);
+    return config.getClear();
+}
+
+SECURESOCKET_API ISecureSocketContext* createSecureSocketContextSSF(ISmartSocketFactory* ssf)
+{
+    if (ssf == nullptr)
+        return createSecureSocketContext(ClientSocket);
+
+    return createSecureSocketContextSynced(ssf->queryTlsConfig(), ClientSocket);
+}
+
+//Legacy factory interfaces
+SECURESOCKET_API ISecureSocketContext* createSecureSocketContextEx2(const IPropertyTree* config, SecureSocketType sockettype)
+{
+    return new securesocket::CSecureSocketContext(config, sockettype);
 }
 
 SECURESOCKET_API ICertificate *createCertificate()
@@ -1870,8 +2087,10 @@ SECURESOCKET_API int signCertificate(const char* csr, const char* ca_certificate
     if(days <= 0)
         days = 365;
 
+# if OPENSSL_API_COMPAT < 0x10100000L
     OpenSSL_add_all_algorithms ();
     ERR_load_crypto_strings ();
+#endif
     
     BIO *bio_err;
     bio_err=BIO_new_fp(stderr, BIO_NOCLOSE);
@@ -1908,10 +2127,14 @@ SECURESOCKET_API int signCertificate(const char* csr, const char* ca_certificate
 
     //set public key in the certificate
     X509_set_pubkey (cert, pkey);
-
     // set duration for the certificate
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     X509_gmtime_adj (X509_get_notBefore (cert), 0);
     X509_gmtime_adj (X509_get_notAfter (cert), days*24*60*60);
+#else
+    X509_gmtime_adj (X509_getm_notBefore (cert), 0);
+    X509_gmtime_adj (X509_getm_notAfter (cert), days*24*60*60);
+#endif
 
     // sign the certificate with the CA private key
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -1961,6 +2184,11 @@ public:
         secureContext.setown(createSecureSocketContext(ClientSocket));
     }
 
+    CSecureSmartSocketFactory(IPropertyTree &service, bool _retry, unsigned _retryInterval, unsigned _dnsInterval) : CSmartSocketFactory(service, _retry, _retryInterval, _dnsInterval)
+    {
+        secureContext.setown(createSecureSocketContextSynced(queryTlsConfig(), ClientSocket));
+    }
+
     virtual ISmartSocket *connect_timeout(unsigned timeoutms) override
     {
         SocketEndpoint ep;
@@ -1989,6 +2217,11 @@ ISmartSocketFactory *createSecureSmartSocketFactory(const char *_socklist, bool 
     return new CSecureSmartSocketFactory(_socklist, _retry, _retryInterval, _dnsInterval);
 }
 
+ISmartSocketFactory *createSecureSmartSocketFactory(IPropertyTree &service, bool _retry, unsigned _retryInterval, unsigned _dnsInterval)
+{
+    return new CSecureSmartSocketFactory(service, _retry, _retryInterval, _dnsInterval);
+}
+
 class CSingletonSecureSocketConnection: public CSingletonSocketConnection
 {
 public:
@@ -2002,7 +2235,7 @@ public:
         state = Snone;
         cancelling = false;
         secureContextClient.setown(createSecureSocketContextSecret("local", ClientSocket));
-        secureContextServer.setown(createSecureSocketContextSecretSrv("local"));
+        secureContextServer.setown(createSecureSocketContextSecretSrv("local", nullptr, true));
 #ifdef _CONTAINERIZED
         tlsLogLevel = getComponentConfigSP()->getPropInt("logging/@detail", SSLogMin);
         if (tlsLogLevel >= ExtraneousMsgThreshold) // or InfoMsgThreshold ?
@@ -2014,15 +2247,7 @@ public:
 
     virtual ~CSingletonSecureSocketConnection()
     {
-        try {
-            if (sock)
-                sock->close();
-        }
-        catch (IException *e) {
-            if (e->errorCode()!=JSOCKERR_graceful_close)
-                EXCLOG(e,"CSingletonSocketConnection close");
-            e->Release();
-        }
+        shutdownAndCloseNoThrow(sock);
     }
 
     bool connect(unsigned timeoutms) override

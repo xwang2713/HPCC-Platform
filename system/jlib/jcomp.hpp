@@ -27,12 +27,15 @@ enum CompilerType
 {
     Vs6CppCompiler      = 0,
     GccCppCompiler      = 1,
+    ClangCppCompiler    = 2,
     MaxCompiler
 };
-const char * const compilerTypeText[MaxCompiler] = {"vs6", "gcc" };
+const char * const compilerTypeText[MaxCompiler] = {"vs6", "gcc", "clang" };
 
 #ifdef _WIN32
 #define DEFAULT_COMPILER Vs6CppCompiler
+#elif defined(__APPLE__)
+#define DEFAULT_COMPILER ClangCppCompiler
 #else
 #define DEFAULT_COMPILER GccCppCompiler
 #endif
@@ -60,6 +63,7 @@ public:
     virtual void setOnlyCompile(bool _onlyCompile) = 0;
     virtual void setCreateExe(bool _createExe) = 0;
     virtual void setOptimizeLevel(unsigned level) = 0;
+    virtual void setStripSymbols(bool stripSymbols) = 0;
     virtual void setTargetBitLength(unsigned bitlength) = 0;
     virtual void setMaxCompileThreads(const unsigned max) = 0;
     virtual void setCCLogPath(const char* path) = 0;

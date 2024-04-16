@@ -57,6 +57,13 @@ define([
 
         show: function (event) {
             var context = this;
+            if (!dojoConfig.username) {
+                context.storage.setItem("Status", "Unlocked");
+                topic.publish("hpcc/session_management_status", {
+                    status: "Unlocked"
+                });
+                return;
+            }
             on(this.unlockPassword, "keypress", function (event) {
                 if (event.key === "Enter") {
                     context._onUnlock();
@@ -88,7 +95,6 @@ define([
             var context = this;
 
             if (this.unlockForm.validate()) {
-                cookie("Status", "login_attempt");
                 WsAccount.Unlock({
                     request: {
                         username: this.unlockUserName.get("value"),
@@ -105,8 +111,6 @@ define([
                         topic.publish("hpcc/session_management_status", {
                             status: "Unlocked"
                         });
-                        cookie("Status", "Unlocked");
-                        context.storage.removeItem("Status");
                         context.storage.setItem("Status", "Unlocked");
                         if (context.idleFired) {
                             dojo.publish("hpcc/brToaster", {
@@ -120,7 +124,6 @@ define([
                         }
                     } else {
                         context.unlockStatus.innerHTML = response.UnlockResponse.Message;
-                        cookie("Status", "Locked");
                     }
                 });
             }
@@ -139,15 +142,13 @@ define([
                 context.idleFired = true;
                 context.unlockDialog.show();
                 domClass.add("SessionLock", "overlay");
-                context.unlockUserName.set("value", cookie("User"));
+                context.unlockUserName.set("value", dojoConfig.username);
                 topic.publish("hpcc/session_management_status", {
                     status: "Locked"
                 });
-                cookie("Status", "Locked");
-                context.storage.removeItem("Status");
                 context.storage.setItem("Status", "Locked");
-            } else if (cookie("Status") === "Unlocked") {
-                xhr("esp/lock", {
+            } else {
+                xhr("/esp/lock", {
                     method: "post"
                 }).then(function (response) {
                     if (response) {
@@ -157,8 +158,6 @@ define([
                         topic.publish("hpcc/session_management_status", {
                             status: "Locked"
                         });
-                        cookie("Status", "Locked");
-                        context.storage.removeItem("Status");
                         context.storage.setItem("Status", "Locked");
                     }
                 });

@@ -74,17 +74,20 @@ public:
     inline T load(std::memory_order order = std::memory_order_relaxed) const noexcept { return BASE::load(order); }
     inline T exchange(T _value, std::memory_order order = std::memory_order_relaxed) noexcept { return BASE::exchange(_value, order); }
     inline T fetch_add(T _value, std::memory_order order = std::memory_order_relaxed) noexcept { return BASE::fetch_add(_value, order); }
-    inline T fetch_sub(T _value, std::memory_order order = std::memory_order_relaxed) noexcept { return BASE::fetch_add(_value, order); }
+    inline T fetch_sub(T _value, std::memory_order order = std::memory_order_relaxed) noexcept { return BASE::fetch_sub(_value, order); }
     inline T add_fetch(T _value, std::memory_order order = std::memory_order_relaxed) noexcept { return ::add_fetch(*this, _value, order); }
     inline T sub_fetch(T _value, std::memory_order order = std::memory_order_relaxed) noexcept { return ::sub_fetch(*this, _value, order); }
     inline void store_max(T _value) noexcept { while (_value > load()) _value = BASE::exchange(_value, std::memory_order_acq_rel); }
     inline void store_min(T _value) noexcept { while (_value < load()) _value = BASE::exchange(_value, std::memory_order_acq_rel); }
+    inline void store_first(T _value) noexcept { while (_value && (_value < load() || !load())) _value = BASE::exchange(_value, std::memory_order_acq_rel); }
 
 //extra functions
     // avoid a locked increment if the value is zero
     inline void add(T _value, std::memory_order order = std::memory_order_relaxed) { if (_value) add_fetch(_value, order); }
     // add() that avoids the inter-thread lock - can be used if value is only updated from a single thread
     inline void fastAdd(T _value) { store(load()+_value); }
+    inline void fastDec() { fastAdd(-1); }
+    inline void fastInc() { fastAdd(1); }
 };
 
 // Class to accumulate values locally and only add atomically once

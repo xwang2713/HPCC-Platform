@@ -26,9 +26,10 @@
 project(javaembed)
 
 if(JAVAEMBED AND USE_JAVA)
-    ADD_PLUGIN(javaembed PACKAGES JNI)
+    ADD_PLUGIN(javaembed)
     if(MAKE_JAVAEMBED)
         find_package(Java 1.8 COMPONENTS Development)
+        find_package(JNI)
         set(
             SRCS
             javaembed.cpp)
@@ -82,7 +83,8 @@ if(JAVAEMBED AND USE_JAVA)
         install(
             FILES ${java_classes}
             DESTINATION classes/com/HPCCSystems
-            COMPONENT Runtime)
+            COMPONENT Runtime
+            CALC_DEPS)
 
         # We link against jsig so that signals are chained from the jvm
 

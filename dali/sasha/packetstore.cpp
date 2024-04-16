@@ -152,7 +152,7 @@ protected:
 
     virtual unsigned getHashFromFindParam(const void *fp) const
     {
-        return hashc((const unsigned char *)fp, strlen((const char *)fp), 0);
+        return hashcz((const unsigned char *)fp, 0);
     }
 
     virtual const void *getFindParam(const void *e) const
@@ -416,7 +416,7 @@ public:
         CriticalBlock block(sect);
         if (doremove(sender,transactionid)) {
             StringBuffer s;
-            IERRLOG("Warning: duplicate transaction detected from %s", sender.getUrlStr(s).str());
+            IERRLOG("Warning: duplicate transaction detected from %s", sender.getEndpointHostText(s).str());
             exit(0);
         }
         p->setTransactionId(sender,transactionid);

@@ -56,9 +56,10 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
         OwnedIFileIO iFileIO;
         CSVSplitter csvSplitter;
         CRC32 inputCRC;
-        bool readFinished;
         offset_t localOffset;
+        unsigned __int64 progress = 0;
         size32_t maxRowSize;
+        bool readFinished;
         bool processHeaderLines = false;
 
         unsigned splitLine(ISerialStream *inputStream, size32_t maxRowSize)
@@ -132,6 +133,7 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
             inputStream.setown(createFileSerialStream(iFileIO));
             if (activity.headerLines)
                 processHeaderLines = true;
+            progress = 0;
         }
         virtual void close(CRC32 &fileCRC)
         {
@@ -140,9 +142,14 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
                 CriticalBlock block(inputCs);
                 partFileIO.setown(iFileIO.getClear());
             }
-            mergeStats(fileStats, partFileIO);
-            partFileIO.clear();
-            inputStream.clear();
+            if (partFileIO)
+            {
+                mergeStats(closedPartFileStats, partFileIO);
+                closedPartFileStats.mergeStatistic(StNumDiskRowsRead, progress);
+                progress = 0;
+                partFileIO.clear();
+                inputStream.clear();
+            }
             fileCRC = inputCRC;
         }
         const void *nextRow()
@@ -160,7 +167,7 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
                 if (res != 0)
                 {
                     localOffset += lineLength;
-                    ++activity.diskProgress;
+                    ++progress;
                     return row.finalizeRowClear(res);
                 }
             }
@@ -171,6 +178,7 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
             CriticalBlock block(inputCs); // Ensure iFileIO remains valid for the duration of mergeStats()
             CDiskPartHandlerBase::gatherStats(merged);
             mergeStats(merged, iFileIO);
+            merged.mergeStatistic(StNumDiskRowsRead, progress);
         }
     };
 
@@ -241,17 +249,27 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
             if (sentHeaderLines->testSet(subFile))
                 return;
 
-            /* Before we can send state of headerLines of subfiles,
-             * need to have received any updates from previous worker.
-             * The previous worker will have sent updates as it progressed,
-             * and info. re. all files it is not dealing with (and all remaining if stopped) */
-            while (true)
+            /* NB: we are here because this worker has consumed all remaining header lines for this subfile.
+             * It must now inform the next worker so it can make progress on this subfile asap.
+             *
+             * The other subfile header line info. will be communicated as this worker makes progress
+             * through the subfiles, or when it stops (see sendRemainingHeaderLines()).
+             */
+
+            // JCSMORE: only left in for testing, should be removed (see HPCC-31160)
+            if (getOptBool("csvWaitAllSubs"))
             {
-                unsigned which = gotHeaderLines->scan(0, false);
-                if (which == subFiles) // all received
-                    break;
-                getHeaderLines(which);
+                // This causes this worker to block until the previous worker has processed the headerlines for all subfiles.
+                // In effect, causing workers to process the csv read sequentially, massively slowing down throughput.
+                while (true)
+                {
+                    unsigned which = gotHeaderLines->scan(0, false);
+                    if (which >= subFiles) // all received
+                        break;
+                    getHeaderLines(which);
+                }
             }
+
             bool someLeft=false;
             unsigned hL=0;
             for (; hL<subFiles; hL++)

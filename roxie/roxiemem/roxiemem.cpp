@@ -72,6 +72,8 @@ namespace roxiemem {
 static unsigned memTraceLevel = 1;
 static memsize_t memTraceSizeLimit = 0;
 static const unsigned ScanReportThreshold = 10; // If average more than 10 scans per allocate then notify us.  More than 10 starts slowing the query down.
+bool memTraceInconsistencies = true;
+static bool memTraceReleaseWhenFree = true;
 
 void setMemTraceLevel(unsigned value)
 {
@@ -167,6 +169,9 @@ static unsigned heapLWM;
 static unsigned heapHWM;
 static unsigned heapLargeBlocks;
 static unsigned heapLargeBlockGranularity;
+static bool heapLocked = false;
+static bool origHeapRetainMemory = false;
+static bool heapHugePagesPossible = false;
 static ILargeMemCallback * heapLargeBlockCallback;
 static bool heapNotifyUnusedEachFree = true;
 static bool heapNotifyUnusedEachBlock = false;
@@ -217,20 +222,110 @@ inline void notifyMemoryUnused(void * address, memsize_t size)
 #endif
 }
 
+static CriticalSection heapBitCrit;
+
+static void notifyAllUnusedRoxieMem();
+
+extern int lockRoxieMem(bool lock)
+{
+#ifndef _WIN32
+    CriticalBlock b(heapBitCrit);
+
+    if (!heapBase || !heapEnd)
+    {
+        DBGLOG("Attempt to lock/unlock heap memory failed, invalid heapBase or heapEnd");
+        return 999;
+    }
+
+    memsize_t memsize = heapEnd - heapBase;
+
+    if (lock && !heapLocked)
+    {
+        // mlock() should fault in all pages ...
+        int srtn = mlock(heapBase, memsize);
+        if (!srtn)
+        {
+            heapLocked = true;
+            DBGLOG("MEMORY LOCKED");
+            heapNotifyUnusedEachFree = false;
+            heapNotifyUnusedEachBlock = false;
+            return 0;
+        }
+        else
+        {
+            int errnum = errno;
+            if (!errnum)
+                errnum = 999;
+            DBGLOG("Attempt to lock heap memory failed, errno = %d", errnum);
+            return errnum;
+        }
+    }
+    else if (!lock && heapLocked)
+    {
+        int srtn = munlock(heapBase, memsize);
+        if (!srtn)
+        {
+            heapLocked = false;
+            DBGLOG("MEMORY UNLOCKED");
+            if (origHeapRetainMemory)
+            {
+                heapNotifyUnusedEachFree = false;
+                heapNotifyUnusedEachBlock = false;
+            }
+            else
+            {
+                if (heapHugePagesPossible)
+                {
+                    heapNotifyUnusedEachFree = false;
+                    heapNotifyUnusedEachBlock = true;
+                }
+                else
+                {
+                    heapNotifyUnusedEachFree = true;
+                    heapNotifyUnusedEachBlock = false;
+                }
+                notifyAllUnusedRoxieMem();
+            }
+            return 0;
+        }
+        else
+        {
+            int errnum = errno;
+            if (!errnum)
+                errnum = 999;
+            DBGLOG("Attempt to unlock heap memory failed, errno = %d", errnum);
+            return errnum;
+        }
+    }
+#endif
+    return 0;
+}
+
+extern bool getRoxieMemLocked()
+{
+    return heapLocked;
+}
+
 //---------------------------------------------------------------------------------------------------------------------
 
 typedef MapBetween<unsigned, unsigned, memsize_t, memsize_t> MapActivityToMemsize;
 
-static CriticalSection heapBitCrit;
-
-static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, bool retainMemory, memsize_t pages, memsize_t largeBlockGranularity, ILargeMemCallback * largeBlockCallback)
+static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, bool retainMemory, bool lockMemory, memsize_t pages, memsize_t largeBlockGranularity, ILargeMemCallback * largeBlockCallback)
 {
     if (heapBase) return;
+
+    origHeapRetainMemory = retainMemory;
+#ifndef _WIN32
+    if (lockMemory && !retainMemory)
+        retainMemory = true;
+#endif
 
     // CriticalBlock b(heapBitCrit); // unnecessary - must call this exactly once before any allocations anyway!
     memsize_t bitmapSize = (pages + HEAP_BITS - 1) / HEAP_BITS;
     memsize_t totalPages = bitmapSize * HEAP_BITS;
     memsize_t memsize = totalPages * HEAP_ALIGNMENT_SIZE;
+
+    // MCK - if using huge pages (below) should we check/round up memsize to a multiple of the huge page size ?
 
     if (totalPages > (unsigned)-1)
         throw makeStringExceptionV(ROXIEMM_TOO_MUCH_MEMORY,
@@ -277,12 +372,13 @@ static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, 
             heapUseHugePages = true;
             heapNotifyUnusedEachFree = false;
             heapNotifyUnusedEachBlock = !retainMemory;
+            heapHugePagesPossible = true;
             DBGLOG("Using Huge Pages for roxiemem");
         }
         else
         {
             heapBase = NULL;
-            DBGLOG("Huge Pages requested but unavailable");
+            DBGLOG("Huge Pages requested but unavailable, errno = %d", errno);
         }
     }
 #else
@@ -348,6 +444,9 @@ static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, 
                     //If we notify heapBlockSize items at a time it will always be a multiple of hugePageSize so shouldn't trigger defragmentation
                     heapNotifyUnusedEachBlock = !retainMemory;
                 }
+                else
+                    origHeapRetainMemory = true;
+                heapHugePagesPossible = true;
                 if (memTraceLevel)
                     DBGLOG("Transparent huge pages used for roxiemem heap");
             }
@@ -370,6 +469,10 @@ static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, 
     }
 #endif
 
+    assertex(((memsize_t)heapBase & (HEAP_ALIGNMENT_SIZE-1)) == 0);
+
+    heapEnd = heapBase + memsize;
+
     if (heapNotifyUnusedEachFree)
     {
         if (memTraceLevel)
@@ -382,15 +485,18 @@ static void initializeHeap(bool allowHugePages, bool allowTransparentHugePages, 
     }
     else
     {
-        DBGLOG("MEMORY WILL NOT BE RELEASED TO OS");
+        StringBuffer memStr("MEMORY WILL NOT BE RELEASED TO OS");
+        if (lockMemory)
+        {
+            lockRoxieMem(true);
+            memStr.append(" (unless unlocked)");
+        }
+        DBGLOG("%s", memStr.str());
         if (!retainMemory)
             DBGLOG("Increase HEAP_ALIGNMENT_SIZE so HEAP_ALIGNMENT_SIZE*%u (0x%" I64F "x) is a multiple of system huge page size (0x%" I64F "x)",
                     HEAP_BITS, (unsigned __int64)(HEAP_ALIGNMENT_SIZE * HEAP_BITS), (unsigned __int64) getHugePageSize());
     }
 
-    assertex(((memsize_t)heapBase & (HEAP_ALIGNMENT_SIZE-1)) == 0);
-
-    heapEnd = heapBase + memsize;
     heapBitmap = new heap_t [heapBitmapSize];
     memset(heapBitmap, 0xff, heapBitmapSize*sizeof(heap_t));
     heapLargeBlocks = 1;
@@ -408,9 +514,14 @@ static void adjustHeapSize(unsigned numPages)
     memsize_t bitmapSize = (numPages + HEAP_BITS - 1) / HEAP_BITS;
     memsize_t totalPages = bitmapSize * HEAP_BITS;
     memsize_t memsize = totalPages * HEAP_ALIGNMENT_SIZE;
+    bool wasLocked = heapLocked;
+    if (wasLocked)
+        lockRoxieMem(false);
     heapEnd = heapBase + memsize;
     heapBitmapSize = (unsigned)bitmapSize;
     heapTotalPages = (unsigned)totalPages;
+    if (wasLocked)
+        lockRoxieMem(true);
 }
 #endif
 
@@ -420,6 +531,8 @@ extern void releaseRoxieHeap()
     {
         if (memTraceLevel)
             DBGLOG("RoxieMemMgr: releasing heap");
+        if (heapLocked)
+            lockRoxieMem(false);
         delete [] heapBitmap;
         heapBitmap = NULL;
 #ifdef _WIN32
@@ -438,6 +551,67 @@ extern void releaseRoxieHeap()
         heapEnd = NULL;
         heapBitmapSize = 0;
         heapTotalPages = 0;
+    }
+}
+
+static void notifyAllUnusedRoxieMem()
+{
+    char *blockStart = nullptr;
+    memsize_t blockLen = 0;
+
+    // NOTE heapBitCrit MUST be held while here
+
+    if (heapHugePagesPossible)
+    {
+        // release only large chunks
+        for (unsigned i = 0; i < heapBitmapSize; i++)
+        {
+            heap_t t = heapBitmap[i];
+            if (t==HEAP_ALLBITS)
+            {
+                if (!blockStart)
+                {
+                    blockStart = heapBase + (i * HEAP_BITS * HEAP_ALIGNMENT_SIZE);
+                    blockLen = HEAP_BITS * HEAP_ALIGNMENT_SIZE;
+                }
+                else
+                    blockLen += (HEAP_BITS * HEAP_ALIGNMENT_SIZE);
+            }
+            else if (blockStart)
+            {
+                notifyMemoryUnused(blockStart, blockLen);
+                blockStart = nullptr;
+            }
+        }
+        if (blockStart)
+            notifyMemoryUnused(blockStart, blockLen);
+    }
+    else
+    {
+        // release HEAP_ALIGNMENT_SIZE chunks
+        for (unsigned i = 0; i < heapBitmapSize; i++)
+        {
+            for (unsigned b = 0; b < HEAP_BITS; b++)
+            {
+                if (heapBitmap[i] & (1U<<b))
+                {
+                    if (!blockStart)
+                    {
+                        blockStart = heapBase + (((i * HEAP_BITS) + b) * HEAP_ALIGNMENT_SIZE);
+                        blockLen = HEAP_ALIGNMENT_SIZE;
+                    }
+                    else
+                        blockLen += HEAP_ALIGNMENT_SIZE;
+                }
+                else if (blockStart)
+                {
+                    notifyMemoryUnused(blockStart, blockLen);
+                    blockStart = nullptr;
+                }
+            }
+        }
+        if (blockStart)
+            notifyMemoryUnused(blockStart, blockLen);
     }
 }
 
@@ -2618,11 +2792,11 @@ public:
             else
                 activityText.append("ac").append(allocatorId & MAX_ACTIVITY_ID);
 
-            target.addStatistic(SSTallocator, activityText.str(), StSizePeakMemory, NULL, results[j]->usage, results[j]->allocations, 0, StatsMergeMax);
+            target.addStatistic(SSTallocator, activityText.str(), StSizePeakRowMemory, NULL, results[j]->usage, results[j]->allocations, 0, StatsMergeMax);
         }
         delete [] results;
 
-        target.addStatistic(SSTglobal, NULL, StSizePeakMemory, NULL, totalUsed, 1, 0, StatsMergeMax);
+        target.addStatistic(SSTglobal, NULL, StSizePeakRowMemory, NULL, totalUsed, 1, 0, StatsMergeMax);
     }
 };
 
@@ -4162,7 +4336,7 @@ public:
         if (!backgroundReleaseBuffersThread)
         {
             backgroundReleaseBuffersThread.setown(new BackgroundReleaseBufferThread(this));
-            backgroundReleaseBuffersThread->start();
+            backgroundReleaseBuffersThread->start(false);
         }
     }
 
@@ -4186,7 +4360,7 @@ public:
             if (!releaseBuffersThread)
             {
                 releaseBuffersThread.setown(new ReleaseBufferThread(*this));
-                releaseBuffersThread->start();
+                releaseBuffersThread->start(false);
             }
         }
         else
@@ -4336,6 +4510,16 @@ void initAllocSizeMappings(const unsigned * sizes)
 
 //---------------------------------------------------------------------------------------------------------------------
 
+// Id is the pointer value with a sequence number stored in the lower bits (typically 1K).  These functions create ids and extract the elements
+inline DataBuffer * getPtrFromDataId(memsize_t id) { return (DataBuffer *)(id & DATA_ALIGNMENT_MASK); }
+inline unsigned getSeqFromDataId(memsize_t id) { return (unsigned)(id & (DATA_ALIGNMENT_SIZE-1)); }
+inline unsigned nextSeqFromDataId(memsize_t id) { return getSeqFromDataId(id+1); }  // Increment before extracting the id to ensure it wraps correctly.
+inline bool isNullDataId(memsize_t id) { return (id & DATA_ALIGNMENT_MASK) == 0; }
+inline memsize_t createDataId(DataBuffer * ptr, unsigned seq) { return memsize_t(ptr) | seq; }
+
+//Tracing version to ensure that sequence numbers are processed correctly
+//inline memsize_t createDataId(DataBuffer * ptr, unsigned seq) { DBGLOG("Create %p:%u", ptr, seq); return memsize_t(ptr) | seq; }
+
 class CChunkingRowManager : public CRowManager
 {
     friend class CRoxieFixedRowHeap;
@@ -4352,9 +4536,11 @@ private:
     CHugeHeap hugeHeap;
     ITimeLimiter *timeLimit;
     DataBuffer *activeBuffs;
-    unsigned peakPages;
+    std::atomic<unsigned> peakPages;
     unsigned dataBuffs;
     unsigned dataBuffPages;
+    unsigned reportWalkFreeThreshold = 256;
+    unsigned attachSeq = 0;
     std::atomic_uint possibleGoers = {0};
     std::atomic_uint totalHeapPages = {0};
     Owned<IActivityMemoryUsageMap> peakUsageMap;
@@ -4439,7 +4625,7 @@ public:
         activeRowManagers--;
         if (memTraceLevel >= 2)
             logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager d-tor pageLimit=%u peakPages=%u dataBuffs=%u dataBuffPages=%u possibleGoers=%u rowMgr=%p num=%u",
-                    maxPageLimit, peakPages, dataBuffs, dataBuffPages, possibleGoers.load(), this, activeRowManagers.load());
+                    maxPageLimit, peakPages.load(), dataBuffs, dataBuffPages, possibleGoers.load(), this, activeRowManagers.load());
 
         //Ensure that the rowHeaps release any references to the fixed heaps, and no longer call back when they
         //are destroyed
@@ -4450,18 +4636,35 @@ public:
         }
 
         DataBuffer *dfinger = activeBuffs;
+        unsigned gone = 0;
+        unsigned dead = 0;
         while (dfinger)
         {
-            DataBuffer *next = dfinger->next;
-            if (memTraceLevel >= 2 && dfinger->queryCount()!=1)
+            DataBuffer *next = dfinger->nextActive;
+            if (memTraceInconsistencies && getSeqFromDataId((memsize_t)next) != 0)
+                logctx.CTXLOG("INTERNAL ERROR: unexpected sequence number in nextActive in ~CChunkingRowManager - addr=%p rowMgr=%p",
+                        dfinger, this);
+
+            unsigned count = dfinger->queryCount();
+            if (count == 1)
+                gone++;
+            else if (count == 0)
+                dead++;
+
+            if (memTraceLevel >= 2 && count!=1)
                 logctx.CTXLOG("RoxieMemMgr: Memory leak: %d records remain linked in active dataBuffer list - addr=%p rowMgr=%p", 
                         dfinger->queryCount()-1, dfinger, this);
-            dfinger->next = NULL;
-            dfinger->mgr = NULL; // Avoid calling back to noteDataBufferReleased, which would be unhelpful
+            dfinger->nextActive = nullptr;
+            dfinger->changeState(DBState::attached, DBState::unowned, __func__);
+            dfinger->mgr = nullptr; // Avoid calling back to noteDataBufferReleased, which would be unhelpful
             dfinger->count.store(0, std::memory_order_relaxed);
             dfinger->released();
             dfinger = next;
         }
+
+        if ((dataBuffs != possibleGoers.load()) || (gone != possibleGoers))
+            logctx.CTXLOG("WARNING: ~CChunkingRowManager() had %u buffers %u goers %u ready to free %u dead", dataBuffs, possibleGoers.load(), gone, dead);
+
         logctx.Release();
     }
 
@@ -4814,35 +5017,65 @@ public:
                     dataBuff, dataBuffs, dataBuffPages, possibleGoers.load(), this);
 
         dataBuff->Link();
-        DataBuffer *last = NULL;
         bool needCheck;
         {
             CriticalBlock b(activeBufferCS);
-            DataBuffer *finger = activeBuffs;
-            while (finger && possibleGoers.load(std::memory_order_relaxed))
+            unsigned readyToGo = possibleGoers.load(std::memory_order_relaxed);
+            const unsigned udpDataBuffFreePercent = 10;
+
+            //Only walk the list of active buffers if more than a certain percentage are ready to be freed
+            if (readyToGo * 100 >= dataBuffs * udpDataBuffFreePercent)
             {
-                // MORE - if we get a load of data in and none out this can start to bog down...
-                DataBuffer *next = finger->next;
-                if (finger->queryCount()==1)
+                unsigned steps = 0;
+                unsigned gone = 0;
+                DataBuffer *finger = activeBuffs;
+                DataBuffer *last = nullptr;
+                while (finger && (gone < readyToGo))
                 {
-                    if (memTraceLevel >= 4)
-                        logctx.CTXLOG("RoxieMemMgr: attachDataBuff() detaching DataBuffer linked in active list - addr=%p rowMgr=%p",
+                    assertex(finger->mgr == this);
+                    // MORE - if we get a load of data in and none out this can start to bog down...
+                    DataBuffer *next = finger->nextActive;
+                    if (memTraceInconsistencies && getSeqFromDataId((memsize_t)next) != 0)
+                        logctx.CTXLOG("INTERNAL ERROR: unexpected sequence number in nextActive in ~CChunkingRowManager - addr=%p rowMgr=%p",
                                 finger, this);
-                    finger->next = NULL;
-                    finger->Release();
-                    dataBuffs--;
-                    possibleGoers.fetch_sub(1, std::memory_order_relaxed); // It doesn't matter when other threads see this update
-                    if (last)
-                        last->next = next;
+
+                    if (finger->queryCount()==1)
+                    {
+                        if (memTraceLevel >= 4)
+                            logctx.CTXLOG("RoxieMemMgr: attachDataBuff() detaching DataBuffer linked in active list - addr=%p rowMgr=%p",
+                                    finger, this);
+                        finger->mgr = nullptr;
+                        finger->nextActive = nullptr;
+                        finger->changeState(DBState::attached, DBState::unowned, __func__);
+                        finger->Release();
+                        if (last)
+                            last->nextActive = next;
+                        else
+                            activeBuffs = next;    // MORE - this is yukky code - surely there's a cleaner way!
+                        gone++;
+                    }
                     else
-                        activeBuffs = next;    // MORE - this is yukky code - surely there's a cleaner way!
+                        last = finger;
+                    finger = next;
+                    steps++;
                 }
-                else
-                    last = finger;
-                finger = next;
+
+                if (memTraceLevel >= 1 && (steps >= reportWalkFreeThreshold))
+                {
+                    logctx.CTXLOG("RoxieMemMgr: attachDataBuff() took %u iterations to free %u buffers from %u now %u", steps, gone, dataBuffs, possibleGoers.load());
+                    reportWalkFreeThreshold *= 2;
+                }
+
+                if (gone)
+                {
+                    possibleGoers.fetch_sub(gone, std::memory_order_relaxed); // It doesn't matter when other threads see this update
+                    dataBuffs -= gone;
+                }
             }
-            assert(dataBuff->next==NULL);
-            dataBuff->next = activeBuffs;
+
+            assert(dataBuff->nextActive == nullptr);
+            dataBuff->changeState(DBState::unowned, DBState::attached, __func__);
+            dataBuff->nextActive = activeBuffs;
             activeBuffs = dataBuff;
             dataBuffs++;
 
@@ -4977,7 +5210,19 @@ public:
         }
         if (map)
             map->reportStatistics(target, detail, allocatorCache);
-        target.addStatistic(SSTglobal, NULL, StSizePeakMemory, NULL, peakPages * HEAP_ALIGNMENT_SIZE, 1, 0, StatsMergeMax);
+        target.addStatistic(SSTglobal, NULL, StSizePeakRowMemory, NULL, peakPages * HEAP_ALIGNMENT_SIZE, 1, 0, StatsMergeMax);
+    }
+
+    virtual void reportSummaryStatistics(CRuntimeStatisticCollection & target)
+    {
+        unsigned pageCount = dataBuffPages + totalHeapPages.load(std::memory_order_acquire);
+        target.addStatistic(StSizeRowMemory, pageCount * HEAP_ALIGNMENT_SIZE);
+        target.addStatistic(StSizePeakRowMemory, peakPages * HEAP_ALIGNMENT_SIZE);
+    }
+
+    virtual void resetPeakMemory()
+    {
+        peakPages = dataBuffPages + totalHeapPages.load(std::memory_order_acquire);
     }
 
     void restoreLimit(unsigned numRequested)
@@ -5192,7 +5437,7 @@ protected:
         else
         {
             logctx.CTXLOG("RoxieMemMgr: pageLimit=%u peakPages=%u dataBuffs=%u dataBuffPages=%u possibleGoers=%u rowMgr=%p cnt(%u)",
-                          maxPageLimit, peakPages, dataBuffs, dataBuffPages, possibleGoers.load(), this, activeRowManagers.load());
+                          maxPageLimit, peakPages.load(), dataBuffs, dataBuffPages, possibleGoers.load(), this, activeRowManagers.load());
             Owned<IActivityMemoryUsageMap> map = getActivityUsage();
             map->report(logctx, allocatorCache);
         }
@@ -5718,7 +5963,7 @@ void * CHugeHeap::doAllocate(memsize_t _size, unsigned allocatorId, unsigned max
     {
         unsigned numPages = head->sizeInPages();
         logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::allocate(size %" I64F "u) allocated new HugeHeaplet size %" I64F "u - addr=%p pages=%u pageLimit=%u peakPages=%u rowMgr=%p",
-            (unsigned __int64) _size, (unsigned __int64) (numPages*HEAP_ALIGNMENT_SIZE), head, numPages, rowManager->getPageLimit(), rowManager->peakPages, this);
+            (unsigned __int64) _size, (unsigned __int64) (numPages*HEAP_ALIGNMENT_SIZE), head, numPages, rowManager->getPageLimit(), rowManager->peakPages.load(), this);
     }
 
     CriticalBlock b(heapletLock);
@@ -5921,7 +6166,7 @@ void * CChunkedHeap::doAllocateRow(unsigned allocatorId, unsigned maxSpillCost)
 
     if (memTraceLevel >= 3 && (memTraceLevel >= 5 || chunkSize > 32000))
         logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::allocate(size %u) allocated new FixedSizeHeaplet size %u - addr=%p pageLimit=%u peakPages=%u rowMgr=%p",
-                chunkSize, chunkSize, donorHeaplet, rowManager->getPageLimit(), rowManager->peakPages, this);
+                chunkSize, chunkSize, donorHeaplet, rowManager->getPageLimit(), rowManager->peakPages.load(), this);
 
     {
         CriticalBlock block(heapletLock);
@@ -6039,7 +6284,7 @@ unsigned CChunkedHeap::doAllocateRowBlock(unsigned allocatorId, unsigned maxSpil
 
     if (memTraceLevel >= 5 || (memTraceLevel >= 3 && chunkSize > 32000))
         logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::allocate(size %u) allocated new FixedSizeHeaplet size %u - addr=%p pageLimit=%u peakPages=%u rowMgr=%p",
-                chunkSize, chunkSize, donorHeaplet, rowManager->getPageLimit(), rowManager->peakPages, this);
+                chunkSize, chunkSize, donorHeaplet, rowManager->getPageLimit(), rowManager->peakPages.load(), this);
 
     {
         CriticalBlock b(heapletLock);
@@ -6237,20 +6482,51 @@ void CPackedChunkingHeap::reportScanProblem(unsigned, unsigned __int64 numScans,
 
 void DataBuffer::Release()
 {
-    if (count.load(std::memory_order_relaxed)==2 && mgr)
-        mgr->noteDataBuffReleased((DataBuffer*) this);
-    if (count.fetch_sub(1, std::memory_order_release) == 1)
+    IRowManager * manager = mgr;
+#ifdef TRACK_DATABUFF_STATE
+    if (state == DBState::freed)
     {
-        //No acquire fence - released() is assumed not to access the data in this buffer
-        //If it does it should contain an acquire fence
+        //Report an error, but don't fail because this will not actually cause problems
+        //It will only cause a memory corruption if the row has been allocated again
+        if (memTraceReleaseWhenFree)
+        {
+            DBGLOG("ERROR: DataBuffer::Release() called on freed buffer");
+            printStackReport();
+        }
+        return;
+    }
+#endif
+    unsigned prevCount = count.fetch_sub(1, std::memory_order_release);
+    //After this line the DataBuffer may be deleted (e.g. by another thread) if neither of the following conditions are met
+    if (prevCount == 1)
+    {
+        //The contents of this buffer should only be modified by the thread that created it - so
+        //the following acquire fence shouldn't actually be needed...
+        std::atomic_thread_fence(std::memory_order_acquire);
         released();
+    }
+    else if (prevCount == 2)
+    {
+        if (manager)
+            manager->noteDataBuffReleased(this); // NB: 'this' is not accessed in noteDataBuffReleased(), only pointer value is traced
+    }
+    else if (prevCount == 0)
+    {
+        //Report an error, but don't fail because this will not actually cause problems
+        //It will only cause a memory corruption if the row has been allocated again
+        if (memTraceReleaseWhenFree)
+        {
+            DBGLOG("ERROR: DataBuffer::Release() called on zero count buffer");
+            printStackReport();
+        }
     }
 }
 
 void DataBuffer::released()
 {
-    assert(next == NULL);
+    assert(nextDataId == 0);
     DataBufferBottom *bottom = (DataBufferBottom *)findBase(this);
+    changeState(DBState::unowned, DBState::freed, __func__);
     assert((char *)bottom != (char *)this);
     if (memTraceLevel >= 4)
         DBGLOG("RoxieMemMgr: DataBuffer::released() releasing DataBuffer - addr=%p", this);
@@ -6275,16 +6551,15 @@ bool DataBuffer::attachToRowMgr(IRowManager *rowMgr)
     }
 }
 
-void DataBuffer::noteReleased(const void *ptr)
+#ifdef TRACK_DATABUFF_STATE
+static constexpr const char * stateNames[(unsigned)DBState::max] = { "zero", "unowned", "queued", "attached", "freed" };
+void DataBuffer::changeState(DBState oldState, DBState newState, const char * func)
 {
-    //The link counter is shared by all the rows that are contained in this DataBuffer
-    if (count.fetch_sub(1, std::memory_order_release) == 1)
-    {
-        //No acquire fence - released() is assumed not to access the data in this buffer
-        //If it does it should contain an acquire fence
-        released();
-    }
+    if ((state != oldState) && memTraceInconsistencies)
+        DBGLOG("ERROR: Unexpected state in %s() was %s, expected %s", func, stateNames[(unsigned)state], stateNames[(unsigned)oldState]);
+    state = newState;
 }
+#endif
 
 void DataBuffer::noteLinked(const void *ptr)
 {
@@ -6335,9 +6610,8 @@ class CDataBufferManager : implements IDataBufferManager, public CInterface
                 // NOTE - do NOT put a CriticalBlock c(finger->crit) here since:
                 // 1. It's not needed - no-one modifies finger->nextBottom chain but me and I hold CDataBufferManager::crit
                 // 2. finger->crit is about to get released back to the pool and it's important that it is not locked at the time!
-                if (finger->okToFree.load(std::memory_order_acquire))
+                if (finger->count.load(std::memory_order_acquire) == 0)
                 {
-                    assert(!finger->isAlive());
                     DataBufferBottom *goer = finger;
                     finger = finger->nextBottom;
                     unlink(goer);
@@ -6370,46 +6644,69 @@ public:
 
     DataBuffer *allocate()
     {
-        CriticalBlock b(crit);
+        CLeavableCriticalBlock block(crit);
 
         if (memTraceLevel >= 5)
             DBGLOG("RoxieMemMgr: CDataBufferManager::allocate() curBlock=%p nextAddr=%p:%x", curBlock, nextBase, nextOffset);
 
-        if (freePending.exchange(false, std::memory_order_acquire))
+        // This code be coded as freePending.exchange(false, std::memory_order_acquire))
+        // but that will be a locked operation.
+        // Since this is the only thread that clears the flag it is more efficient to check if it is set and clear if true.
+        if (freePending.load(std::memory_order_acquire))
+        {
+            freePending.store(false, std::memory_order_release);
             freeUnused();
+        }
 
         for (;;)
         {
             if (curBlock)
             {
                 DataBufferBottom *bottom = curBlock;
-                CriticalBlock c(bottom->crit);
-                if (bottom->freeChain)
+                // No need to hold the critical section on bottom->crit since there is a lock on the CDataBufferManager so nothing else can
+                // allocate anything from any of the blocks, and freeHeadId is lock free - so no need to lock for that
+
+                memsize_t curHeadId = bottom->freeHeadId;
+                if (!isNullDataId(curHeadId))
                 {
-                    dataBuffersActive.fetch_add(1);
-                    curBlock->Link();
-                    DataBuffer *x = bottom->freeChain;
-                    bottom->freeChain = x->next;
-                    x->next = NULL;
-                    if (memTraceLevel >= 4)
-                        DBGLOG("RoxieMemMgr: CDataBufferManager::allocate() reallocated DataBuffer - addr=%p", x);
-                    return ::new(x) DataBuffer();
-                }
-                else if (nextOffset < HEAP_ALIGNMENT_SIZE) // Is there any space in the current block (it must be a whole block)
-                {
-                    dataBuffersActive.fetch_add(1);
-                    curBlock->Link();
-                    DataBuffer *x = ::new(nextBase+nextOffset) DataBuffer();
-                    nextOffset += DATA_ALIGNMENT_SIZE;
-                    if (nextOffset == HEAP_ALIGNMENT_SIZE)
+                    //If the pointer is non-null then it will remain non-null (other threads can only add items to the list, not remove them)
+                    for (;;)
                     {
-                        // MORE: May want to delete this "if" logic !!
-                        //       and let it be handled in the similar logic of "else" part below.
-                        curBlock->Release();
-                        curBlock = NULL;
-                        nextBase = NULL;
-                        //nextOffset = 0 - not needed since only used if curBlock is set
+                        DataBuffer * curFree = getPtrFromDataId(curHeadId);
+
+                        //Nothing else can modify curFree, so this pointer will remain valid
+                        DataBuffer * nextFree = getPtrFromDataId(curFree->nextDataId);
+
+                        //Always update the sequence number when updating the freeHeadId to avoid ABA problem.
+                        memsize_t nextHeadId = createDataId(nextFree, nextSeqFromDataId(curHeadId));
+                        if (likely(bottom->freeHeadId.compare_exchange_weak(curHeadId, nextHeadId, std::memory_order_acq_rel)))
+                        {
+                            bottom->Link();
+
+                            //Leave the critical section before initialising the return result
+                            block.leave();
+
+                            dataBuffersActive.fetch_add(1);
+                            curFree->nextDataId = 0;
+                            curFree->changeState(DBState::freed, DBState::unowned, __func__); // sanity check - will be overriden by the following new
+                            if (memTraceLevel >= 4)
+                                DBGLOG("RoxieMemMgr: CDataBufferManager::allocate() reallocated DataBuffer - addr=%p", curFree);
+                            return ::new(curFree) DataBuffer();
+                        }
                     }
+                }
+
+                if (nextOffset < HEAP_ALIGNMENT_SIZE) // Is there any space in the current block (it must be a whole block)
+                {
+                    curBlock->Link();
+                    char * result = nextBase+nextOffset;
+                    nextOffset += DATA_ALIGNMENT_SIZE;
+
+                    //Leave the critical section before initialising the return result
+                    block.leave();
+
+                    dataBuffersActive.fetch_add(1);
+                    DataBuffer *x = ::new(result) DataBuffer();
                     if (memTraceLevel >= 4)
                         DBGLOG("RoxieMemMgr: CDataBufferManager::allocate() allocated DataBuffer - addr=%p", x);
                     return x;
@@ -6428,24 +6725,43 @@ public:
             {
                 for (;;)
                 {
-                    CriticalBlock c(finger->crit);
-                    if (finger->freeChain)
+                    memsize_t curHeadId = finger->freeHeadId;
+                    if (!isNullDataId(curHeadId))
                     {
-                        finger->Link(); // Link once for the reference we save in curBlock
-                                        // Release (to dec ref count) when no more free blocks in the page
-                        if (finger->isAlive())
+                        //If the pointer is non-null then it will remain non-null (items can only be added, not removed
+                        //from the free list)
+                        if (finger->isAliveAndLink())
                         {
                             curBlock = finger;
                             nextBase = nullptr; // should never be accessed
                             nextOffset = HEAP_ALIGNMENT_SIZE; // only use the free chain to allocate
                             dataBuffersActive.fetch_add(1);
-                            finger->Link(); // and once for the value we are about to return
-                            DataBuffer *x = finger->freeChain;
-                            finger->freeChain = x->next;
-                            x->next = NULL;
-                            if (memTraceLevel >= 4)
-                                DBGLOG("RoxieMemMgr: CDataBufferManager::allocate() reallocated DataBuffer - addr=%p", x);
-                            return ::new(x) DataBuffer();
+
+                            for (;;)
+                            {
+                                DataBuffer * curFree = getPtrFromDataId(curHeadId);
+                                assertex(curFree);
+
+                                //Nothing else can modify curFree, so this pointer will remain valid
+                                DataBuffer * nextFree = getPtrFromDataId(curFree->nextDataId);
+
+                                //Always update the sequence number when updating the freeHeadId to avoid ABA problem
+                                memsize_t nextHeadId = createDataId(nextFree, nextSeqFromDataId(curHeadId));
+                                if (likely(finger->freeHeadId.compare_exchange_weak(curHeadId, nextHeadId, std::memory_order_acq_rel)))
+                                {
+                                    finger->Link();
+
+                                    //Leave the critical section before initialising the return result
+                                    block.leave();
+
+                                    dataBuffersActive.fetch_add(1);
+                                    curFree->nextDataId = 0;
+                                    curFree->changeState(DBState::freed, DBState::unowned, __func__); // sanity check - will be overriden by the following new
+                                    if (memTraceLevel >= 4)
+                                        DBGLOG("RoxieMemMgr: CDataBufferManager::allocate() reallocated DataBuffer - addr=%p", curFree);
+                                    return ::new(curFree) DataBuffer();
+                                }
+                            }
                         }
                     }
                     finger = finger->nextBottom;
@@ -6478,7 +6794,7 @@ public:
     }
 };
 
-DataBufferBottom::DataBufferBottom(CDataBufferManager *_owner, DataBufferBottom *ownerFreeChain) : okToFree(false)
+DataBufferBottom::DataBufferBottom(CDataBufferManager *_owner, DataBufferBottom *ownerFreeChain)
 {
     owner = _owner;
     if (ownerFreeChain)
@@ -6493,37 +6809,30 @@ DataBufferBottom::DataBufferBottom(CDataBufferManager *_owner, DataBufferBottom 
         prevBottom = this;
         nextBottom = this;
     }
-    freeChain = NULL;
+    freeHeadId = 0;
 }
 
 void DataBufferBottom::addToFreeChain(DataBuffer * buffer)
 {
-    CriticalBlock b(crit);
-    buffer->next = freeChain;
-    freeChain = buffer;
+    memsize_t expected = freeHeadId.load();
+    for (;;)
+    {
+        //Always increment the sequence number to prevent ABA problems.
+        unsigned nextSeq = nextSeqFromDataId(expected);
+        memsize_t newHead = createDataId(buffer, nextSeq);
+        buffer->nextDataId = expected;
+        if (likely(freeHeadId.compare_exchange_weak(expected, newHead, std::memory_order_acq_rel)))
+            break;
+    }
 }
 
 void DataBufferBottom::Release()
 {
+    //Need to save the value of owner because the object can be freed as soon as counter goes to 0
+    CDataBufferManager * savedOwner = owner;
     if (count.fetch_sub(1, std::memory_order_release) == 1)
     {
-        //No acquire fence - released() is assumed not to access the data in this buffer
-        //If it does it should contain an acquire fence
-        released();
-    }
-}
-
-void DataBufferBottom::released()
-{
-    // Not safe to free here as owner may be in the middle of allocating from it
-    // instead, give owner a hint that it's worth thinking about freeing this page next time it is safe
-    unsigned expected = 0;
-    if (count.compare_exchange_strong(expected, DEAD_PSEUDO_COUNT, std::memory_order_release))
-    {
-        //Need to save the value of owner because the object can be freed as soon as okToFree is set
-        CDataBufferManager * savedOwner = owner;
-        //No acquire fence required since the following code doesn't read anything from the object
-        okToFree.store(true, std::memory_order_release);
+        //indicate to the owner that there is now a page that is ready to be freed.
         savedOwner->freePending.store(true, std::memory_order_release);
     }
 }
@@ -6583,7 +6892,7 @@ extern void setMemoryStatsInterval(unsigned secs)
     lastStatsCycles = get_cycles_now();
 }
 
-extern void setTotalMemoryLimit(bool allowHugePages, bool allowTransparentHugePages, bool retainMemory, memsize_t max, memsize_t largeBlockSize, const unsigned * allocSizes, ILargeMemCallback * largeBlockCallback)
+extern void setTotalMemoryLimit(bool allowHugePages, bool allowTransparentHugePages, bool retainMemory, bool lockMemory, memsize_t max, memsize_t largeBlockSize, const unsigned * allocSizes, ILargeMemCallback * largeBlockCallback)
 {
     assertex(largeBlockSize == align_pow2(largeBlockSize, HEAP_ALIGNMENT_SIZE));
     memsize_t totalMemoryLimit = (unsigned) (max / HEAP_ALIGNMENT_SIZE);
@@ -6592,8 +6901,17 @@ extern void setTotalMemoryLimit(bool allowHugePages, bool allowTransparentHugePa
         totalMemoryLimit = 1;
     if (memTraceLevel)
         DBGLOG("RoxieMemMgr: Setting memory limit to %" I64F "d bytes (%" I64F "u pages)", (unsigned __int64) max, (unsigned __int64)totalMemoryLimit);
-    initializeHeap(allowHugePages, allowTransparentHugePages, retainMemory, totalMemoryLimit, largeBlockGranularity, largeBlockCallback);
+    initializeHeap(allowHugePages, allowTransparentHugePages, retainMemory, lockMemory, totalMemoryLimit, largeBlockGranularity, largeBlockCallback);
     initAllocSizeMappings(allocSizes ? allocSizes : defaultAllocSizes);
+}
+
+void setMemoryOptions(IPropertyTree * options)
+{
+    if (!options)
+        return;
+    memTraceInconsistencies = options->getPropBool("@roxiememTraceInconsistencies", true);
+    memTraceReleaseWhenFree = options->getPropBool("@roxiememTraceReleaseWhenFree", true);
+    //MORE: Other options should probably be processed here - so they can be read consistently
 }
 
 extern memsize_t getTotalMemoryLimit()
@@ -6893,7 +7211,8 @@ protected:
 
         memsize_t memory = (useLargeMemory ? largeMemory : smallMemory) * (unsigned __int64)0x100000U;
         const bool retainMemory = true; // remove the time releasing pages from the timing overhead
-        initializeHeap(false, true, retainMemory, (unsigned)(memory / HEAP_ALIGNMENT_SIZE), 0, NULL);
+        const bool lockMemory = false; // remove the time faulting in pages from the timing overhead
+        initializeHeap(false, true, retainMemory, lockMemory, (unsigned)(memory / HEAP_ALIGNMENT_SIZE), 0, NULL);
         initAllocSizeMappings(defaultAllocSizes);
     }
 
@@ -7162,7 +7481,7 @@ protected:
         for (unsigned i1 = 0; i1 < numThreads; i1++)
             threads[i1] = new BitmapAllocatorThread(sem, size, numThreads);
         for (unsigned i2 = 0; i2 < numThreads; i2++)
-            threads[i2]->start();
+            threads[i2]->start(false);
 
         unsigned startTime = msTick();
         sem.signal(numThreads);
@@ -7612,7 +7931,7 @@ protected:
     {
         for (unsigned i2 = 0; i2 < numCasThreads; i2++)
         {
-            threads[i2]->start();
+            threads[i2]->start(false);
         }
 
         bool aborted = false;
@@ -8569,8 +8888,8 @@ protected:
         callback.rows = (const void * *)rowManager->allocate(1, 0);
         Owned<ReleaseThread> releaser = new ReleaseThread(callback, rowManager);
         Owned<ResizeThread> resizer = new ResizeThread(callback, rowManager);
-        releaser->start();
-        resizer->start();
+        releaser->start(false);
+        resizer->start(false);
         resizer->join();
         releaser->join();
         CPPUNIT_ASSERT(!callback.failed);
@@ -8630,7 +8949,7 @@ public:
 protected:
     void testSetup()
     {
-        setTotalMemoryLimit(true, true, false, memorySize, 0, NULL, NULL);
+        setTotalMemoryLimit(true, true, false, false, memorySize, 0, NULL, NULL);
     }
 
     void testCleanup()
@@ -8951,7 +9270,7 @@ public:
 protected:
     void testSetup()
     {
-        setTotalMemoryLimit(true, true, false, hugeMemorySize, 0, NULL, NULL);
+        setTotalMemoryLimit(true, true, false, false, hugeMemorySize, 0, NULL, NULL);
     }
 
     void testCleanup()
@@ -9032,7 +9351,7 @@ public:
 protected:
     void testSetup()
     {
-        setTotalMemoryLimit(true, true, true, tuningMemorySize, 0, NULL, NULL);
+        setTotalMemoryLimit(true, true, true, true, tuningMemorySize, 0, NULL, NULL);
     }
 
     void testCleanup()

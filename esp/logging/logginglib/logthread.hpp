@@ -87,7 +87,7 @@ public:
     CLogRequestReader(CLogRequestReaderSettings* _settings, CLogThread* _logThread)
         : settings(_settings), logThread(_logThread), threaded("LogRequestReader")
     {
-        threaded.init(this);
+        threaded.init(this, false);
     };
 
     ~CLogRequestReader();
@@ -146,7 +146,7 @@ class CLogThread : public Thread , implements IUpdateLogThread
     void checkAndCreateFile(const char* fileName);
 
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CLogThread();
     CLogThread(IPropertyTree* _agentConfig, const char* _service, const char* _agentName, IEspLogAgent* _logAgent = nullptr, const char* _tankFile = nullptr);

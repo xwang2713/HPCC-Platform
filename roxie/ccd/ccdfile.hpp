@@ -61,7 +61,7 @@ interface ILazyFileIO : extends IFileIO
 interface IRoxieFileCache : extends IInterface
 {
     virtual ILazyFileIO *lookupFile(const char *lfn, RoxieFileType fileType, IPartDescriptor *pdesc, unsigned numParts,
-                                      unsigned channel, const StringArray &deployedLocationInfo, bool startFileCopy) = 0;
+                                      unsigned channel, const StringArray &localEnoughLocationInfo, const StringArray &deployedLocationInfo, bool startFileCopy) = 0;
     virtual RoxieFileStatus fileUpToDate(IFile *f, offset_t size, const CDateTime &modified, bool isCompressed, bool autoDisconnect=true) = 0;
     virtual int numFilesToCopy() = 0;
     virtual void closeExpired(bool remote) = 0;
@@ -143,7 +143,7 @@ interface IResolvedFileCreator : extends IResolvedFile
 };
 
 extern IResolvedFileCreator *createResolvedFile(const char *lfn, const char *physical, bool isSuperFile);
-extern IResolvedFile *createResolvedFile(const char *lfn, const char *physical, IDistributedFile *dFile, IRoxieDaliHelper *daliHelper, bool isDynamic, bool cacheIt, bool writeAccess);
+extern IResolvedFile *createResolvedFile(const char *lfn, const char *physical, IDistributedFile *dFile, IRoxieDaliHelper *daliHelper, bool isDynamic, bool cacheIt, AccessMode accessMode);
 
 interface IRoxiePublishCallback
 {

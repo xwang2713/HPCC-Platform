@@ -108,6 +108,7 @@ typedef IEsdlCommand *(*EsdlCommandFactory)(const char *cmdname);
 #define ESDLOPT_WSDL_ADDRESS            "--wsdl-address"
 #define ESDLOPT_UNVERSIONED_NAMESPACE   "--unversioned-ns"
 #define ESDLOPT_UNVERSIONED_NAMESPACE_S "-uvns"
+#define ESDLOPT_NO_EXCEPT_INLINE        "--no-exceptions-inline"
 
 #define DEFAULT_NAMESPACE_BASE          "urn:hpccsystems:ws"
 #define ESDLOPTLIST_DELIMITER           ";"
@@ -132,7 +133,9 @@ typedef IEsdlCommand *(*EsdlCommandFactory)(const char *cmdname);
 #define ESDL_OPTION_ECL_INCLUDE_LIST    "--ecl-imports"
 #define ESDL_OPTION_ECL_HEADER_BLOCK    "--ecl-header"
 #define ESDL_OPTION_ENCODED             "--encoded"
+#define ESDL_OPTION_SSL                 "--ssl"
 
+#define ESDL_OPTION_USE_CASSANDRA          "--use-cassandra"
 #define ESDL_OPTION_CASSANDRA_CONSISTENCY  "--cassandra-consistency"
 
 #define ESDLOPT_INCLUDE_PATH            "--include-path"
@@ -140,6 +143,13 @@ typedef IEsdlCommand *(*EsdlCommandFactory)(const char *cmdname);
 #define ESDLOPT_INCLUDE_PATH_ENV        "ESDL_INCLUDE_PATH"
 #define ESDLOPT_INCLUDE_PATH_INI        "esdlIncludePath"
 #define ESDLOPT_INCLUDE_PATH_USAGE      "   -I, --include-path <include path>    Locations to look for included esdl files\n"
+#define ESDLOPT_RECURSIVE               "--recursive"
+#define ESDLOPT_RECURSIVE_S             "-r"
+
+#define ESDLOPT_MANIFEST_NOCDATA        "--no-cdata"
+#define ESDLOPT_MANIFEST_OUTFILE        "--outfile"
+#define ESDLOPT_MANIFEST_FORMAT         "--output-type"
+
 
 bool matchVariableOption(ArgvIterator &iter, const char prefix, IArrayOf<IEspNamedValue> &values);
 
@@ -187,8 +197,8 @@ public:
             "                                            " ESDL_TRACE_CATEGORY_WARNING ": all warning output\n"
             "                                            " ESDL_TRACE_CATEGORY_PROGRESS ": all progress output\n"
             "                                            " ESDL_TRACE_CATEGORY_INFO ": all info output\n"
-            "                                        Errors and warnings are enabled by default if not verbose, and all are enabled when verbose."
-            "                                        Use an empty <flags> value to disable all."
+            "                                        Errors and warnings are enabled by default if not verbose, and all are enabled when verbose.\n"
+            "                                        Use an empty <flags> value to disable all.\n"
         );
     }
     virtual void outputWsStatus(int code, const char * message)
@@ -220,7 +230,7 @@ public:
     EsdlCmdHelper()
     {
         esdlDef.set(createEsdlDefinition(nullptr, makeCmdReporter));
-        defHelper.set(createEsdlDefinitionHelper());
+        defHelper.setown(createEsdlDefinitionHelper());
     }
 
     IMPLEMENT_IINTERFACE;
@@ -302,12 +312,12 @@ public:
         fprintf(stderr, "\n");
     }
 
-    static IClientWsESDLConfig * getWsESDLConfigSoapService(const char *server, const char *port, const char *username, const char *password)
+    static IClientWsESDLConfig * getWsESDLConfigSoapService(bool https, const char *server, const char *port, const char *username, const char *password)
     {
         if(server == NULL)
             throw MakeStringException(-1, "Server url not specified");
 
-        VStringBuffer url("http://%s:%s/WsESDLConfig/?ver_=%s", server, port, VERSION_FOR_ESDLCMD);
+        VStringBuffer url("%s://%s:%s/WsESDLConfig/?ver_=%s", https ? "https" : "http", server, port, VERSION_FOR_ESDLCMD);
 
         IClientWsESDLConfig * esdlConfigClient = createWsESDLConfigClient();
         esdlConfigClient->addServiceUrl(url.str());

@@ -59,6 +59,10 @@
   so that the compiler can warn you if you've gotten it wrong. Trailing fields
   not used in the filter are ignored (always treated as wildcards).</para>
 
+  <para>Prior to version 7.0, KEYED(expression) on a disk read filter would
+  give a compile-time error if the field being filtered was not fixed size. In
+  version 7.0 and later versions, it won't.</para>
+
   <para>The rules for their use are as follows (the term "segmonitor" refers
   to an internal object created to represent the possible match conditions for
   a single keyable field):</para>
@@ -66,7 +70,7 @@
   <para>1. KEYED generates a segmonitor. The segmonitor may be a wild one if
   the <emphasis>expression</emphasis> can never be false, such as:</para>
 
-  <programlisting>   KEYED(inputval = '' OR field = inputval)</programlisting>
+  <programlisting lang="ECL">   KEYED(inputval = '' OR field = inputval)</programlisting>
 
   <para>2. WILD generates a wild segmonitor, unless there is also a KEYED()
   filter on the same field.</para>
@@ -90,7 +94,7 @@
 
   <para>Example:</para>
 
-  <programlisting>ds := DATASET('~local::rkc::person',
+  <programlisting lang="ECL">ds := DATASET('~LR::person',
         { STRING15 f1, STRING15 f2, STRING15 f3, STRING15 f4,
         UNSIGNED8 filepos{VIRTUAL(fileposition)} }, FLAT);
 ix := INDEX(ds, { ds },'\\lexis\\person.name_first.key');

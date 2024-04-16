@@ -33,10 +33,12 @@ include_directories (
          ./../../roxie/roxiemem 
          ./../../system/include 
          ./../../system/jlib 
-         ./../../system/aeron/aeron-client/src/main/cpp 
-         ./../../system/aeron/aeron-driver/src/main/c/
-         ./../../system/aeron/aeron-samples/src/main/cpp  # temporary
          ./../../roxie/ccd 
+         ./../../roxie/udplib
+         ./../../common/thorhelper
+         ./../../common/workunit
+         ./../../rtl/include
+         ./../../rtl/eclrtl
     )
 
 ADD_DEFINITIONS ( -D_CONSOLE )
@@ -51,11 +53,3 @@ target_link_libraries ( udptransport
          roxiemem
          udplib 
     )
-
-if (USE_AERON)
-  target_link_libraries ( udptransport 
-         aeron_client
-         aeron_driver
-    )
-endif()
-

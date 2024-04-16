@@ -631,7 +631,8 @@ void PythonThreadContext::addManifestFiles(ICodeContext *codeCtx)
         IEngineContext *engine = codeCtx->queryEngineContext();
         if (engine)
         {
-            const StringArray &manifestModules = engine->queryManifestFiles("pyzip");
+            StringArray manifestModules;
+            engine->getManifestFiles("pyzip", manifestModules);
             if (manifestModules.length())
             {
                 PyObject *sysPath = PySys_GetObject((char *) "path");
@@ -640,11 +641,14 @@ void PythonThreadContext::addManifestFiles(ICodeContext *codeCtx)
                 ForEachItemIn(idx, manifestModules)
                 {
                     const char *path = manifestModules.item(idx);
-                    DBGLOG("Manifest zip %s", path);
-                    OwnedPyObject newPath = PyString_FromString(path);
-                    PyList_Insert(sysPath, 0, newPath);
-                    checkPythonError();
-                    engine->onTermination(Python27GlobalState::removePath, manifestModules.item(idx), true);
+                    if (path)
+                    {
+                        DBGLOG("Manifest zip %s", path);
+                        OwnedPyObject newPath = PyString_FromString(path);
+                        PyList_Insert(sysPath, 0, newPath);
+                        checkPythonError();
+                        engine->onTermination(Python27GlobalState::removePath, manifestModules.item(idx), true);
+                    }
                 }
             }
         }

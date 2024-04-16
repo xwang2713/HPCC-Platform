@@ -60,6 +60,7 @@ class ECLFile:
 
     def __init__(self, ecl, dir_a, dir_ex, dir_r, dir_inc, cluster, args):
         logger.debug("%3d. ECLFile(ecl: '%s', cluster: '%s').", self.taskId, ecl,  cluster)
+        self.config = getConfig()
         self.dir_ec = os.path.dirname(ecl)
         self.dir_ex = dir_ex
         self.dir_r = dir_r
@@ -87,6 +88,8 @@ class ECLFile:
         self.version=''
         self.versionId=0
         self.timeout = self.checkFileTimeout(int(args.timeout))
+        if self.timeout == -1:
+            self.timeout = int(self.config.timeout) # use default from config
         self.args = args
         self.eclccWarning = ''
         self.eclccWarningChanges = ''
@@ -110,7 +113,6 @@ class ECLFile:
         # -X in the CLI is the highest.
         self.optXHash=self.checkQueryxmlFile()
 
-        self.config = getConfig()
         try:
             # Process definitions of stored input value(s) from config
             for param in self.config.Params:
@@ -509,11 +511,18 @@ class ECLFile:
             logger.debug("%3d. recieved: " + repr(recieved),  self.taskId )
             diffLines = ''
             lineIndex = 1
+            missingLines = 0
+            addedLines = 0
             for line in difflib.unified_diff(expected, recieved, fromfile=self.xml_e, tofile=self.xml_r):
+                if line.startswith('-'):
+                    missingLines += 1
+                if line.startswith('-'):
+                    addedLines += 1
                 diffLines += line
                 logger.debug("%3d. Line" + str(lineIndex) +":" + line,  self.taskId )
                 lineIndex += 1
 
+            logger.debug("%3d. missingLines: %d, addedLines: %d" % (self.taskId, missingLines,  addedLines))
             logger.debug("%3d. diffLines: " + diffLines,  self.taskId )
             if len(diffLines) > 0:
                 self.diff += ("%3d. Test: %s\n") % (self.taskId,  self.getBaseEclRealName())

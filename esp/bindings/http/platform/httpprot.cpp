@@ -89,7 +89,7 @@ void CHttpProtocol::init(IPropertyTree * cfg, const char * process, const char *
             if(!http_pool_factory)
                 http_pool_factory = new CHttpThreadPoolFactory();
             if(!http_thread_pool)
-                http_thread_pool = createThreadPool("Http Thread", http_pool_factory, NULL, m_maxConcurrentThreads, INFINITE);
+                http_thread_pool = createThreadPool("Http Thread", http_pool_factory, false, nullptr, m_maxConcurrentThreads, INFINITE);
         }
     }
 
@@ -175,7 +175,8 @@ bool CHttpProtocol::notifySelected(ISocket *sock,unsigned selected, IPersistentH
                     CHttpThread *workthread = new CHttpThread(accepted.getLink(), apport, CEspProtocol::getViewConfig(), false, nullptr, persistentHandler);
                     workthread->setMaxRequestEntityLength(getMaxRequestEntityLength());
                     workthread->setShouldClose(shouldClose);
-                    workthread->start();
+                    workthread->start(false);
+                    //MORE: The caller should wait for the thread to finish, otherwise the program can crash on exit
                     workthread->Release();
                 }
             }
@@ -216,32 +217,38 @@ CSecureHttpProtocol::CSecureHttpProtocol(IPropertyTree* cfg)
     {
         m_config.setown(cfg);
 
-        //ensure keys are specified. Passphrase is optional
-        StringBuffer sb;
-        cfg->getProp("certificate", sb);
-        if(sb.length() == 0)
-        {
-            throw MakeStringException(-1, "certificate file not specified in config file");
-        }
-
-        cfg->getProp("privatekey", sb.clear());
-        if(sb.length() == 0)
-        {
-            throw MakeStringException(-1, "private key file not specified in config file");
-        }
-
-        createSecureSocketContextEx2_t xproc = NULL;
         IEspPlugin *pplg = loadPlugin(SSLIB);
-        if (pplg)
-            xproc = (createSecureSocketContextEx2_t) pplg->getProcAddress("createSecureSocketContextEx2");
-        else
+        if (!pplg)
             throw MakeStringException(-1, "dll/shared-object %s can't be loaded", SSLIB);
 
-
-        if (xproc)
-            m_ssctx.setown(xproc(cfg, ServerSocket));
+        const char *issuer = cfg->queryProp("issuer");
+        if (!isEmptyString(issuer))
+        {
+            const char *trustedPeers = nullptr;
+            if (cfg->hasProp("verify"))
+                trustedPeers = cfg->queryProp("verify/trusted_peers");
+            createSecureSocketContextSecretSrv_t xproc = (createSecureSocketContextSecretSrv_t) pplg->getProcAddress("createSecureSocketContextSecretSrv");
+            if (!xproc)
+                throw MakeStringException(-1, "procedure createSecureSocketContextSecretSrv can't be loaded");
+            m_ssctx.setown(xproc(issuer, trustedPeers, false));
+        }
         else
-            throw MakeStringException(-1, "procedure createSecureSocketContextEx2 can't be loaded");
+        {
+            //ensure keys are specified. Passphrase is optional
+            StringBuffer sb;
+            cfg->getProp("certificate", sb);
+            if(sb.isEmpty())
+                throw MakeStringException(-1, "certificate file not specified in config file");
+
+            cfg->getProp("privatekey", sb.clear());
+            if(sb.isEmpty())
+                throw MakeStringException(-1, "private key file not specified in config file");
+
+            createSecureSocketContextEx2_t xproc = (createSecureSocketContextEx2_t) pplg->getProcAddress("createSecureSocketContextEx2");
+            if (!xproc)
+                throw MakeStringException(-1, "procedure createSecureSocketContextEx2 can't be loaded");
+            m_ssctx.setown(xproc(cfg, ServerSocket));
+        }
     }
 }
 
@@ -278,7 +285,7 @@ void CSecureHttpProtocol::init(IPropertyTree * cfg, const char * process, const 
             if(!http_pool_factory)
                 http_pool_factory = new CHttpThreadPoolFactory();
             if(!http_thread_pool)
-                http_thread_pool = createThreadPool("Http Thread", http_pool_factory, NULL, m_maxConcurrentThreads, INFINITE);
+                http_thread_pool = createThreadPool("Http Thread", http_pool_factory, false, nullptr, m_maxConcurrentThreads, INFINITE);
         }
     }
 
@@ -342,8 +349,9 @@ bool CSecureHttpProtocol::notifySelected(ISocket *sock,unsigned selected, IPersi
                         CHttpThread *workthread = new CHttpThread(accepted.getLink(), apport, CEspProtocol::getViewConfig(), true, m_ssctx.get(), persistentHandler);
                         workthread->setMaxRequestEntityLength(getMaxRequestEntityLength());
                         workthread->setShouldClose(shouldClose);
-                        workthread->start();
+                        workthread->start(false);
                         ESPLOG(LogMax, "Request processing thread started.");
+                        //MORE: The caller should wait for the thread to finish, otherwise the program can crash on exit
                         workthread->Release();
                     }
                 }
@@ -422,17 +430,15 @@ bool CHttpThread::onRequest()
     if(m_is_ssl && m_ssctx && m_persistentHandler == nullptr)
     {
         ESPLOG(LogMax, "Creating secure socket");
-        secure_sock.setown(m_ssctx->createSecureSocket(m_socket.getLink(), getEspLogLevel()));
+        LogLevel logLevel = getEspLogLevel();
+        secure_sock.setown(m_ssctx->createSecureSocket(m_socket.getLink(), logLevel));
         int res = 0;
         try
         {
             ESPLOG(LogMax, "Accepting from secure socket");
-            res = secure_sock->secure_accept();
+            res = secure_sock->secure_accept(logLevel);
             if(res < 0)
-            {
-                ESPLOG(LogMin, "Error accepting from secure socket");
                 return false;
-            }
         }
         catch(IException* e)
         {

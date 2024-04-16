@@ -48,7 +48,7 @@ typedef unsigned short UChar;
 
 //Should be incremented whenever the virtuals in the context or a helper are changed, so
 //that a work unit can't be rerun.  Try as hard as possible to retain compatibility.
-#define ACTIVITY_INTERFACE_VERSION      653
+#define ACTIVITY_INTERFACE_VERSION      654
 #define MIN_ACTIVITY_INTERFACE_VERSION  650             //minimum value that is compatible with current interface
 
 typedef unsigned char byte;
@@ -283,6 +283,7 @@ interface IEngineRowAllocator : extends IInterface
 
     virtual void gatherStats(CRuntimeStatisticCollection & stats) = 0;
     virtual void releaseAllRows() = 0; // Only valid on unique allocators, use with extreme care
+    virtual void emptyCache() = 0;      // Should be called on all blocked allocators.
 };
 
 interface IRowSerializerTarget
@@ -612,7 +613,10 @@ enum
     XWFtrim         = 0x0001,
     XWFopt          = 0x0002,
     XWFnoindent     = 0x0004,
-    XWFexpandempty  = 0x0008
+    XWFexpandempty  = 0x0008,
+    XWFonlyindentroot = 0x0010, //JSON only for now.  only indent and add newline at root level.  Useful for writing out individual rows in ECL output
+    XWFbracketformenc = 0x0020,  //form encoding has a couple different styles: bracket, dot, and our hpcc proprietary format
+    XWFhpccformenc = 0x0040
 };
 
 
@@ -775,8 +779,9 @@ interface ICodeContext : public IResourceContext
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) = 0;
     virtual IEngineRowAllocator * getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, unsigned flags) const = 0;
     virtual void addWuExceptionEx(const char * text, unsigned code, unsigned severity, unsigned audience, const char * source) = 0;
+    virtual unsigned getElapsedMs() const = 0;
+    virtual unsigned getWorkflowId() const = 0; // Note: don't use yet as it has not been fully implemented in all derived classes
 };
-
 
 //Provided by engine=>can extend
 interface IFilePositionProvider : extends IInterface
@@ -1150,6 +1155,7 @@ enum
     TDWupdatecrc        = 0x80000,      // has format crc
     TDWexpires          = 0x100000,
     TDWrestricted       = 0x200000,
+    TDWnocompress       = 0x400000,
 };
 
 //flags for thor index read
@@ -1194,6 +1200,7 @@ enum
     TIWhaswidth         = 0x0800,
     TIWexpires          = 0x1000,
     TIWmaxlength        = 0x2000,       // explicit maxlength
+    TIWcompressdefined  = 0x4000,       // compression is defined via string value
     TIWrestricted       = 0x200000,     // value matches the equivalent TDW flag (same value as TDW* caused problems as some index related code uses TDW* flags)
 };
 
@@ -1234,6 +1241,7 @@ struct IHThorIndexWriteArg : public IHThorArg
     virtual unsigned getMaxKeySize() = 0;
     virtual const IBloomBuilderInfo * const *queryBloomInfo() const = 0;
     virtual __uint64 getPartitionFieldMask() const = 0;
+    virtual const char * queryCompression() = 0;
 };
 
 struct IHThorFirstNArg : public IHThorArg
@@ -2223,7 +2231,10 @@ enum
     SOAPFnoroot         = 0x004000,
     SOAPFjson           = 0x008000,
     SOAPFxml            = 0x010000,
-    SOAPFlogusertail    = 0x020000
+    SOAPFlogusertail    = 0x020000,
+    SOAPFformEncoded    = 0x040000,
+    SOAPFpersist        = 0x080000,
+    SOAPFpersistMax     = 0x100000,
 };
 
 struct IHThorWebServiceCallActionArg : public IHThorArg
@@ -2258,6 +2269,7 @@ struct IHThorWebServiceCallActionArg : public IHThorArg
     virtual const char * getRequestHeader() = 0;
     virtual const char * getRequestFooter() = 0;
     virtual void getLogTailText(size32_t & lenText, char * & text, const void * left) = 0;  // iff SOAPFlogusertail set
+    virtual unsigned getPersistMaxRequests() = 0; // only available iff SOAPFpersistMax
 };
 typedef IHThorWebServiceCallActionArg IHThorSoapActionArg ;
 typedef IHThorWebServiceCallActionArg IHThorHttpActionArg ;
@@ -2807,6 +2819,8 @@ struct IHThorNWayMergeJoinArg : public IHThorArg
 enum
 {
     PPFparallel                 = 0x0001,
+    PPFsequential               = 0x0002,
+    PPFnulltransform            = 0x0004,
 };
 
 struct IHThorPrefetchProjectArg : public IHThorArg 
@@ -2940,7 +2954,7 @@ struct IGlobalCodeContext
     virtual void fail(int, const char *) = 0;  
 
     virtual bool isResult(const char * name, unsigned sequence) = 0;
-    virtual unsigned getWorkflowId() = 0;
+    virtual unsigned getWorkflowIdDeprecated() = 0; // Workflows are not associated with global context. Deprecated. Left here to avoid changing interface.
     virtual void doNotify(char const * name, char const * text) = 0;
 
     virtual int queryLastFailCode() = 0;
@@ -2959,13 +2973,11 @@ struct IGlobalCodeContext
     virtual void doNotify(char const * name, char const * text, const char * target) = 0;
 };
 
-
 struct IEclProcess : public IInterface
 {
     virtual int perform(IGlobalCodeContext * gctx, unsigned wfid) = 0;
     virtual unsigned getActivityVersion() const = 0;
 };
-
 
 //------------------------------------------------------------------------------------------------
 

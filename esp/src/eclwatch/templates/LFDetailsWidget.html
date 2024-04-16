@@ -30,6 +30,7 @@
                                         <input id="${id}CopyTargetRetainSuperfileStructure" title="${i18n.RetainSuperfileStructure}:" name="superCopy" data-dojo-type="dijit.form.CheckBox" />
                                         <input id="${id}CopyPreserveCompression" title="${i18n.PreserveCompression}:" checked="true" name="preserveCompression" data-dojo-type="dijit.form.CheckBox" />
                                         <input id="${id}CopyExpireDays" title="${i18n.ExpireDays}:" name="ExpireDays" data-dojo-type="dijit.form.NumberTextBox" />
+                                        <input id="${id}MaxConnections" title="${i18n.MaxConnections}:" name="maxConnections" data-dojo-type="dijit.form.NumberTextBox" />
                                     </div>
                                 </div>
                                 <div class="dijitDialogPaneActionBar">
@@ -144,6 +145,10 @@
                                 <div id="${id}JobName"></div>
                             </li>
                             <li>
+                                <label for="${id}FormattedCost">${i18n.Cost}: </label>
+                                <div id="${id}FormattedCost"></div>
+                            </li>
+                            <li>
                                 <label class="Prompt" for="${id}isProtected">${i18n.Protected}:</label>
                                 <div><input id="${id}isProtected" data-dojo-type="dijit.form.CheckBox" /></div>
                             </li>
@@ -160,10 +165,6 @@
                                 <div id="${id}KeyType"></div>
                             </li>
                             <li>
-                                <label for="${id}Filesize">${i18n.FileSize}: </label>
-                                <div id="${id}Filesize"></div>
-                            </li>
-                            <li>
                                 <label for="${id}Format">${i18n.Format}: </label>
                                 <div id="${id}Format"></div>
                             </li>
@@ -176,12 +177,20 @@
                                 <div id="${id}CompressedFileSizeString"></div>
                             </li>
                             <li>
+                                <label for="${id}Filesize">${i18n.FileSize}: </label>
+                                <div id="${id}Filesize"></div>
+                            </li>
+                            <li>
                                 <label for="${id}PercentCompressed">${i18n.PercentCompressed}: </label>
                                 <div id="${id}PercentCompressed"></div>
                             </li>
                             <li>
                                 <label for="${id}Modified">${i18n.Modified}: </label>
                                 <div id="${id}Modified"></div>
+                            </li>
+                            <li>
+                                <label for="${id}ExpirationDate">${i18n.ExpirationDate}: </label>
+                                <div id="${id}ExpirationDate"></div>
                             </li>
                             <li>
                                 <label for="${id}ExpireDays">${i18n.ExpireDays}: </label>

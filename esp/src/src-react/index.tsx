@@ -1,13 +1,21 @@
 import * as React from "react";
 import * as ReactDOM from "react-dom";
 import { initializeIcons } from "@fluentui/react";
-import { initSession } from "src/Session";
+import { scopedLogger } from "@hpcc-js/util";
+import { cookieKeyValStore } from "src/KeyValStore";
+import { needsRedirectV9 } from "src/Session";
+import { ECLWatchLogger } from "./hooks/logging";
+import { replaceUrl } from "./util/history";
 
-import "css!dojo-themes/flat/flat.css";
+import "css!dijit-themes/flat/flat.css";
 import "css!hpcc/css/ecl.css";
 import "css!hpcc/css/hpcc.css";
+import "src-react-css/index.css";
 
-initializeIcons();
+ECLWatchLogger.init();
+initializeIcons("/esp/files/dist/fluentui-fonts/");
+
+const logger = scopedLogger("../index.tsx");
 
 declare const dojoConfig: any;
 
@@ -24,11 +32,43 @@ dojoConfig.urlInfo = {
 };
 dojoConfig.disableLegacyHashing = true;
 
-initSession();
-
-import("./components/Frame").then(_ => {
-    ReactDOM.render(
-        <_.DevFrame />,
-        document.getElementById("placeholder")
-    );
+needsRedirectV9().then(async redirected => {
+    if (!redirected) {
+        loadUI();
+    }
 });
+
+async function loadUI() {
+    const authTypeResp = await fetch("/esp/getauthtype");
+    const authType = await authTypeResp?.text() ?? "None";
+    const userStore = cookieKeyValStore();
+    const userSession = await userStore.getAll();
+    if (authType.indexOf("None") < 0 && (userSession["ESPSessionState"] === "false" || userSession["ECLWatchUser"] === "false")) {
+        if (window.location.hash.indexOf("login") < 0) {
+            replaceUrl("/login");
+        }
+        import("./components/forms/Login").then(_ => {
+            try {
+                ReactDOM.render(
+                    <_.Login />,
+                    document.getElementById("placeholder")
+                );
+                document.getElementById("loadingOverlay").remove();
+            } catch (e) {
+                logger.error(e);
+            }
+        });
+    } else {
+        import("./components/Frame").then(_ => {
+            try {
+                ReactDOM.render(
+                    <_.Frame />,
+                    document.getElementById("placeholder")
+                );
+                document.getElementById("loadingOverlay").remove();
+            } catch (e) {
+                logger.error(e);
+            }
+        });
+    }
+}

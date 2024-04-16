@@ -72,7 +72,7 @@ void setStatisticsComponentName(StatisticCreatorType processType, const char * p
 // Textual forms of the different enumerations, first items are for none and all.
 static constexpr const char * const measureNames[] = { "", "all", "ns", "ts", "cnt", "sz", "cpu", "skw", "node", "ppm", "ip", "cy", "en", "txt", "bool", "id", "fname", "cost", NULL };
 static constexpr const char * const creatorTypeNames[]= { "", "all", "unknown", "hthor", "roxie", "roxie:s", "thor", "thor:m", "thor:s", "eclcc", "esp", "summary", NULL };
-static constexpr const char * const scopeTypeNames[] = { "", "all", "global", "graph", "subgraph", "activity", "allocator", "section", "compile", "dfu", "edge", "function", "workflow", "child", "file", "unknown", nullptr };
+static constexpr const char * const scopeTypeNames[] = { "", "all", "global", "graph", "subgraph", "activity", "allocator", "section", "operation", "dfu", "edge", "function", "workflow", "child", "file", "channel", "unknown", nullptr };
 
 static unsigned matchString(const char * const * names, const char * search, unsigned dft)
 {
@@ -106,12 +106,13 @@ static const StatisticScopeType scoreOrder[] = {
     SSTsubgraph,
     SSTallocator,
     SSTsection,
-    SSTcompilestage,
+    SSToperation,
     SSTdfuworkunit,
     SSTfunction,
     SSTworkflow,
     SSTchildgraph,
     SSTfile,
+    SSTchannel,  // MORE - not sure what this means!
     SSTunknown
 };
 static int scopePriority[SSTmax];
@@ -348,13 +349,13 @@ static StringBuffer & formatSize(StringBuffer & out, unsigned __int64 value)
     unsigned Kb = (unsigned)((value % oneMb) / oneKb);
     unsigned b = (unsigned)(value % oneKb);
     if (Gb)
-        return out.appendf("%u.%03uGb", Gb, toPermille(Mb));
+        return out.appendf("%u.%03uGB", Gb, toPermille(Mb));
     else if (Mb)
-        return out.appendf("%u.%03uMb", Mb, toPermille(Kb));
+        return out.appendf("%u.%03uMB", Mb, toPermille(Kb));
     else if (Kb)
-        return out.appendf("%u.%03uKb", Kb, toPermille(b));
+        return out.appendf("%u.%03uKB", Kb, toPermille(b));
     else
-        return out.appendf("%ub", b);
+        return out.appendf("%uB", b);
 }
 
 static StringBuffer & formatLoad(StringBuffer & out, unsigned __int64 value)
@@ -385,53 +386,9 @@ static StringBuffer & formatIPV4(StringBuffer & out, unsigned __int64 value)
     return out.appendf("%d.%d.%d.%d", ip1, ip2, ip3, ip4);
 }
 
-class MoneyLocale
-{
-public:
-    ~MoneyLocale()
-    {
-        delete locale.load(std::memory_order_relaxed);
-    }
-    std::locale * createMoneyLocale() const
-    {
-        StringBuffer localestr;
-        getGlobalConfigSP()->getProp("cost/@moneyLocale", localestr);
-        std::locale * loc = nullptr;
-        try
-        {
-            loc = new std::locale(localestr.str());
-        }
-        catch (std::exception const& e)
-        {
-            // Use default locale if the specified moneyLocale is invalid
-            // (avoids difficult to track down crashes)
-            OERRLOG("Locale '%s' is not installed [%s]", localestr.str(), e.what());
-            loc = new std::locale("");
-        }
-        return loc;
-    }
-    std::locale & queryMoneyLocale()
-    {
-        return *querySingleton(locale, cslock, [this]{ return this->createMoneyLocale(); });
-    }
-
-private:
-    static CriticalSection cslock;
-    std::atomic<std::locale *> locale {nullptr};
-};
-
-static MoneyLocale moneyLocale;
-CriticalSection MoneyLocale::cslock;
-
 StringBuffer & formatMoney(StringBuffer &out, unsigned __int64 value)
 {
-    std::stringstream ss;
-    std::locale & loc = moneyLocale.queryMoneyLocale();
-    ss.imbue(loc);
-    unsigned decplaces = std::use_facet<std::moneypunct<char>>(loc).frac_digits();
-    long double mvalue = cost_type2money(value)*std::pow(10, decplaces);
-    ss << std::showbase << std::put_money(mvalue);
-    return out.append(ss.str().c_str());
+    return out.appendf("%.6f", cost_type2money(value));
 }
 
 StringBuffer & formatStatistic(StringBuffer & out, unsigned __int64 value, StatisticMeasure measure)
@@ -480,6 +437,16 @@ StringBuffer & formatStatistic(StringBuffer & out, unsigned __int64 value, Stati
 StringBuffer & formatStatistic(StringBuffer & out, unsigned __int64 value, StatisticKind kind)
 {
     return formatStatistic(out, value, queryMeasure(kind));
+}
+
+constexpr static stat_type usTimestampThreshold = 100ULL * 365ULL * 24ULL * 3600'000000ULL; // 100 years in us
+// Support the gradual conversion of timestamps from us to ns.  If a timestamp is in the old format (before 2070)
+// then it is assumed to be in us, otherwise ns.
+stat_type normalizeTimestampToNs(stat_type value)
+{
+    if (value < usTimestampThreshold)
+        return value * 1000;
+    return value;
 }
 
 //--------------------------------------------------------------------------------------------------------------------
@@ -591,6 +558,23 @@ void validateScope(const char * scopeText)
     }
 }
 
+StatisticScopeType getScopeType(const char * scope)
+{
+    StatsScopeId id;
+    if (nullptr == scope)
+        id.setId(SSTglobal, 0);
+    else if (startsWith(scope, "compile"))
+        id.setId(SSToperation, 0);
+    else
+    {
+        const char * colon = strchr(scope, ':');
+        if (colon)
+            id.setScopeText(colon+1);
+        else
+            id.setScopeText(scope);
+    }
+    return id.queryScopeType();
+}
 
 //--------------------------------------------------------------------------------------------------------------------
 
@@ -720,41 +704,6 @@ StatisticMeasure queryMeasure(const char * measure, StatisticMeasure dft)
     return dft;
 }
 
-StatsMergeAction queryMergeMode(StatisticMeasure measure)
-{
-    switch (measure)
-    {
-    case SMeasureTimeNs:        return StatsMergeSum;
-    case SMeasureTimestampUs:   return StatsMergeKeepNonZero;
-    case SMeasureCount:         return StatsMergeSum;
-    case SMeasureSize:          return StatsMergeSum;
-    case SMeasureLoad:          return StatsMergeMax;
-    case SMeasureSkew:          return StatsMergeMax;
-    case SMeasureNode:          return StatsMergeKeepNonZero;
-    case SMeasurePercent:       return StatsMergeReplace;
-    case SMeasureIPV4:          return StatsMergeKeepNonZero;
-    case SMeasureCycle:         return StatsMergeSum;
-    case SMeasureEnum:          return StatsMergeKeepNonZero;
-    case SMeasureText:          return StatsMergeKeepNonZero;
-    case SMeasureBool:          return StatsMergeKeepNonZero;
-    case SMeasureId:            return StatsMergeKeepNonZero;
-    case SMeasureFilename:      return StatsMergeKeepNonZero;
-    case SMeasureCost:          return StatsMergeSum;
-    default:
-#ifdef _DEBUG
-        throwUnexpected();
-#else
-        return StatsMergeSum;
-#endif
-    }
-}
-
-extern jlib_decl StatsMergeAction queryMergeMode(StatisticKind kind)
-{
-    //MORE: Optimize by looking up in the meta
-    return queryMergeMode(queryMeasure(kind));
-}
-
 //--------------------------------------------------------------------------------------------------------------------
 
 #define BASE_NAMES(x, y) \
@@ -803,25 +752,27 @@ extern jlib_decl StatsMergeAction queryMergeMode(StatisticKind kind)
     "@TimeDelta" # y, \
     "@TimeStdDev" # y,
 
-#define CORESTAT(x, y, m)     St##x##y, m, St##x##y, St##x##y, { NAMES(x, y) }, { TAGS(x, y) }
-#define STAT(x, y, m)         CORESTAT(x, y, m)
+#define CORESTAT(x, y, m, mm)     St##x##y, m, mm, St##x##y, St##x##y, { NAMES(x, y) }, { TAGS(x, y) }
+#define STAT(x, y, m, mm)         CORESTAT(x, y, m, mm)
 
 //--------------------------------------------------------------------------------------------------------------------
 
 //These are the macros to use to define the different entries in the stats meta table
 //#define TIMESTAT(y) STAT(Time, y, SMeasureTimeNs)
-#define TIMESTAT(y) St##Time##y, SMeasureTimeNs, St##Time##y, St##Cycle##y##Cycles, { NAMES(Time, y) }, { TAGS(Time, y) }
-#define WHENSTAT(y) St##When##y, SMeasureTimestampUs, St##When##y, St##When##y, { WHENNAMES(When, y) }, { WHENTAGS(When, y) }
-#define NUMSTAT(y) STAT(Num, y, SMeasureCount)
-#define SIZESTAT(y) STAT(Size, y, SMeasureSize)
-#define LOADSTAT(y) STAT(Load, y, SMeasureLoad)
-#define SKEWSTAT(y) STAT(Skew, y, SMeasureSkew)
-#define NODESTAT(y) STAT(Node, y, SMeasureNode)
-#define PERSTAT(y) STAT(Per, y, SMeasurePercent)
-#define IPV4STAT(y) STAT(IPV4, y, SMeasureIPV4)
-#define CYCLESTAT(y) St##Cycle##y##Cycles, SMeasureCycle, St##Time##y, St##Cycle##y##Cycles, { NAMES(Cycle, y##Cycles) }, { TAGS(Cycle, y##Cycles) }
-#define ENUMSTAT(y) STAT(Enum, y, SMeasureEnum)
-
+#define TIMESTAT(y) St##Time##y, SMeasureTimeNs, StatsMergeSum, St##Time##y, St##Cycle##y##Cycles, { NAMES(Time, y) }, { TAGS(Time, y) }
+#define WHENFIRSTSTAT(y) St##When##y, SMeasureTimestampUs, StatsMergeFirst, St##When##y, St##When##y, { WHENNAMES(When, y) }, { WHENTAGS(When, y) }
+#define WHENLASTSTAT(y) St##When##y, SMeasureTimestampUs, StatsMergeLast, St##When##y, St##When##y, { WHENNAMES(When, y) }, { WHENTAGS(When, y) }
+#define NUMSTAT(y) STAT(Num, y, SMeasureCount, StatsMergeSum)
+#define SIZESTAT(y) STAT(Size, y, SMeasureSize, StatsMergeSum)
+#define LOADSTAT(y) STAT(Load, y, SMeasureLoad, StatsMergeMax)
+#define SKEWSTAT(y) STAT(Skew, y, SMeasureSkew, StatsMergeMax)
+#define NODESTAT(y) STAT(Node, y, SMeasureNode, StatsMergeKeepNonZero)
+#define PERSTAT(y) STAT(Per, y, SMeasurePercent, StatsMergeReplace)
+#define IPV4STAT(y) STAT(IPV4, y, SMeasureIPV4, StatsMergeKeepNonZero)
+#define CYCLESTAT(y) St##Cycle##y##Cycles, SMeasureCycle, StatsMergeSum, St##Time##y, St##Cycle##y##Cycles, { NAMES(Cycle, y##Cycles) }, { TAGS(Cycle, y##Cycles) }, "<cycles>"
+#define ENUMSTAT(y) STAT(Enum, y, SMeasureEnum, StatsMergeKeepNonZero)
+#define COSTSTAT(y) STAT(Cost, y, SMeasureCost, StatsMergeSum)
+#define PEAKSIZESTAT(y) STAT(Size, y, SMeasureSize, StatsMergeMax)
 //--------------------------------------------------------------------------------------------------------------------
 
 class StatisticMeta
@@ -829,134 +780,221 @@ class StatisticMeta
 public:
     StatisticKind kind;
     StatisticMeasure measure;
+    StatsMergeAction mergeAction;
     StatisticKind serializeKind;
     StatisticKind rawKind;
     const char * names[StNextModifier/StVariantScale];
     const char * tags[StNextModifier/StVariantScale];
+    const char * description;
 };
 
+constexpr const char * UNUSED = "<unused>";
+
 //The order of entries in this table must match the order in the enumeration
-static const StatisticMeta statsMetaData[StMax] = {
-    { StKindNone, SMeasureNone, StKindNone, StKindNone, { "none" }, { "@none" } },
-    { StKindAll, SMeasureAll, StKindAll, StKindAll, { "all" }, { "@all" } },
-    { WHENSTAT(GraphStarted) }, // Deprecated - use WhenStart
-    { WHENSTAT(GraphFinished) }, // Deprecated - use WhenFinished
-    { WHENSTAT(FirstRow) },
-    { WHENSTAT(QueryStarted) }, // Deprecated - use WhenStart
-    { WHENSTAT(QueryFinished) }, // Deprecated - use WhenFinished
-    { WHENSTAT(Created) },
-    { WHENSTAT(Compiled) },
-    { WHENSTAT(WorkunitModified) },
-    { TIMESTAT(Elapsed) },
-    { TIMESTAT(LocalExecute) },
-    { TIMESTAT(TotalExecute) },
-    { TIMESTAT(Remaining) },
-    { SIZESTAT(GeneratedCpp) },
-    { SIZESTAT(PeakMemory) },
-    { SIZESTAT(MaxRowSize) },
-    { NUMSTAT(RowsProcessed) },
-    { NUMSTAT(Slaves) },
-    { NUMSTAT(Starts) },
-    { NUMSTAT(Stops) },
-    { NUMSTAT(IndexSeeks) },
-    { NUMSTAT(IndexScans) },
-    { NUMSTAT(IndexWildSeeks) },
-    { NUMSTAT(IndexSkips) },
-    { NUMSTAT(IndexNullSkips) },
-    { NUMSTAT(IndexMerges) },
-    { NUMSTAT(IndexMergeCompares) },
-    { NUMSTAT(PreFiltered) },
-    { NUMSTAT(PostFiltered) },
-    { NUMSTAT(BlobCacheHits) },
-    { NUMSTAT(LeafCacheHits) },
-    { NUMSTAT(NodeCacheHits) },
-    { NUMSTAT(BlobCacheAdds) },
-    { NUMSTAT(LeafCacheAdds) },
-    { NUMSTAT(NodeCacheAdds) },
-    { NUMSTAT(PreloadCacheHits) },
-    { NUMSTAT(PreloadCacheAdds) },
-    { NUMSTAT(ServerCacheHits) },
-    { NUMSTAT(IndexAccepted) },
-    { NUMSTAT(IndexRejected) },
-    { NUMSTAT(AtmostTriggered) },
-    { NUMSTAT(DiskSeeks) },
-    { NUMSTAT(Iterations) },
-    { LOADSTAT(WhileSorting) },
-    { NUMSTAT(LeftRows) },
-    { NUMSTAT(RightRows) },
-    { PERSTAT(Replicated) },
-    { NUMSTAT(DiskRowsRead) },
-    { NUMSTAT(IndexRowsRead) },
-    { NUMSTAT(DiskAccepted) },
-    { NUMSTAT(DiskRejected) },
-    { TIMESTAT(Soapcall) },
-    { TIMESTAT(FirstExecute) },
-    { TIMESTAT(DiskReadIO) },
-    { TIMESTAT(DiskWriteIO) },
-    { SIZESTAT(DiskRead) },
-    { SIZESTAT(DiskWrite) },
+static const constexpr StatisticMeta statsMetaData[StMax] = {
+    { StKindNone, SMeasureNone, StatsMergeSum, StKindNone, StKindNone, { "none" }, { "@none" }, nullptr },
+    { StKindAll, SMeasureAll, StatsMergeSum, StKindAll, StKindAll, { "all" }, { "@all" }, nullptr },
+    { WHENFIRSTSTAT(GraphStarted), "The time when a graph started./nDeprecated" }, // Deprecated - use WhenStart
+    { WHENLASTSTAT(GraphFinished), "The time when a graph finished./nDeprecated"  }, // Deprecated - use WhenFinished
+    { WHENFIRSTSTAT(FirstRow), "The time when the first row is processed by an activity"  },
+    { WHENFIRSTSTAT(QueryStarted), "The time when a query started./nDeprecated" }, // Deprecated - use WhenStart
+    { WHENLASTSTAT(QueryFinished), "The time when a query finished./nDeprecated" }, // Deprecated - use WhenFinished
+    { WHENFIRSTSTAT(Created), "The time when an item was created" },
+    { WHENFIRSTSTAT(Compiled), "The time a workunit started being compiled" },
+    { WHENFIRSTSTAT(WorkunitModified), UNUSED },
+    { TIMESTAT(Elapsed), "The elapsed time between starting and finishing\nFor child queries this may be significantly larger than TimeTotalExecute" },
+    { TIMESTAT(LocalExecute), "The time spent executing this activity not including its inputs\nSort activities by local execute time to help isolate potential processing bottlenecks" },
+    { TIMESTAT(TotalExecute), "The time spent executing this activity and its inputs\nSort activities by total execute time to find sections of a query that are a bottleneck" },
+    { TIMESTAT(Remaining), UNUSED },
+    { SIZESTAT(GeneratedCpp), "The size of the generated c++ file" },
+    { SIZESTAT(PeakMemory), "The peak memory used while processing this item" },
+    { SIZESTAT(MaxRowSize), "The high water mark of the memory used for representing rows (roxiemem)" },
+    { NUMSTAT(RowsProcessed), "The number of rows processed" },
+    { NUMSTAT(Slaves), "The number of parallel execution processes used to execute an activity" },
+    { NUMSTAT(Starts), "The number of times the activity has started executing\nAn activity is active if this does not match NumStops" },
+    { NUMSTAT(Stops), "The number of times the activity has stopped executing\nAn activity is active if this is less than NumStarts" },
+    { NUMSTAT(IndexSeeks), "The number of keyed lookups on an index\nThese correspond to KEYED() filters on indexes.  A single keyed filter may result in multiple seeks if a leading component is not single-valued" },
+    { NUMSTAT(IndexScans), "The number of index scans\nHow many entries are sequentially examined after an initial seek (including wild seeks).  Large numbers compared to the number of seeks may indicate extra keyed filters would be worthwhile" },
+    { NUMSTAT(IndexWildSeeks), "The number of seeks caused by WILD() filters\nThe number of keyed lookups that had to search for the next potential match.  If this is a high proportion of NumIndexScans it may suggest poor key design" },
+    { NUMSTAT(IndexSkips), "The number of smart-stepping operations that increment the next match" },
+    { NUMSTAT(IndexNullSkips), "The number of smart-stepping operations that had no effect\nIf this is large compare to NumIndexSkips it suggests the priority may not be set correctly" },
+    { NUMSTAT(IndexMerges), "The number of merges set up when smart stepping"},
+    { NUMSTAT(IndexMergeCompares), "The number of merge comparisons when smart stepping" },
+    { NUMSTAT(PreFiltered), "The number of LEFT rows filtered before performing a keyed lookup" },
+    { NUMSTAT(PostFiltered), "The number of index matches filtered by the transform and the non-keyed filter" },
+    { NUMSTAT(BlobCacheHits), "The number of times a blob was resolved in the cache" },
+    { NUMSTAT(LeafCacheHits), "The number of times a leaf node was resolved in the cache" },
+    { NUMSTAT(NodeCacheHits), "The number of times a branch node was resolved in the cache" },
+    { NUMSTAT(BlobCacheAdds), "The number of times a blob was read from disk rather than the cache" },
+    { NUMSTAT(LeafCacheAdds), "The number of times a leaf node was read from disk rather than the cache\nIf this number is high it may be worth experimenting with the leaf cache size (the branch cache size is more important)" },
+    { NUMSTAT(NodeCacheAdds), "The number of times a branch node was read from disk rather than the cache\nBranch cache hits are significant for performance.  If this number is high it is likely to be worth increasing the node cache size.  If this number does not increase once the system is warmed up it may be worth reducing the cache size" },
+    { NUMSTAT(PreloadCacheHits), UNUSED },
+    { NUMSTAT(PreloadCacheAdds), UNUSED },
+    { NUMSTAT(ServerCacheHits), UNUSED },
+    { NUMSTAT(IndexAccepted), "The number of KEYED JOIN matches that return a result from the TRANSFORM" },
+    { NUMSTAT(IndexRejected), "The number of KEYED JOIN matches that are skipped by the TRANSFORM" },
+    { NUMSTAT(AtmostTriggered), "The number of times ATMOST on a JOIN causes it to fail to match" },
+    { NUMSTAT(DiskSeeks), "The number of FETCHES from disk" },
+    { NUMSTAT(Iterations), "The number of LOOP iterations executed" },
+    { LOADSTAT(WhileSorting), UNUSED },
+    { NUMSTAT(LeftRows), "The number of LEFT rows processed" },
+    { NUMSTAT(RightRows), "The number of RIGHT rows processed"  },
+    { PERSTAT(Replicated), "The percentage replication complete" },
+    { NUMSTAT(DiskRowsRead), "The number of rows read from the file" },
+    { NUMSTAT(IndexRowsRead), "The number of rows read from the index" },
+    { NUMSTAT(DiskAccepted), "The number of disk rows that return a result from the TRANSFORM" },
+    { NUMSTAT(DiskRejected), "The number of disk rows that are skipped by the TRANSFORM" },
+    { TIMESTAT(Soapcall), "The time taken to execute a SOAPCALL" },
+    { TIMESTAT(FirstExecute), "The time taken to return the first row from this activity" },
+    { TIMESTAT(DiskReadIO), "Total time spent reading from disk" },
+    { TIMESTAT(DiskWriteIO), "Total time spent writing to disk" },
+    { SIZESTAT(DiskRead), "Total size of data read from disk" },
+    { SIZESTAT(DiskWrite), "Total size of data written to disk" },
     { CYCLESTAT(DiskReadIO) },
     { CYCLESTAT(DiskWriteIO) },
-    { NUMSTAT(DiskReads) },
-    { NUMSTAT(DiskWrites) },
-    { NUMSTAT(Spills) },
-    { TIMESTAT(SpillElapsed) },
-    { TIMESTAT(SortElapsed) },
-    { NUMSTAT(Groups) },
-    { NUMSTAT(GroupMax) },
-    { SIZESTAT(SpillFile) },
+    { NUMSTAT(DiskReads), "The number of disk read operations" },
+    { NUMSTAT(DiskWrites), "The number of disk write operations" },
+    { NUMSTAT(Spills), "The number of times the activity spilt to disk"},
+    { TIMESTAT(SpillElapsed), "Time spent spilling rows from memory to disk" }, //MORE: Do we have a similar stat for SpillRead?
+    { TIMESTAT(SortElapsed), "Time spent sorting rows in memory" },
+    { NUMSTAT(Groups), "The number of groups processed by this activity" },
+    { NUMSTAT(GroupMax), "The size of the largest group processed by this activity\nA skew in group size can cause a skew in processing time.  A large skew may indicate some special values would benefit from special casing" },
+    { SIZESTAT(SpillFile), "Total size of data spilled to disk" },
     { CYCLESTAT(SpillElapsed) },
     { CYCLESTAT(SortElapsed) },
-    { NUMSTAT(Strands) },
+    { NUMSTAT(Strands), "The number of parallel execution strands\n(A partially implemented feature to allow parallel execution within an activity)" },
     { CYCLESTAT(TotalExecute) },
-    { NUMSTAT(Executions) },
-    { TIMESTAT(TotalNested) },
+    { NUMSTAT(Executions), "The number of times a graph has been executed" },
+    { TIMESTAT(TotalNested), UNUSED },
     { CYCLESTAT(LocalExecute) },
-    { NUMSTAT(Compares) },
-    { NUMSTAT(ScansPerRow) },
-    { NUMSTAT(Allocations) },
-    { NUMSTAT(AllocationScans) },
-    { NUMSTAT(DiskRetries) },
+    { NUMSTAT(Compares), UNUSED },
+    { NUMSTAT(ScansPerRow), UNUSED },
+    { NUMSTAT(Allocations), "The number of allocations from the row memory" },
+    { NUMSTAT(AllocationScans), "The number of scans within the memory manager when allocating row memory\nOnly applies to the scanning heap manager (not used by default)" },
+    { NUMSTAT(DiskRetries), "The number of times an I/O operation was retried\nIf this is non-zero it may suggest a problem with the underlying disk storage" },
     { CYCLESTAT(Elapsed) },
     { CYCLESTAT(Remaining) },
     { CYCLESTAT(Soapcall) },
     { CYCLESTAT(FirstExecute) },
     { CYCLESTAT(TotalNested) },
-    { TIMESTAT(Generate) },
+    { TIMESTAT(Generate), "Time taken to generate the c++ code from the parsed ECL" },
     { CYCLESTAT(Generate) },
-    { WHENSTAT(Started) },
-    { WHENSTAT(Finished) },
-    { NUMSTAT(AnalyseExprs) },
-    { NUMSTAT(TransformExprs) },
-    { NUMSTAT(UniqueAnalyseExprs) },
-    { NUMSTAT(UniqueTransformExprs) },
-    { NUMSTAT(DuplicateKeys) },
-    { NUMSTAT(AttribsProcessed) },
-    { NUMSTAT(AttribsSimplified) },
-    { NUMSTAT(AttribsFromCache) },
-    { NUMSTAT(SmartJoinDegradedToLocal) },
-    { NUMSTAT(SmartJoinSlavesDegradedToStd) },
-    { NUMSTAT(AttribsSimplifiedTooComplex) },
-    { NUMSTAT(SysContextSwitches) },
-    { TIMESTAT(OsUser) },
-    { TIMESTAT(OsSystem) },
-    { TIMESTAT(OsTotal) },
+    { WHENFIRSTSTAT(Started), "Time when this activity or operation started" },
+    { WHENLASTSTAT(Finished), "Time when this activity or operation finished" },
+    { NUMSTAT(AnalyseExprs), "Code generator internal\nThe number of expressions that were processed by transformer::analyse()" },
+    { NUMSTAT(TransformExprs), "Code generator internal\nThe number of expressions that were processed by transformer::transform()" },
+    { NUMSTAT(UniqueAnalyseExprs), "Code generator internal\nThe number of unique expressions that were processed by transformer::analyse()" },
+    { NUMSTAT(UniqueTransformExprs), "Code generator internal\nThe number of unique expressions that were processed by transformer::transform()" },
+    { NUMSTAT(DuplicateKeys), "The number of duplicate keys that were present in the index" },
+    { NUMSTAT(AttribsProcessed), "The number of attributes processed when parsing the ECL" },
+    { NUMSTAT(AttribsSimplified), UNUSED },
+    { NUMSTAT(AttribsFromCache), UNUSED },
+    { NUMSTAT(SmartJoinDegradedToLocal), "The number of times a global smart-join switched to a LOCAL JOIN (with distribute)\nThis will be 0 or 1 unless the activity is within a LOOP" },
+    { NUMSTAT(SmartJoinSlavesDegradedToStd), "The number of times a global smart-join degraded to a standard join" },
+    { NUMSTAT(AttribsSimplifiedTooComplex), UNUSED },
+    { NUMSTAT(SysContextSwitches), "The number of context switches that occurred when processing" },
+    { TIMESTAT(OsUser), "Total elapsed user-space time" },
+    { TIMESTAT(OsSystem), "Total time spent in the system/kernel" },
+    { TIMESTAT(OsTotal), "Total elapsed time according to the OS\nIncludes system, user, idle and iowait times" },
     { CYCLESTAT(OsUser) },
     { CYCLESTAT(OsSystem) },
     { CYCLESTAT(OsTotal) },
-    { NUMSTAT(ContextSwitches) },
-    { TIMESTAT(User) },
-    { TIMESTAT(System) },
-    { TIMESTAT(Total) },
+    //The following seem to be duplicates of the values above
+    { NUMSTAT(ContextSwitches), "The number of context switches that occurred when processing" },
+    { TIMESTAT(User), "Total elapsed user-space time" },
+    { TIMESTAT(System), "Total time spent in the system/kernel" },
+    { TIMESTAT(Total), "Total elapsed time according to the OS\nInclude system,user,idle and iowait times" },
     { CYCLESTAT(User) },
     { CYCLESTAT(System) },
     { CYCLESTAT(Total) },
-    { SIZESTAT(OsDiskRead) },
-    { SIZESTAT(OsDiskWrite) },
-    { TIMESTAT(Blocked) },
+    { SIZESTAT(OsDiskRead), UNUSED },
+    { SIZESTAT(OsDiskWrite), UNUSED },
+    { TIMESTAT(Blocked), "Time spent blocked waiting for another operation to complete" },
     { CYCLESTAT(Blocked) },
-    { STAT(Cost, Execute, SMeasureCost) },
+    { COSTSTAT(Execute), "The CPU cost of executing" },
+    { SIZESTAT(AgentReply), "Size of data sent from the workers to the agent" },
+    { TIMESTAT(AgentWait), "Time that the agent spent waiting for a reply from the workers" },
+    { CYCLESTAT(AgentWait) },
+    { COSTSTAT(FileAccess), "The transactional cost of any file operations" },
+    { NUMSTAT(Pods), "The number of pods used" },
+    { COSTSTAT(Compile), "The cost to compile this workunit"},
+    { TIMESTAT(NodeLoad), "Time spent reading branch nodes from disk and decompressing them" },
+    { CYCLESTAT(NodeLoad) },
+    { TIMESTAT(LeafLoad), "Time spent reading leaf nodes from disk and decompressing them\nIf this is a high proportion of the time (especially compared to TimeLeafRead) then consider using the new index compression formats" },
+    { CYCLESTAT(LeafLoad) },
+    { TIMESTAT(BlobLoad), "Time spent reading blob nodes from disk and decompressing them" },
+    { CYCLESTAT(BlobLoad) },
+    { TIMESTAT(Dependencies), "Time spent processing dependencies for this activity"},
+    { CYCLESTAT(Dependencies) },
+    { TIMESTAT(Start), "Time taken to start an activity\nThis includes the time spent processing dependencies" },
+    { CYCLESTAT(Start) },
+    { ENUMSTAT(ActivityCharacteristics), "A bitfield describing characteristics of the activity\nurgentStart = 0x01, hasRowLatency = 0x02, hasDependencies = 0x04, slowDependencies = 0x08" },
+    { TIMESTAT(NodeRead), "Time spent reading branch nodes from disk (including linux page cache)" },
+    { CYCLESTAT(NodeRead) },
+    { TIMESTAT(LeafRead), "Time spent reading leaf nodes from disk (including linux page cache)" },
+    { CYCLESTAT(LeafRead) },
+    { TIMESTAT(BlobRead), "Time spent reading blob from disk (including linux page cache)" },
+    { CYCLESTAT(BlobRead) },
+    { NUMSTAT(NodeDiskFetches), "Number of times a branch node was read from disk rather than the linux page cache" },
+    { NUMSTAT(LeafDiskFetches), "Number of times a leaf node was read from disk rather than the linux page cache\nIf this is a significant proportion of NumLeafAdds then consider allocating more memory, or reducing the leaf cache size" },
+    { NUMSTAT(BlobDiskFetches), "Number of times a blob was read from disk rather than the linux page cache" },
+    { TIMESTAT(NodeFetch), "Time spent reading branch nodes from disk (EXCLUDING the linux page cache)" },
+    { CYCLESTAT(NodeFetch) },
+    { TIMESTAT(LeafFetch), "Time spent reading leaf nodes from disk (EXCLUDING the linux page cache)" },
+    { CYCLESTAT(LeafFetch) },
+    { TIMESTAT(BlobFetch), "Time spent reading blobs from disk (EXCLUDING the linux page cache)" },
+    { CYCLESTAT(BlobFetch) },
+    { PEAKSIZESTAT(GraphSpill), "Peak size of spill memory usage" },
+    { TIMESTAT(AgentQueue), "Time worker items were received and queued before being processed\nThis may indicate that the primary node on a channel was down, or that the workers are overloaded with requests" },
+    { CYCLESTAT(AgentQueue) },
+    { TIMESTAT(IBYTIDelay), "Time spent waiting for another worker to start processing a request\nA non-zero value indicates that the primary node on a channel was down or very busy" },
+    { CYCLESTAT(IBYTIDelay) },
+    { WHENFIRSTSTAT(Queued), "The time when this item was added to a queue" },
+    { WHENFIRSTSTAT(Dequeued), "The time when this item was removed from a queue" },
+    { WHENFIRSTSTAT(K8sLaunched), "The time when the K8s job to process this item was launched" },
+    { WHENFIRSTSTAT(K8sStarted), "The time when the K8s job to process this item started executing/nThe difference between the K8sStarted and K8sLaunched indicates how long Kubernetes took to resource and initialised the job" },
+    { WHENFIRSTSTAT(K8sReady), "The time when the Thor job is ready to process\nThe difference with K8sStarted indicates how long it took to resource and start the slave processes" },
+    { NUMSTAT(SocketWrites), "The number of writes to the client socket" },
+    { SIZESTAT(SocketWrite), "The size of data written to the client socket" },
+    { TIMESTAT(SocketWriteIO), "The total time spent writing data to the client socket" },
+    { CYCLESTAT(SocketWriteIO) },
+    { NUMSTAT(SocketReads), "The number of reads from the client socket" },
+    { SIZESTAT(SocketRead), "The size of data read from the client socket" },
+    { TIMESTAT(SocketReadIO), "The total time spent reading data from the client socket" },
+    { CYCLESTAT(SocketReadIO) },
+    { SIZESTAT(Memory), "The total memory allocated from the system" },
+    { SIZESTAT(RowMemory), "The size of memory used to store rows" },
+    { SIZESTAT(PeakRowMemory), "The peak memory used to store rows" },
+    { SIZESTAT(AgentSend), "The size of data sent to the agent from the server" },
+    { TIMESTAT(IndexCacheBlocked), "The time spent waiting to access the index page cache" },
+    { CYCLESTAT(IndexCacheBlocked) },
+    { TIMESTAT(AgentProcess), "The total time spent by the agents processing requests" },
+    { CYCLESTAT(AgentProcess) },
+    { NUMSTAT(AckRetries), "The number of times the server failed to receive a response from an agent within the expected time" },
+    { SIZESTAT(ContinuationData), "The total size of continuation data sent from agent to the server\nA large number may indicate a poor filter, or merging from many different index locations" },
+    { NUMSTAT(ContinuationRequests), "The number of times the agent indicated there was more data to be returned" },
+    { NUMSTAT(Failures), "The number of times a query has failed" },
 };
+
+static MapStringTo<StatisticKind, StatisticKind> statisticNameMap(true);
+
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    //Insert the names into a hash table to allow fast string->kind mapping
+    statisticNameMap.setValue("*", StKindAll);
+
+    for (unsigned variant=0; variant < StNextModifier; variant += StVariantScale)
+    {
+        for (unsigned i=0; i < StMax; i++)
+        {
+            StatisticKind kind = (StatisticKind)(i+variant);
+            const char * shortName = queryStatisticName(kind);
+            if (shortName)
+                statisticNameMap.setValue(shortName, kind);
+        }
+    }
+    return true;
+}
 
 //Is a 0 value likely, and useful to be reported if it does happen to be zero?
 bool includeStatisticIfZero(StatisticKind kind)
@@ -972,6 +1010,31 @@ bool includeStatisticIfZero(StatisticKind kind)
     return false;
 }
 
+
+inline StatsMergeAction queryBaseMergeMode(StatisticKind kind)
+{
+    dbgassertex(queryStatsVariant(kind) == 0);
+    dbgassertex(kind >= StKindNone && kind < StMax);
+    return statsMetaData[kind].mergeAction;
+}
+
+extern jlib_decl StatsMergeAction queryMergeMode(StatisticKind kind)
+{
+    if (queryStatsVariant(kind) == 0)
+        return queryBaseMergeMode(kind);
+    unsigned variant = queryStatsVariant(kind);
+    switch (variant)
+    {
+    case StSkew:
+    case StSkewMin:
+    case StSkewMax:
+        return StatsMergeMax;
+    case StNodeMin:
+    case StNodeMax:
+        return StatsMergeKeepNonZero;
+    }
+    return queryBaseMergeMode((StatisticKind)(kind & StKindMask));
+}
 
 //--------------------------------------------------------------------------------------------------------------------
 
@@ -1018,6 +1081,14 @@ const char * queryStatisticName(StatisticKind kind)
     return "Unknown";
 }
 
+
+const char * queryStatisticDescription(StatisticKind kind)
+{
+    StatisticKind rawkind = (StatisticKind)(kind & StKindMask);
+    if (rawkind >= StKindNone && rawkind < StMax)
+        return statsMetaData[rawkind].description;
+    return nullptr;
+}
 
 unsigned __int64 convertMeasure(StatisticMeasure from, StatisticMeasure to, unsigned __int64 value)
 {
@@ -1127,20 +1198,9 @@ StatisticKind queryStatisticKind(const char * search, StatisticKind dft)
 {
     if (!search)
         return dft;
-    if (streq(search, "*"))
-        return StKindAll;
-
-    //Slow - should use a hash table....
-    for (unsigned variant=0; variant < StNextModifier; variant += StVariantScale)
-    {
-        for (unsigned i=0; i < StMax; i++)
-        {
-            StatisticKind kind = (StatisticKind)(i+variant);
-            const char * shortName = queryStatisticName(kind);
-            if (shortName && strieq(shortName, search))
-                return kind;
-        }
-    }
+    StatisticKind * match = statisticNameMap.getValue(search);
+    if (match)
+        return *match;
     return dft;
 }
 
@@ -1172,61 +1232,51 @@ extern jlib_decl StatisticScopeType queryScopeType(const char * sst, StatisticSc
 
 //--------------------------------------------------------------------------------------------------------------------
 
-inline void mergeUpdate(StatisticMeasure measure, unsigned __int64 & value, const unsigned __int64 otherValue)
-{
-    switch (measure)
-    {
-    case SMeasureTimeNs:
-    case SMeasureCount:
-    case SMeasureSize:
-    case SMeasureLoad:
-    case SMeasureSkew:
-    case SMeasureCycle:
-        value += otherValue;
-        break;
-    case SMeasureTimestampUs:
-        if (otherValue && otherValue < value)
-            value = otherValue;
-        break;
-    }
-}
-
-unsigned __int64 mergeStatistic(StatisticMeasure measure, unsigned __int64 value, unsigned __int64 otherValue)
-{
-    mergeUpdate(measure, value, otherValue);
-    return value;
-}
-
-unsigned __int64 mergeStatisticValue(unsigned __int64 prevValue, unsigned __int64 newValue, StatsMergeAction mergeAction)
+inline void mergeUpdate(unsigned __int64 & value, const unsigned __int64 otherValue, StatsMergeAction mergeAction)
 {
     switch (mergeAction)
     {
     case StatsMergeKeepNonZero:
-        if (prevValue)
-            return prevValue;
-        return newValue;
+        if (otherValue && !value)
+            value = otherValue;
+        break;
     case StatsMergeAppend:
     case StatsMergeReplace:
-        return newValue;
+        value = otherValue;
+        break;
     case StatsMergeSum:
-        return prevValue + newValue;
+        value += otherValue;
+        break;
     case StatsMergeMin:
-        if (prevValue > newValue)
-            return newValue;
-        else
-            return prevValue;
+        if (otherValue < value)
+            value = otherValue;
+        break;
+    case StatsMergeFirst:
+        if (otherValue && ((otherValue < value) || !value))
+            value = otherValue;
+        break;
     case StatsMergeMax:
-        if (prevValue < newValue)
-            return newValue;
-        else
-            return prevValue;
-    default:
+    case StatsMergeLast:
+        if (otherValue > value)
+            value = otherValue;
+        break;
 #ifdef _DEBUG
+    default:
         throwUnexpected();
-#else
-        return newValue;
 #endif
     }
+}
+
+unsigned __int64 mergeStatisticValue(unsigned __int64 prevValue, unsigned __int64 newValue, StatsMergeAction mergeAction)
+{
+    unsigned __int64 value = prevValue;
+    mergeUpdate(value, newValue, mergeAction);
+    return value;
+}
+
+unsigned __int64 mergeStatisticValue(unsigned __int64 prevValue, unsigned __int64 newValue, StatisticKind kind)
+{
+    return mergeStatisticValue(prevValue, newValue, queryMergeMode(kind));
 }
 
 //--------------------------------------------------------------------------------------------------------------------
@@ -1242,11 +1292,12 @@ class CComponentStatistics
 
 //--------------------------------------------------------------------------------------------------------------------
 
+static std::unordered_map<unsigned, const StatisticsMapping *> allStatsMappings;
+
 static int compareUnsigned(unsigned const * left, unsigned const * right)
 {
     return (*left < *right) ? -1 : (*left > *right) ? +1 : 0;
 }
-
 
 void StatisticsMapping::createMappings()
 {
@@ -1254,6 +1305,7 @@ void StatisticsMapping::createMappings()
     indexToKind.sort(compareUnsigned);
 
     //Provide mappings to all statistics to map them to the "unknown" bin by default
+    kindToIndex.ensureCapacity(StMax);
     for (unsigned i=0; i < StMax; i++)
         kindToIndex.append(numStatistics());
 
@@ -1262,7 +1314,42 @@ void StatisticsMapping::createMappings()
         unsigned kind = indexToKind.item(i2);
         kindToIndex.replace(i2, kind);
     }
+
+    const unsigned * kinds = indexToKind.getArray();
+    hashcode = hashc((const byte *)kinds, indexToKind.ordinality() * sizeof(unsigned), 0x811C9DC5);
+
+    //All StatisticsMapping objects are assumed to be static, and never destroyed.
+    const StatisticsMapping * existing = allStatsMappings[hashcode];
+    if (existing)
+    {
+        //Another mapping object hashes to the same code - we need to re-implement the hash function so it can be used to deserialized nested mappings...
+        //Throw a c++ standard exception because this will almost certainly be called from the static initializers, so will not be caught
+        if (!equals(*existing))
+            throw std::runtime_error("Need to reimplement the hash function for the statistic mappings");
+    }
+    else
+        allStatsMappings[hashcode] = this;
 }
+
+bool StatisticsMapping::equals(const StatisticsMapping & other)
+{
+    if (numStatistics() != other.numStatistics())
+        return false;
+
+    ForEachItemIn(i, indexToKind)
+    {
+        if (indexToKind.item(i) != other.indexToKind.item(i))
+            return false;
+    }
+    return true;
+}
+
+const StatisticsMapping noStatistics({});
+const StatisticsMapping jhtreeCacheStatistics({ StNumIndexSeeks, StNumIndexScans, StNumPostFiltered, StNumIndexWildSeeks,
+                                                StNumNodeCacheAdds, StNumLeafCacheAdds, StNumBlobCacheAdds, StNumNodeCacheHits, StNumLeafCacheHits, StNumBlobCacheHits, StCycleNodeLoadCycles, StCycleLeafLoadCycles,
+                                                StCycleBlobLoadCycles, StCycleNodeReadCycles, StCycleLeafReadCycles, StCycleBlobReadCycles, StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
+                                                StCycleNodeFetchCycles, StCycleLeafFetchCycles, StCycleBlobFetchCycles, StCycleIndexCacheBlockedCycles, StNumIndexMergeCompares, StNumIndexMerges, StNumIndexSkips,
+                                                StNumIndexNullSkips, StTimeLeafLoad, StTimeLeafRead, StTimeLeafFetch, StTimeIndexCacheBlocked, StTimeNodeFetch, StTimeNodeLoad, StTimeNodeRead});
 
 const StatisticsMapping allStatistics(StKindAll);
 const StatisticsMapping heapStatistics({StNumAllocations, StNumAllocationScans});
@@ -1270,6 +1357,18 @@ const StatisticsMapping diskLocalStatistics({StCycleDiskReadIOCycles, StSizeDisk
 const StatisticsMapping diskRemoteStatistics({StTimeDiskReadIO, StSizeDiskRead, StNumDiskReads, StTimeDiskWriteIO, StSizeDiskWrite, StNumDiskWrites, StNumDiskRetries});
 const StatisticsMapping diskReadRemoteStatistics({StTimeDiskReadIO, StSizeDiskRead, StNumDiskReads, StNumDiskRetries, StCycleDiskReadIOCycles});
 const StatisticsMapping diskWriteRemoteStatistics({StTimeDiskWriteIO, StSizeDiskWrite, StNumDiskWrites, StNumDiskRetries, StCycleDiskWriteIOCycles});
+const StatisticsMapping stdAggregateKindStatistics({StCostExecute, StCostFileAccess, StSizeGraphSpill, StSizeSpillFile});
+
+const StatisticsMapping * queryStatsMapping(const StatsScopeId & scope, unsigned hashcode)
+{
+    const StatisticsMapping * match = allStatsMappings[hashcode];
+    if (match)
+        return match;
+
+    StringBuffer scopeText;
+    scope.getScopeText(scopeText);
+    throw makeStringExceptionV(0, "No Stats mapping found for scope '%s' hashcode %u", scopeText.str(), hashcode);
+}
 
 //--------------------------------------------------------------------------------------------------------------------
 
@@ -1309,7 +1408,8 @@ public:
 
     void merge(unsigned __int64 otherValue)
     {
-        mergeUpdate(queryMeasure(kind), value, otherValue);
+        StatsMergeAction mergeAction = queryMergeMode(kind);
+        mergeUpdate(value, otherValue, mergeAction);
     }
     void serialize(MemoryBuffer & out) const
     {
@@ -1351,8 +1451,20 @@ StringBuffer & StatsScopeId::getScopeText(StringBuffer & out) const
         return out.append(WorkflowScopePrefix).append(id);
     case SSTchildgraph:
         return out.append(ChildGraphScopePrefix).append(id);
+    case SSTfile:
+        return out.append(FileScopePrefix).append(name);
+    case SSTchannel:
+        return out.append(ChannelScopePrefix).append(id);
+    case SSTdfuworkunit:
+        return out.append(DFUWorkunitScopePrefix).append(name);
+    case SSTsection:
+        return out.append(SectionScopePrefix).append(name);
+    case SSToperation:
+        return out.append(OperationScopePrefix).append(name);
     case SSTunknown:
         return out.append(name);
+    case SSTglobal:
+        return out;
     default:
 #ifdef _DEBUG
         throwUnexpected();
@@ -1366,8 +1478,12 @@ unsigned StatsScopeId::getHash() const
     switch (scopeType)
     {
     case SSTfunction:
+    case SSTdfuworkunit:
+    case SSTfile:
+    case SSTsection:
+    case SSToperation:
     case SSTunknown:
-        return hashc((const byte *)name.get(), strlen(name), (unsigned)scopeType);
+        return hashcz((const byte *)name.get(), (unsigned)scopeType);
     default:
         return hashc((const byte *)&id, sizeof(id), (unsigned)scopeType);
     }
@@ -1408,13 +1524,17 @@ void StatsScopeId::describe(StringBuffer & description) const
     case SSTactivity:
     case SSTworkflow:
     case SSTchildgraph:
+    case SSTchannel:
         description.append(' ').append(id);
         break;
     case SSTedge:
         description.append(' ').append(id).append(',').append(extra);
         break;
-    case SSTfile:
     case SSTfunction:
+    case SSTdfuworkunit:
+    case SSTfile:
+    case SSTsection:
+    case SSToperation:
         description.append(' ').append(name);
         break;
     default:
@@ -1454,6 +1574,7 @@ void StatsScopeId::deserialize(MemoryBuffer & in, unsigned version)
     case SSTactivity:
     case SSTworkflow:
     case SSTchildgraph:
+    case SSTchannel:
         in.read(id);
         break;
     case SSTedge:
@@ -1461,6 +1582,10 @@ void StatsScopeId::deserialize(MemoryBuffer & in, unsigned version)
         in.read(extra);
         break;
     case SSTfunction:
+    case SSTdfuworkunit:
+    case SSTfile:
+    case SSTsection:
+    case SSToperation:
         in.read(name);
         break;
     default:
@@ -1479,14 +1604,18 @@ void StatsScopeId::serialize(MemoryBuffer & out) const
     case SSTactivity:
     case SSTworkflow:
     case SSTchildgraph:
+    case SSTchannel:
         out.append(id);
         break;
     case SSTedge:
         out.append(id);
         out.append(extra);
         break;
-    case SSTfile:
     case SSTfunction:
+    case SSTdfuworkunit:
+    case SSTfile:
+    case SSTsection:
+    case SSToperation:
         out.append(name);
         break;
     default:
@@ -1583,6 +1712,45 @@ bool StatsScopeId::setScopeText(const char * text, const char * * _next)
             setChildGraphId(strtoul(text+ strlen(ChildGraphScopePrefix), next, 10));
             return true;
         }
+        if (MATCHES_CONST_PREFIX(text, "compile"))
+        {
+            setOperationId("compile");
+            return true;
+        }
+        break;
+    case ChannelScopePrefix[0]:
+        if (MATCHES_CONST_PREFIX(text, ChannelScopePrefix) && isdigit(text[strlen(ChannelScopePrefix)]))
+        {
+            setChannelId(strtoul(text+ strlen(ChannelScopePrefix), next, 10));
+            return true;
+        }
+        break;
+    case DFUWorkunitScopePrefix[0]:
+        if (MATCHES_CONST_PREFIX(text, DFUWorkunitScopePrefix))
+        {
+            setDfuWorkunitId(text+ strlen(DFUWorkunitScopePrefix));
+            if (_next)
+                *_next = text + strlen(text);
+            return true;
+        }
+        break;
+    case SectionScopePrefix[0]:
+        if (MATCHES_CONST_PREFIX(text, SectionScopePrefix))
+        {
+            setSectionId(text+strlen(SectionScopePrefix));
+            if (_next)
+                *_next = text + strlen(text);
+            return true;
+        }
+        break;
+    case OperationScopePrefix[0]:
+        if (MATCHES_CONST_PREFIX(text, OperationScopePrefix))
+        {
+            setOperationId(text+strlen(OperationScopePrefix));
+            if (_next)
+                *_next = text + strlen(text);
+            return true;
+        }
         break;
     case '\0':
         setId(SSTglobal, 0);
@@ -1637,6 +1805,10 @@ void StatsScopeId::setFileId(const char * _name)
     scopeType = SSTfile;
     name.set(_name);
 }
+void StatsScopeId::setChannelId(unsigned _id)
+{
+    setId(SSTchannel, _id);
+}
 void StatsScopeId::setWorkflowId(unsigned _id)
 {
     setId(SSTworkflow, _id);
@@ -1644,6 +1816,21 @@ void StatsScopeId::setWorkflowId(unsigned _id)
 void StatsScopeId::setChildGraphId(unsigned _id)
 {
     setId(SSTchildgraph, _id);
+}
+void StatsScopeId::setDfuWorkunitId(const char * _name)
+{
+    scopeType = SSTdfuworkunit;
+    name.set(_name);
+}
+void StatsScopeId::setSectionId(const char * _name)
+{
+    scopeType = SSTsection;
+    name.set(_name);
+}
+void StatsScopeId::setOperationId(const char * _name)
+{
+    scopeType = SSToperation;
+    name.set(_name);
 }
 
 //--------------------------------------------------------------------------------------------------------------------
@@ -1691,11 +1878,78 @@ public:
 class CStatisticCollection : public CInterfaceOf<IStatisticCollection>
 {
     friend class CollectionHashTable;
+
+    CStatisticCollection * ensureSubScopePath(std::initializer_list<const StatsScopeId> path)
+    {
+        CStatisticCollection * curScope = this;
+        for (const auto & scopeItem: path)
+            curScope = curScope->ensureSubScope(scopeItem, true); // n.b. this will always return a valid pointer
+        return curScope;
+    }
+    void markDirty()
+    {
+        isDirty=true;
+        if (parent) parent->markDirty();
+    }
+    void refreshAggregates(CRuntimeStatisticCollection & parentTotals, AggregateUpdatedCallBackFunc & fWhenAggregateUpdated)
+    {
+        const StatisticsMapping & mapping = parentTotals.queryMapping();
+        // if this scope is not dirty, the aggregates are accurate at this level so return totals (no need to descend)
+        // Also there is no stats below sg scope, so no need to descend
+        if (isDirty==false || id.queryScopeType()==SSTsubgraph)
+        {
+            // return the aggregates at this scope level
+            ForEachItemIn(i, stats)
+            {
+                Statistic & stat = stats.element(i);
+                StatisticKind kind = stat.queryKind();
+                if (queryStatsVariant(kind) != 0)
+                    continue; // ignore variants (shouldn't happen as the mapping ensure only the aggregator kinds are present)
+                if (mapping.hasKind(kind))
+                {
+                    // Totals required from this level by parent, even if they are not dirty
+                    parentTotals.mergeStatistic(kind, stat.queryValue());
+                }
+            }
+            isDirty=false;
+            return;
+        }
+        else
+        {
+            // descend down to lower level to obtain totals required for aggregation and then aggregate
+            CRuntimeStatisticCollection childTotals(mapping);
+            for (auto & child : children)
+            {
+                child.refreshAggregates(childTotals, fWhenAggregateUpdated);
+            }
+            // 1) Set any values that has changed for this scope and 2) update ALL totals for parent
+            const unsigned numStats = mapping.numStatistics();
+            for (unsigned i=0; i<numStats; ++i)
+            {
+                StatisticKind kind = mapping.getKind(i);
+                unsigned __int64 value = childTotals.queryStatisticByIndex(i).get();
+
+                if (updateStatistic(kind, value, StatsMergeReplace))
+                {
+                    if (value || includeStatisticIfZero(kind))
+                    {
+                        StringBuffer s;
+                        fWhenAggregateUpdated(getFullScope(s).str(), queryScopeType(), kind, value);
+                    }
+                }
+
+                // All totals still required at parent level (even unchanged totals)
+                if (value)
+                    parentTotals.mergeStatistic(kind, value);
+            }
+            isDirty=false;
+            return;
+        }
+    }
 public:
     CStatisticCollection(CStatisticCollection * _parent, const StatsScopeId & _id) : id(_id), parent(_parent)
     {
     }
-
     CStatisticCollection(CStatisticCollection * _parent, MemoryBuffer & in, unsigned version) : parent(_parent)
     {
         id.deserialize(in, version);
@@ -1718,12 +1972,9 @@ public:
             children.add(*next);
         }
     }
-
     virtual byte getCollectionType() const { return SCintermediate; }
-
-    StringBuffer &toXML(StringBuffer &out) const;
-
 //interface IStatisticCollection:
+    virtual StringBuffer &toXML(StringBuffer &out) const override;
     virtual StatisticScopeType queryScopeType() const override
     {
         return id.queryScopeType();
@@ -1743,7 +1994,8 @@ public:
         if (parent)
         {
             parent->getFullScope(str);
-            str.append(':');
+            if (!str.isEmpty())
+                str.append(':');
         }
         id.getScopeText(str);
         return str;
@@ -1789,7 +2041,6 @@ public:
             return *hashIter.getClear();
         return * new SortedCollectionIterator(*hashIter);
     }
-
     virtual void getMinMaxScope(IStringVal & minValue, IStringVal & maxValue, StatisticScopeType searchScopeType) const override
     {
         if (id.queryScopeType() == searchScopeType)
@@ -1807,7 +2058,6 @@ public:
         for (auto & curChild : children)
             curChild.getMinMaxScope(minValue, maxValue, searchScopeType);
     }
-
     virtual void getMinMaxActivity(unsigned & minValue, unsigned & maxValue) const override
     {
         unsigned activityId = id.queryActivity();
@@ -1823,15 +2073,40 @@ public:
         for (iter.first(); iter.isValid(); iter.next())
             iter.query().getMinMaxActivity(minValue, maxValue);
     }
+    virtual bool setStatistic(const char *scope, StatisticKind kind, unsigned __int64 value) override
+    {
+        if (*scope=='\0')
+        {
+            return updateStatistic(kind, value, StatsMergeReplace);
+        }
+        else
+        {
+            StatsScopeId childScopeId;
+            const char * next;
+            if (!childScopeId.setScopeText(scope, &next) || (*next!=':' && *next!='\0'))
+                throw makeStringExceptionV(JLIBERR_UnexpectedValue, "'%s' does not appear to be a valid scope id", scope);
+            CStatisticCollection * child = ensureSubScope(childScopeId, true);
+
+            if (*next==':')
+                next++;
+            return child->setStatistic(next, kind, value);
+        }
+    }
 
 //other public interface functions
+    // addStatistic() should only be used if it is known that the kind is not already there
     void addStatistic(StatisticKind kind, unsigned __int64 value)
     {
+#ifdef _DEBUG
+        // In debug builds check that a value for this kind has not already been added.
+        // We do not want the O(N) overhead in release mode, especially as N is beginning to get larger
+        unsigned __int64 debugTest;
+        assertex(getStatistic(kind,debugTest)==false);
+#endif
         Statistic s(kind, value);
         stats.append(s);
     }
-
-    void updateStatistic(StatisticKind kind, unsigned __int64 value, StatsMergeAction mergeAction)
+    bool updateStatistic(StatisticKind kind, unsigned __int64 value, StatsMergeAction mergeAction)
     {
         if (mergeAction != StatsMergeAppend)
         {
@@ -1840,18 +2115,23 @@ public:
                 Statistic & cur = stats.element(i);
                 if (cur.kind == kind)
                 {
+                    if (mergeAction==StatsMergeReplace)
+                    {
+                        if (cur.value==value)
+                            return false;
+                    }
                     cur.value = mergeStatisticValue(cur.value, value, mergeAction);
-                    return;
+                    return true;
                 }
             }
         }
         Statistic s(kind, value);
         stats.append(s);
+        return true;
     }
-
     CStatisticCollection * ensureSubScope(const StatsScopeId & search, bool hasChildren)
     {
-        //Once the CStatisicCollection is created it should not be replaced - so that returned pointers remain valid.
+        //Once the CStatisticCollection is created it should not be replaced - so that returned pointers remain valid.
         CStatisticCollection * match = children.find(&search);
         if (match)
             return match;
@@ -1860,8 +2140,7 @@ public:
         children.add(*ret);
         return ret;
     }
-
-    virtual void serialize(MemoryBuffer & out) const
+    virtual void serialize(MemoryBuffer & out) const override
     {
         out.append(getCollectionType());
         id.serialize(out);
@@ -1875,9 +2154,7 @@ public:
         for (iter.first(); iter.isValid(); iter.next())
             iter.query().serialize(out);
     }
-
     inline const StatsScopeId & queryScopeId() const { return id; }
-
     virtual void mergeInto(IStatisticGatherer & target) const
     {
         StatsOptScope block(target, id);
@@ -1887,12 +2164,79 @@ public:
         for (auto const & cur : children)
             cur.mergeInto(target);
     }
+    virtual void visit(IStatisticVisitor & visitor) const
+    {
+        if (visitor.visitScope(*this))
+        {
+            for (auto const & cur : children)
+                cur.visit(visitor);
+        }
+    }
+    virtual void visitChildren(IStatisticVisitor & visitor) const
+    {
+        for (auto const & cur : children)
+            cur.visit(visitor);
+    }
+    virtual void refreshAggregates(const StatisticsMapping & mapping, AggregateUpdatedCallBackFunc & fWhenAggregateUpdated) override
+    {
+        if (isDirty)
+        {
+            CRuntimeStatisticCollection totals(mapping);
+            refreshAggregates(totals, fWhenAggregateUpdated);
+        }
+    }
+    virtual stat_type aggregateStatistic(StatisticKind kind) const override
+    {
+        stat_type sum = 0;
+        if (!getStatistic(kind, sum)) // get sum of statistics at this level
+        {
+            // if no stats at this level, then get sum of stats from children
+            for (auto & child : children)
+                sum += child.aggregateStatistic(kind);
+        }
+        return sum;
+    }
+    virtual void recordStats(const StatisticsMapping & mapping, IStatisticCollection * sourceStatsCollection, std::initializer_list<const StatsScopeId> path) override
+    {
+        CStatisticCollection * curSrcCollection = static_cast<CStatisticCollection *>(sourceStatsCollection);
+        const StatsScopeId * scopeItem = path.begin();
+        // n.b. sourceStatsCollection has workflow as root but this collection has global as root
+        // Locate the collection with the stats and make curSrcCollection point to that
+        if (!curSrcCollection || curSrcCollection->queryScopeId().compare(*scopeItem)!=0)
+            return; // Required path doesn't exist in source collection so nothing more to do here
+        ++scopeItem;
+        while (scopeItem!=path.end())
+        {
+            curSrcCollection = curSrcCollection->children.find(scopeItem);
+            if (!curSrcCollection)
+                return; // Required path doesn't exist in source collection so nothing more to do here
+            ++scopeItem;
+        }
 
+        CStatisticCollection * tgtScopeCollection = ensureSubScopePath(path);
+        bool wasUpdated = false;
+        // More efficient to iterate over stats rather than mapping...
+        ForEachItemIn(i, curSrcCollection->stats)
+        {
+            Statistic & cur = curSrcCollection->stats.element(i);
+            if (queryStatsVariant(cur.kind) != 0)
+                continue; // ignore variants
+            if (mapping.hasKind(cur.kind))
+            {
+                if (tgtScopeCollection->updateStatistic(cur.kind, cur.value, StatsMergeReplace))
+                    wasUpdated=true;
+            }
+        }
+        if (wasUpdated)
+            tgtScopeCollection->markDirty();
+    }
 private:
     StatsScopeId id;
     CStatisticCollection * parent;
+protected:
     CollectionHashTable children;
     StatsArray stats;
+    bool isDirty = false; // used to track which scope has changed (used to workout what aggregates to recalculate)
 };
 
 StringBuffer &CStatisticCollection::toXML(StringBuffer &out) const
@@ -1991,6 +2335,15 @@ public:
         out.append(creator);
         out.append(whenCreated);
     }
+    virtual void mergeInto(IStatisticGatherer & target) const override
+    {
+        // Similar to CStatisticCollection::mergeInfo but do not add the root scope.
+        ForEachItemIn(iStat, stats)
+            stats.item(iStat).mergeInto(target);
+
+        for (auto const & cur : children)
+            cur.mergeInto(target);
+    }
 public:
     StatisticCreatorType creatorType;
     StringAttr creator;
@@ -2026,6 +2379,11 @@ IStatisticCollection * createStatisticCollection(MemoryBuffer & in)
     unsigned version;
     in.read(version);
     return deserializeCollection(NULL, in, version);
+}
+
+IStatisticCollection * createStatisticCollection(const StatsScopeId & scopeId)
+{
+    return new CStatisticCollection(nullptr, scopeId);
 }
 
 
@@ -2064,6 +2422,12 @@ public:
     virtual void beginChildGraphScope(unsigned id) override
     {
         StatsScopeId scopeId(SSTchildgraph, id);
+        CStatisticCollection & tos = scopes.tos();
+        scopes.append(*tos.ensureSubScope(scopeId, true));
+    }
+    virtual void beginChannelScope(unsigned id) override
+    {
+        StatsScopeId scopeId(SSTchannel, id);
         CStatisticCollection & tos = scopes.tos();
         scopes.append(*tos.ensureSubScope(scopeId, true));
     }
@@ -2135,6 +2499,7 @@ public:
     virtual void beginChildGraphScope(unsigned id) { throwUnexpected(); }
     virtual void beginActivityScope(unsigned id) { throwUnexpected(); }
     virtual void beginEdgeScope(unsigned id, unsigned oid) { throwUnexpected(); }
+    virtual void beginChannelScope(unsigned id) { throwUnexpected(); }
     virtual void endScope()
     {
         node = &stack.popGet();
@@ -2201,6 +2566,10 @@ void CRuntimeStatistic::merge(unsigned __int64 otherValue, StatsMergeAction merg
     case StatsMergeMin:
         value.store_min(otherValue);
         break;
+    case StatsMergeFirst:
+        value.store_first(otherValue);
+        break;
+    case StatsMergeLast:
     case StatsMergeMax:
         value.store_max(otherValue);
         break;
@@ -2214,6 +2583,24 @@ void CRuntimeStatistic::merge(unsigned __int64 otherValue, StatsMergeAction merg
 }
 
 //--------------------------------------------------------------------------------------------------------------------
+
+CRuntimeStatisticCollection::CRuntimeStatisticCollection(const CRuntimeStatisticCollection & _other) : mapping(_other.mapping)
+#ifdef _DEBUG
+, ignoreUnknown(_other.ignoreUnknown)
+#endif
+{
+    unsigned num = mapping.numStatistics();
+    values = new CRuntimeStatistic[num+1];
+    for (unsigned i=0; i <= num; i++)
+        values[i].set(_other.values[i].get());
+
+    CNestedRuntimeStatisticMap *otherNested = _other.queryNested();
+    if (otherNested)
+    {
+        nested = createNested();
+        queryNested()->set(*otherNested, 0);
+    }
+}
 
 CRuntimeStatisticCollection::~CRuntimeStatisticCollection()
 {
@@ -2248,14 +2635,29 @@ unsigned __int64 CRuntimeStatisticCollection::getSerialStatisticValue(StatisticK
     return value + convertMeasure(rawKind, kind, rawValue);
 }
 
-void CRuntimeStatisticCollection::merge(const CRuntimeStatisticCollection & other, unsigned node)
+void CRuntimeStatisticCollection::set(const CRuntimeStatisticCollection & other, unsigned node)
 {
     ForEachItemIn(i, other)
     {
         StatisticKind kind = other.getKind(i);
         unsigned __int64 value = other.getStatisticValue(kind);
-        if (value)
-            mergeStatistic(kind, value, node);
+        setStatistic(kind, value, node);
+    }
+
+    CNestedRuntimeStatisticMap *otherNested = other.queryNested();
+    if (otherNested)
+    {
+        ensureNested().set(*otherNested, node);
+    }
+}
+
+void CRuntimeStatisticCollection::merge(const CRuntimeStatisticCollection & other, unsigned node)
+{
+    ForEachItemIn(i, other)
+    {
+        StatisticKind kind = other.getKind(i);
+        unsigned __int64 value = other.queryStatisticByIndex(i).get();
+        mergeStatistic(kind, value, node);
     }
 
     CNestedRuntimeStatisticMap *otherNested = other.queryNested();
@@ -2295,7 +2697,17 @@ void CRuntimeStatisticCollection::updateDelta(CRuntimeStatisticCollection & targ
 
 void CRuntimeStatisticCollection::mergeStatistic(StatisticKind kind, unsigned __int64 value)
 {
-    queryStatistic(kind).merge(value, queryMergeMode(kind));
+    CRuntimeStatistic * target = queryOptStatistic(kind);
+    if (target)
+    {
+        target->merge(value, queryMergeMode(kind));
+    }
+    else
+    {
+        StatisticKind serialKind= querySerializedKind(kind);
+        if (kind != serialKind)
+            mergeStatistic(serialKind, convertMeasure(kind, serialKind, value));
+    }
 }
 
 void CRuntimeStatisticCollection::sumStatistic(StatisticKind kind, unsigned __int64 value)
@@ -2306,6 +2718,11 @@ void CRuntimeStatisticCollection::sumStatistic(StatisticKind kind, unsigned __in
 void CRuntimeStatisticCollection::mergeStatistic(StatisticKind kind, unsigned __int64 value, unsigned node)
 {
     mergeStatistic(kind, value);
+}
+
+void CRuntimeStatisticCollection::setStatistic(StatisticKind kind, unsigned __int64 value, unsigned node)
+{
+    setStatistic(kind, value);
 }
 
 void CRuntimeStatisticCollection::reset()
@@ -2327,27 +2744,12 @@ CRuntimeStatisticCollection & CRuntimeStatisticCollection::registerNested(const 
     return ensureNested().addNested(scope, mapping).queryStats();
 }
 
-void CRuntimeStatisticCollection::rollupStatistics(unsigned numTargets, IContextLogger * const * targets) const
-{
-    ForEachItem(iStat)
-    {
-        unsigned __int64 value = values[iStat].getClear();
-        if (value)
-        {
-            StatisticKind kind = getKind(iStat);
-            for (unsigned iTarget = 0; iTarget < numTargets; iTarget++)
-                targets[iTarget]->noteStatistic(kind, value);
-        }
-    }
-    reportIgnoredStats();
-}
-
-void CRuntimeStatisticCollection::recordStatistics(IStatisticGatherer & target) const
+void CRuntimeStatisticCollection::recordStatistics(IStatisticGatherer & target, bool clear) const
 {
     ForEachItem(i)
     {
         StatisticKind kind = getKind(i);
-        unsigned __int64 value = values[i].get();
+        unsigned __int64 value = clear ? values[i].getClearAtomic() : values[i].get();
         if (value || includeStatisticIfZero(kind))
         {
             StatisticKind serialKind= querySerializedKind(kind);
@@ -2360,7 +2762,7 @@ void CRuntimeStatisticCollection::recordStatistics(IStatisticGatherer & target) 
     reportIgnoredStats();
     CNestedRuntimeStatisticMap *qn = queryNested();
     if (qn)
-        qn->recordStatistics(target);
+        qn->recordStatistics(target, clear);
 }
 
 void CRuntimeStatisticCollection::reportIgnoredStats() const
@@ -2391,14 +2793,21 @@ StringBuffer & CRuntimeStatisticCollection::toStr(StringBuffer &str) const
 {
     ForEachItem(iStat)
     {
+        StatisticKind kind = getKind(iStat);
+        StatisticKind serialKind = querySerializedKind(kind);
+        if (kind != serialKind)
+            continue; // ignore - we will roll this one into the corresponding serialized value's output
         unsigned __int64 value = values[iStat].get();
+        StatisticKind rawKind = queryRawKind(kind);
+        if (kind != rawKind)
+        {
+            // roll raw values into the corresponding serialized value, if present...
+            unsigned __int64 rawValue = getStatisticValue(rawKind);
+            if (rawValue)
+                value += convertMeasure(rawKind, kind, rawValue);
+        }
         if (value)
         {
-            StatisticKind kind = getKind(iStat);
-            StatisticKind serialKind = querySerializedKind(kind);
-            if (kind != serialKind)
-                value = convertMeasure(kind, serialKind, value);
-
             const char * name = queryStatisticName(serialKind);
             str.append(' ').append(name).append("=");
             formatStatistic(str, value, serialKind);
@@ -2408,6 +2817,42 @@ StringBuffer & CRuntimeStatisticCollection::toStr(StringBuffer &str) const
     if (qn)
         qn->toStr(str);
     return str;
+}
+
+//MORE: This could be commoned up with the toStr() method by using a visitor pattern
+void CRuntimeStatisticCollection::exportToSpan(ISpan * span, StringBuffer & prefix) const
+{
+    unsigned lenPrefix = prefix.length();
+    ForEachItem(iStat)
+    {
+        StatisticKind kind = getKind(iStat);
+        StatisticKind serialKind = querySerializedKind(kind);
+        if (kind != serialKind)
+            continue; // ignore - we will roll this one into the corresponding serialized value's output
+        unsigned __int64 value = values[iStat].get();
+        StatisticKind rawKind = queryRawKind(kind);
+        if (kind != rawKind)
+        {
+            // roll raw values into the corresponding serialized value, if present...
+            unsigned __int64 rawValue = getStatisticValue(rawKind);
+            if (rawValue)
+                value += convertMeasure(rawKind, kind, rawValue);
+        }
+        if (value)
+        {
+            //Convert timestamp to nanoseconds so it is reported consistently.
+            if (queryMeasure(serialKind) == SMeasureTimestampUs)
+                value = normalizeTimestampToNs(value);
+
+            const char * name = queryStatisticName(serialKind);
+            getSnakeCase(prefix, name);
+            span->setSpanAttribute(prefix, value);
+            prefix.setLength(lenPrefix);
+        }
+    }
+    CNestedRuntimeStatisticMap *qn = queryNested();
+    if (qn)
+        qn->exportToSpan(span, prefix);
 }
 
 void CRuntimeStatisticCollection::deserialize(MemoryBuffer& in)
@@ -2447,14 +2892,8 @@ void CRuntimeStatisticCollection::deserializeMerge(MemoryBuffer& in)
     in.read(hasNested);
     if (hasNested)
     {
-        ensureNested().deserializeMerge(in);
+        ensureNested().deserialize(in);
     }
-}
-
-void CRuntimeStatisticCollection::getNodeProgressInfo(IPropertyTree &node) const
-{
-    TreeNodeStatisticGatherer gatherer(node);
-    recordStatistics(gatherer);
 }
 
 bool CRuntimeStatisticCollection::serialize(MemoryBuffer& out) const
@@ -2524,6 +2963,45 @@ void CRuntimeSummaryStatisticCollection::DerivedStats::mergeStatistic(unsigned _
     sumSquares += dvalue * dvalue;
 }
 
+void CRuntimeSummaryStatisticCollection::DerivedStats::setStatistic(unsigned __int64 value, unsigned node)
+{
+    if (count == 0)
+    {
+        min = value;
+        max = value;
+        minNode = node;
+        maxNode = node;
+    }
+    else
+    {
+        if (value < min)
+        {
+            min = value;
+            minNode = node;
+        }
+        if (value > max)
+        {
+            max = value;
+            maxNode = node;
+        }
+    }
+    count++;
+    sum = value;
+    double dvalue = (double)value;
+    sumSquares = dvalue * dvalue;
+}
+
+double CRuntimeSummaryStatisticCollection::DerivedStats::queryStdDevInfo(unsigned __int64 &_min, unsigned __int64 &_max, unsigned &_minNode, unsigned &_maxNode) const
+{
+    _min = min;
+    _max = max;
+    _minNode = minNode;
+    _maxNode = maxNode;
+    double mean = sum / count;
+    double variance = (sumSquares - sum * mean) / count;
+    return sqrt(variance);
+}
+
 CRuntimeSummaryStatisticCollection::CRuntimeSummaryStatisticCollection(const StatisticsMapping & _mapping) : CRuntimeStatisticCollection(_mapping)
 {
     derived = new DerivedStats[ordinality()+1];
@@ -2536,7 +3014,7 @@ CRuntimeSummaryStatisticCollection::~CRuntimeSummaryStatisticCollection()
 
 CNestedRuntimeStatisticMap * CRuntimeSummaryStatisticCollection::createNested() const
 {
-    return new CNestedSummaryRuntimeStatisticMap;
+    return new CNestedRuntimeSummaryStatisticMap;
 }
 
 void CRuntimeSummaryStatisticCollection::mergeStatistic(StatisticKind kind, unsigned __int64 value, unsigned node)
@@ -2544,6 +3022,18 @@ void CRuntimeSummaryStatisticCollection::mergeStatistic(StatisticKind kind, unsi
     CRuntimeStatisticCollection::mergeStatistic(kind, value);
     unsigned index = queryMapping().getIndex(kind);
     derived[index].mergeStatistic(value, node);
+}
+
+void CRuntimeSummaryStatisticCollection::setStatistic(StatisticKind kind, unsigned __int64 value, unsigned node)
+{
+    CRuntimeStatisticCollection::setStatistic(kind, value);
+    unsigned index = queryMapping().getIndex(kind);
+    derived[index].setStatistic(value, node);
+}
+
+double CRuntimeSummaryStatisticCollection::queryStdDevInfo(StatisticKind kind, unsigned __int64 &_min, unsigned __int64 &_max, unsigned &_minNode, unsigned &_maxNode) const
+{
+    return derived[queryMapping().getIndex(kind)].queryStdDevInfo(_min, _max, _minNode, _maxNode);
 }
 
 static bool skewHasMeaning(StatisticKind kind)
@@ -2597,6 +3087,8 @@ static bool isWorthReportingMergedValue(StatisticKind kind)
     case StatsMergeSum:
     case StatsMergeMin:
     case StatsMergeMax:
+    case StatsMergeFirst:
+    case StatsMergeLast:
         break;
     default:
         return false;
@@ -2609,11 +3101,19 @@ static bool isWorthReportingMergedValue(StatisticKind kind)
         return false;
     }
 
+    switch (kind)
+    {
+    case StSizePeakMemory:
+    case StSizePeakRowMemory:
+        //These only make sense for individual nodes, the aggregated value is meaningless
+        return false;
+    }
+
     return true;
 }
 
 
-void CRuntimeSummaryStatisticCollection::recordStatistics(IStatisticGatherer & target) const
+void CRuntimeSummaryStatisticCollection::recordStatistics(IStatisticGatherer & target, bool clear) const
 {
     for (unsigned i = 0; i < ordinality(); i++)
     {
@@ -2625,7 +3125,7 @@ void CRuntimeSummaryStatisticCollection::recordStatistics(IStatisticGatherer & t
             //Thor should always publish the average value for a stat, and the merged value if it makes sense.
             //So that it is easy to analyse graphs independent of the number of slave nodes it is executed on.
 
-            unsigned __int64 mergedValue = convertMeasure(kind, serialKind, values[i].get());
+            unsigned __int64 mergedValue = convertMeasure(kind, serialKind, clear ? values[i].getClearAtomic() : values[i].get());
             if (isWorthReportingMergedValue(serialKind))
             {
                 if (mergedValue || includeStatisticIfZero(serialKind))
@@ -2694,7 +3194,7 @@ void CRuntimeSummaryStatisticCollection::recordStatistics(IStatisticGatherer & t
     reportIgnoredStats();
     CNestedRuntimeStatisticMap *qn = queryNested();
     if (qn)
-        qn->recordStatistics(target);
+        qn->recordStatistics(target, clear);
 }
 
 bool CRuntimeSummaryStatisticCollection::serialize(MemoryBuffer & out) const
@@ -2736,16 +3236,22 @@ void CNestedRuntimeStatisticCollection::merge(const CNestedRuntimeStatisticColle
     stats->merge(other.queryStats(), node);
 }
 
+void CNestedRuntimeStatisticCollection::set(const CNestedRuntimeStatisticCollection & other, unsigned node)
+{
+    stats->set(other.queryStats(), node);
+}
+
 bool CNestedRuntimeStatisticCollection::serialize(MemoryBuffer& out) const
 {
     scope.serialize(out);
+    out.append(stats->queryMapping().getUniqueHash());
     return stats->serialize(out);
 }
 
-void CNestedRuntimeStatisticCollection::recordStatistics(IStatisticGatherer & target) const
+void CNestedRuntimeStatisticCollection::recordStatistics(IStatisticGatherer & target, bool clear) const
 {
     target.beginScope(scope);
-    stats->recordStatistics(target);
+    stats->recordStatistics(target, clear);
     target.endScope();
 }
 
@@ -2755,6 +3261,14 @@ StringBuffer & CNestedRuntimeStatisticCollection::toStr(StringBuffer &str) const
     scope.getScopeText(str).append("={");
     stats->toStr(str);
     return str.append(" }");
+}
+
+void CNestedRuntimeStatisticCollection::exportToSpan(ISpan * span, StringBuffer & prefix) const
+{
+    unsigned lenPrefix = prefix.length();
+    scope.getScopeText(prefix).append(".");
+    stats->exportToSpan(span, prefix);
+    prefix.setLength(lenPrefix);
 }
 
 StringBuffer & CNestedRuntimeStatisticCollection::toXML(StringBuffer &str) const
@@ -2809,10 +3323,12 @@ void CNestedRuntimeStatisticMap::deserialize(MemoryBuffer& in)
     for (unsigned i=0; i < numItems; i++)
     {
         StatsScopeId scope;
+        unsigned mappingCode;
         scope.deserialize(in, currentStatisticsVersion);
+        in.read(mappingCode);
 
         //Use allStatistics as the default mapping if it hasn't already been added.
-        CNestedRuntimeStatisticCollection & child = addNested(scope, allStatistics);
+        CNestedRuntimeStatisticCollection & child = addNested(scope, *queryStatsMapping(scope, mappingCode));
         child.deserialize(in);
     }
 }
@@ -2824,10 +3340,12 @@ void CNestedRuntimeStatisticMap::deserializeMerge(MemoryBuffer& in)
     for (unsigned i=0; i < numItems; i++)
     {
         StatsScopeId scope;
+        unsigned mappingCode;
         scope.deserialize(in, currentStatisticsVersion);
+        in.read(mappingCode);
 
         //Use allStatistics as the default mapping if it hasn't already been added.
-        CNestedRuntimeStatisticCollection & child = addNested(scope, allStatistics);
+        CNestedRuntimeStatisticCollection & child = addNested(scope, *queryStatsMapping(scope, mappingCode));
         child.deserializeMerge(in);
     }
 }
@@ -2840,6 +3358,17 @@ void CNestedRuntimeStatisticMap::merge(const CNestedRuntimeStatisticMap & other,
         CNestedRuntimeStatisticCollection & cur = other.map.item(i);
         CNestedRuntimeStatisticCollection & target = addNested(cur.scope, cur.queryMapping());
         target.merge(cur, node);
+    }
+}
+
+void CNestedRuntimeStatisticMap::set(const CNestedRuntimeStatisticMap & other, unsigned node)
+{
+    ReadLockBlock b(other.lock);
+    ForEachItemIn(i, other.map)
+    {
+        CNestedRuntimeStatisticCollection & cur = other.map.item(i);
+        CNestedRuntimeStatisticCollection & target = addNested(cur.scope, cur.queryMapping());
+        target.set(cur, node);
     }
 }
 
@@ -2868,11 +3397,11 @@ bool CNestedRuntimeStatisticMap::serialize(MemoryBuffer& out) const
     return nonEmpty;
 }
 
-void CNestedRuntimeStatisticMap::recordStatistics(IStatisticGatherer & target) const
+void CNestedRuntimeStatisticMap::recordStatistics(IStatisticGatherer & target, bool clear) const
 {
     ReadLockBlock b(lock);
     ForEachItemIn(i, map)
-        map.item(i).recordStatistics(target);
+        map.item(i).recordStatistics(target, clear);
 }
 
 StringBuffer & CNestedRuntimeStatisticMap::toStr(StringBuffer &str) const
@@ -2881,6 +3410,13 @@ StringBuffer & CNestedRuntimeStatisticMap::toStr(StringBuffer &str) const
     ForEachItemIn(i, map)
         map.item(i).toStr(str);
     return str;
+}
+
+void CNestedRuntimeStatisticMap::exportToSpan(ISpan * span, StringBuffer & prefix) const
+{
+    ReadLockBlock b(lock);
+    ForEachItemIn(i, map)
+        map.item(i).exportToSpan(span, prefix);
 }
 
 StringBuffer & CNestedRuntimeStatisticMap::toXML(StringBuffer &str) const
@@ -2896,7 +3432,7 @@ CRuntimeStatisticCollection * CNestedRuntimeStatisticMap::createStats(const Stat
     return new CRuntimeStatisticCollection(mapping);
 }
 
-CRuntimeStatisticCollection * CNestedSummaryRuntimeStatisticMap::createStats(const StatisticsMapping & mapping)
+CRuntimeStatisticCollection * CNestedRuntimeSummaryStatisticMap::createStats(const StatisticsMapping & mapping)
 {
     return new CRuntimeSummaryStatisticCollection(mapping);
 }
@@ -3696,6 +4232,7 @@ static void checkDistributedKind(StatisticKind kind)
 
 void verifyStatisticFunctions()
 {
+    static_assert(_elements_in(statsMetaData) == StMax, "statsMetaData is missing entries");
     static_assert(_elements_in(measureNames) == SMeasureMax+1 && !measureNames[SMeasureMax], "measureNames needs updating");
     static_assert(_elements_in(creatorTypeNames) == SCTmax+1 && !creatorTypeNames[SCTmax], "creatorTypeNames needs updating");
     static_assert(_elements_in(scopeTypeNames) == SSTmax+1 && !scopeTypeNames[SSTmax], "scopeTypeNames needs updating");

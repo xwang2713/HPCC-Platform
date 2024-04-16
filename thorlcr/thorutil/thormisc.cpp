@@ -52,6 +52,7 @@
 #include "rtlformat.hpp"
 #include "rmtfile.hpp"
 #include "roxiestream.hpp"
+#include "hpccconfig.hpp"
 
 
 #define SDS_LOCK_TIMEOUT 30000
@@ -62,6 +63,7 @@ static Owned<IGroup> nodeGroup;    // master + processGroup
 static Owned<IGroup> slaveGroup;   // group containing all channels
 static Owned<IGroup> clusterGroup; // master + slaveGroup
 static Owned<IGroup> dfsGroup;     // same as slaveGroup, but without ports
+static Owned<IGroup> localGroup;   // used as a placeholder in IFileDescriptors for local files (spills)
 static Owned<ICommunicator> nodeComm; // communicator based on nodeGroup (master+slave processes)
 
 
@@ -72,20 +74,25 @@ static Owned<IMPtagAllocator> ClusterMPAllocator;
 
 // stat. mappings shared between master and slave activities
 const StatisticsMapping spillStatistics({StTimeSpillElapsed, StTimeSortElapsed, StNumSpills, StSizeSpillFile});
-const StatisticsMapping basicActivityStatistics({StTimeLocalExecute, StTimeBlocked});
+const StatisticsMapping soapcallStatistics({StTimeSoapcall});
+const StatisticsMapping basicActivityStatistics({StTimeTotalExecute, StTimeLocalExecute, StTimeBlocked});
 const StatisticsMapping groupActivityStatistics({StNumGroups, StNumGroupMax}, basicActivityStatistics);
 const StatisticsMapping hashJoinActivityStatistics({StNumLeftRows, StNumRightRows}, basicActivityStatistics);
-const StatisticsMapping indexReadActivityStatistics({StNumRowsProcessed, StNumIndexSeeks, StNumIndexScans, StNumPostFiltered, StNumIndexWildSeeks}, diskReadRemoteStatistics, basicActivityStatistics);
-const StatisticsMapping indexWriteActivityStatistics({StPerReplicated}, basicActivityStatistics, diskWriteRemoteStatistics);
-const StatisticsMapping keyedJoinActivityStatistics({ StNumIndexSeeks, StNumIndexScans, StNumIndexAccepted, StNumPostFiltered, StNumPreFiltered, StNumDiskSeeks, StNumDiskAccepted, StNumDiskRejected, StNumIndexWildSeeks}, basicActivityStatistics);
+const StatisticsMapping indexReadFileStatistics({}, diskReadRemoteStatistics, jhtreeCacheStatistics);
+const StatisticsMapping indexReadActivityStatistics({StNumRowsProcessed}, indexReadFileStatistics, basicActivityStatistics);
+const StatisticsMapping indexWriteActivityStatistics({StPerReplicated, StNumLeafCacheAdds, StNumNodeCacheAdds, StNumBlobCacheAdds }, basicActivityStatistics, diskWriteRemoteStatistics);
+const StatisticsMapping keyedJoinActivityStatistics({ StNumIndexAccepted, StNumPreFiltered, StNumDiskSeeks, StNumDiskAccepted, StNumDiskRejected}, basicActivityStatistics, indexReadFileStatistics);
 const StatisticsMapping loopActivityStatistics({StNumIterations}, basicActivityStatistics);
 const StatisticsMapping lookupJoinActivityStatistics({StNumSmartJoinSlavesDegradedToStd, StNumSmartJoinDegradedToLocal}, basicActivityStatistics);
 const StatisticsMapping joinActivityStatistics({StNumLeftRows, StNumRightRows}, basicActivityStatistics, spillStatistics);
-const StatisticsMapping diskReadActivityStatistics({StNumDiskRowsRead}, basicActivityStatistics, diskReadRemoteStatistics);
+const StatisticsMapping diskReadActivityStatistics({StNumDiskRowsRead, }, basicActivityStatistics, diskReadRemoteStatistics);
 const StatisticsMapping diskWriteActivityStatistics({StPerReplicated}, basicActivityStatistics, diskWriteRemoteStatistics);
 const StatisticsMapping sortActivityStatistics({}, basicActivityStatistics, spillStatistics);
-const StatisticsMapping graphStatistics({StNumExecutions}, basicActivityStatistics);
-
+const StatisticsMapping graphStatistics({StNumExecutions, StSizeSpillFile, StSizeGraphSpill, StTimeUser, StTimeSystem, StNumContextSwitches, StSizeMemory, StSizePeakMemory, StSizeRowMemory, StSizePeakRowMemory}, basicActivityStatistics);
+const StatisticsMapping diskReadPartStatistics({StNumDiskRowsRead}, diskReadRemoteStatistics);
+const StatisticsMapping indexDistribActivityStatistics({}, basicActivityStatistics, jhtreeCacheStatistics);
+const StatisticsMapping soapcallActivityStatistics({}, basicActivityStatistics, soapcallStatistics);
+const StatisticsMapping hashDedupActivityStatistics({StNumSpills, StSizeSpillFile, StTimeSortElapsed}, diskWriteRemoteStatistics, basicActivityStatistics);
 
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
@@ -101,6 +108,7 @@ MODULE_EXIT()
     clusterGroup.clear();
     slaveGroup.clear();
     dfsGroup.clear();
+    localGroup.clear();
     nodeComm.clear();
     ClusterMPAllocator.clear();
 }
@@ -137,7 +145,7 @@ void ActPrintLogArgs(const CGraphElementBase *container, const ActLogEnum flags,
         return; // suppress logging child activities unless thorlog_all flag
     StringBuffer res;
     ActPrintLogArgsPrep(res, container, flags, format, args);
-    LOG(logCat, thorJob, "%s", res.str());
+    LOG(logCat, "%s", res.str());
 }
 
 void ActPrintLogArgs(const CGraphElementBase *container, IException *e, const ActLogEnum flags, const LogMsgCategory &logCat, const char *format, va_list args)
@@ -149,7 +157,7 @@ void ActPrintLogArgs(const CGraphElementBase *container, IException *e, const Ac
         res.append(" : ");
         e->errorMessage(res);
     }
-    LOG(logCat, thorJob, "%s", res.str());
+    LOG(logCat, "%s", res.str());
 }
 
 void ActPrintLogEx(const CGraphElementBase *container, const ActLogEnum flags, const LogMsgCategory &logCat, const char *format, ...)
@@ -161,7 +169,7 @@ void ActPrintLogEx(const CGraphElementBase *container, const ActLogEnum flags, c
     va_start(args, format);
     ActPrintLogArgsPrep(res, container, flags, format, args);
     va_end(args);
-    LOG(logCat, thorJob, "%s", res.str());
+    LOG(logCat, "%s", res.str());
 }
 
 void ActPrintLog(const CActivityBase *activity, const char *format, ...)
@@ -206,7 +214,7 @@ void GraphPrintLogArgs(CGraphBase *graph, const ActLogEnum flags, const LogMsgCa
         return; // suppress logging from child graph unless thorlog_all flag
     StringBuffer res;
     GraphPrintLogArgsPrep(res, graph, flags, logCat, format, args);
-    LOG(logCat, thorJob, "%s", res.str());
+    LOG(logCat, "%s", res.str());
 }
 
 void GraphPrintLogArgs(CGraphBase *graph, IException *e, const ActLogEnum flags, const LogMsgCategory &logCat, const char *format, va_list args)
@@ -220,7 +228,7 @@ void GraphPrintLogArgs(CGraphBase *graph, IException *e, const ActLogEnum flags,
         res.append(" : ");
         e->errorMessage(res);
     }
-    LOG(logCat, thorJob, "%s", res.str());
+    LOG(logCat, "%s", res.str());
 }
 
 void GraphPrintLog(CGraphBase *graph, IException *e, const char *format, ...)
@@ -328,9 +336,19 @@ public:
             }
             if (slave)
             {
-                str.appendf("SLAVE #%d [", slave);
-                queryClusterGroup().queryNode(slave).endpoint().getUrlStr(str);
-                str.append("]: ");
+                if (((int)slave) < 0)
+                {
+                    unsigned node = (unsigned)-slave;
+                    str.appendf("NODE #%d [", node);
+                    queryNodeGroup().queryNode(node).endpoint().getEndpointHostText(str);
+                    str.append("]: ");
+                }
+                else
+                {
+                    str.appendf("SLAVE #%d [", slave);
+                    queryClusterGroup().queryNode(slave).endpoint().getEndpointHostText(str);
+                    str.append("]: ");
+                }
             }
         }
         str.append(msg);
@@ -621,99 +639,103 @@ class CTempNameHandler
 {
 public:
     unsigned num;
-    StringAttr tempdir, tempPrefix;
-    StringAttr alttempdir; // only set if needed
+    StringBuffer rootDir, subDirName, prefix, subDirPath;
     CriticalSection crit;
-    bool altallowed;
-    bool cleardir;
-    unsigned slaveNum = 0;
 
     CTempNameHandler()
     {
         num = 0;
-        altallowed = false;
-        cleardir = false;
     }
-    ~CTempNameHandler()
-    {
-        if (cleardir) 
-            clearDirs(false);       // don't log as jlog may have closed
-    }
-    const char *queryTempDir(bool alt) 
+    const char *queryTempDir() 
     { 
-        if (alt&&altallowed) 
-            return alttempdir;
-        return tempdir; 
+        return subDirPath; 
     }
-    void setTempDir(unsigned _slaveNum, const char *name, const char *_tempPrefix, bool clear)
+    void clearTempDirectory(bool log)
     {
-        assertex(name && *name);
-        CriticalBlock block(crit);
-        slaveNum = _slaveNum;
-        assertex(tempdir.isEmpty()); // should only be called once
-        tempPrefix.set(_tempPrefix);
-        StringBuffer base(name);
-        addPathSepChar(base);
-        tempdir.set(base.str());
-        recursiveCreateDirectory(tempdir);
-#ifdef _WIN32
-        altallowed = false;
-#else
-        altallowed = globals->getPropBool("@thor_dual_drive",true);
-#endif
-        if (altallowed)
+        assertex(subDirPath.length());
+        Owned<IDirectoryIterator> iter = createDirectoryIterator(subDirPath);
+        ForEach (*iter)
         {
-            unsigned d = getPathDrive(tempdir);
-            if (d>1)
-                altallowed = false;
-            else
+            IFile &file = iter->query();
+            if (file.isFile()==fileBool::foundYes)
             {
-                StringBuffer p(tempdir);
-                alttempdir.set(setPathDrive(p,d?0:1).str());
-                recursiveCreateDirectory(alttempdir);
-            }
-        }
-        cleardir = clear;
-        if (clear)
-            clearDirs(true);
-    }
-    static void clearDir(const char *dir, bool log)
-    {
-        if (dir&&*dir)
-        {
-            Owned<IDirectoryIterator> iter = createDirectoryIterator(dir);
-            ForEach (*iter)
-            {
-                IFile &file = iter->query();
-                if (file.isFile()==fileBool::foundYes)
+                if (log)
+                    LOG(MCdebugInfo, "Deleting %s", file.queryFilename());
+                try { file.remove(); }
+                catch (IException *e)
                 {
                     if (log)
-                        LOG(MCdebugInfo, thorJob, "Deleting %s", file.queryFilename());
-                    try { file.remove(); }
-                    catch (IException *e)
-                    {
-                        if (log)
-                            FLLOG(MCwarning, thorJob, e);
-                        e->Release();
-                    }
+                        FLLOG(MCwarning, e);
+                    e->Release();
                 }
             }
         }
     }
-    void clearDirs(bool log)
+    void setTempDir(const char *_rootDir, const char *_subDirName, const char *_prefix, bool clearDir)
     {
-        clearDir(tempdir,log);
-        clearDir(alttempdir,log);
+        assertex(!isEmptyString(_rootDir) && !isEmptyString(_prefix) && !isEmptyString(_subDirName));
+        CriticalBlock block(crit);
+        rootDir.set(_rootDir);
+        addPathSepChar(rootDir);
+        subDirName.set(_subDirName);
+        prefix.set(_prefix);
+        // NB: subDirPath will be empty, unless there was a problem during the job ctor. Either way ok to clear/set.
+        subDirPath.setf("%s%s", rootDir.str(), subDirName.str());
+        bool ret = recursiveCreateDirectory(subDirPath);
+        VStringBuffer msg("%s to create temp directory %s", ret ? "Succeeded" : "Failed", subDirPath.str());
+        DBGLOG("%s", msg.str());
+        if (!ret)
+        {
+            // temp dir. should not exist, but if it does issue warning only.
+            if (checkDirExists(subDirPath))
+                WARNLOG("Existing temp directory %s already exists", subDirPath.str());
+            else
+                throw MakeThorException(0, "%s", msg.str());
+        }
+        if (clearDir)
+            clearTempDirectory(true);
+#ifdef _CONTAINERIZED
+        // setTempDir is called exactly once in containerized mode
+        // Output the unique directory used by this manager/worker to a file,
+        // so the postStop command can find it and ensure cleared up.
+        Owned<IFile> nameTmpDir = createIFile("tmpdir"); // NB: each pod is in it's own private working directory
+        Owned<IFileIO> nameTmpDirIO = nameTmpDir->open(IFOcreate);
+        if (!nameTmpDirIO)
+            throw makeStringException(0, "Failed to create file 'tmpdir' with content of temp directory name");
+        nameTmpDirIO->write(0, subDirPath.length(), subDirPath.str());
+#endif
     }
-    void getTempName(StringBuffer &name, const char *suffix,bool alt)
+    void clear(bool log)
+    {
+        clearTempDirectory(log);
+        try
+        {
+            Owned<IFile> dirIFile = createIFile(subDirPath);
+            bool success = dirIFile->remove();
+            if (log)
+                PROGLOG("%s to delete temp directory: %s", subDirPath.str(), success ? "succeeded" : "failed");
+        }
+        catch (IException *e)
+        {
+            if (log)
+                FLLOG(MCwarning, e);
+            e->Release();
+        }
+        subDirPath.clear();
+    }
+    void getTempName(StringBuffer &name, const char *suffix, bool inTempDir)
     {
         CriticalBlock block(crit);
-        assertex(!tempdir.isEmpty()); // should only be called once
-        if (alt && altallowed)
-            name.append(alttempdir);
+        assertex(!subDirPath.isEmpty());
+        if (inTempDir)
+        {
+            name.append(rootDir);
+            name.append(subDirName);
+            addPathSepChar(name);
+        }
         else
-            name.append(tempdir);
-        name.append(tempPrefix).append((unsigned)GetCurrentProcessId()).append('_').append(slaveNum).append('_').append(++num);
+            name.append(subDirName).append('_');
+        name.append(prefix).append('_').append(++num);
         if (suffix)
             name.append("__").append(suffix);
         name.append(".tmp");
@@ -722,31 +744,39 @@ public:
 
 
 
-void GetTempName(StringBuffer &name, const char *prefix,bool altdisk)
+void GetTempFileName(StringBuffer &name, const char *suffix)
 {
-    TempNameHandler.getTempName(name, prefix, altdisk);
+    TempNameHandler.getTempName(name, suffix, false);
 }
 
-void SetTempDir(unsigned slaveNum, const char *name, const char *tempPrefix, bool clear)
+void GetTempFilePath(StringBuffer &name, const char *suffix)
 {
-    TempNameHandler.setTempDir(slaveNum, name, tempPrefix, clear);
+    TempNameHandler.getTempName(name, suffix, true);
 }
 
-void ClearDir(const char *dir)
+void SetTempDir(const char *rootTempDir, const char *uniqueSubDir, const char *tempPrefix, bool clearDir)
 {
-    CTempNameHandler::clearDir(dir,true);
+    TempNameHandler.setTempDir(rootTempDir, uniqueSubDir, tempPrefix, clearDir);
+    LOG(MCdebugProgress, "temporary rootTempdir: %s, uniqueSubDir: %s, prefix: %s", rootTempDir, uniqueSubDir, tempPrefix);
 }
 
-void ClearTempDirs()
+void ClearTempDir()
 {
-    TempNameHandler.clearDirs(true);
-    LOG(MCthorDetailedDebugInfo, thorJob, "temp directory cleared");
+    try
+    {
+        TempNameHandler.clear(true);
+        LOG(MCthorDetailedDebugInfo, "temp directory cleared");
+    }
+    catch (IException *e)
+    {
+        EXCLOG(e, "ClearTempDir");
+        e->Release();
+    }
 }
 
-
-const char *queryTempDir(bool altdisk)
+const char *queryTempDir()
 {
-    return TempNameHandler.queryTempDir(altdisk);
+    return TempNameHandler.queryTempDir();
 }
 
 class DECL_EXCEPTION CBarrierAbortException: public CSimpleInterface, public IBarrierException
@@ -783,8 +813,6 @@ void loadCmdProp(IPropertyTree *tree, const char *cmdProp)
     }
 }
 
-const LogMsgJobInfo thorJob(UnknownJob, UnknownUser); // may be improved later
-
 void ensureDirectoryForFile(const char *fName)
 {
     if (!recursiveCreateDirectoryForFile(fName))
@@ -794,7 +822,7 @@ void ensureDirectoryForFile(const char *fName)
 // Not recommended to be used from slaves as tend to be one or more trying at same time.
 void reportExceptionToWorkunit(IConstWorkUnit &workunit,IException *e, ErrorSeverity severity)
 {
-    LOG(MCwarning, thorJob, e, "Reporting exception to WU");
+    LOG(MCwarning, e, "Reporting exception to WU");
     Owned<IWorkUnit> wu = &workunit.lock();
     if (wu)
     {
@@ -858,6 +886,10 @@ void setupGroups(INode *_masterNode, IGroup *_processGroup, IGroup *_slaveGroup)
     ForEach(*nodeIter)
         dfsGroupNodes.append(*createINodeIP(nodeIter->query().endpoint(), 0));
     dfsGroup.setown(createIGroup(dfsGroupNodes.ordinality(), dfsGroupNodes.getArray()));
+
+    Owned<INode> localNode = createINode("localhost");
+    INode *p = localNode;
+    localGroup.setown(createIGroup(1, &p));
 
     nodeComm.setown(createCommunicator(nodeGroup));
 }
@@ -932,6 +964,7 @@ IGroup &queryProcessGroup() { return *processGroup; }
 IGroup &queryClusterGroup() { return *clusterGroup; }
 IGroup &querySlaveGroup() { return *slaveGroup; }
 IGroup &queryDfsGroup() { return *dfsGroup; }
+IGroup &queryLocalGroup() { return *localGroup; }
 unsigned queryClusterWidth() { return clusterGroup->ordinality()-1; }
 unsigned queryNodeClusterWidth() { return nodeGroup->ordinality()-1; }
 
@@ -1034,7 +1067,7 @@ bool getBestFilePart(CActivityBase *activity, IPartDescriptor &partDesc, OwnedIF
                 file.setown(createDaliServixFile(rfn));
             }
             else
-                file.setown(createIFile(locationName.str()));
+                file.setown(createIFile(rfn)); // use rfn not locationName, to preserve port through hooking mechanisms
             try
             {
                 if (file->exists())
@@ -1126,12 +1159,12 @@ void CFifoFileCache::deleteFile(IFile &ifile)
     try 
     {
         if (!ifile.remove())
-            FLLOG(MCoperatorWarning, thorJob, "CFifoFileCache: Failed to remove file (missing) : %s", ifile.queryFilename());
+            FLLOG(MCoperatorWarning, "CFifoFileCache: Failed to remove file (missing) : %s", ifile.queryFilename());
     }
     catch (IException *e)
     {
         StringBuffer s("Failed to remove file: ");
-        FLLOG(MCoperatorWarning, thorJob, e, s.append(ifile.queryFilename()));
+        FLLOG(MCoperatorWarning, e, s.append(ifile.queryFilename()));
     }
 }
 
@@ -1245,6 +1278,9 @@ public:
     {
         CMessageBuffer msg;
         msg.append(1); // stop
+#ifdef TRACE_GLOBAL_GROUP
+        ActPrintLog(&activity, "%s - sending to %u", __func__, node);
+#endif
         verifyex(comm.send(msg, node, mpTag));
     }
 };
@@ -1263,7 +1299,7 @@ class CRowServer : public CSimpleInterface, implements IThreaded, implements IRo
     mptag_t mpTag;
     unsigned fetchBuffSize;
     Linked<IRowStream> seq;
-    bool running;
+    std::atomic<bool> running;
 
 public:
     IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
@@ -1273,10 +1309,13 @@ public:
     {
         fetchBuffSize = DEFAULT_ROWSERVER_BUFF_SIZE;
         running = true;
-        threaded.init(this);
+        threaded.init(this, true);
     }
     ~CRowServer()
     {
+#ifdef TRACE_GLOBAL_GROUP
+        ActPrintLog(activity, "%s", __func__);
+#endif
         stop();
         threaded.join();
     }
@@ -1286,6 +1325,9 @@ public:
         while (running)
         {
             rank_t sender;
+#ifdef TRACE_GLOBAL_GROUP
+            ActPrintLog(activity, "%s - recv()", __func__);
+#endif
             if (comm.recv(mb, RANK_ALL, mpTag, &sender))
             {
                 unsigned code;
@@ -1294,6 +1336,9 @@ public:
                     mb.read(code);
                     if (1 == code) // stop
                     {
+#ifdef TRACE_GLOBAL_GROUP
+                        ActPrintLog(activity, "%s - received stop mb.len=%u, sender=%u", __func__, mb.length(), (unsigned)sender);
+#endif
                         seq->stop();
                         break;
                     }
@@ -1316,7 +1361,15 @@ public:
         }
         running = false;
     }
-    void stop() { running = false; comm.cancel(RANK_ALL, mpTag); }
+    void stop()
+    {
+#ifdef TRACE_GLOBAL_GROUP
+        ActPrintLog(activity, "%s", __func__);
+#endif
+        bool wanted = true;
+        if (running.compare_exchange_strong(wanted, false))
+            comm.cancel(RANK_ALL, mpTag);
+    }
 };
 
 IRowServer *createRowServer(CActivityBase *activity, IRowStream *seq, ICommunicator &comm, mptag_t mpTag)
@@ -1537,6 +1590,8 @@ void checkAndDumpAbortInfo(const char *cmd)
 {
     try
     {
+        bool validateAllowedPrograms = true;
+        StringBuffer allowedPipePrograms;
         StringBuffer dumpInfoCmd(cmd);
         if (dumpInfoCmd.length())
         {
@@ -1553,11 +1608,17 @@ void checkAndDumpAbortInfo(const char *cmd)
                 exePath.append("process-name-unknown");
             unsigned pid = GetCurrentProcessId();
             dumpInfoCmd.appendf(" %s %u %s %u", myInstanceName, myBasePort, exePath.str(), pid);
+
+            // only allow custom command if listed as allowedPipeProgram. NB: default is "" (none) above.
+            getAllowedPipePrograms(allowedPipePrograms, false);
         }
         else
+        {
             getDebuggerGetStacksCmd(dumpInfoCmd);
+            validateAllowedPrograms = false; // explicitly allow default through
+        }
         StringBuffer cmdOutput;
-        unsigned retCode = getCommandOutput(cmdOutput, dumpInfoCmd, "slave dump info", globals->queryProp("@allowedPipePrograms"));
+        unsigned retCode = getCommandOutput(cmdOutput, dumpInfoCmd, "slave dump info", validateAllowedPrograms ? allowedPipePrograms.str() : nullptr);
         PROGLOG("\n%s, return code = %u\n%s\n", dumpInfoCmd.str(), retCode, cmdOutput.str());
     }
     catch (IException *e)
@@ -1576,7 +1637,7 @@ void checkFileType(CActivityBase *activity, IDistributedFile *file, const char *
             return;
         if (!strieq(kind, expectedType))
         {
-            Owned<IThorException> e = MakeActivityException(activity, TE_FileTypeMismatch, "File format mismatch reading file: '%s'. Expected type '%s', but file is type '%s'", file->queryLogicalName(), expectedType, kind);
+            Owned<IThorException> e = MakeActivityException(activity, ENGINEERR_FILE_TYPE_MISMATCH, "File format mismatch reading file: '%s'. Expected type '%s', but file is type '%s'", file->queryLogicalName(), expectedType, kind);
             if (throwException)
                 throw e.getClear();
             e->setAction(tea_warning);
@@ -1586,3 +1647,48 @@ void checkFileType(CActivityBase *activity, IDistributedFile *file, const char *
     }
 }
 
+void CThorPerfTracer::start(const char *_workunit, unsigned _subGraphId, double interval)
+{
+    workunit.set(_workunit);
+    subGraphId = _subGraphId;
+    PROGLOG("Starting perf trace of subgraph %u, with interval %.3g seconds", subGraphId, interval);
+    perf.setInterval(interval);
+    perf.start();    
+}
+
+void CThorPerfTracer::stop()
+{
+    PROGLOG("Stopping perf trace of subgraph %u", subGraphId);
+    perf.stop();
+    StringBuffer flameGraphName;
+    if (getConfigurationDirectory(globals->queryPropTree("Directories"), "debug", "thor", globals->queryProp("@name"), flameGraphName))
+        addPathSepChar(flameGraphName);
+    flameGraphName.appendf("%s/%u/flame_%u.svg", workunit.get(), globals->getPropInt("@slavenum"), subGraphId);
+    ensureDirectoryForFile(flameGraphName);
+    Owned<IFile> iFile = createIFile(flameGraphName);
+    try
+    {
+        Owned<IFileIO> iFileIO = iFile->open(IFOcreate);
+        if (iFileIO)
+        {
+            StringBuffer &svg = perf.queryResult();
+            iFileIO->write(0, svg.length(), svg.str());
+            PROGLOG("Flame graph for subgraph %u written to %s", subGraphId, flameGraphName.str());
+        }
+    }
+    catch (IException *E)
+    {
+        EXCLOG(E);
+        ::Release(E);
+    }
+}
+
+void saveWuidToFile(const char *wuid)
+{
+    // Store current wuid to a local file, so post mortem script can find it (and if necessary publish files to it)
+    Owned<IFile> wuidFile = createIFile("wuid"); // NB: each pod is in it's own private working directory
+    Owned<IFileIO> wuidFileIO = wuidFile->open(IFOcreate);
+    if (!wuidFileIO)
+        throw makeStringException(0, "Failed to create file 'wuid' to store current workunit for post mortem script");
+    wuidFileIO->write(0, strlen(wuid), wuid);
+}

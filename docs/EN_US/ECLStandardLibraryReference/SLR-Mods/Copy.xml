@@ -28,6 +28,8 @@
   [</emphasis> <emphasis>,preserveCompression</emphasis> <emphasis
   role="bold">] [</emphasis> <emphasis>,noSplit</emphasis> <emphasis
   role="bold">] [</emphasis> <emphasis>,expireDays</emphasis> <emphasis
+  role="bold">] [</emphasis>
+  <emphasis>,ensure</emphasis> <emphasis
   role="bold">]);</emphasis></para>
 
   <para><emphasis>dfuwuid</emphasis> <emphasis role="bold"> :=
@@ -55,7 +57,9 @@
   [</emphasis> <emphasis>,preserveCompression</emphasis> <emphasis
   role="bold">] [</emphasis> <emphasis>,noSplit</emphasis> <emphasis
   role="bold">] [</emphasis> <emphasis>,expireDays</emphasis> <emphasis
-  role="bold">]);</emphasis></para>
+  role="bold">] [</emphasis>
+  <emphasis>,ensure</emphasis><emphasis role="bold">]);
+  </emphasis></para>
 
   <informaltable colsep="1" frame="all" rowsep="1">
     <tgroup cols="2">
@@ -105,18 +109,21 @@
         <row>
           <entry><emphasis>espServerIPPort</emphasis></entry>
 
-          <entry>Optional. A null-terminated string containing the protocol,
-          IP, port, and directory, or the DNS equivalent, of the ESP server
-          program. This is usually the same IP and port as ECL Watch, with
-          "/FileSpray" appended. If omitted, the default is the value
-          contained in the lib_system.ws_fs_server attribute.</entry>
+          <entry>Optional. This should almost always be omitted, which then
+          defaults to the value contained in the lib_system.ws_fs_server
+          attribute. When not omitted, it should be a null-terminated string
+          containing the protocol, IP, port, and directory, or the DNS
+          equivalent, of the ESP server program. This is usually the same IP
+          and port as ECL Watch, with "/FileSpray" appended.</entry>
         </row>
 
         <row>
           <entry><emphasis>maxConnections</emphasis></entry>
 
           <entry>Optional. An integer specifying the maximum number of
-          connections. If omitted, the default is one (1).</entry>
+          connections. If omitted, the default is -1, which indicates the
+          system chooses a suitable default based on the size of the
+          cluster.</entry>
         </row>
 
         <row>
@@ -162,8 +169,9 @@
 
           <entry>Optional. A boolean TRUE or FALSE flag indicating whether to
           execute the copy process on the source nodes and push to the targets
-          instead of executing on the targets and pulling from the source. If
-          omitted, the default is FALSE.</entry>
+          instead of executing on the targets and pulling from the source.
+          This option is only valid within the same environment. If omitted,
+          the default is FALSE.</entry>
         </row>
 
         <row>
@@ -201,6 +209,13 @@
         </row>
 
         <row>
+          <entry><emphasis>ensure</emphasis></entry>
+
+          <entry>Optional. Copies logical file, but does not copy file parts
+          if they already exist. Default is FALSE.</entry>
+        </row>
+
+        <row>
           <entry><emphasis>dfuwuid</emphasis></entry>
 
           <entry>The attribute name to receive the null-terminated string
@@ -220,8 +235,8 @@
 
   <para>The <emphasis role="bold">Copy </emphasis>function takes a logical
   file and copies it to another logical file. This may be done within the same
-  cluster, or to another cluster, or to a cluster in a completely separate
-  Dali.</para>
+  cluster or to another cluster. The Destination cannot be foreign
+  file.</para>
 
   <para>Example:</para>
 

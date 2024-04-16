@@ -17,9 +17,23 @@
 
 //version multiPart=false
 //version multiPart=true
+//version multiPart=false,variant='default'
+//version multiPart=false,variant='inplace'
+//version multiPart=false,variant='inplace_row'
+//version multiPart=false,variant='inplace_lzw'
+//version multiPart=false,variant='inplace_lz4hc'
+
+// The settings below may be useful when trying to analyse Roxie keyed join behaviour, as they will
+// eliminate some wait time for an agent queue to become available
+
+//#option('roxie:minPayloadSize', 10000)
+//#option('roxie:agentThreads', 400)
+//#option('roxie:prestartAgentThreads', true)
 
 import ^ as root;
 multiPart := #IFDEFINED(root.multiPart, true);
+variant := #IFDEFINED(root.variant, '');
+numJoins := #IFDEFINED(root.numJoins, 40);
 
 //--- end of version configuration ---
 
@@ -33,7 +47,7 @@ createSample(unsigned i, unsigned num, unsigned numRows) := FUNCTION
     //The splitter performs pathologically on roxie - it may be worth further investigation
     filtered := files.getSearchSource()(HASH32(kind, word, doc, segment, wpos) % num = i, keyed(word != ''));
     inputFile := choosen(filtered, numRows);
-    j := JOIN(inputFile, files.getSearchIndex(),
+    j := JOIN(inputFile, files.getSearchIndexVariant(variant),
             (LEFT.kind = RIGHT.kind) AND
             (LEFT.word = RIGHT.word) AND
             (LEFT.doc = RIGHT.doc) AND
@@ -58,4 +72,4 @@ createSamples(iters, numRows) := FUNCTIONMACRO
     RETURN o;
 ENDMACRO;
 
-createSamples(40, 60000);
+createSamples(numJoins, 60000);

@@ -1,0 +1,27 @@
+{
+  "name": "hpcc-platform",
+  "private": true,
+  "scripts": {
+    "copy-res": "cp ./devdoc/*.png ./devdoc/.vitepress/dist/devdoc",
+    "docs-dev": "vitepress dev devdoc",
+    "docs-build": "vitepress build devdoc",
+    "docs-preview": "vitepress preview devdoc",
+    "convert": "pandoc -w markdown -o ./docs/DOCUMENTATION.md ./docs/DOCUMENTATION.rst",
+    "build": "npm run docs-build && npm run copy-res",
+    "update": "npx npm-check-updates -u -t minor",
+    "update-major": "npx npm-check-updates -u"
+  },
+  "devDependencies": {
+    "vitepress": "1.0.0-rc.40"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hpcc-systems/HPCC-Platform.git"
+  },
+  "author": "hpcc-systems",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://track.hpccsystems.com/"
+  },
+  "homepage": "https://hpccsystems.com"
+}

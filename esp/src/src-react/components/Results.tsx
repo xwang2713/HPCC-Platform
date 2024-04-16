@@ -1,13 +1,13 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
-import { AlphaNumSortMemory } from "src/Memory";
-import * as Observable from "dojo/store/Observable";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link, Pivot, PivotItem, ScrollablePane, Sticky } from "@fluentui/react";
+import { SizeMe } from "react-sizeme";
 import nlsHPCC from "src/nlsHPCC";
-import { useWorkunitResults } from "../hooks/Workunit";
-import { HolyGrail } from "../layouts/HolyGrail";
-import { createCopyDownloadSelection, ShortVerticalDivider } from "./Common";
-import { DojoGrid, selector } from "./DojoGrid";
+import { QuerySortItem } from "src/store/Store";
+import { useWorkunitResults } from "../hooks/workunit";
+import { pivotItemStyle } from "../layouts/pivot";
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
+import { ShortVerticalDivider } from "./Common";
+import { Result } from "./Result";
 
 const defaultUIState = {
     hasSelection: false
@@ -15,67 +15,64 @@ const defaultUIState = {
 
 interface ResultsProps {
     wuid: string;
+    sort?: QuerySortItem;
 }
 
+const defaultSort = { attribute: "Wuid", descending: true };
+
 export const Results: React.FunctionComponent<ResultsProps> = ({
-    wuid
+    wuid,
+    sort = defaultSort
 }) => {
 
-    const [grid, setGrid] = React.useState<any>(undefined);
-    const [selection, setSelection] = React.useState([]);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
-    const [results] = useWorkunitResults(wuid);
+    const [results, , , refreshData] = useWorkunitResults(wuid);
+    const [data, setData] = React.useState<any[]>([]);
+    const {
+        selection, setSelection,
+        setTotal,
+        refreshTable } = useFluentStoreState({});
 
     //  Grid ---
-    const gridStore = useConst(new Observable(new AlphaNumSortMemory("__hpcc_id", { Name: true, Value: true })));
-    const gridQuery = useConst({});
-    const gridSort = useConst([{ attribute: "Wuid", "descending": true }]);
-    const gridColumns = useConst({
-        col1: selector({
-            width: 27,
-            selectorType: "checkbox"
-        }),
-        Name: {
-            label: nlsHPCC.Name, width: 180, sortable: true,
-            formatter: function (Name, row) {
-                return `<a href='#/workunits/${row.Wuid}/outputs/${Name}' class='dgrid-row-url'>${Name}</a>`;
+    const columns = React.useMemo((): FluentColumns => {
+        return {
+            col1: {
+                width: 27,
+                selectorType: "checkbox"
+            },
+            Name: {
+                label: nlsHPCC.Name, width: 180, sortable: true,
+                formatter: (Name, row) => {
+                    return <Link href={`#/workunits/${row.Wuid}/outputs/${Name}`}>{Name}</Link>;
+                }
+            },
+            FileName: {
+                label: nlsHPCC.FileName, sortable: true,
+                formatter: (FileName, row) => {
+                    return <Link href={`#/files/${FileName}`}>{FileName}</Link>;
+                }
+            },
+            Value: {
+                label: nlsHPCC.Value,
+                width: 180,
+                sortable: true
+            },
+            ResultViews: {
+                label: nlsHPCC.Views, sortable: true,
+                formatter: (ResultViews, idx) => {
+                    return <>
+                        {ResultViews?.map((item, idx) => <Link href='#' viewName={encodeURIComponent(item)}>{item}</Link>)}
+                    </>;
+                }
             }
-        },
-        FileName: {
-            label: nlsHPCC.FileName, sortable: true,
-            formatter: function (FileName, idx) {
-                return `<a href='#/files/${FileName}' class='dgrid-row-url2'>${FileName}</a>`;
-            }
-        },
-        Value: {
-            label: nlsHPCC.Value,
-            width: 180,
-            sortable: true
-        },
-        ResultViews: {
-            label: nlsHPCC.Views, sortable: true,
-            formatter: function (ResultViews, idx) {
-                let retVal = "";
-                ResultViews?.forEach((item, idx) => {
-                    retVal += "<a href='#' onClick='return false;' viewName=" + encodeURIComponent(item) + " class='dgrid-row-url3'>" + item + "</a>&nbsp;";
-                });
-                return retVal;
-            }
-        }
-    });
-
-    const refreshTable = React.useCallback((clearSelection = false) => {
-        grid?.set("query", gridQuery);
-        if (clearSelection) {
-            grid?.clearSelection();
-        }
-    }, [grid, gridQuery]);
+        };
+    }, []);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -94,19 +91,29 @@ export const Results: React.FunctionComponent<ResultsProps> = ({
             key: "open legacy", text: nlsHPCC.OpenLegacyMode, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
             onClick: () => {
                 if (selection.length === 1) {
-                    window.location.href = `#/workunits/${wuid}/outputs/${selection[0].Name}/legacy`;
+                    window.location.href = `#/workunits/${wuid}/outputs/${selection[0].Name}?__legacy`;
                 } else {
                     for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open(`#/workunits/${wuid}/outputs/${selection[i].Name}/legacy`, "_blank");
+                        window.open(`#/workunits/${wuid}/outputs/${selection[i].Name}?__legacy`, "_blank");
                     }
                 }
             }
         },
-    ], [refreshTable, selection, uiState.hasSelection, wuid]);
+        {
+            key: "visualize", text: nlsHPCC.Visualize, disabled: !uiState.hasSelection, iconProps: { iconName: "BarChartVertical" },
+            onClick: () => {
+                if (selection.length === 1) {
+                    window.location.href = `#/workunits/${wuid}/outputs/${selection[0].Sequence}?__visualize`;
+                } else {
+                    for (let i = selection.length - 1; i >= 0; --i) {
+                        window.open(`#/workunits/${wuid}/outputs/${selection[i].Sequence}?__visualize`, "_blank");
+                    }
+                }
+            }
+        },
+    ], [refreshData, selection, uiState.hasSelection, wuid]);
 
-    const rightButtons = React.useMemo((): ICommandBarItemProps[] => [
-        ...createCopyDownloadSelection(grid, selection, "results.csv")
-    ], [grid, selection]);
+    const copyButtons = useCopyButtons(columns, selection, "results");
 
     //  Selection  ---
     React.useEffect(() => {
@@ -120,7 +127,7 @@ export const Results: React.FunctionComponent<ResultsProps> = ({
     }, [selection]);
 
     React.useEffect(() => {
-        gridStore.setData(results.map(row => {
+        setData(results.map(row => {
             const tmp: any = row.ResultViews;
             return {
                 __hpcc_id: row.Name,
@@ -132,13 +139,43 @@ export const Results: React.FunctionComponent<ResultsProps> = ({
                 Sequence: row.Sequence
             };
         }));
-        refreshTable();
-    }, [gridStore, refreshTable, results]);
+    }, [results]);
 
-    return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
-        main={
-            <DojoGrid store={gridStore} query={gridQuery} sort={gridSort} columns={gridColumns} setGrid={setGrid} setSelection={setSelection} />
-        }
-    />;
+    return <ScrollablePane>
+        <Sticky>
+            <CommandBar items={buttons} farItems={copyButtons} />
+        </Sticky>
+        <FluentGrid
+            data={data}
+            primaryID={"__hpcc_id"}
+            alphaNumColumns={{ Name: true, Value: true }}
+            sort={sort}
+            columns={columns}
+            setSelection={setSelection}
+            setTotal={setTotal}
+            refresh={refreshTable}
+        ></FluentGrid>
+    </ScrollablePane >;
+};
+
+interface TabbedResultsProps {
+    wuid: string;
+}
+
+export const TabbedResults: React.FunctionComponent<TabbedResultsProps> = ({
+    wuid
+}) => {
+
+    const [results] = useWorkunitResults(wuid);
+
+    return <SizeMe monitorHeight>{({ size }) =>
+        <Pivot overflowBehavior="menu" style={{ height: "100%" }}>
+            {results.map(result => {
+                return <PivotItem key={`${result?.ResultName}_${result?.Sequence}`} headerText={result?.ResultName} style={pivotItemStyle(size)}>
+                    <Result wuid={wuid} resultName={result?.ResultName} />
+                </PivotItem>;
+            })}
+        </Pivot>
+    }</SizeMe>;
+
 };

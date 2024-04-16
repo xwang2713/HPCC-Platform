@@ -226,7 +226,7 @@ public:
 
     void verifyFile(const char *name,CDateTime *cutoff)
     {
-        Owned<IDistributedFile> file=queryDistributedFileDirectory().lookup(name,udesc,false,false,false,nullptr,defaultPrivilegedUser);
+        Owned<IDistributedFile> file=queryDistributedFileDirectory().lookup(name,udesc,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser);
         if (!file)
             return;
         IPropertyTree &fileprops = file->queryAttributes();
@@ -252,7 +252,7 @@ public:
             SocketEndpoint ep(testpart->queryNode()->endpoint()); 
             if (!dafilesrvips.verifyDaliFileServer(ep)) {
                 StringBuffer ips;
-                ep.getIpText(ips);
+                ep.getHostText(ips);
                 PROGLOG("VERIFY: file %s, cannot run DAFILESRV on %s",name,ips.str());
                 return;
             }
@@ -276,7 +276,7 @@ public:
                 SocketEndpoint ep(part->queryNode()->endpoint());
                 if (!dafilesrvips.verifyDaliFileServer(ep)) {
                     StringBuffer ips;
-                    ep.getIpText(ips);
+                    ep.getHostText(ips);
                     PROGLOG("VERIFY: file %s, cannot run DAFILESRV on %s",name,ips.str());
                     continue;
                 }
@@ -315,7 +315,7 @@ public:
                 try
                 {
                     partfile.setown(createIFile(rfn));
-                    // PROGLOG("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getUrlStr(eps).str());
+                    // PROGLOG("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getEndpointHostText(eps).str());
                     if (partfile) {
                         if (parent->stopped)
                             return;
@@ -329,7 +329,7 @@ public:
                 catch (IException *e)
                 {
                     StringBuffer s;
-                    s.appendf("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getUrlStr(eps).str());
+                    s.appendf("VERIFY: part %s on %s",partfile->queryFilename(),rfn.queryEndpoint().getEndpointHostText(eps).str());
                     EXCLOG(e, s.str());
                     e->Release();
                     ok = false;
@@ -348,7 +348,7 @@ public:
             }
         }
         if (!stopped) {
-            file.setown(queryDistributedFileDirectory().lookup(name,udesc,false,false,false,nullptr,defaultPrivilegedUser));
+            file.setown(queryDistributedFileDirectory().lookup(name,udesc,AccessMode::tbdRead,false,false,nullptr,defaultPrivilegedUser));
             if (!file)
                 return;
             if (afor.ok) {
@@ -372,7 +372,7 @@ class CSashaVerifierServer: public ISashaServer, public Thread
     Semaphore stopsem;
     Owned<IUserDescriptor> udesc;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaVerifierServer()
         : Thread("CSashaVerifierServer")
@@ -391,7 +391,7 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
@@ -474,7 +474,7 @@ class CSashaDaFSMonitorServer: public ISashaServer, public Thread
     bool stopped;
     Semaphore stopsem;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaDaFSMonitorServer()
         : Thread("CSashaDaFSMonitorServer")
@@ -488,7 +488,7 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
@@ -540,12 +540,12 @@ public:
                     if (rver==0) {
                         StringBuffer epstr;
                         SocketEndpoint ep = eps.item(i);
-                        ep.getUrlStr(epstr);
+                        ep.getEndpointHostText(epstr);
                         CriticalBlock block(sect);
                         if (failurelimit) {
-                            LOG(MCoperatorError, unknownJob,"DAFSMON: dafilesrv on %s cannot be contacted",epstr.str());
+                            LOG(MCoperatorError, "DAFSMON: dafilesrv on %s cannot be contacted",epstr.str());
                             if (--failurelimit==0) 
-                                LOG(MCoperatorError, unknownJob,"DAFSMON: monitoring suspended for cluster %s (too many failures)",clustername);
+                                LOG(MCoperatorError, "DAFSMON: monitoring suspended for cluster %s (too many failures)",clustername);
                         }
                     }
                 }
@@ -554,10 +554,10 @@ public:
                     CriticalBlock block(sect);
                     StringBuffer epstr;
                     SocketEndpoint ep = eps.item(i);
-                    ep.getUrlStr(epstr);
+                    ep.getEndpointHostText(epstr);
                     StringBuffer s;
                     s.appendf("DAFSMON: dafilesrv %s",epstr.str());
-                    LOG(MCoperatorError, unknownJob, e, s.str());
+                    LOG(MCoperatorError, e, s.str());
                     e->Release();
                     return;
                 }
@@ -599,7 +599,7 @@ public:
                 if (!ep.isNull()) {
                     if (trc.length())
                         trc.append(", ");
-                    ep.getUrlStr(trc);
+                    ep.getEndpointHostText(trc);
                     if (ep.port==0)
                         ep.port = getDaliServixPort();
                     eps.append(ep);

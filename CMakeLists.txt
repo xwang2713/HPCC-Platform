@@ -67,14 +67,22 @@
 #
 #########################################################
 
-project(hpccsystems-platform LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.22.1)
+
+set(HPCC_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+include(${HPCC_SOURCE_DIR}/version.cmake)
+include(${HPCC_SOURCE_DIR}/cmake_modules/options.cmake)
+include(${HPCC_SOURCE_DIR}/cmake_modules/plugins.cmake)
+include(${HPCC_SOURCE_DIR}/cmake_modules/vcpkg.cmake)
+
+project(hpccsystems-platform LANGUAGES C CXX
+    VERSION ${HPCC_MAJOR}.${HPCC_MINOR}.${HPCC_POINT}.${HPCC_SEQUENCE}
+)
 
 # Stupid workaround. See https://gitlab.kitware.com/cmake/cmake/-/issues/21378
 # If cmake runs twice, cmake might not correctly set the compiler version variables
 unset ( ENV{CC} )
 unset ( ENV{CXX} )
-
-cmake_minimum_required(VERSION 3.13.0)
 
 set(TOP_LEVEL_PROJECT ON)
 if(NOT CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
@@ -84,10 +92,7 @@ endif(NOT CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
 include(CTest)
 enable_testing()
 
-set(HPCC_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(CMAKE_MODULE_PATH "${HPCC_SOURCE_DIR}/cmake_modules/")
-
-include(${HPCC_SOURCE_DIR}/version.cmake)
 
 ###
 ## Build Level
@@ -145,16 +150,28 @@ endif()
 include(${HPCC_SOURCE_DIR}/cmake_modules/commonSetup.cmake)
 
 if ( PLUGIN )
-    HPCC_ADD_SUBDIRECTORY (system/yaml)
-    HPCC_ADD_SUBDIRECTORY (system/aws "SQS")
-    HPCC_ADD_SUBDIRECTORY (system/tbb_sm)
+    HPCC_ADD_SUBDIRECTORY (common/deftype)
+    HPCC_ADD_SUBDIRECTORY (common/dllserver)
+    HPCC_ADD_SUBDIRECTORY (common/environment)
+    HPCC_ADD_SUBDIRECTORY (common/remote)
+    HPCC_ADD_SUBDIRECTORY (common/workunit)
+    HPCC_ADD_SUBDIRECTORY (ecl/hql)
+    HPCC_ADD_SUBDIRECTORY (fs/dafsclient)
     HPCC_ADD_SUBDIRECTORY (roxie/roxiemem)
     HPCC_ADD_SUBDIRECTORY (rtl/nbcd)
     HPCC_ADD_SUBDIRECTORY (rtl/eclrtl)
     HPCC_ADD_SUBDIRECTORY (system/jlib)
+    HPCC_ADD_SUBDIRECTORY (system/jhtree)
+    HPCC_ADD_SUBDIRECTORY (system/hrpc)
+    HPCC_ADD_SUBDIRECTORY (system/mp)
+    HPCC_ADD_SUBDIRECTORY (system/security/securesocket)
+    HPCC_ADD_SUBDIRECTORY (system/security/zcrypt)
     HPCC_ADD_SUBDIRECTORY (dali/base)
+    HPCC_ADD_SUBDIRECTORY (plugins/cassandra "CASSANDRAEMBED")
+    HPCC_ADD_SUBDIRECTORY (plugins/eclblas "ECLBLAS")
     HPCC_ADD_SUBDIRECTORY (plugins/Rembed "REMBED")
     HPCC_ADD_SUBDIRECTORY (plugins/v8embed "V8EMBED")
+    HPCC_ADD_SUBDIRECTORY (plugins/wasmembed "WASMEMBED")
     HPCC_ADD_SUBDIRECTORY (plugins/memcached "MEMCACHED")
     HPCC_ADD_SUBDIRECTORY (plugins/redis "REDIS")
     HPCC_ADD_SUBDIRECTORY (plugins/javaembed "JAVAEMBED")
@@ -164,8 +181,10 @@ if ( PLUGIN )
     HPCC_ADD_SUBDIRECTORY (plugins/mysql "MYSQLEMBED")
     HPCC_ADD_SUBDIRECTORY (plugins/exampleplugin "EXAMPLEPLUGIN")
     HPCC_ADD_SUBDIRECTORY (plugins/couchbase "COUCHBASEEMBED")
-    HPCC_ADD_SUBDIRECTORY (plugins/spark "SPARK")
     HPCC_ADD_SUBDIRECTORY (plugins/h3 "H3")
+    HPCC_ADD_SUBDIRECTORY (plugins/nlp "NLP")
+    HPCC_ADD_SUBDIRECTORY (plugins/mongodb "MONGODBEMBED")
+    HPCC_ADD_SUBDIRECTORY (plugins/parquet "PARQUETEMBED")
 elseif ( NOT MAKE_DOCS_ONLY )
     HPCC_ADD_SUBDIRECTORY (system)
     HPCC_ADD_SUBDIRECTORY (initfiles)
@@ -198,33 +217,45 @@ elseif ( NOT MAKE_DOCS_ONLY )
 endif()
 
 HPCC_ADD_SUBDIRECTORY(docs "PLATFORM")
-if(APPLE OR WIN32)
-    HPCC_ADD_SUBDIRECTORY(lib2)
-endif(APPLE OR WIN32)
 
 if(APPLE)
     HPCC_ADD_SUBDIRECTORY(package)
 endif(APPLE)
+
+if (NOT CLIENTTOOLS_ONLY)
+    install(DIRECTORY ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include DESTINATION ${COMPONENTFILES_DIR}/cl FILES_MATCHING PATTERN "*")
+endif()
 
 ###
 ## CPack install and packaging setup.
 ###
 if ( WIN32 )
     set ( CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE )
+    if (MSVC_VERSION EQUAL 1930 AND MSVC_TOOLSET_VERSION EQUAL 142)
+        cmake_host_system_information(RESULT VS_DIR QUERY VS_17_DIR)
+        file(GLOB MSVC_REDIST_LIBRARIES "${VS_DIR}/VC/Redist/MSVC/*/${MSVC_C_ARCHITECTURE_ID}/Microsoft.VC143.CRT/*.dll")
+        list(APPEND CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS "${MSVC_REDIST_LIBRARIES}")
+        set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_NO_WARNINGS TRUE)
+    endif()
     include(InstallRequiredSystemLibraries)
-    if (MSVC14)
-        find_file(MSVC14_REDIST "vcredist_${CMAKE_MSVC_ARCH}.exe" HINTS ${MSVC_REDIST_DIR}/1033 )
-        if (EXISTS "${MSVC14_REDIST}")
-            install ( PROGRAMS ${MSVC14_REDIST} DESTINATION tmp )
-            get_filename_component(MSVC14_REDIST_NAME ${MSVC14_REDIST} NAME)
+    if (MSVC_VERSION GREATER_EQUAL 1900)
+        message("MSVC_REDIST_DIR: ${MSVC_REDIST_DIR} (${CMAKE_MSVC_ARCH})")
+        string(REPLACE 2022 2019 MSVC2019_REDIST_DIR ${MSVC_REDIST_DIR})
+        find_file(MSVC_REDIST "vcredist_${CMAKE_MSVC_ARCH}.exe" HINTS ${MSVC_REDIST_DIR} ${MSVC2019_REDIST_DIR})
+        if (NOT EXISTS "${MSVC_REDIST}")
+            find_file(MSVC_REDIST "vc_redist.${CMAKE_MSVC_ARCH}.exe" HINTS ${MSVC_REDIST_DIR} ${MSVC2019_REDIST_DIR})
+        endif ()
+        if (EXISTS "${MSVC_REDIST}")
+            install ( PROGRAMS ${MSVC_REDIST} DESTINATION tmp )
+            get_filename_component(MSVC_REDIST_NAME ${MSVC_REDIST} NAME)
             list ( APPEND CPACK_NSIS_EXTRA_INSTALL_COMMANDS " 
-                ExecWait '$INSTDIR\\\\tmp\\\\${MSVC14_REDIST_NAME} /S'
+                ExecWait '$INSTDIR\\\\tmp\\\\${MSVC_REDIST_NAME} /S'
             ")
         else ()
-            MESSAGE(WARNING "-- Unable to locate vcredist_x86.exe")
+            MESSAGE(FATAL_ERROR "-- Unable to locate vcredist_${CMAKE_MSVC_ARCH}.exe")
         endif ()
     else ()
-        MESSAGE(WARNING "-- Unknown compiler version")
+        MESSAGE(FATAL_ERROR "-- Unknown compiler version")
     endif ()
 endif ()
 
@@ -281,6 +312,14 @@ if(TOP_LEVEL_PROJECT)
         set(CPACK_STRIP_FILES TRUE)
     endif()
 
+    if (NOT CPACK_STRIP_FILES) 
+        set(packageStrippedLabel "_withsymbols")
+    endif()
+
+    if (CONTAINERIZED) 
+        set(packageContainerizedLabel "_k8s")
+    endif()
+    
     if(UNIX AND NOT APPLE)
         execute_process(
             COMMAND ${HPCC_SOURCE_DIR}/cmake_modules/distrocheck.sh
@@ -302,11 +341,11 @@ if(TOP_LEVEL_PROJECT)
         message("-- distro uses ${packageManagement}, revision is ${packageRevisionArch}")
 
         if("${packageManagement}" STREQUAL "DEB")
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}${packageRevisionArch}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}${packageRevisionArch}${packageStrippedLabel}${packageContainerizedLabel}${CUSTOM_LABEL}")
         elseif("${packageManagement}" STREQUAL "RPM")
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}.${packageRevisionArch}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}.${packageRevisionArch}${packageStrippedLabel}${packageContainerizedLabel}${CUSTOM_LABEL}")
         else()
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}_${stagever}${CPACK_SYSTEM_NAME}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}_${stagever}${CPACK_SYSTEM_NAME}${packageStrippedLabel}${packageContainerizedLabel}${CUSTOM_LABEL}")
         endif()
     endif ()
 
@@ -374,7 +413,7 @@ endif()
 #set( CPACK_DEB_PACKAGE_COMPONENT ON )
 
 if(TOP_LEVEL_PROJECT)
-    if(UNIX)
+    if (UNIX AND NOT APPLE)
         if("${packageManagement}" STREQUAL "DEB")
             set(CPACK_GENERATOR "${packageManagement}")
             message("-- Will build DEB package")
@@ -401,7 +440,10 @@ if(TOP_LEVEL_PROJECT)
             ###
             set(CPACK_RPM_SPEC_MORE_DEFINE
 "%define _use_internal_dependency_generator 0
-%define __getdeps() while read file; do /usr/lib/rpm/rpmdeps -%{1} ${file} | %{__grep} -v libantlr3c.so | %{__grep} -v libtbb.so ; done | /bin/sort -u
+%define __getdeps() while read file; do /usr/lib/rpm/rpmdeps -%{1} ${file} | %{__grep} -v libantlr3c.so ; done | /bin/sort -u
+%global _enable_debug_package 0
+%global debug_package %{nil}
+%global __os_install_post %(echo '%{__os_install_post}' | __os_install_post /usr/lib/rpm/brp-compress %{nil})
 %define __find_provides /bin/sh -c '%{__getdeps P}'
 %define __find_requires /bin/sh -c '%{__getdeps R}'
 %undefine __brp_mangle_shebangs
@@ -427,7 +469,7 @@ if(TOP_LEVEL_PROJECT)
         else()
             message("WARNING: Unsupported package ${packageManagement}.")
         endif ()
-    endif(UNIX)
+    endif(UNIX AND NOT APPLE)
 
     if(PLUGIN)
         if("${packageManagement}" STREQUAL "RPM")
@@ -446,17 +488,21 @@ if(TOP_LEVEL_PROJECT)
         endif()
     endif()
 
-    if(UNIX)
+    if(APPLE)
+        set(CPACK_PACKAGING_INSTALL_PREFIX "/opt/HPCCSystems/${version}/clienttools")
+    elseif(UNIX)
         set(CPACK_PACKAGING_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
-    endif(UNIX)
+    endif(APPLE)
 
     if(PLATFORM OR PLUGIN)
         set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PACKAGE_FILE_NAME_PREFIX}")
     else()
+        if (APPLE)
+            set(CPACK_GENERATOR "productbuild")
+        endif ()
         if(APPLE OR WIN32)
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${version}-${stagever}${CPACK_SYSTEM_NAME}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${version}-${stagever}${CPACK_SYSTEM_NAME}${packageStrippedLabel}${packageContainerizedLabel}${CUSTOM_LABEL}")
         endif()
-        set(CPACK_MONOLITHIC_INSTALL TRUE)
         file(WRITE "${PROJECT_BINARY_DIR}/welcome.txt"
             "HPCC Systems® - Client Tools\r"
             "===========================\r\r"
@@ -465,6 +511,7 @@ if(TOP_LEVEL_PROJECT)
         set(CPACK_RESOURCE_FILE_LICENSE "${HPCC_SOURCE_DIR}/${LICENSE_FILE}")
         set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "HPCC Systems® Client Tools.")
         if(WIN32)
+            set(CPACK_MONOLITHIC_INSTALL TRUE)
             if("${SIGN_DIRECTORY}" STREQUAL "")
                 set(SIGN_DIRECTORY "${HPCC_SOURCE_DIR}/../sign")
             endif()
@@ -489,16 +536,17 @@ if(TOP_LEVEL_PROJECT)
 
             set(CPACK_NSIS_MODIFY_PATH "ON")
 
+            if (EXISTS "${SIGN_DIRECTORY}/passphrase.txt")
 
-            file(STRINGS "${SIGN_DIRECTORY}/passphrase.txt" PFX_PASSWORD LIMIT_COUNT 1)
+                file(STRINGS "${SIGN_DIRECTORY}/passphrase.txt" PFX_PASSWORD LIMIT_COUNT 1)
 
-            add_custom_target(SIGN
-                COMMAND signtool sign /f "${SIGN_DIRECTORY}/hpcc_code_signing.pfx"
-/p "${PFX_PASSWORD}" /tr "http://timestamp.digicert.com" "${CMAKE_BINARY_DIR}/${PACKAGE_FILE_NAME_PREFIX}*.exe"
-                COMMENT "Digital Signature"
-            )
-            add_dependencies(SIGN PACKAGE)
-            set_property(TARGET SIGN PROPERTY FOLDER "CMakePredefinedTargets")
+                add_custom_target(SIGN
+                    COMMAND signtool sign /f "${SIGN_DIRECTORY}/hpcc_code_signing.pfx" /fd "SHA256" /p "${PFX_PASSWORD}" /tr "http://timestamp.digicert.com" "${CMAKE_BINARY_DIR}/${PACKAGE_FILE_NAME_PREFIX}*.exe"
+                    COMMENT "Digital Signature"
+                )
+                add_dependencies(SIGN PACKAGE)
+                set_property(TARGET SIGN PROPERTY FOLDER "CMakePredefinedTargets")
+            endif()
         endif()
     endif(PLATFORM OR PLUGIN)
 endif(TOP_LEVEL_PROJECT)

@@ -30,6 +30,7 @@ namespace LegacyKJ
 class CKeyedJoinMaster : public CMasterActivity
 {
     IHThorKeyedJoinArg *helper;
+    Owned<IDistributedFile> dataFile, indexFile;
     Owned<IFileDescriptor> dataFileDesc;
     Owned<CSlavePartMapping> dataFileMapping;
     MemoryBuffer offsetMapMb, initMb;
@@ -54,17 +55,15 @@ public:
             if (TAG_NULL != tags[i])
                 container.queryJob().freeMPTag(tags[i]);
     }
-    virtual void init()
+    virtual void init() override
     {
         CMasterActivity::init();
         OwnedRoxieString indexFileName(helper->getIndexFileName());
-        Owned<IDistributedFile> dataFile;
-        Owned<IDistributedFile> indexFile = queryThorFileManager().lookup(container.queryJob(), indexFileName, false, 0 != (helper->getJoinFlags() & JFindexoptional), true, container.activityIsCodeSigned());
+        indexFile.setown(lookupReadFile(indexFileName, AccessMode::readRandom, false, false, 0 != (helper->getJoinFlags() & JFindexoptional)));
 
         unsigned keyReadWidth = (unsigned)container.queryJob().getWorkUnitValueInt("KJKRR", 0);
         if (!keyReadWidth || keyReadWidth>container.queryJob().querySlaves())
             keyReadWidth = container.queryJob().querySlaves();
-        
 
         initMb.clear();
         initMb.append(indexFileName.get());
@@ -81,12 +80,12 @@ public:
         if (indexFile)
         {
             if (!isFileKey(indexFile))
-                throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read flat file as an index: %s", indexFileName.get());
+                throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read flat file as an index: %s", indexFileName.get());
             unsigned numParts = 0;
             localKey = indexFile->queryAttributes().getPropBool("@local");
 
             if (container.queryLocalData() && !localKey)
-                throw MakeActivityException(this, TE_FileTypeMismatch, "Keyed Join cannot be LOCAL unless supplied index is local");
+                throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Keyed Join cannot be LOCAL unless supplied index is local");
 
             checkFormatCrc(this, indexFile, helper->getIndexFormatCrc(), helper->queryIndexRecordSize(), helper->getProjectedIndexFormatCrc(), helper->queryProjectedIndexRecordSize(), true);
             Owned<IFileDescriptor> indexFileDesc = indexFile->getFileDescriptor();
@@ -207,7 +206,7 @@ public:
                     OwnedRoxieString fetchFilename(helper->getFileName());
                     if (fetchFilename)
                     {
-                        dataFile.setown(queryThorFileManager().lookup(container.queryJob(), fetchFilename, false, 0 != (helper->getFetchFlags() & FFdatafileoptional), true, container.activityIsCodeSigned()));
+                        dataFile.setown(lookupReadFile(fetchFilename, AccessMode::readRandom, false, false, 0 != (helper->getFetchFlags() & FFdatafileoptional)));
                         if (dataFile)
                         {
                             if (isFileKey(dataFile))
@@ -260,22 +259,20 @@ public:
             else
                 indexFile.clear();
         }
-        if (indexFile)
-        {
-            addReadFile(indexFile);
-            if (dataFile)
-                addReadFile(dataFile);
-        }
-        else
+        if (!indexFile)
             initMb.append((unsigned)0);
     }
-    virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave)
+    virtual void kill() override
+    {
+        CMasterActivity::kill();
+        indexFile.clear();
+        dataFile.clear();
+    }
+    virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave) override
     {
         dst.append(initMb);
-        IDistributedFile *indexFile = queryReadFile(0); // 0 == indexFile, 1 == dataFile
         if (indexFile && helper->diskAccessRequired())
         {
-            IDistributedFile *dataFile = queryReadFile(1);
             if (dataFile)
             {
                 dst.append(remoteDataFiles);

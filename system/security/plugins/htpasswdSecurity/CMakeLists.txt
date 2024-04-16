@@ -37,19 +37,18 @@ include_directories (
          ${HPCC_SOURCE_DIR}/system/jlib
          ${HPCC_SOURCE_DIR}/esp/platform
          ${HPCC_SOURCE_DIR}/dali/base
-         ${APR_INCLUDE_DIR}
          ${APRUTIL_INCLUDE_DIR}
+         ${APR_INCLUDE_DIR}
     )
 
 ADD_DEFINITIONS( -DHTPASSWDSECURITY_EXPORTS -D_USRDLL )
 
 HPCC_ADD_LIBRARY( htpasswdSecurity SHARED ${SRCS} )
-install ( TARGETS htpasswdSecurity RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
+install ( TARGETS htpasswdSecurity RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} CALC_DEPS)
 target_link_libraries ( htpasswdSecurity
          jlib
          dalibase
-         ${APR_LIBRARIES}
-         ${APRUTIL_LIBRARIES}
+         ${APRUTIL_LIBRARY}
+         ${APR_LIBRARY}
+         ${Iconv_LIBRARIES}
     )
-
-

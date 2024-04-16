@@ -19,6 +19,7 @@
 #include "jlib.hpp"
 #include "jthread.hpp"
 #include "jregexp.hpp"
+#include "securesocket.hpp"
 
 #include "wujobq.hpp"
 #include "thorplugin.hpp"
@@ -52,7 +53,8 @@ static void controlException(StringBuffer &response, IException *E, const IRoxie
     }
     catch(IException *EE)
     {
-        logctx.logOperatorException(EE, __FILE__, __LINE__, "controlException - While reporting exception");
+        if (traceLevel)
+            logctx.logOperatorException(EE, __FILE__, __LINE__, "controlException - While reporting exception");
         EE->Release();
     }
 #ifndef _DEBUG
@@ -77,6 +79,7 @@ class CascadeManager : public CInterface
     CriticalSection revisionCrit;
     int myEndpoint;
     const IRoxieContextLogger &logctx;
+    ISyncedPropertyTree *tlsConfig = nullptr;
 
     void unlockChildren()
     {
@@ -109,10 +112,9 @@ class CascadeManager : public CInterface
         {
             unlockChildren();
             entered = false;
-            if (traceLevel > 5)
+            if (doTrace(traceRoxieLock))
                 DBGLOG("globalLock released");
             globalLock.signal();
-            globalSignals++;
         }
     }
 
@@ -126,17 +128,37 @@ class CascadeManager : public CInterface
                 if (traceLevel)
                 {
                     StringBuffer epStr;
-                    ep.getUrlStr(epStr);
+                    ep.getEndpointHostText(epStr);
                     DBGLOG("connectChild connecting to %s", epStr.str());
                 }
-                ISocket *sock = ISocket::connect_timeout(ep, 2000);
+                Owned<ISocket> sock = ISocket::connect_timeout(ep, 2000);
                 assertex(sock);
-                activeChildren.append(*sock);
+                if (tlsConfig)
+                {
+                    Owned<ISecureSocketContext> secureCtx = createSecureSocketContextSynced(tlsConfig, ClientSocket);
+                    if (!secureCtx)
+                        throw makeStringException(ROXIE_TLS_ERROR, "Roxie CascadeManager failed creating secure context for roxie control message");
+                    Owned<ISecureSocket> ssock = secureCtx->createSecureSocket(sock.getClear());
+                    if (!ssock)
+                        throw makeStringException(ROXIE_TLS_ERROR, "Roxie CascadeManager failed creating secure socket for roxie control message");
+
+                    int status = ssock->secure_connect();
+                    if (status < 0)
+                    {
+                        StringBuffer err;
+                        err.append("Roxie CascadeManager failed to establish secure connection to ");
+                        ep.getEndpointHostText(err);
+                        err.append(": returned ").append(status);
+                        throw makeStringException(ROXIE_TLS_ERROR, err.str());
+                    }
+                    sock.setown(ssock.getClear());
+                }
+                activeChildren.append(*sock.getClear());
                 activeIdxes.append(idx);
                 if (traceLevel)
                 {
                     StringBuffer epStr;
-                    ep.getUrlStr(epStr);
+                    ep.getEndpointHostText(epStr);
                     DBGLOG("connectChild connected to %s", epStr.str());
                 }
             }
@@ -146,7 +168,7 @@ class CascadeManager : public CInterface
                 connectChild((idx+1) * 2 - 1);
                 connectChild((idx+1) * 2);
                 errors.append("<Endpoint ep='");
-                ep.getUrlStr(errors);
+                ep.getEndpointHostText(errors);
                 errors.append("'><Exception><Code>").append(E->errorCode()).append("</Code><Message>");
                 E->errorMessage(errors).append("</Message></Exception></Endpoint>");
                 logctx.CTXLOG("Connection failed - %s", errors.str());
@@ -257,13 +279,12 @@ private:
 
     void getGlobalLock()
     {
-        if (traceLevel > 5)
+        if (doTrace(traceRoxieLock))
             DBGLOG("in getGlobalLock");
         if (!globalLock.wait(2000))  // since all lock in the same order it's ok to block for a bit here
             throw MakeStringException(ROXIE_LOCK_ERROR, "lock failed");
-        globalLocks++;
         entered = true;
-        if (traceLevel > 5)
+        if (doTrace(traceRoxieLock))
             DBGLOG("globalLock locked");
     }
 
@@ -275,13 +296,12 @@ private:
         }
         catch(...)
         {
-            if (traceLevel>5)
+            if (doTrace(traceRoxieLock))
                 DBGLOG("Failed to get child locks - unlocking");
             assertex(entered);
             entered = false;
             globalLock.signal();
-            globalSignals++;
-            if (traceLevel > 5)
+            if (doTrace(traceRoxieLock))
                 DBGLOG("globalLock released");
             throw;
         }
@@ -289,7 +309,7 @@ private:
 
 
 public:
-    CascadeManager(const IRoxieContextLogger &_logctx, const ITopologyServer *_topology) : topology(_topology), servers(_topology->queryServers(roxiePort)), logctx(_logctx)
+    CascadeManager(const IRoxieContextLogger &_logctx, const ITopologyServer *_topology) : topology(_topology), servers(_topology->queryServers(roxiePort)), logctx(_logctx), tlsConfig(roxiePortTlsClientConfig)
     {
         entered = false;
         connected = false;
@@ -306,7 +326,7 @@ public:
     inline bool checkEntered(){return entered;}
     void doLockChild(IPropertyTree *xml, const char *logText, StringBuffer &reply)
     {
-        if (traceLevel > 5)
+        if (doTrace(traceRoxieLock))
             DBGLOG("doLockChild: %s", logText);
         isOriginal = false;
         bool unlock = xml->getPropBool("@unlock", false);
@@ -335,8 +355,7 @@ public:
             }
             catch (IException *E)
             {
-                if (traceLevel > 5)
-                    logctx.logOperatorException(E, __FILE__, __LINE__, "Trying to get global lock");
+                logctx.logOperatorException(E, __FILE__, __LINE__, "Trying to get global lock");
                 E->Release();
                 reply.append("<Lock>0</Lock>");
             }
@@ -372,8 +391,7 @@ public:
             catch (IException *E)
             {
                 unsigned errCode = E->errorCode();
-                if (traceLevel > 5)
-                    logctx.logOperatorException(E, __FILE__, __LINE__, "In doLockGlobal()");
+                logctx.logOperatorException(E, __FILE__, __LINE__, "In doLockGlobal()");
                 E->Release();
 
                 if ( (!--attemptsLeft) || (errCode == ROXIE_CLUSTER_SYNC_ERROR))
@@ -386,7 +404,7 @@ public:
                 Sleep(lockDelay);
             }
         }
-        if (traceLevel > 5)
+        if (doTrace(traceRoxieLock))
             DBGLOG("doLockGlobal got %d locks", locksGot);
         reply.append("<Lock>").append(locksGot).append("</Lock>");
         reply.append("<NumServers>").append(servers.ordinality()).append("</NumServers>");
@@ -406,15 +424,13 @@ public:
 
     void doControlQuery(SocketEndpoint &ep, IPropertyTree *xml, const char *queryText, StringBuffer &reply)
     {
-        if (logctx.queryTraceLevel() > 5)
-            logctx.CTXLOG("doControlQuery (%d): %.80s", isOriginal, queryText);
         // By this point we should have cascade-connected thanks to a prior <control:lock>
         // So do the query ourselves and in all child threads;
         const char *name = xml->queryName();
         CascadeMergeType mergeType=CascadeMergeNone;
-        if (strstr(name, "querystats"))
+        if (strieq(name, "control:querystats"))
             mergeType=CascadeMergeStats;
-        else if (strstr(name, "queries"))
+        else if (strieq(name, "control:queries"))
             mergeType=CascadeMergeQueries;
         Owned<IPropertyTree> mergedReply;
         if (mergeType!=CascadeMergeNone)
@@ -441,8 +457,6 @@ public:
             }
             void Do(unsigned i)
             {
-                if (logctx.queryTraceLevel() > 5)
-                    logctx.CTXLOG("doControlQuery::do (%d of %d): %.80s", i, numChildren, queryText);
                 if (i == numChildren)
                     doMe();
                 else
@@ -477,18 +491,21 @@ public:
             {
                 StringBuffer myReply;
                 myReply.append("<Endpoint ep='");
-                ep.getUrlStr(myReply);
+                ep.getEndpointHostText(myReply);
                 myReply.append("'>\n");
+                unsigned savedLength = myReply.length();
                 try
                 {
                     globalPackageSetManager->doControlMessage(xml, myReply, logctx);
                 }
                 catch(IException *E)
                 {
+                    myReply.setLength(savedLength);
                     controlException(myReply, E, logctx);
                 }
                 catch(...)
                 {
+                    myReply.setLength(savedLength);
                     controlException(myReply, MakeStringException(ROXIE_INTERNAL_ERROR, "Unknown exception"), logctx);
                 }
                 myReply.append("</Endpoint>\n");
@@ -509,8 +526,6 @@ public:
         activeChildren.kill();
         if (mergedReply)
             toXML(mergedReply, reply, 0, (mergeType == CascadeMergeQueries) ? XML_Embed|XML_LineBreak|XML_SortTags : XML_Format);
-        if (logctx.queryTraceLevel() > 5)
-            logctx.CTXLOG("doControlQuery (%d) finished: %.80s", isOriginal, queryText);
     }
 
 };
@@ -610,7 +625,7 @@ public:
         if (sink->getIsSuspended())
         {
             accepted = false;
-            if (traceLevel > 1)
+            if (doTrace(traceRoxieActiveQueries))
                 DBGLOG("Rejecting query since Roxie server pool %d is suspended ", parent->queryPort());
         }
         else
@@ -621,10 +636,10 @@ public:
             if (accepted && threadsActive > sink->getMaxActiveThreads())
             {
                 sink->setMaxActiveThreads(threadsActive);
-                if (traceLevel > 1)
+                if (doTrace(traceRoxieActiveQueries))
                     DBGLOG("Maximum queries active %d of %d for pool %d", threadsActive, poolSize, parent->queryPort());
             }
-            if (!accepted && traceLevel > 5)
+            if (!accepted && doTrace(traceRoxieActiveQueries, TraceFlags::Detailed))
                 DBGLOG("Too many active queries (%d >= %d)", threadsActive, poolSize);
         }
         sink->incActiveThreadCount();
@@ -653,12 +668,12 @@ public:
     }
 };
 
-static Owned<IActiveQueryLimiterFactory> queryLimiterFactory;
+static Owned<IActiveQueryLimiterFactory> theQueryLimiterFactory;
 IActiveQueryLimiterFactory *ensureLimiterFactory()
 {
-    if (!queryLimiterFactory)
-        queryLimiterFactory.setown(new CActiveQueryLimiterFactory());
-    return queryLimiterFactory;
+    if (!theQueryLimiterFactory)
+        theQueryLimiterFactory.setown(new CActiveQueryLimiterFactory());
+    return theQueryLimiterFactory;
 }
 
 //================================================================================================================================
@@ -666,7 +681,7 @@ IActiveQueryLimiterFactory *ensureLimiterFactory()
 class RoxieListener : public Thread, implements IHpccProtocolListener, implements IHpccProtocolMsgSink, implements IThreadFactory
 {
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
     RoxieListener(unsigned _poolSize, bool _suspended) : Thread("RoxieListener")
     {
         running = false;
@@ -737,17 +752,17 @@ public:
             }
 #endif /* GLIBC */
             if (traceLevel)
-                traceAffinity(&cpuMask);
+                traceAffinitySettings(&cpuMask);
         }
 #endif
     }
 
-    virtual void start()
+    virtual void start() override
     {
         // Note we allow a few additional threads than requested - these are the threads that return "Too many active queries" responses
-        pool.setown(createThreadPool("RoxieSocketWorkerPool", this, NULL, poolSize+5, INFINITE));
+        pool.setown(createThreadPool("RoxieSocketWorkerPool", this, false, nullptr, poolSize+5, INFINITE));
         assertex(!running);
-        Thread::start();
+        Thread::start(false);
         started.wait();
     }
 
@@ -787,7 +802,7 @@ public:
         if (!allowed)
         {
             StringBuffer peerStr;
-            peer.getIpText(peerStr);
+            peer.getHostText(peerStr);
             StringBuffer qText;
             if (queryText && *queryText)
                 decodeXML(queryText, qText);
@@ -848,14 +863,14 @@ public:
                         }
                     }
                 }
-                if (traceLevel > 3)
-                    traceAffinity(&threadMask);
+                if (doTrace(traceAffinity))
+                    traceAffinitySettings(&threadMask);
                 pthread_setaffinity_np(GetCurrentThreadId(), sizeof(cpu_set_t), &threadMask);
             }
             else
             {
-                if (traceLevel > 3)
-                    traceAffinity(&cpuMask);
+                if (doTrace(traceAffinity))
+                    traceAffinitySettings(&cpuMask);
                 pthread_setaffinity_np(GetCurrentThreadId(), sizeof(cpu_set_t), &cpuMask);
             }
         }
@@ -865,7 +880,7 @@ public:
 
 protected:
     unsigned poolSize;
-    bool running;
+    std::atomic<bool> running;
     bool suspended;
     Semaphore started;
     Owned<IThreadPool> pool;
@@ -880,7 +895,7 @@ protected:
     static unsigned lastCore;
 
 private:
-    static void traceAffinity(cpu_set_t *mask)
+    static void traceAffinitySettings(cpu_set_t *mask)
     {
         StringBuffer trace;
         for (unsigned core = 0; core < CPU_SETSIZE; core++)
@@ -928,6 +943,27 @@ extern void updateAffinity(unsigned __int64 affinity)
     RoxieListener::updateAffinity();
 }
 
+//--------------------------------------------------------------------------------------------------------------------
+
+void ContextLogger::exportStatsToSpan(bool failed, stat_type elapsedNs, unsigned memused, unsigned agentsDuplicates, unsigned agentsResends)
+{
+    if (activeSpan->isRecording())
+    {
+        activeSpan->setSpanStatusSuccess(!failed);
+        setSpanAttribute("time_elapsed", elapsedNs);
+
+        if (memused)
+            setSpanAttribute("size_peak_row_memory", memused * 0x100000);
+
+        StringBuffer prefix("");
+        stats.exportToSpan(activeSpan, prefix);
+    }
+}
+
+//--------------------------------------------------------------------------------------------------------------------
+
+
+
 class RoxieWorkUnitListener : public RoxieListener
 {
     Owned<IJobQueue> queue;
@@ -965,11 +1001,11 @@ public:
         worker->threadmain();
     }
 
-    virtual void noteQuery(IHpccProtocolMsgContext *msgctx, const char *peer, bool failed, unsigned bytesOut, unsigned elapsed, unsigned memused, unsigned agentsReplyLen, unsigned agentsDuplicates, unsigned agentsResends, bool continuationNeeded, unsigned requestArraySize)
+    virtual void noteQuery(IHpccProtocolMsgContext *msgctx, const char *peer, bool failed, unsigned bytesOut, stat_type elapsedNs, unsigned memused, unsigned agentsReplyLen, unsigned agentsDuplicates, unsigned agentsResends, bool continuationNeeded, unsigned requestArraySize)
     {
     }
 
-    virtual void onQueryMsg(IHpccProtocolMsgContext *msgctx, IPropertyTree *msg, IHpccProtocolResponse *protocol, unsigned flags, PTreeReaderOptions readFlags, const char *target, unsigned idx, unsigned &memused, unsigned &agentReplyLen, unsigned &agentsDuplicates, unsigned &agentsResends)
+    virtual void onQueryMsg(IHpccProtocolMsgContext *msgctx, IPropertyTree *msg, IHpccProtocolResponse *protocol, unsigned flags, PTreeReaderOptions readFlags, const char *target, unsigned idx, unsigned &memused, unsigned &agentReplyLen, unsigned &agentsDuplicates, unsigned &agentsResends, StringAttr &statsWuid)
     {
         UNIMPLEMENTED;
     }
@@ -1074,14 +1110,14 @@ public:
     RoxieQueryWorker(RoxieListener *_pool)
     {
         pool = _pool;
-        qstart = msTick();
+        startNs = nsTick();
         time(&startTime);
     }
 
     //  interface IPooledThread
     virtual void init(void *) override
     {
-        qstart = msTick();
+        startNs = nsTick();
         time(&startTime);
     }
 
@@ -1099,7 +1135,7 @@ public:
 
 protected:
     RoxieListener *pool;
-    unsigned qstart;
+    stat_type startNs;
     time_t startTime;
 
 };
@@ -1122,13 +1158,6 @@ class RoxieWorkUnitWorker : public RoxieQueryWorker
 {
     void noteQuery(bool failed, unsigned elapsedTime, unsigned priority)
     {
-        Owned <IJlibDateTime> now = createDateTimeNow();
-        unsigned y,mo,d,h,m,s,n;
-        now->getLocalTime(h, m, s, n);
-        now->getLocalDate(y, mo, d);
-        lastQueryTime = h*10000 + m * 100 + s;
-        lastQueryDate = y*10000 + mo * 100 + d;
-
         switch(priority)
         {
         case 0: loQueryStats.noteQuery(failed, elapsedTime); break;
@@ -1159,30 +1188,24 @@ public:
         if (standalone)
         {
             Owned<ILoadedDllEntry> standAloneDll = createExeDllEntry(wuid.get()+1);
-            StringBuffer wuXML;
-            if (getEmbeddedWorkUnitXML(standAloneDll, wuXML))
-            {
-                wu.setown(createLocalWorkUnit(wuXML));
+            wu.setown(createLocalWorkUnit(standAloneDll));
+            if (wu)
                 dll.setown(createExeQueryDll(wuid.get()+1));
-            }
         }
         else
         {
             daliHelper.setown(connectToDali());
-            wu.setown(daliHelper->attachWorkunit(wuid.get(), NULL));
+            wu.setown(daliHelper->attachWorkunit(wuid.get()));
         }
+
+        JobNameScope jobName(wuid);
         Owned<StringContextLogger> logctx = new StringContextLogger(wuid.get());
-        if (wu->hasDebugValue("GlobalId"))
-        {
-            SCMStringBuffer globalId;
-            SocketEndpoint ep;
-            ep.setLocalHost(0);
-            SCMStringBuffer callerId;
-            logctx->setGlobalId(wu->getDebugValue("GlobalId", globalId).str(), ep, GetCurrentProcessId());
-            wu->getDebugValue("CallerId", callerId);
-            if (callerId.length())
-                logctx->setCallerId(callerId.str());
-        }
+
+        Owned<IProperties> traceHeaders = extractTraceDebugOptions(wu);
+        OwnedSpanScope requestSpan = queryTraceManager().createServerSpan("run_workunit", traceHeaders);
+        requestSpan->setSpanAttribute("hpcc.wuid", wuid);
+        ContextSpanScope spanScope(*logctx, requestSpan);
+
         Owned<IQueryFactory> queryFactory;
         try
         {
@@ -1232,7 +1255,6 @@ public:
         unsigned priority = (unsigned) -2;
         try
         {
-            queryCount++;
             bool isBlind = wu->getDebugValueBool("blindLogging", false);
             if (pool)
             {
@@ -1296,14 +1318,16 @@ public:
             reportUnknownException(wu, logctx);
         }
 #endif
-        unsigned elapsed = msTick() - qstart;
-        noteQuery(failed, elapsed, priority);
-        queryFactory->noteQuery(startTime, failed, elapsed, memused, agentsReplyLen, 0);
-        if (logctx.queryTraceLevel() && (logctx.queryTraceLevel() > 2 || logFullQueries || logctx.intercept))
+        stat_type elapsedNs = nsTick() - startNs;
+        unsigned elapsedMs = nanoToMilli(elapsedNs);
+        noteQuery(failed, elapsedMs, priority);
+        queryFactory->noteQuery(startTime, failed, elapsedMs, memused, agentsReplyLen, 0);
+        if (logctx.queryTraceLevel() && (logFullQueries || logctx.intercept))
         {
             StringBuffer s;
             logctx.getStats(s);
 
+            //MORE: logctx.queryActiveSpan()->getLogPrefix() or similar.
             StringBuffer txidInfo;
             const char *globalId = logctx.queryGlobalId();
             if (globalId && *globalId)
@@ -1319,8 +1343,9 @@ public:
                 txidInfo.append(']');
             }
 
-            logctx.CTXLOG("COMPLETE: %s%s complete in %u msecs memory=%u Mb priority=%d agentsreply=%u duplicatePackets=%u resentPackets=%u%s", wuid.get(), txidInfo.str(), elapsed, memused, priority, agentsReplyLen, agentsDuplicates, agentsResends, s.str());
+            logctx.CTXLOG("COMPLETE: %s%s complete in %u msecs memory=%u Mb priority=%d agentsreply=%u duplicatePackets=%u resentPackets=%u%s", wuid.get(), txidInfo.str(), elapsedMs, memused, priority, agentsReplyLen, agentsDuplicates, agentsResends, s.str());
         }
+        logctx.exportStatsToSpan(failed, elapsedNs, memused, agentsDuplicates, agentsResends);
     }
 
 private:
@@ -1353,16 +1378,17 @@ class RoxieProtocolMsgContext : implements IHpccProtocolMsgContext, public CInte
 public:
     StringAttr queryName;
     StringAttr uid = "-";
-    StringAttr callerId;
     Owned<CascadeManager> cascade;
     Owned<IDebuggerContext> debuggerContext;
     Owned<CDebugCommandHandler> debugCmdHandler;
     Owned<StringContextLogger> logctx;
     Owned<IQueryFactory> queryFactory;
+    OwnedSpanScope requestSpan;
 
     SocketEndpoint ep;
     time_t startTime;
     bool notedActive = false;
+    bool ensureGlobalIdExists = false;
 public:
     IMPLEMENT_IINTERFACE;
 
@@ -1370,7 +1396,6 @@ public:
     {
         ep.set(_ep);
         unknownQueryStats.noteActive();
-        queryCount++;
     }
     ~RoxieProtocolMsgContext()
     {
@@ -1384,7 +1409,7 @@ public:
         {
             unsigned instanceId = getNextInstanceId();
             StringBuffer ctxstr;
-            logctx.setown(new StringContextLogger(ep.getIpText(ctxstr).appendf(":%u{%u}", ep.port, instanceId).str()));
+            logctx.setown(new StringContextLogger(ep.getHostText(ctxstr).appendf(":%u{%u}", ep.port, instanceId).str()));
         }
         return *logctx;
     }
@@ -1412,9 +1437,7 @@ public:
         IConstWorkUnit *workunit = queryFactory->queryWorkUnit();
         if (workunit && workunit->getDebugValueBool("generateGlobalId", false) && isEmptyString(logctx->queryGlobalId()))
         {
-            StringBuffer gen_id;
-            appendGloballyUniqueId(gen_id);
-            setTransactionId(gen_id.str(), nullptr, true);
+            ensureGlobalIdExists = true;
         }
     }
     virtual void noteQueryActive()
@@ -1442,44 +1465,43 @@ public:
         return *cascade;
     }
 
-    virtual void setTransactionId(const char *id, const char *caller, bool global) override
+    virtual void startSpan(const char * id, const char * querySetName, const char * queryName, const IProperties * headers) override
     {
-        if (!id || !*id)
-            return;
-        uid.set(id);
-        ensureContextLogger();
-        if (!global && !isEmptyString(logctx->queryGlobalId())) //globalId wins
-            return;
-        StringBuffer s;
-        ep.getIpText(s).appendf(":%u{%s}", ep.port, uid.str()); //keep no matter what for existing log parsers
-        if (global)
+        Linked<const IProperties> allHeaders = headers;
+        SpanFlags flags = (ensureGlobalIdExists) ? SpanFlags::EnsureGlobalId : SpanFlags::None;
+        if (headers && !headers->queryProp("global-id"))
         {
-            s.append('[');
-            logctx->setGlobalId(id, ep, 0);
-            if (caller && *caller)
+            //If an id is provided, and we are not automatically creating global ids, use the id as the global-id
+            if ((id && *id) && !ensureGlobalIdExists)
             {
-                setCallerId(caller);
-                logctx->setCallerId(caller);
+                Owned<IProperties> clonedHeaders = cloneProperties(headers, true);
+                clonedHeaders->setProp("global-id", id);
+                allHeaders.setown(clonedHeaders.getClear());
             }
-            if (callerId.length())
-                s.appendf("caller:%s", callerId.str());
-
-            const char *local = logctx->queryLocalId(); //generated in setGlobalId above
-            if (local && *local)
-            {
-                if (callerId.length())
-                    s.append(',');
-                s.appendf("local:%s", local);
-            }
-            s.append("]");
         }
-        logctx->set(s.str());
-    }
-    virtual void setCallerId(const char *id)
-    {
-        if (!id || !*id)
-            return;
-        callerId.set(id);
+
+        ensureContextLogger();
+
+        const char * spanQueryName = !isEmptyString(queryName) ? queryName : "run_query";
+        StringBuffer spanName(querySetName);
+        if (spanName.length())
+            spanName.append('/');
+        spanName.append(spanQueryName);
+        requestSpan.setown(queryTraceManager().createServerSpan(spanName, allHeaders, flags));
+        logctx->setActiveSpan(requestSpan);
+
+        const char * globalId = requestSpan->queryGlobalId();
+        if (globalId)
+            id = globalId;
+
+        uid.set(id);
+        if (id)
+        {
+            StringBuffer s;
+            ep.getHostText(s).appendf(":%u{%s}", ep.port, id); //keep no matter what for existing log parsers
+            requestSpan->getLogPrefix(s);
+            logctx->set(s.str());
+        }
     }
     inline IDebuggerContext &ensureDebuggerContext(const char *id)
     {
@@ -1567,12 +1589,6 @@ public:
     }
     void noteQueryStats(bool failed, unsigned elapsedTime)
     {
-        Owned <IJlibDateTime> now = createDateTimeNow();
-        unsigned y,mo,d,h,m,s,n;
-        now->getLocalTime(h, m, s, n);
-        now->getLocalDate(y, mo, d);
-        lastQueryTime = h*10000 + m * 100 + s;
-        lastQueryDate = y*10000 + mo * 100 + d;
         if (!notedActive)
         {
             unknownQueryStats.noteQuery(failed, elapsedTime);
@@ -1590,38 +1606,46 @@ public:
             combinedQueryStats.noteQuery(failed, elapsedTime);
         }
     }
-    void noteQuery(const char *peer, bool failed, unsigned elapsed, unsigned memused, unsigned agentsReplyLen, unsigned agentsDuplicates, unsigned agentsResends, unsigned bytesOut, bool continuationNeeded, unsigned requestArraySize)
+    void noteQuery(const char *peer, bool failed, stat_type elapsedNs, unsigned memused, unsigned agentsReplyLen, unsigned agentsDuplicates, unsigned agentsResends, unsigned bytesOut, bool continuationNeeded, unsigned requestArraySize)
     {
-        noteQueryStats(failed, elapsed);
+        unsigned elapsedMs = nanoToMilli(elapsedNs);
+        noteQueryStats(failed, elapsedMs);
         if (queryFactory)
         {
-            queryFactory->noteQuery(startTime, failed, elapsed, memused, agentsReplyLen, bytesOut);
+            queryFactory->noteQuery(startTime, failed, elapsedMs, memused, agentsReplyLen, bytesOut);
             queryFactory.clear();
         }
-        if (logctx && logctx->queryTraceLevel() && (logctx->queryTraceLevel() > 2 || logFullQueries() || logctx->intercept))
+        if (logctx)
         {
-            if (queryName.get())
+            if (logctx->queryTraceLevel() && (logFullQueries() || logctx->intercept))
             {
-                StringBuffer s;
-                logctx->getStats(s);
-
-                StringBuffer txIds;
-                if (callerId.length())
-                    txIds.appendf("caller: %s", callerId.str());
-                const char *localId = logctx->queryLocalId();
-                if (localId && *localId)
+                if (queryName.get())
                 {
+                    StringBuffer s;
+                    logctx->getStats(s);
+
+                    const char * callerId = logctx->queryCallerId();
+                    StringBuffer txIds;
+                    if (!isEmptyString(callerId))
+                        txIds.appendf("caller: %s", callerId);
+                    const char *localId = logctx->queryLocalId();
+                    if (localId && *localId)
+                    {
+                        if (txIds.length())
+                            txIds.append(", ");
+                        txIds.append("local: ").append(localId);
+                    }
                     if (txIds.length())
-                        txIds.append(", ");
-                    txIds.append("local: ").append(localId);
+                        txIds.insert(0, '[').append(']');
+                    if (requestArraySize > 1)
+                        logctx->CTXLOG("COMPLETE: %s(x%u) %s%s from %s complete in %u msecs memory=%u Mb priority=%d agentsreply=%u duplicatePackets=%u resentPackets=%u resultsize=%u continue=%d%s", queryName.get(), requestArraySize, uid.get(), txIds.str(), peer, elapsedMs, memused, getQueryPriority(), agentsReplyLen, agentsDuplicates, agentsResends, bytesOut, continuationNeeded, s.str());
+                    else
+                        logctx->CTXLOG("COMPLETE: %s %s%s from %s complete in %u msecs memory=%u Mb priority=%d agentsreply=%u duplicatePackets=%u resentPackets=%u resultsize=%u continue=%d%s", queryName.get(), uid.get(), txIds.str(), peer, elapsedMs, memused, getQueryPriority(), agentsReplyLen, agentsDuplicates, agentsResends, bytesOut, continuationNeeded, s.str());
+
                 }
-                if (txIds.length())
-                    txIds.insert(0, '[').append(']');
-                if (requestArraySize > 1)
-                    logctx->CTXLOG("COMPLETE: %s(x%u) %s%s from %s complete in %u msecs memory=%u Mb priority=%d agentsreply=%u duplicatePackets=%u resentPackets=%u resultsize=%u continue=%d%s", queryName.get(), requestArraySize, uid.get(), txIds.str(), peer, elapsed, memused, getQueryPriority(), agentsReplyLen, agentsDuplicates, agentsResends, bytesOut, continuationNeeded, s.str());
-                else
-                    logctx->CTXLOG("COMPLETE: %s %s%s from %s complete in %u msecs memory=%u Mb priority=%d agentsreply=%u duplicatePackets=%u resentPackets=%u resultsize=%u continue=%d%s", queryName.get(), uid.get(), txIds.str(), peer, elapsed, memused, getQueryPriority(), agentsReplyLen, agentsDuplicates, agentsResends, bytesOut, continuationNeeded, s.str());
             }
+
+            logctx->exportStatsToSpan(failed, elapsedNs, memused, agentsDuplicates, agentsResends);
         }
     }
 };
@@ -1699,7 +1723,7 @@ public:
         if (!allowed)
         {
             StringBuffer peerStr;
-            peer.getIpText(peerStr);
+            peer.getHostText(peerStr);
             StringBuffer qText;
             if (queryText && *queryText)
                 decodeXML(queryText, qText);
@@ -1756,18 +1780,41 @@ public:
     }
 
     virtual void onQueryMsg(IHpccProtocolMsgContext *msgctx, IPropertyTree *msg, IHpccProtocolResponse *protocol, unsigned flags, PTreeReaderOptions xmlReadFlags,
-                            const char *target, unsigned idx, unsigned &memused, unsigned &agentsReplyLen, unsigned &agentsDuplicates, unsigned &agentsResends)
+                            const char *target, unsigned idx, unsigned &memused, unsigned &agentsReplyLen, unsigned &agentsDuplicates, unsigned &agentsResends, StringAttr &statsWuid)
     {
         RoxieProtocolMsgContext *roxieMsgCtx = checkGetRoxieMsgContext(msgctx, msg);
+        LogContextScope ls(roxieMsgCtx->logctx);
         IQueryFactory *f = roxieMsgCtx->queryQueryFactory();
         Owned<IRoxieServerContext> ctx = f->createContext(msg, protocol, flags, *roxieMsgCtx->logctx, xmlReadFlags, target);
         if (!(flags & HPCC_PROTOCOL_NATIVE))
         {
             ctx->process();
+            statsWuid.set(ctx->queryStatsWuid());
             if (msgctx->getIntercept())
             {
                 Owned<IXmlWriter> logwriter = protocol->writeAppendContent(nullptr);
                 msgctx->writeLogXML(*logwriter);
+            }
+
+            bool summaryStats = msg->getPropBool("@summaryStats", false);
+            if (!statsWuid.isEmpty() || summaryStats)
+            {
+                Owned<IXmlWriter> wuwriter = protocol->writeAppendContent(nullptr);
+                if (!statsWuid.isEmpty())
+                {
+                    wuwriter->outputBeginNested("StatsWorkUnit", true);
+                    wuwriter->outputCString(statsWuid.str(), "wuid");
+                    wuwriter->outputEndNested("StatsWorkUnit");
+                }
+                if (summaryStats)
+                {
+                    //The query completion time needs discussion and is unavailable for now.
+                    VStringBuffer s(" COMPLETE: %s %s memory=%u Mb agentsreply=%u duplicatePackets=%u resentPackets=%u",
+                        target, roxieMsgCtx->uid.str(), memused, agentsReplyLen, agentsDuplicates, agentsResends);
+                    IRoxieContextLogger &logctx = static_cast<IRoxieContextLogger&>(*msgctx->queryLogContext());
+                    logctx.getStats(s).newline();
+                    wuwriter->outputCString(s.str(), "SummaryStats");
+                }
             }
 
             protocol->finalize(idx);
@@ -1775,12 +1822,14 @@ public:
             agentsReplyLen += ctx->getAgentsReplyLen();
             agentsDuplicates += ctx->getAgentsDuplicates();
             agentsResends += ctx->getAgentsResends();
+            ctx->done(false);
         }
         else
         {
             try
             {
                 ctx->process();
+                statsWuid.set(ctx->queryStatsWuid());
                 memused = (unsigned)(ctx->getMemoryUsage() / 0x100000);
                 agentsReplyLen = ctx->getAgentsReplyLen();
                 agentsDuplicates = ctx->getAgentsDuplicates();
@@ -1803,27 +1852,17 @@ public:
         StringBuffer reply;
         RoxieProtocolMsgContext *roxieMsgCtx = checkGetRoxieMsgContext(msgctx, msg);
         const char *name = msg->queryName();
-        IContextLogger &logctx = *msgctx->queryLogContext();
-
         StringBuffer xml;
         toXML(msg, xml, 0, 0);
 
         if (strieq(name, "control:lock"))
         {
-            if (logctx.queryTraceLevel() > 8)
-                logctx.CTXLOG("Got lock request %s", xml.str());
             roxieMsgCtx->ensureCascadeManager().doLockGlobal(reply, false);
-            if (logctx.queryTraceLevel() > 8)
-                logctx.CTXLOG("lock reply %s", reply.str());
             unknownQueryStats.noteComplete();
         }
         else if (strieq(name, "control:childlock"))
         {
-            if (logctx.queryTraceLevel() > 8)
-                logctx.CTXLOG("Got childlock request %s", xml.str());
             roxieMsgCtx->ensureCascadeManager().doLockChild(msg, xml.str(), reply);
-            if (logctx.queryTraceLevel() > 8)
-                logctx.CTXLOG("childlock reply %s", reply.str());
             unknownQueryStats.noteComplete();
         }
         else
@@ -1832,11 +1871,7 @@ public:
             bool lockAll = msg->getPropBool("@lockAll", false);
             if (!roxieMsgCtx->ensureCascadeManager().checkEntered() && (lock || lockAll)) //only if not already locked
             {
-                if (logctx.queryTraceLevel() > 8)
-                    logctx.CTXLOG("controll msg lock%s attribute", lockAll ? "All" : "");
                 roxieMsgCtx->ensureCascadeManager().doLockGlobal(reply, false);
-                if (logctx.queryTraceLevel() > 8)
-                    logctx.CTXLOG("lock%s attribute reply %s", lockAll ? "All" : "", reply.str());
             }
 
             bool doControlQuery = true;
@@ -1867,7 +1902,7 @@ public:
             else if (strieq(name, "control:queryaclinfo"))
             {
                 reply.append("<Endpoint ep='");
-                ep.getUrlStr(reply);
+                ep.getEndpointHostText(reply);
                 reply.append("'>\n");
 
                 queryAccessInfo(reply);
@@ -1891,10 +1926,10 @@ public:
         roxieMsgCtx->ensureDebugCommandHandler().doDebugCommand(msg, &roxieMsgCtx->ensureDebuggerContext(uid), out);
     }
 
-    virtual void noteQuery(IHpccProtocolMsgContext *msgctx, const char *peer, bool failed, unsigned bytesOut, unsigned elapsed, unsigned memused, unsigned agentsReplyLen, unsigned agentsDuplicates, unsigned agentsResends, bool continuationNeeded, unsigned requestArraySize)
+    virtual void noteQuery(IHpccProtocolMsgContext *msgctx, const char *peer, bool failed, unsigned bytesOut, stat_type elapsedNs, unsigned memused, unsigned agentsReplyLen, unsigned agentsDuplicates, unsigned agentsResends, bool continuationNeeded, unsigned requestArraySize)
     {
         RoxieProtocolMsgContext *roxieMsgCtx = checkGetRoxieMsgContext(msgctx);
-        roxieMsgCtx->noteQuery(peer, failed, elapsed, memused, agentsReplyLen, agentsDuplicates, agentsResends, bytesOut, continuationNeeded, requestArraySize);
+        roxieMsgCtx->noteQuery(peer, failed, elapsedNs, memused, agentsReplyLen, agentsDuplicates, agentsResends, bytesOut, continuationNeeded, requestArraySize);
     }
 
 };

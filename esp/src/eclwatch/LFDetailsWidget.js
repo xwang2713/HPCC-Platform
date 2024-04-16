@@ -10,6 +10,8 @@ define([
 
     "dijit/registry",
 
+    "src/Utility",
+
     "hpcc/_TabContainerWidget",
     "hpcc/DelayLoadWidget",
     "src/Clippy",
@@ -17,6 +19,7 @@ define([
     "src/ESPDFUWorkunit",
     "src/FileSpray",
     "src/DataPatternsWidget",
+    "src/Session",
 
     "dojo/text!../templates/LFDetailsWidget.html",
 
@@ -48,8 +51,8 @@ define([
     "hpcc/TableContainer"
 
 ], function (exports, declare, lang, nlsHPCCMod, dom, domAttr, domClass, domForm,
-    registry,
-    _TabContainerWidget, DelayLoadWidget, Clippy, ESPLogicalFile, ESPDFUWorkunit, FileSpray, DataPatternsWidget,
+    registry, Utility,
+    _TabContainerWidget, DelayLoadWidget, Clippy, ESPLogicalFile, ESPDFUWorkunit, FileSpray, DataPatternsWidget, Session,
     template) {
 
     var nlsHPCC = nlsHPCCMod.default;
@@ -275,11 +278,11 @@ define([
             });
             this.logicalFile.refresh();
 
-            this.isProtected.on("change", function (evt) {
+            this.isProtected.on("click", function (evt) {
                 context._onSave();
             });
 
-            this.isRestricted.on("change", function (evt) {
+            this.isRestricted.on("click", function (evt) {
                 context._onSave();
             });
         },
@@ -459,6 +462,12 @@ define([
                 }
             } else if (name === "RecordSize" && newValue === "0") {
                 this.updateInput("RecordSize", oldValue, this.i18n.NoPublishedSize);
+            } else if (name === "Cost") {
+                this.updateInput("FormattedCost", oldValue, Session.formatCost(newValue));
+            } else if (name === "MinSkew") {
+                domAttr.set(this.id + "MinSkew", "innerHTML", this.logicalFile.MinSkew ? Math.abs(this.logicalFile.MinSkew) + "%" : "");
+            } else if (name === "MaxSkew") {
+                domAttr.set(this.id + "MaxSkew", "innerHTML", this.logicalFile.MaxSkew ? this.logicalFile.MaxSkew + "%" : "");
             }
         },
 

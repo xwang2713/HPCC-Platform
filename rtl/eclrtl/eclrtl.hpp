@@ -77,7 +77,7 @@ enum DBZaction { DBZnone, DBZzero, DBZnan, DBZfail }; // Different actions on di
 
 //-----------------------------------------------------------------------------
 
-// RegEx Compiler for ansii  strings (uses BOOST or std::regex)
+// RegEx Compiler for ansii  strings (uses PCRE2)
 interface IStrRegExprFindInstance
 {
     virtual bool found() const = 0;
@@ -525,6 +525,7 @@ ECLRTL_API size32_t rtlGetPackedSize(const void * _ptr);
 ECLRTL_API __int64 rtlGetPackedSigned(const void * ptr);
 ECLRTL_API void rtlSetPackedSigned(void * ptr, __int64 value);
 ECLRTL_API size32_t rtlGetPackedSizeFromFirst(byte first);
+ECLRTL_API size32_t rtlGetPackedSize(unsigned __int64 value);
 
 ECLRTL_API void rtlReleaseRow(const void * row);
 ECLRTL_API void * rtlLinkRow(const void * row);
@@ -763,6 +764,21 @@ ECLRTL_API void rtlGetLocalFailMessage(size32_t & len, char * & text, IException
 ECLRTL_API void rtlFreeException(IException * e);
 
 ECLRTL_API IAtom * rtlCreateFieldNameAtom(const char * name);
+
+ECLRTL_API void rtlGetEclUserSecret(size32_t & outlen, void * & out, const char *name, const char *key);
+
+/**
+ * Wrapper function to encode input binary data with base 64 code.
+ *
+ * @param tlen          Encoded string length
+ * @param tgt           Pointer to encoded string
+ * @param slen          Input binary data length
+ * @param src           Pointer to input binary data
+ * @param addLineBreaks If true, add linefeeds periodically in output
+ * @see                 void JBASE64_Encode(const void *data, long length, StringBuffer &out, bool addLineBreaks)
+ *                      function in jutil library
+ */
+ECLRTL_API void rtlBase64EncodeV2(size32_t & tlen, char * & tgt, size32_t slen, const void * src, bool addLineBreaks);
 
 /**
  * Wrapper function to encode input binary data with base 64 code.

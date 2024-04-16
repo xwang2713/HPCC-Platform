@@ -610,7 +610,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
             CKeyedFetchResultProcessor(CKeyedJoinSlave &_owner, ICommunicator &_comm, mptag_t _mpTag) : threaded("CKeyedFetchResultProcessor", this), owner(_owner), comm(_comm), resultMpTag(_mpTag)
             {
                 aborted = false;
-                threaded.start();
+                threaded.start(true);
             }
             ~CKeyedFetchResultProcessor()
             {
@@ -722,7 +722,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
             CKeyedFetchRequestProcessor(CKeyedJoinSlave &_owner, ICommunicator &_comm, mptag_t _requestMpTag, mptag_t _resultMpTag) : threaded("CKeyedFetchRequestProcessor", this), owner(_owner), comm(_comm), requestMpTag(_requestMpTag), resultMpTag(_resultMpTag)
             {
                 aborted = false;
-                threaded.start();
+                threaded.start(true);
                 unsigned expectedFormatCrc = owner.helper->getDiskFormatCrc();
                 unsigned projectedFormatCrc = owner.helper->getProjectedFormatCrc();
                 IOutputMetaData *projectedFormat = owner.helper->queryProjectedDiskRecordSize();
@@ -946,7 +946,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
             requestProcessor = new CKeyedFetchRequestProcessor(owner, owner.queryJobChannel().queryJobComm(), requestMpTag, resultMpTag); // remote receive of fetch fpos'
             resultProcessor = new CKeyedFetchResultProcessor(owner, owner.queryJobChannel().queryJobComm(), resultMpTag); // asynchronously receiving results back
 
-            threaded.start();
+            threaded.start(true);
         }
         ~CKeyedFetchHandler()
         {
@@ -1206,10 +1206,14 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
         unsigned candidateCount;
         __int64 lastSeeks, lastScans;
         IConstPointerArrayOf<ITranslator> translators;
+        CStatsContextLogger contextLogger;
 
-        inline void noteStats(unsigned seeks, unsigned scans)
+        inline void updateJhTreeStats()
         {
             CriticalBlock b(owner.statCrit);
+            const CRuntimeStatisticCollection & stats = contextLogger.queryStats();
+            unsigned __int64 seeks = stats.getStatisticValue(StNumIndexSeeks);
+            unsigned __int64 scans = stats.getStatisticValue(StNumIndexScans);
             owner.statsArr[AS_Seeks] += seeks-lastSeeks;
             owner.statsArr[AS_Scans] += scans-lastScans;
             lastSeeks = seeks;
@@ -1249,9 +1253,9 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
     public:
         IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
 
-        CKeyLocalLookup(CKeyedJoinSlave &_owner, const RtlRecord &_keyRecInfo) : owner(_owner), keyRecInfo(_keyRecInfo), indexReadFieldsRow(_owner.indexInputAllocator)
+        CKeyLocalLookup(CKeyedJoinSlave &_owner, const RtlRecord &_keyRecInfo) : owner(_owner), keyRecInfo(_keyRecInfo), indexReadFieldsRow(_owner.indexInputAllocator), contextLogger(jhtreeCacheStatistics)
         {
-            tlkManager.setown(owner.keyHasTlk ? createLocalKeyManager(keyRecInfo, nullptr, nullptr, owner.helper->hasNewSegmentMonitors(), false) : nullptr);
+            tlkManager.setown(owner.keyHasTlk ? createLocalKeyManager(keyRecInfo, nullptr, &contextLogger, owner.helper->hasNewSegmentMonitors(), false) : nullptr);
             reset();
             owner.getKeyIndexes(partKeyIndexes);
             RecordTranslationMode translationMode = getTranslationMode(owner);
@@ -1271,7 +1275,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
             }
             else
             {
-                partManager.setown(createLocalKeyManager(owner.helper->queryIndexRecordSize()->queryRecordAccessor(true), nullptr, nullptr, owner.helper->hasNewSegmentMonitors(), false));
+                partManager.setown(createLocalKeyManager(owner.helper->queryIndexRecordSize()->queryRecordAccessor(true), nullptr, &contextLogger, owner.helper->hasNewSegmentMonitors(), false));
                 getLayoutTranslations(translators, owner.helper->getFileName(), owner.indexParts, translationMode, expectedFormatCrc, owner.helper->queryIndexRecordSize(), projectedFormatCrc, projectedFormat);
             }
         }
@@ -1359,7 +1363,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                             ++candidateCount;
                             if (candidateCount > owner.atMost)
                                 break;
-                            KLBlobProviderAdapter adapter(partManager);
+                            KLBlobProviderAdapter adapter(partManager, &contextLogger);
                             byte const * keyRow = partManager->queryKeyBuffer();
                             size_t fposOffset = partManager->queryRowSize() - sizeof(offset_t);
                             offset_t fpos = rtlReadBigUInt8(keyRow + fposOffset);
@@ -1388,7 +1392,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
 #ifdef TRACE_JOINGROUPS
                                 ::ActPrintLog(&owner, "CJoinGroup [result] %x from %d", currentJG, __LINE__);
 #endif
-                                noteStats(partManager->querySeeks(), partManager->queryScans());
+                                updateJhTreeStats();
                                 size32_t lorsz = owner.keyLookupAllocator->queryOutputMeta()->getRecordSize(lookupRow.getSelf());
                                 // must be easier way
                                 return lookupRow.finalizeRowClear(lorsz);
@@ -1400,7 +1404,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                             }
                         }
                         partManager->releaseSegmentMonitors();
-                        noteStats(partManager->querySeeks(), partManager->queryScans());
+                        updateJhTreeStats();
                         currentPart = nullptr;
                         if (owner.localKey)
                         { // merger done
@@ -1468,7 +1472,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                             ::ActPrintLog(&owner, "CJoinGroup [end marker returned] %x from %d", currentJG, __LINE__);
 #endif
                             if (currentPart)
-                                noteStats(partManager->querySeeks(), partManager->queryScans());
+                                updateJhTreeStats();
                             currentJG = NULL;
                             size32_t lorsz = owner.keyLookupAllocator->queryOutputMeta()->getRecordSize(lookupRow.getSelf());
                             // must be easier way
@@ -1512,7 +1516,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                 throw;
             }
             if (currentPart)
-                noteStats(partManager->querySeeks(), partManager->queryScans());
+                updateJhTreeStats();
             return NULL;
         }
 
@@ -1583,7 +1587,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
             queueSize = _queueSize<maxPoolSize?maxPoolSize:_queueSize;
             lookupQ.setLimit(queueSize);
 
-            keyLookupPool.setown(createThreadPool("KeyLookupPool", this, &owner, maxPoolSize));
+            keyLookupPool.setown(createThreadPool("KeyLookupPool", this, true, &owner, maxPoolSize));
             unsigned i=0;
             for (; i<maxPoolSize; i++)
                 keyLookupPool->start(NULL);
@@ -2420,18 +2424,17 @@ public:
         info.unknownRowsOutput = true;
     }
 
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
+        PARENT::gatherActiveStats(activeStats);
         constexpr StatisticKind mapping[] = { StNumIndexSeeks, StNumIndexScans, StNumIndexAccepted, StNumPostFiltered, StNumPreFiltered, StNumDiskSeeks, StNumDiskAccepted, StNumDiskRejected };
         ForEachItemIn(s, _statsArr)
         {
             unsigned __int64 v = _statsArr.item(s);
             if (0 == v)
                 continue;
-            stats.setStatistic(mapping[s], v);
+            activeStats.setStatistic(mapping[s], v);
         }
-
-        CSlaveActivity::serializeStats(mb);
     }
 
 friend class CKeyedFetchHandler;

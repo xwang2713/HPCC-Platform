@@ -1365,7 +1365,7 @@ public:
         }
         StringBuffer valuebuf;
         valuebuf.append(valueLen, (const char*)valueData);
-        DBGLOG("Flags = %d, valueLen = %d, valueData=%s", flags, valueLen, valueLen>0?valuebuf.str():"");
+        DBGLOG("Flags = %d, valueLen = %d, valueData=%s", flags, valueLen, valuebuf.str());
         Owned<IProperties> props = createProperties(false);
         valuebuf.replace(';', '\n');
         props->loadProps(valuebuf.str());
@@ -1458,8 +1458,12 @@ private:
 
 Owned<IEsdlStore> gEsdlCentralStore;
 
-esdl_engine_decl IEsdlStore* createEsdlCentralStore()
+esdl_engine_decl IEsdlStore* getEsdlCentralStore(bool isForLoadingBindings)
 {
+    if (isForLoadingBindings && !getComponentConfigSP()->getPropBool("@loadDaliBindings", true))
+        return nullptr;
+    if (!daliClientActive())
+        return nullptr;
     if (gEsdlCentralStore.get() == nullptr)
         gEsdlCentralStore.setown(new CEsdlSDSStore);
     return gEsdlCentralStore.getLink();
@@ -1467,5 +1471,9 @@ esdl_engine_decl IEsdlStore* createEsdlCentralStore()
 
 esdl_engine_decl IEsdlSubscription* createEsdlSubscription(IEsdlListener* listener)
 {
+    if (!getComponentConfigSP()->getPropBool("@loadDaliBindings", true))
+        return nullptr;
+    if (!daliClientActive())
+        return nullptr;
     return new CEsdlSDSSubscription(listener);
 }

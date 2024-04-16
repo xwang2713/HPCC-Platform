@@ -65,8 +65,6 @@ class CXRefExBuilderThread : public Thread
         nodeQueue.enqueue(LINK(xRefNode));
     }
 public:
-    IMPLEMENT_IINTERFACE;
-
     CXRefExBuilderThread() { };
     ~CXRefExBuilderThread(){DBGLOG("Destroyed XRef thread");};
 
@@ -201,6 +199,9 @@ class CWsDfuXRefEx : public CWsDFUXRef
     void findUnusedFilesWithDetailsInDFS(IEspContext &context, const char *process, const MapStringTo<bool> &usedFileMap, IArrayOf<IEspDFULogicalFile> &unusedFiles);
     const char* formatResult(IEspContext& context, IPropertyTree* result, StringBuffer& formatedResult);
     const char* formatResult(IEspContext& context, StringBuffer& result, StringBuffer& encodedResult);
+    void getRoxieFiles(const char *process, bool checkPackageMaps, MapStringTo<bool> &usedFileMap);
+    bool canRemoveLogicalFile(const char *logicalFile, IUserDescriptor *userDesc, bool removeFromSuperfiles, StringBuffer &errStr);
+    bool removeLogicalFileFromSuperfiles(const char *logicalFile, IDistributedSuperFileIterator *superOwners, StringBuffer &errStr);
 
 public:
    IMPLEMENT_IINTERFACE;

@@ -24,7 +24,9 @@
 
 #define MATCH_ENTRY [&](const EntryValue& e) {return strieq(e.get()->name, pathPart);}
 
-static auto pRequestCount = hpccMetrics::createMetricAndAddToReporter<hpccMetrics::CounterMetric>("requests", "Number of Requests");
+#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
+static auto pRequestCount = hpccMetrics::registerCounterMetric("esp.requests.received", "Number of requests received", SMeasureCount);
+#endif
 
 inline bool validate(const char* k)
 {
@@ -51,14 +53,13 @@ CTxSummary::TxEntryBase::TxEntryBase(const char* _key, const LogLevel _logLevel,
     // 'name' is set to the rightmost element of _key
     // 'fullname' is the entire _key
 
+    fullname.set(_key);
     if(isEmptyString(_key))
     {
-        fullname.set(_key);
         name = nullptr;
     }
     else
     {
-        fullname.set(_key);
         const char* finger = strrchr(fullname.str(), '.');
         if(finger)
             name = ++finger;
@@ -123,7 +124,7 @@ StringBuffer& CTxSummary::TxEntryTimer::serialize(StringBuffer& buf, const LogLe
     else if (requestedStyle & TXSUMMARY_OUT_TEXT)
     {
         buf.append(fullname);
-        buf.appendf("=%" I64F "ums;", value->getTotalMillis());
+        buf.appendf("=%" I64F "u;", value->getTotalMillis());
     }
 
     return buf;
@@ -332,7 +333,9 @@ StringBuffer& CTxSummary::TxEntryObject::serialize(StringBuffer& buf, const LogL
 CTxSummary::CTxSummary(unsigned creationTime)
 : m_creationTime(creationTime ? creationTime : msTick())
 {
+#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
     pRequestCount->inc(1);
+#endif
 }
 
 CTxSummary::~CTxSummary()
@@ -392,6 +395,8 @@ bool CTxSummary::setEntry(const char* key, TxEntryBase* value)
     if(!validate(key))
          return false;
 
+    CriticalBlock block(m_sync);
+
     bool found = false;
     EntryValue entry;
     entry.setown(value);
@@ -399,6 +404,9 @@ bool CTxSummary::setEntry(const char* key, TxEntryBase* value)
     {
         if(strieq(key, entryItr->get()->fullname.str()))
         {
+            // prevent a scalar value from replacing a timer
+            if (dynamic_cast<TxEntryTimer*>(entry.get()))
+                return false;
             found = true;
             auto finger = m_entries.erase(entryItr);
             m_entries.insert(finger, entry);
@@ -443,7 +451,7 @@ CumulativeTimer* CTxSummary::queryTimer(const char* key, LogLevel level, const u
         return nullptr;
 
     if(!validate(key))
-        throw makeStringExceptionV(-1, "CTxSummary::queryTimer Key (%s) is malformed", key);
+        return nullptr;
 
     CriticalBlock block(m_sync);
 
@@ -455,14 +463,17 @@ CumulativeTimer* CTxSummary::queryTimer(const char* key, LogLevel level, const u
         TxEntryTimer* timer = dynamic_cast<TxEntryTimer*>(entry.get());
         if(!timer)
         {
-            throw makeStringExceptionV(-1, "CTxSummary::queryTimer Key (%s) already exists for a non-timer entry", key);
+            // prevent a timer from replacing a scalar value
+            return nullptr;
         }
         else
         {
-            if(timer->queryLogLevel() == level && timer->queryGroup() == group)
-                return timer->value.get();
-            else
-                throw makeStringExceptionV(-1, "CTxSummary::queryTimer Search for key (%s) logLevel (%d) group (%d) found mismatched timer with logLevel (%d) group (%d)", key, level, group, timer->queryLogLevel(), timer->queryGroup());
+
+            if ((timer->queryGroup() & group) != group)
+                timer->setGroup(group | timer->queryGroup());
+            if (timer->queryLogLevel() < level)
+                timer->setLogLevel(level);
+            return timer->value.get();
         }
     } else {
         // The CumulativeTimer does not yet exist
@@ -515,7 +526,7 @@ void CTxSummary::serialize(StringBuffer& buffer, const LogLevel logLevel, const 
         // For text serialization, we create a new entry if it has
         // a profile mapping it to a new name, then serialize it.
         // Otherwise, we just serialize the existing entry.
-        for(auto entry : m_entries)
+        for(auto& entry : m_entries)
         {
             StringBuffer effectiveName;
             bool mapped = false;
@@ -542,7 +553,7 @@ void CTxSummary::serialize(StringBuffer& buffer, const LogLevel logLevel, const 
         // Create a TxEntryObject as a kind of JSON 'DOM' with copies of the entries.
         // The root should be output for all Log Levels and all output styles.
         TxEntryObject root(nullptr, LogMin, TXSUMMARY_OUT_TEXT | TXSUMMARY_OUT_JSON);
-        for(auto entry : m_entries)
+        for(auto& entry : m_entries)
         {
             StringBuffer effectiveName(entry->fullname.str());
             if(m_profile)
@@ -644,7 +655,7 @@ CTxSummary::TxEntryBase* CTxSummary::queryEntry(const char* key)
     if(!validate(key))
         return nullptr;
 
-    for(auto entry : m_entries)
+    for(auto& entry : m_entries)
     {
         if(strieq(key, entry->fullname.str()))
             return entry.get();

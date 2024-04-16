@@ -41,6 +41,8 @@ class CKeyedJoinMaster : public CMasterActivity
     bool remoteKeyedFetch = false;
     bool assumePrimary = false;
     unsigned totalIndexParts = 0;
+    unsigned indexFileStatsTableEntry = NotFound;
+    unsigned dataFileStatsTableEntry = NotFound;
 
     // CMap contains mappings and lists of parts for each slave
     class CMap
@@ -151,7 +153,7 @@ class CKeyedJoinMaster : public CMasterActivity
                         bool filePartExists = false;
                         if (activity.assumePrimary)
                         {
-                            /* If the index is big (e.g. large super-index), then it can be expensive
+                            /* If the index is big (e.g. large superkey), then it can be expensive
                              * to walk over all part copies, checking their existence.
                              * This option provides a workaround in those cases, to avoid that check,
                              * by assuming the primary copy will exist and be used.
@@ -176,8 +178,14 @@ class CKeyedJoinMaster : public CMasterActivity
                             {
                                 do
                                 {
-                                    INode &groupNode = dfsGroup.queryNode(gn);
-                                    if (partNode->equals(&groupNode))
+                                    // NB: all parts are considered 'local' in containerized mode
+                                    // It will cause the parts to be striped across the group (and hence the workers),
+                                    // such that the parts will be partitioned, with each worker dealing with some parts
+                                    // locally via local key lookup handlers and the rest being handled remotely by other
+                                    // workers via remote key lookup handlers.
+                                    // remoteKeyedLookup=false will disabled this default behaviour, causing all parts
+                                    // to be handled locally by each worker.
+                                    if (isContainerized() || partNode->equals(&dfsGroup.queryNode(gn)))
                                     {
                                         /* NB: If there's >1 slave per node (e.g. slavesPerNode>1) then there are multiple matching node's in the dfsGroup
                                         * Which means a copy of a part may already be assigned to a cluster slave map. This check avoid handling it again if it has.
@@ -302,24 +310,26 @@ public:
         totalIndexParts = 0;
 
         Owned<IDistributedFile> dataFile;
-        Owned<IDistributedFile> indexFile = queryThorFileManager().lookup(container.queryJob(), indexFileName, false, 0 != (helper->getJoinFlags() & JFindexoptional), true, container.activityIsCodeSigned());
+        Owned<IDistributedFile> indexFile = lookupReadFile(indexFileName, AccessMode::readRandom, false, false, 0 != (helper->getJoinFlags() & JFindexoptional), true, indexReadFileStatistics, &indexFileStatsTableEntry);
         if (indexFile)
         {
             if (!isFileKey(indexFile))
-                throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read flat file as an index: %s", indexFileName.get());
+                throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read flat file as an index: %s", indexFileName.get());
             IDistributedSuperFile *superIndex = indexFile->querySuperFile();
+
+            unsigned numSuperIndexSubs = superIndex?superIndex->numSubFiles(true):1;
             if (helper->diskAccessRequired())
             {
                 OwnedRoxieString fetchFilename(helper->getFileName());
                 if (fetchFilename)
                 {
-                    dataFile.setown(queryThorFileManager().lookup(container.queryJob(), fetchFilename, false, 0 != (helper->getFetchFlags() & FFdatafileoptional), true, container.activityIsCodeSigned()));
+                    dataFile.setown(lookupReadFile(fetchFilename, AccessMode::readRandom, false, false, 0 != (helper->getFetchFlags() & FFdatafileoptional), true, diskReadRemoteStatistics, &dataFileStatsTableEntry));
                     if (dataFile)
                     {
                         if (isFileKey(dataFile))
-                            throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read index as a flat file: %s", fetchFilename.get());
+                            throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Full-Keyed-Join: Attempting to read index as a flat file (fetch file): %s", fetchFilename.get());
                         if (superIndex)
-                            throw MakeActivityException(this, 0, "Superkeys and full keyed joins are not supported");
+                            throw MakeActivityException(this, 0, "Full-Keyed-Join: Superkeys with full keyed joins are not supported");
 
                         dataFileDesc.setown(getConfiguredFileDescriptor(*dataFile));
                         void *ekey;
@@ -332,12 +342,12 @@ public:
                             free(ekey);
                             if (!encrypted)
                             {
-                                Owned<IException> e = MakeActivityWarning(&container, TE_EncryptionMismatch, "Ignoring encryption key provided as file '%s' was not published as encrypted", dataFile->queryLogicalName());
+                                Owned<IException> e = MakeActivityWarning(&container, TE_EncryptionMismatch, "Full-Keyed-Join: Ignoring encryption key provided as file '%s' was not published as encrypted", fetchFilename.get());
                                 queryJobChannel().fireException(e);
                             }
                         }
                         else if (encrypted)
-                            throw MakeActivityException(this, 0, "File '%s' was published as encrypted but no encryption key provided", dataFile->queryLogicalName());
+                            throw MakeActivityException(this, 0, "Full-Keyed-Join: File '%s' was published as encrypted but no encryption key provided", fetchFilename.get());
 
                         /* If fetch file is local to cluster, fetches are sent to the slave the parts are local to.
                          * If fetch file is off cluster, fetches are performed by requesting node directly on fetch part, therefore each nodes
@@ -369,10 +379,8 @@ public:
                 indexFileDesc.setown(indexFile->getFileDescriptor());
 
                 unsigned superIndexWidth = 0;
-                unsigned numSuperIndexSubs = 0;
                 if (superIndex)
                 {
-                    numSuperIndexSubs = superIndex->numSubFiles(true);
                     bool first=true;
                     // consistency check
                     Owned<IDistributedFileIterator> iter = superIndex->getSubFileIterator(true);
@@ -394,11 +402,11 @@ public:
                         else
                         {
                             if (hasTlk != keyHasTlk)
-                                throw MakeActivityException(this, 0, "Local/Single part keys cannot be mixed with distributed(tlk) keys in keyedjoin");
+                                throw MakeActivityException(this, 0, "Unsupported: Superkey with a mixture of Local/Single and Distributed sub-indexes. (Superkey: '%s', sub-index: '%s')", indexFileName.get(), f.queryLogicalName());
                             if (keyHasTlk && superIndexWidth != f.numParts()-1)
-                                throw MakeActivityException(this, 0, "Super sub keys of different width cannot be mixed with distributed(tlk) keys in keyedjoin");
+                                throw MakeActivityException(this, 0, "Unsupported: sub-indexes of different widths cannot be mixed. (Superkey: '%s', sub-index: '%s')", indexFileName.get(), f.queryLogicalName());
                             if (localKey && superIndexWidth != queryClusterWidth())
-                                throw MakeActivityException(this, 0, "Super keys of local index must be same width as target cluster");
+                                throw MakeActivityException(this, 0, "Unsupported: Superkey of local indexes must be same width as target cluster. (Superkey: '%s', sub-index: '%s')", indexFileName.get(), f.queryLogicalName());
                         }
                     }
                     if (keyHasTlk)
@@ -458,10 +466,7 @@ public:
                     initMb.append(keyHasTlk);
                     if (keyHasTlk)
                     {
-                        if (numSuperIndexSubs)
-                            initMb.append(numSuperIndexSubs);
-                        else
-                            initMb.append((unsigned)1);
+                        initMb.append(numSuperIndexSubs);
 
                         Owned<IDistributedFileIterator> iter;
                         IDistributedFile *f;
@@ -505,12 +510,6 @@ public:
         }
         else
             initMb.append(totalIndexParts); // 0
-        if (indexFile)
-        {
-            addReadFile(indexFile);
-            if (dataFile)
-                addReadFile(dataFile);
-        }
     }
     virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave)
     {
@@ -531,6 +530,7 @@ public:
             }
             if (remoteKeyedLookup)
                 indexMap.serializePartMap(dst);
+            dst.append(indexFileStatsTableEntry);
             unsigned totalDataParts = dataMap.count();
             dst.append(totalDataParts);
             if (totalDataParts)
@@ -549,8 +549,30 @@ public:
                 }
                 if (remoteKeyedFetch)
                     dataMap.serializePartMap(dst);
+                dst.append(dataFileStatsTableEntry);
             }
         }
+    }
+    virtual void deserializeStats(unsigned node, MemoryBuffer &mb) override
+    {
+        CMasterActivity::deserializeStats(node, mb);
+        unsigned numFilesToRead;
+        mb.read(numFilesToRead);
+        assertex(fileStats.size()>=numFilesToRead);
+        for (unsigned i=0; i<numFilesToRead; i++)
+            fileStats[i]->deserialize(node, mb);
+    }
+    virtual void getActivityStats(IStatisticGatherer & stats) override
+    {
+        CMasterActivity::getActivityStats(stats);
+        diskAccessCost = calcFileReadCostStats(false);
+        if (diskAccessCost)
+            stats.addStatistic(StCostFileAccess, diskAccessCost);
+    }
+    virtual void done() override
+    {
+        diskAccessCost = calcFileReadCostStats(true);
+        CMasterActivity::done();
     }
 };
 

@@ -26,14 +26,14 @@ class DALIFT_API DaftProgress : public IDaftProgress
 public:
     DaftProgress();
 
-    virtual void onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize, unsigned numNodes);
+    virtual void onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize, unsigned numNodes, unsigned __int64 numReads, unsigned __int64 numWrites);
     virtual void displayProgress(unsigned percentDone, unsigned secsLeft, const char * timeLeft,
                             unsigned __int64 scaledDone, unsigned __int64 scaledTotal, const char * scale,
                             unsigned kbPerSecondAve, unsigned kbPerSecondRate,
-                            unsigned numNodes) = 0;
+                            unsigned numNodes, unsigned __int64 numReads, unsigned __int64 numWrites) = 0;
     virtual void displaySummary(const char * timeTaken, unsigned kbPerSecond) = 0;
     virtual void setRange(unsigned __int64 sizeReadBefore, unsigned __int64 totalSize, unsigned _totalNodes);
-
+    virtual void setFileAccessCost(cost_type fileAccessCost) = 0;
 protected:
     void formatTime(char * buffer, unsigned secs);
 
@@ -59,6 +59,7 @@ public:
                             unsigned __int64 scaledDone, unsigned __int64 scaledTotal, const char * scale,
                             unsigned kbPerSecondAve, unsigned kbPerSecondRate, unsigned numNodes);
     virtual void displaySummary(const char * timeTaken, unsigned kbPerSecond);
+    virtual void setFileAccessCost(cost_type fileAccessCost) {};
 };
 
 #endif

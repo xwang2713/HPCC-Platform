@@ -17,7 +17,7 @@
 #    limitations under the License.
 ##############################################################################
 
-# Utility script for starting a local cluster corresponding to current git branch
+# Utility script for starting a local cluster (including elastic4hpcclogs) corresponding to current git branch
 # Usage startup.sh [<image.version>] [<helm-install-options>]
 
 DOCKER_REPO=hpccsystems
@@ -25,12 +25,22 @@ scriptdir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 restArgs=()
 CLUSTERNAME=mycluster
 PVFILE=$scriptdir/../helm/examples/local/hpcc-localfile/values.yaml
+MKDIR=1
+
+MANAGED_ELK_SUBPATH="managed/logging/elastic"
+MANAGED_PROM_SUBPATH="managed/metrics/prometheus"
+MANAGED_LOKI_SUBPATH="managed/logging/loki-stack"
+
+LOG_FORMAT_ARG="table" # table/xml/json
+
+ELASTIC_LOG_ACCESS_ARG="-f $scriptdir/../helm/${MANAGED_ELK_SUBPATH}/elastic4hpcclogs-hpcc-logaccess.yaml"
 
 dependency_check () {
 
   if [ -z "$1" ]
   then
-      CHART_SUBPATH="hpcc"
+      echo "dependency_check requires target chart subdir"
+      exit 0
   else
       CHART_SUBPATH=$1
   fi
@@ -39,16 +49,29 @@ dependency_check () {
   while IFS= read -r line
   do
     echo "${line}"
-    if echo "${line}" | egrep -q 'missing$'; then
+    if echo "${line}" | egrep -q 'missing$|wrong version$' ; then
       let "missingDeps++"
     fi
   done < <(helm dependency list ${scriptdir}/../helm/${CHART_SUBPATH} | grep -v WARNING)
   if [[ ${missingDeps} -gt 0 ]]; then
-    echo "Some of the chart dependencies are missing."
+    echo "Some of the chart dependencies are missing or outdated."
     echo "Either issue a 'helm dependency update ${scriptdir}/../helm/${CHART_SUBPATH}' to fetch them,"
     echo "or rerun $0 with option -c to auto update them."
     exit 0
   fi
+}
+
+dependency_update () {
+
+  if [ -z "$1" ]
+  then
+      echo "dependency_update requires target chart subdir"
+      exit 0
+  else
+      CHART_SUBPATH=$1
+  fi
+
+  helm dependency update ${scriptdir}/../helm/${CHART_SUBPATH}
 }
 
 CMD="install"
@@ -68,15 +91,21 @@ while [ "$#" -gt 0 ]; do
          ;;
       u) CMD="upgrade"
          ;;
-      p) shift
-         if [[ $arg == '-pv' ]] ; then
-           PERSISTVALUES="--values=$1"
-           PVFILE=$1
+      p) if [[ $arg == '-pm' ]] ; then
+           #Option for minikube to avoid trying to create the directories (because they are mounted elsewhere)
+           MKDIR=0
          else
-           PERSIST=$1
+           shift
+           if [[ $arg == '-pv' ]] ; then
+             PERSISTVALUES="--values=$1"
+             echo $PERSISTVALUES
+             PVFILE=$1
+           else
+             PERSIST=$1
+           fi
          fi
          ;;
-      c) DEP_UPDATE_ARG="--dependency-update"
+      c) DEP_UPDATE=1
          ;;
       h) echo "Usage: startall.sh [options]"
          echo "    -d <docker-repo>   Docker repository to fetch images from"
@@ -87,7 +116,9 @@ while [ "$#" -gt 0 ]; do
          echo "    -c                 Update chart dependencies"
          echo "    -p <location>      Use local persistent data"
          echo "    -pv <yamlfile>     Override dataplane definitions for local persistent data"
-         echo "    -e                 Deploy light-weight Elastic Stack for component log processing"
+         echo "    -e                 Suppress deployment of elastic4hpcclogs (deployed by default)"
+         echo "    -m                 Deploy Prometheus Stack for component metrics processing"
+         echo "    -g                 Deploy Grafana Loki Stack for component logs processing"
          exit
          ;;
       t) CMD="template"
@@ -96,7 +127,14 @@ while [ "$#" -gt 0 ]; do
       # vanilla install - for testing system in the same way it will normally be used
       v) DEVELOPER_OPTIONS=""
          ;;
-      e) DEPLOY_ES=true
+      e) ELASTIC_LOG_ACCESS_ARG=""
+	       echo -e "\nDeployment of elastic4hpcclogs suppressed.\n"
+         ;;
+      m) DEPLOY_PROM=1
+         PROMETHEUS_METRICS_SINK_ARG="-f $scriptdir/../helm/examples/metrics/prometheus_metrics.yaml"
+         ;;
+      g) DEPLOY_LOKI=1
+         LOG_FORMAT_ARG="json"
          ;;
       *) restArgs+=(${arg})
          ;;
@@ -107,39 +145,73 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-
-if [[ -n "${DEP_UPDATE_ARG}" ]]; then
-  if [[ "${CMD}" = "upgrade" ]]; then
-    echo "Chart dependencies cannot be updated whilst performing a helm upgrade"
-    DEP_UPDATE_ARG=""
+if [[ "${CMD}" = "upgrade" ]]; then
+  if [[ $(helm list -q -f $CLUSTERNAME) != $CLUSTERNAME ]]; then
+    echo "Requested installation for upgrade does not exist - assuming install"
+    CMD="install"
   fi
-else
-  dependency_check "hpcc"
 fi
-
 [[ -n ${INPUT_DOCKER_REPO} ]] && DOCKER_REPO=${INPUT_DOCKER_REPO}
 [[ -z ${LABEL} ]] && LABEL=$(docker image ls | fgrep "${DOCKER_REPO}/platform-core" | head -n 1 | awk '{print $2}')
 
 if [[ -n ${PERSIST} ]] ; then
   PERSIST=$(realpath -q $PERSIST || echo $PERSIST)
   PERSIST_PATH=$(echo $PERSIST | sed 's/\\//g')
-  for subdir in `grep subPath: $PVFILE | awk '{ print $2 }'` ; do
-    echo mkdir -p ${PERSIST_PATH}/$subdir
-    mkdir -p ${PERSIST_PATH}/$subdir
-  done
+  if [[ -n "${WSL_DISTRO_NAME}" ]] ; then
+    WSLPATH=${PERSIST_PATH#/run/desktop/mnt/host/}
+    if [[ ${PERSIST_PATH} != ${WSLPATH} ]] ; then # if they're different PERSIST_PATH was prefixed with WSLPATH
+      PERSIST_PATH="/mnt/${WSLPATH}"
+      echo WSLPATH = ${PERSIST_PATH}
+    fi
+  fi
+  if [[ $MKDIR == '1' ]] ; then
+    for subdir in `grep subPath: $PVFILE | awk '{ print $2 }'` ; do
+      echo mkdir -p ${PERSIST_PATH}/$subdir
+      mkdir -p ${PERSIST_PATH}/$subdir
+    done
+  fi
   helm ${CMD} localfile $scriptdir/../helm/examples/local/hpcc-localfile --set common.hostpath=${PERSIST} $PERSISTVALUES | tee lsfull.yaml | grep -A1000 storage: > localstorage.yaml && \
   grep "##" lsfull.yaml  && \
-  helm ${CMD} $CLUSTERNAME $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL $DEVELOPER_OPTIONS $DEP_UPDATE_ARG ${restArgs[@]} -f localstorage.yaml
+  helm ${CMD} $CLUSTERNAME $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL $DEVELOPER_OPTIONS ${restArgs[@]} -f localstorage.yaml ${PROMETHEUS_METRICS_SINK_ARG} ${ELASTIC_LOG_ACCESS_ARG} --set global.logging.format=${LOG_FORMAT_ARG}
 else
-  helm ${CMD} $CLUSTERNAME $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL $DEVELOPER_OPTIONS $DEP_UPDATE_ARG ${restArgs[@]}
+  echo helm ${CMD} $CLUSTERNAME $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL $DEVELOPER_OPTIONS ${restArgs[@]} ${PROMETHEUS_METRICS_SINK_ARG} ${ELASTIC_LOG_ACCESS_ARG} --set global.logging.format=${LOG_FORMAT_ARG}
+  helm ${CMD} $CLUSTERNAME $scriptdir/../helm/hpcc/ --set global.image.root="${DOCKER_REPO}" --set global.image.version=$LABEL $DEVELOPER_OPTIONS ${restArgs[@]} ${PROMETHEUS_METRICS_SINK_ARG} ${ELASTIC_LOG_ACCESS_ARG} --set global.logging.format=${LOG_FORMAT_ARG}
 fi
 
-if [[ $DEPLOY_ES ]] ; then
+if [[ -n $ELASTIC_LOG_ACCESS_ARG ]] ; then
   echo -e "\n\nDeploying "myelastic4hpcclogs" - light-weight Elastic Stack:"
-  if [[ -z "${DEP_UPDATE_ARG}" ]]; then
-    dependency_check "managed/logging/elastic"
+  if [[ $DEP_UPDATE == 1 ]]; then
+    dependency_update $MANAGED_ELK_SUBPATH
+  else
+    dependency_check $MANAGED_ELK_SUBPATH
   fi
-  helm ${CMD} myelastic4hpcclogs $scriptdir/../helm/managed/logging/elastic $DEP_UPDATE_ARG ${restArgs[@]}
+  helm ${CMD} myelastic4hpcclogs $scriptdir/../helm/$MANAGED_ELK_SUBPATH ${restArgs[@]}
+fi
+
+if [[ $DEPLOY_PROM == 1 ]] ; then
+  echo -e "\n\nDeploying "myprometheus4hpccmetrics" - Prometheus Stack:"
+  if [[ $DEP_UPDATE == 1 ]]; then
+    dependency_update $MANAGED_PROM_SUBPATH
+  else
+    dependency_check $MANAGED_PROM_SUBPATH
+  fi
+  helm ${CMD} myprometheus4hpccmetrics $scriptdir/../helm/$MANAGED_PROM_SUBPATH ${restArgs[@]} --set kube-prometheus-stack.prometheus.service.type=LoadBalancer --set kube-prometheus-stack.grafana.service.type=LoadBalancer
+fi
+
+if [[ $DEPLOY_LOKI == 1 ]] ; then
+  echo -e "\n\nDeploying "myloki4hpcclogs" - Grafana Loki Stack:"
+  echo -e "\n Access Grafana on: http://localhost:3000 from outside the cluster"
+  echo -e "\n  or http://myloki-grafana.default.svc.cluster.local:3000 from within cluster"
+  echo -e "\n user: admin"
+  echo -e "\n To obtain pass: 'kubectl get secret myloki4hpcclogs-grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo' "
+  echo -e "\n Find logs on 'Explore' view, under 'loki' datasource\n"
+
+  if [[ $DEP_UPDATE == 1 ]]; then
+    dependency_update $MANAGED_LOKI_SUBPATH
+  else
+    dependency_check $MANAGED_LOKI_SUBPATH
+  fi
+  helm ${CMD} myloki4hpcclogs $scriptdir/../helm/$MANAGED_LOKI_SUBPATH ${restArgs[@]}
 fi
 
 if [ ${CMD} != "template" ] ; then

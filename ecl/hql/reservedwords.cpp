@@ -67,6 +67,7 @@ static const char * eclReserved2[] = { //HPCC and OS environment settings
 
     "clustersize",
     "getenv",
+    "getsecret",
     NULL
 };
 
@@ -432,6 +433,7 @@ static const char * eclReserved14[] = { //Attribute functions (some might actual
     "default",
     "escape",
     "format",
+    "formencoded",
     "global",
     "groupby",
     "guard",
@@ -474,6 +476,7 @@ static const char * eclReserved14[] = { //Attribute functions (some might actual
     "timelimit",
     "timeout",
     "token",
+    "uncompressed",
     "unstable",
     "update",
     "use",

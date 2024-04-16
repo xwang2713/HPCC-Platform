@@ -205,11 +205,6 @@
             </listitem>
 
             <listitem>
-              <para><emphasis role="bold">The Six Degrees of Kevin
-              Bacon</emphasis> example</para>
-            </listitem>
-
-            <listitem>
               <para>Read <emphasis role="bold">Using Config Manager</emphasis>
               to learn how to configure an HPCC Systems platform using
               Advanced View.</para>
@@ -283,17 +278,18 @@
         <sect3 id="Installing_CentOS-RedHat-Suse">
           <title>CentOS/Red Hat</title>
 
-          <para>To install the Platform you should have the appropriate
-          permissions to install packages. If you have sudo rights, then you
-          can install the platform using yum.</para>
+          <para>To install the HPCC Systems Platform you should have the
+          appropriate rights and permissions to install packages on your
+          system.</para>
 
-          <programlisting>sudo yum install &lt;hpccsystems platform rpm package&gt;</programlisting>
+          <para>One way to install the platform is using yum.</para>
 
-          <para>Optionally you can install the package with rpm (recommended
-          using the -Uvh options), however then you would have to negotiate
-          installing any additional dependencies.</para>
+          <programlisting lang="bash">sudo yum install -y epel-release 
+sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
-
+          <para>Optionally you can install packages with rpm (recommended
+          using the -Uvh options), however you would then have to negotiate
+          installing any dependencies.</para>
         </sect3>
 
         <sect3 id="Installing_Ubuntu-Debian">
@@ -304,8 +300,8 @@
 
           <programlisting>sudo dpkg -i &lt;deb filename&gt;</programlisting>
 
-          <para>After installing the package, run the following to
-          update any dependencies.</para>
+          <para>After installing the package, run the following to update any
+          dependencies.</para>
 
           <para><programlisting>sudo apt-get install -f </programlisting></para>
         </sect3>
@@ -549,12 +545,12 @@
           <orderedlist>
             <listitem>
               <para>Create a file called hello.ecl and type in the following
-              text (including the quotes): <programlisting>output('Hello world'); </programlisting></para>
+              text (including the quotes): <programlisting>OUTPUT('Hello world'); </programlisting></para>
 
               <para>You can either use your favorite editor, or you can use
               the command line by typing the following</para>
 
-              <para><programlisting>echo "Output('Hello world');" &gt; hello.ecl</programlisting></para>
+              <para><programlisting>echo "OUTPUT('Hello world');" &gt; hello.ecl</programlisting></para>
             </listitem>
 
             <listitem>
@@ -1153,7 +1149,7 @@ sudo cp /etc/HPCCSystems/source/NewEnvironment.xml /etc/HPCCSystems/environment.
                     <entry><para>You may want to use a script to push this
                     command out to every node. A sample script is provided
                     with HPCC Systems. Use the following command to start HPCC
-                    Systems on all nodes:</para><para><programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh systemctl start hpccsystems-platform.target</programlisting></para></entry>
+                    Systems on all nodes:</para><para><programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh start </programlisting></para></entry>
                   </row>
                 </tbody>
               </tgroup>
@@ -1394,11 +1390,6 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
         <listitem>
           <para>The <emphasis role="bold">HPCC Systems Data
           Tutorial</emphasis></para>
-        </listitem>
-
-        <listitem>
-          <para><emphasis role="bold">The Six Degrees of Kevin
-          Bacon</emphasis> example</para>
         </listitem>
 
         <listitem>
@@ -1850,13 +1841,13 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para>This example starts all components on the nodes</para>
 
-        <para><programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh systemctl start hpccsystems-platform.target
+        <para><programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh start 
 </programlisting></para>
 
         <para>This example starts all components on all the nodes, using 8
         concurrent executions</para>
 
-        <para><programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh systemctl start hpccsystems-platform.target -n 8
+        <para><programlisting>sudo /opt/HPCCSystems/sbin/hpcc-run.sh start -n 8
 </programlisting>This example starts all components of the dali type on the
         nodes</para>
 
@@ -1916,8 +1907,8 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
         <para>This script is intended to assist administrators to deploy HPCC
         Systems SSH keys across their cluster. SSH keys are used primarily for
         component startup such as Thor and certain plug-ins such as Spark. SSH
-        keys are more important in a physical bare metal environment and less
-        so in a cloud environment. </para>
+        keys are more important in a physical bare-metal environment and less
+        so in a cloud environment.</para>
 
         <para><emphasis role="bold">Examples:</emphasis></para>
 
@@ -1925,7 +1916,7 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para>This example generates new private/public SSH keys and
         overwrites any existing keys and distributes the keys to the
-        components. </para>
+        components.</para>
       </sect2>
     </sect1>
 
@@ -1940,11 +1931,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
       <programlisting>sudo yum remove hpccsystems-platform </programlisting>
 
-
       <para><emphasis role="bold">Ubuntu/Debian </emphasis></para>
 
       <programlisting>sudo apt-get remove hpccsystems-platform</programlisting>
-
     </sect1>
 
     <sect1 id="Helper-Applications">
@@ -1979,9 +1968,9 @@ init_start_thor--></property></para>
     <sect1 id="hpcc-init">
       <title>hpcc-init</title>
 
-      <para>Systems utilizing System V based init systems do not support
-      the systemd calls utilized by HPCC Systems. We will continue to support
-      the old System V style init.d calls.</para>
+      <para>Systems utilizing System V based init systems do not support the
+      systemd calls utilized by HPCC Systems. We will continue to support the
+      old System V style init.d calls.</para>
 
       <para><emphasis role="bold">hpcc-init
       </emphasis><emphasis><emphasis>[</emphasis>option<emphasis>]</emphasis>
@@ -2136,10 +2125,6 @@ sudo /etc/init.d/hpcc-init -c esp start
         services from active list and /etc/systemd/system/ directory.</para>
       </sect2>
     </sect1>
-
-    <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/UnityLauncher.xml"
-                xpointer="element(/1)"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
 
     <sect1 id="Running-HPCC-Tools-Under-WINE">
       <title>Running the ECL IDE under WINE</title>
@@ -2437,21 +2422,8 @@ add1(10);
       <sect2 id="Add_Python_support" role="brk">
         <title>Python</title>
 
-        <para>The HPCC Systems platform supports Python3 by default. It
-        includes plugins for both Python2 and Python3, but only one may be
-        safely enabled at a time as the Python libraries export the same
-        symbols for both versions. Enabling both may lead to unpredictable
-        results including segmentation faults or undefined symbol
-        errors.</para>
-
-        <para>By default the Python2 plugin is present but disabled, and the
-        Python3 plugin is present and enabled. If you want to use Python2
-        modify your environment.conf file according to the example in the
-        file. </para>
-
-        <para>A cluster updated from an older version may not have the
-        appropriate entries in the environment.conf file to support either
-        version of Python.</para>
+        <para>The HPCC Systems platform supports Python3 and the Python3
+        plug-in is present and enabled. Python2 is no longer supported.</para>
 
         <para>To enable Python support within the HPCC
         Systems<superscript>®</superscript> Platform:</para>
@@ -2460,10 +2432,6 @@ add1(10);
           <listitem>
             <para>Install Python, if not already installed. Many distributions
             come with Python already installed.</para>
-
-            <para>Python 2.6, 2.7, or Python3 depending on your distribution's
-            default version and to coordinate with the enabled entry in the
-            environment.conf.</para>
           </listitem>
 
           <listitem>
@@ -2512,10 +2480,7 @@ split_words('Once upon a time');
 
         <para>In order for Python to work properly it is important that the
         version of Python and HPCC Systems are set up correctly to support
-        using the installed version of Python. If you see "ld: cannot find
-        --lpy2embed" error then your system is likely set up for Python3.
-        Likewise, if you see "ld: cannot find --lpy3embed" then your system is
-        set up for Python2.</para>
+        using the correct installed version of Python.</para>
 
         <sect3>
           <title>Python Scope Options</title>

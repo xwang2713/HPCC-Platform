@@ -65,9 +65,21 @@
         <xsl:copy>
             <Software>
                 <xsl:apply-templates select="$espProcess"/>
-
-        <xsl:copy-of select="/Environment/Software/Directories"/>
-      </Software>
+                <xsl:copy-of select="/Environment/Software/Directories"/>
+            </Software>
+            <!--
+            # Generated for configuration info. accessed by getGlobalConfig()
+            -->
+            <global>
+                <expert>
+                    <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+                </expert>
+                <storage>
+                    <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>
+                </storage>
+                <xsl:copy-of select="/Environment/Hardware/cost"/>
+                <xsl:copy-of select="/Environment/Software/tracing"/>
+            </global>
         </xsl:copy>
     </xsl:template>
 
@@ -660,6 +672,7 @@
      <xsl:template name="bindAuthentication">
         <xsl:param name="authMethod"/>
         <xsl:param name="bindingNode"/>
+        <xsl:copy-of select="$bindingNode/cors"/>
         <xsl:choose>
            <xsl:when test="$authMethod='basic'">
               <Authenticate type="Basic" method="UserDefined">

@@ -61,7 +61,7 @@ class CRowStreamLookAhead : public CSimpleInterfaceOf<IStartableEngineRowStream>
     CSlaveActivity &activity;
     bool allowspill, preserveGrouping;
     ILookAheadStopNotify *notify;
-    bool running = false;
+    std::atomic<bool> running{false};
     bool started = false;
     rowcount_t required;
     Semaphore startSem;
@@ -96,7 +96,7 @@ public:
         {
             StringBuffer temp;
             if (allowspill)
-                GetTempName(temp,"lookahd",true);
+                GetTempFilePath(temp,"lookahd");
             assertex(bufsize);
             if (allowspill)
                 smartbuf.setown(createSmartBuffer(&activity, temp.str(), bufsize, rowIf));
@@ -159,7 +159,7 @@ public:
         public:
             CNotifyThread(CRowStreamLookAhead &_owner) : threaded("Lookahead-CNotifyThread"), owner(_owner)
             {
-                threaded.init(this);
+                threaded.init(this, true);
             }
             ~CNotifyThread()
             {
@@ -193,7 +193,7 @@ public:
         return 0;
     }
 
-    CRowStreamLookAhead(CSlaveActivity &_activity, IEngineRowStream *_inputStream, IThorRowInterfaces *_rowIf, size32_t _bufsize, bool _allowspill, bool _preserveGrouping, rowcount_t _required, ILookAheadStopNotify *_notify, IDiskUsage *_iDiskUsage)
+    CRowStreamLookAhead(CSlaveActivity &_activity, IEngineRowStream *_inputStream, IThorRowInterfaces *_rowIf, size32_t _bufsize, bool _allowspill, bool _preserveGrouping, rowcount_t _required, ILookAheadStopNotify *_notify)
         : thread(*this), activity(_activity), inputStream(_inputStream), rowIf(_rowIf)
     {
 #ifdef _FULL_TRACE
@@ -236,7 +236,7 @@ public:
 #endif
         started = true;
         running = true;
-        thread.start();
+        thread.start(true);
         startSem.wait();
     }
 // IEngineRowStream
@@ -267,9 +267,9 @@ public:
 };
 
 
-IStartableEngineRowStream *createRowStreamLookAhead(CSlaveActivity *activity, IEngineRowStream *inputStream, IThorRowInterfaces *rowIf, size32_t bufsize, bool allowspill, bool preserveGrouping, rowcount_t maxcount, ILookAheadStopNotify *notify, IDiskUsage *iDiskUsage)
+IStartableEngineRowStream *createRowStreamLookAhead(CSlaveActivity *activity, IEngineRowStream *inputStream, IThorRowInterfaces *rowIf, size32_t bufsize, bool allowspill, bool preserveGrouping, rowcount_t maxcount, ILookAheadStopNotify *notify)
 {
-    return new CRowStreamLookAhead(*activity, inputStream, rowIf, bufsize, allowspill, preserveGrouping, maxcount, notify, iDiskUsage);
+    return new CRowStreamLookAhead(*activity, inputStream, rowIf, bufsize, allowspill, preserveGrouping, maxcount, notify);
 }
 
 void initMetaInfo(ThorDataLinkMetaInfo &info)
@@ -733,7 +733,7 @@ IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc,
     partDesc.getFilename(0, rfn);
     StringBuffer primaryName;
     rfn.getPath(primaryName);
-    if (isUrl(primaryName))
+    if (isUrl(primaryName) || activity->getOptBool(THOROPT_AVOID_RENAME)) // THOROPT_AVOID_RENAME see HPCC-31559
     {
         twFlags &= ~TW_RenameToPrimary;
         twFlags |= TW_Direct;
@@ -747,15 +747,18 @@ IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc,
     else
     {
         // use temp name
-        GetTempName(outLocationName, "partial");
         if (rfn.isLocal() || (twFlags & TW_External))
-        { // ensure local tmp in same directory as target
+        {
+            // ensure local tmp in same directory (and plane) as target
             StringBuffer dir;
             splitDirTail(primaryName, dir);
             addPathSepChar(dir);
-            dir.append(pathTail(outLocationName));
+            GetTempFileName(dir, "partial");
             outLocationName.swapWith(dir);
         }
+        else
+            GetTempFilePath(outLocationName, "partial");
+
         assertex(outLocationName.length());
         ensureDirectoryForFile(outLocationName.str());
     }
@@ -832,7 +835,7 @@ StringBuffer &locateFilePartPath(CActivityBase *activity, const char *logicalFil
 {
     unsigned location;
     OwnedIFile ifile;
-    if (globals->getPropBool("@autoCopyBackup", true)?ensurePrimary(activity, partDesc, ifile, location, filePath):getBestFilePart(activity, partDesc, ifile, location, filePath, activity))
+    if (globals->getPropBool("@autoCopyBackup", !isContainerized())?ensurePrimary(activity, partDesc, ifile, location, filePath):getBestFilePart(activity, partDesc, ifile, location, filePath, activity))
         ActPrintLog(activity, "reading physical file '%s' (logical file = %s)", filePath.str(), logicalFilename);
     else
     {

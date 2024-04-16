@@ -22,6 +22,7 @@
 #include "jsocket.hpp"
 #include "jptree.hpp"
 #include "udplib.hpp"
+#include "udptopo.hpp"
 #include "portlist.h"
 #include "thorsoapcall.hpp"
 #include "thorxmlwrite.hpp"
@@ -55,9 +56,7 @@
 
 // Have not yet tested impact of new IBYTI handling in non-containerized systems
 
-#ifdef _CONTAINERIZED
 #define NEW_IBYTI
-#endif
 
 #if defined(_CONTAINERIZED) || defined (NEW_IBYTI)
 // Both containerized mode and new IBYTI mode assume subchannels are passed in header.
@@ -102,8 +101,6 @@ void setMulticastEndpoints(unsigned numChannels);
 #define SUBCHANNEL_MASK 3
 #define SUBCHANNEL_BITS 2    // allows for up to 7-way redundancy in a 16-bit short retries flag, high bits used for indicators/flags
 #define MAX_SUBCHANNEL  7    // (16-2) / SUBCHANNEL_BITS
-
-//#define TIME_PACKETS
 
 #define ROXIE_FASTLANE      0x8000u         // mask in retries indicating agent reply goes on the fast queue
 #define ROXIE_BROADCAST     0x4000u         // mask in retries indicating original request was a broadcast
@@ -167,9 +164,8 @@ public:
 #ifdef SUBCHANNELS_IN_HEADER
     ServerIdentifier subChannels[MAX_SUBCHANNEL];
 #endif
-#ifdef TIME_PACKETS
-    unsigned tick = 0;
-#endif
+    unsigned filler = 0; // keeps valgrind happy
+
     RoxiePacketHeader() = default;
 
     RoxiePacketHeader(const RemoteActivityId &_remoteId, ruid_t _uid, unsigned _channel, unsigned _overflowSequence);
@@ -182,7 +178,7 @@ public:
     void init(const RemoteActivityId &_remoteId, ruid_t _uid, unsigned _channel, unsigned _overflowSequence);
     StringBuffer &toString(StringBuffer &ret) const;
     bool allChannelsFailed();
-    bool retry();
+    bool retry(bool ack);
     void setException(unsigned subChannel);
     unsigned thisChannelRetries(unsigned subChannel);
 
@@ -245,6 +241,9 @@ interface ISerializedRoxieQueryPacket : extends IInterface
     virtual unsigned getTraceLength() const = 0;
     virtual IRoxieQueryPacket *deserialize() const = 0;
     virtual ISerializedRoxieQueryPacket *cloneSerializedPacket(unsigned channel) const = 0;
+    virtual unsigned __int64 queryIBYTIDelayTime() const = 0;
+    virtual unsigned __int64 queryEnqueuedTimeStamp() const = 0;
+    virtual void noteQueued(unsigned __int64 IBYTIdelayNs) = 0;
 };
 
 interface IRoxieQueryPacket : extends IInterface
@@ -263,6 +262,11 @@ interface IRoxieQueryPacket : extends IInterface
     virtual IRoxieQueryPacket *insertSkipData(size32_t skipDataLen, const void *skipData) const = 0;
 
     virtual ISerializedRoxieQueryPacket *serialize() const = 0;
+
+    virtual void noteTimeSent() = 0;
+    virtual void setAcknowledged() = 0;
+    virtual bool isAcknowledged() const = 0;
+    virtual bool resendNeeded(unsigned timeout, unsigned now) const = 0;
 };
 
 interface IQueryDll;
@@ -273,15 +277,18 @@ interface IQueryDll;
 
 enum class SinkMode : byte
 {
-    Parallel = 0,           // Execute sinks in parallel - this is the default
+    Parallel = 0,           // Execute sinks in parallel
     ParallelPersistent = 1, // Execute sinks in parallel using persistent threads. May be faster for a heavily-reused child query, but lead to higher thread usage
-    Sequential = 2          // Execute sinks sequentially - sometimes faster if sinks not doing much work
+    Sequential = 2,         // Execute sinks sequentially - sometimes faster if sinks not doing much work
+    // NOTE - all values from here on are considered "automatic"
+    Automatic = 3,          // Combine simple sinks into a single sequential sink, execute remaining sinks in parallel using default threading (default)
+    AutomaticPersistent = 4,// Combine simple sinks into a single sequential sink, execute remaining sinks in parallel using persistent threads
+    AutomaticParallel = 5,  // Combine simple sinks into a single parallel sink, execute remaining sinks in parallel using standard threads
 };
 
 
 // Global configuration info
 extern bool shuttingDown;
-extern unsigned numChannels;
 extern unsigned callbackRetries;
 extern unsigned callbackTimeout;
 extern unsigned lowTimeout;
@@ -293,16 +300,19 @@ extern IPropertyTree *topology;
 extern MapStringTo<int> *preferredClusters;
 extern StringArray allQuerySetNames;
 
+extern bool blockedLocalAgent;
+extern bool acknowledgeAllRequests;
+extern unsigned packetAcknowledgeTimeout;
 extern bool alwaysTrustFormatCrcs;
 extern bool allFilesDynamic;
 extern bool lockSuperFiles;
 extern bool logFullQueries;
+extern bool alwaysSendSummaryStats;
 extern bool blindLogging;
 extern bool debugPermitted;
 extern bool useRemoteResources;
 extern bool checkFileDate;
 extern bool lazyOpen;
-extern bool useAeron;
 extern bool ignoreOrphans;
 extern bool doIbytiDelay;
 extern bool copyResources;
@@ -337,8 +347,8 @@ extern bool prestartAgentThreads;
 extern unsigned preabortKeyedJoinsThreshold;
 extern unsigned preabortIndexReadsThreshold;
 extern bool traceStartStop;
+extern bool traceActivityCharacteristics;
 extern unsigned actResetLogPeriod;
-extern bool traceRoxiePackets;
 extern bool delaySubchannelPackets;
 extern bool traceTranslations;
 extern bool defaultTimeActivities;
@@ -353,9 +363,10 @@ extern bool fastLaneQueue;
 extern unsigned mtu_size;
 extern StringBuffer fileNameServiceDali;
 extern StringBuffer roxieName;
+extern StringBuffer allowedPipePrograms;
 #ifdef _CONTAINERIZED
 extern StringBuffer defaultPlane;
-extern StringBuffer defaultPlaneDirPrefix;
+extern StringBuffer defaultIndexBuildPlane;
 #endif
 extern bool trapTooManyActiveQueries;
 extern unsigned maxEmptyLoopIterations;
@@ -364,19 +375,21 @@ extern HardwareInfo hdwInfo;
 extern unsigned parallelAggregate;
 extern bool inMemoryKeysEnabled;
 extern unsigned __int64 minFreeDiskSpace;
-extern bool probeAllRows;
 extern bool steppingEnabled;
 extern bool simpleLocalKeyedJoins;
 extern bool enableKeyDiff;
 extern PTreeReaderOptions defaultXmlReadFlags;
 extern bool mergeAgentStatistics;
 extern bool defaultNoSeekBuildIndex;
-extern unsigned parallelLoadQueries;
+extern unsigned parallelQueryLoadThreads;
 extern bool adhocRoxie;
 extern bool alwaysFailOnLeaks;
+extern bool ignoreFileDateMismatches;
+extern bool ignoreFileSizeMismatches;
+extern int fileTimeFuzzySeconds;
 extern SinkMode defaultSinkMode;
 
-#ifdef _CONTAINERIZED
+#if defined(_CONTAINERIZED) || defined(SUBCHANNELS_IN_HEADER)
 static constexpr bool roxieMulticastEnabled = false;
 extern unsigned myChannel;
 #else
@@ -386,15 +399,20 @@ extern bool preloadOnceData;
 extern bool reloadRetriesFailed;
 extern bool selfTestMode;
 extern bool defaultCollectFactoryStatistics;
+extern bool defaultExecuteDependenciesSequentially;
+extern bool defaultStartInputsSequentially;
 extern bool oneShotRoxie;
+extern bool traceStrands;
+extern unsigned minPayloadSize;
 
 extern int backgroundCopyClass;
 extern int backgroundCopyPrio;
 
 extern unsigned roxiePort;     // If listening on multiple, this is the first. Used for lock cascading
+extern ISyncedPropertyTree *roxiePortTlsClientConfig;
+
 
 extern unsigned udpMulticastBufferSize;
-extern size32_t diskReadBufferSize;
 
 extern unsigned nodeCacheMB;
 extern unsigned leafCacheMB;
@@ -440,6 +458,7 @@ extern StringBuffer pluginsList;
 extern StringBuffer queryDirectory;
 extern StringBuffer codeDirectory;
 extern StringBuffer tempDirectory;
+extern StringBuffer spillDirectory;
 
 #undef UNIMPLEMENTED
 #undef throwUnexpected
@@ -464,7 +483,11 @@ inline unsigned getBondedChannel(unsigned partNo)
 extern void FatalError(const char *format, ...)  __attribute__((format(printf, 1, 2)));
 extern unsigned getNextInstanceId();
 extern void closedown();
-extern void saveTopology();
+extern void saveTopology(bool lockDali);
+extern unsigned __int64 getTopologyHash();
+
+extern unsigned __int64 currentTopologyHash;
+extern unsigned __int64 originalTopologyHash;
 
 #define LOGGING_INTERCEPTED     0x01
 #define LOGGING_TIMEACTIVITIES  0x02
@@ -552,6 +575,8 @@ public:
 extern void putStatsValue(IPropertyTree *node, const char *statName, const char *statType, unsigned __int64 val);
 extern void putStatsValue(StringBuffer &reply, const char *statName, const char *statType, unsigned __int64 val);
 
+extern const StatisticsMapping accumulatedStatistics;
+
 class ContextLogger : implements IRoxieContextLogger, public CInterface
 {
 protected:
@@ -567,16 +592,12 @@ public: // Not very clean but I don't care
     mutable bool aborted;
     mutable CIArrayOf<LogItem> log;
 private:
-    StringAttr globalIdHeader = "HPCC-Global-Id";
-    StringAttr callerIdHeader = "HPCC-Caller-Id";
-    StringAttr globalId;
-    StringAttr callerId;
-    StringBuffer localId;
+    Owned<ISpan> activeSpan = getNullSpan();
     ContextLogger(const ContextLogger &);  // Disable copy constructor
 public:
     IMPLEMENT_IINTERFACE;
 
-    ContextLogger() : stats(allStatistics)
+    ContextLogger() : stats(accumulatedStatistics, true)
     {
         ctxTraceLevel = traceLevel;
         intercept = false;
@@ -584,8 +605,6 @@ public:
         start = msTick();
         channel = 0;
         aborted = false;
-        if ( topology && topology->hasProp("@httpGlobalIdHeader"))
-            setHttpIdHeaders(topology->queryProp("@httpGlobalIdHeader"), topology->queryProp("@httpCallerIdHeader"));
     }
 
     void outputXML(IXmlStreamFlusher &out)
@@ -606,10 +625,19 @@ public:
             log.item(idx).writeXML(writer);
         }
         writer.outputEndArray("Log");
-    };
+    }
 
-    virtual void CTXLOGa(TracingCategory category, const char *prefix, const char *text) const
+    virtual void CTXLOGva(const LogMsgCategory & cat, LogMsgCode code, const char *format, va_list args) const override  __attribute__((format(printf,4,0)))
     {
+        StringBuffer text, prefix;
+        getLogPrefix(prefix);
+        text.valist_appendf(format, args);
+        CTXLOGa(LOG_TRACING, cat, code, prefix.str(), text.str());
+    }
+
+    virtual void CTXLOGa(TracingCategory category, const LogMsgCategory & cat, LogMsgCode code, const char *prefix, const char *text) const override
+    {
+        LogContextScope ls(nullptr);
         if (category == LOG_TRACING)
             DBGLOG("[%s] %s", prefix, text);
         else
@@ -622,6 +650,7 @@ public:
     }
     virtual void CTXLOGaeva(IException *E, const char *file, unsigned line, const char *prefix, const char *format, va_list args) const  __attribute__((format(printf,6,0)))
     {
+        LogContextScope ls(nullptr);
         StringBuffer text;
         text.append("ERROR");
         if (E)
@@ -634,7 +663,7 @@ public:
         {
             text.append(": ").valist_appendf(format, args);
         }
-        LOG(MCoperatorProgress, unknownJob, "[%s] %s", prefix, text.str());
+        LOG(MCoperatorProgress, "[%s] %s", prefix, text.str());
         if (intercept)
         {
             CriticalBlock b(crit);
@@ -658,9 +687,9 @@ public:
         blind = _blind;
     }
 
-    void setTraceLevel(unsigned _traceLevel)
+    void setTraceLevel(unsigned _level)
     {
-        ctxTraceLevel = _traceLevel;
+        ctxTraceLevel = _level;
     }
 
     StringBuffer &getStats(StringBuffer &s) const
@@ -686,10 +715,22 @@ public:
         stats.addStatisticAtomic(kind, value);
     }
 
+    virtual void setStatistic(StatisticKind kind, unsigned __int64 value) const
+    {
+        stats.setStatistic(kind, value);
+    }
+
     virtual void mergeStats(const CRuntimeStatisticCollection &from) const
     {
-        CriticalBlock block(statsCrit);
-        stats.merge(from);
+        if (from.isThreadSafeMergeSource())
+        {
+            stats.merge(from);
+        }
+        else
+        {
+            CriticalBlock block(statsCrit);
+            stats.merge(from);
+        }
     }
     virtual void gatherStats(CRuntimeStatisticCollection & merged) const override
     {
@@ -704,42 +745,51 @@ public:
     {
         stats.reset();
     }
-    virtual void setGlobalId(const char *id, SocketEndpoint &ep, unsigned pid) override
+    virtual ISpan * queryActiveSpan() const override
     {
-        globalId.set(id);
-        appendGloballyUniqueId(localId.clear());
+        return activeSpan;
     }
-    virtual void setCallerId(const char *id) override
+    virtual void setActiveSpan(ISpan * span) override
     {
-        callerId.set(id);
+        activeSpan.set(span);
     }
-    virtual const char *queryGlobalId() const
+    virtual IProperties * getClientHeaders() const override
     {
-        return globalId.get();
+        return ::getClientHeaders(activeSpan);
+    }
+    virtual IProperties * getSpanContext() const override
+    {
+        return ::getSpanContext(activeSpan);
+    }
+    virtual void setSpanAttribute(const char *name, const char *value) const override
+    {
+        activeSpan->setSpanAttribute(name, value);
+    }
+    virtual void setSpanAttribute(const char *name, __uint64 value) const override
+    {
+        activeSpan->setSpanAttribute(name, value);
+    }
+    virtual const char *queryGlobalId() const override
+    {
+        return activeSpan->queryGlobalId();
     }
     virtual const char *queryCallerId() const override
     {
-        return callerId.get();
+        return activeSpan->queryCallerId();
     }
-    virtual const char *queryLocalId() const
+    virtual const char *queryLocalId() const override
     {
-        return localId.str();
+        return activeSpan->queryLocalId();
     }
-    virtual void setHttpIdHeaders(const char *global, const char *caller)
+    virtual const CRuntimeStatisticCollection & queryStats() const override
     {
-        if (global && *global)
-            globalIdHeader.set(global);
-        if (caller && *caller)
-            callerIdHeader.set(caller);
+        return stats;
     }
-    virtual const char *queryGlobalIdHttpHeader() const
+    virtual void recordStatistics(IStatisticGatherer &progress) const override
     {
-        return globalIdHeader.str();
+        stats.recordStatistics(progress, false);
     }
-    virtual const char *queryCallerIdHttpHeader() const
-    {
-        return callerIdHeader.str();
-    }
+    void exportStatsToSpan(bool failed, stat_type elapsedNs, unsigned memused, unsigned agentsDuplicates, unsigned agentsResends);
 };
 
 class StringContextLogger : public ContextLogger

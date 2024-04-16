@@ -311,12 +311,20 @@ function switchInputForm()
                      </span>
               </td>
             </tr>
-            <xsl:if test="$includeRoxieOptions=1">
+            <xsl:if test="$includeRoxieOptions=1 or $includeRoxieOptions=2">
             <tr>
                <td class='input' align='left'>
                   <span>
                      <hr/>
                      <input type='checkbox' name='@log'/> Capture Log Info.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Trace Level: <input type='text' name='@traceLevel' size='10'/>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<input type='checkbox' name='.noTimeout' value='1'/> No Timeout<br/>
+                  </span>
+               </td>
+            </tr>
+            <tr>
+               <td class='input' align='left'>
+                  <span>
+                     <hr/>
+                     <input type='checkbox' name='@statsToWorkunit'/> Save stats to workunit.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<input type='checkbox' name='@summaryStats'/> Get summary stats.<br/>
                   </span>
                </td>
             </tr>
@@ -329,6 +337,16 @@ function switchInputForm()
                   <xsl:if test="$includeRoxieOptions=1">
                     <select id="job_type">
                       <option value="QUERY">Call Query</option>
+                      <option value="WORKUNIT">Create Workunit</option>
+                    </select>&nbsp;
+                  </xsl:if>
+                  <xsl:if test="$includeRoxieOptions=2">
+                    <select id="job_type">
+                      <option value="QUERY">Call Query</option>
+                    </select>&nbsp;
+                  </xsl:if>
+                  <xsl:if test="$includeRoxieOptions=3">
+                    <select id="job_type">
                       <option value="WORKUNIT">Create Workunit</option>
                     </select>&nbsp;
                   </xsl:if>

@@ -29,7 +29,6 @@ FOREACH( iFILES
     ${CMAKE_CURRENT_SOURCE_DIR}/soap_page.xsl
     ${CMAKE_CURRENT_SOURCE_DIR}/sso_create_session.xslt
     ${CMAKE_CURRENT_SOURCE_DIR}/ui_overrides.xslt
-    ${CMAKE_CURRENT_SOURCE_DIR}/yuitree.xsl
     ${CMAKE_CURRENT_SOURCE_DIR}/xmlformatter.xsl
     ${CMAKE_CURRENT_SOURCE_DIR}/wsecl3_form.xsl
     ${CMAKE_CURRENT_SOURCE_DIR}/wsecl3_boxform.xsl
@@ -42,7 +41,9 @@ FOREACH( iFILES
     ${CMAKE_CURRENT_SOURCE_DIR}/passwordupdate.xsl
     ${CMAKE_CURRENT_SOURCE_DIR}/esdl2ecl.xslt
     ${CMAKE_CURRENT_SOURCE_DIR}/esdl2monitor.xslt
+    ${CMAKE_CURRENT_SOURCE_DIR}/esdl2monitor_cassandra.xslt
     ${CMAKE_CURRENT_SOURCE_DIR}/esxdl2xsd.xslt
+    ${CMAKE_CURRENT_SOURCE_DIR}/esp_service_xml2xsd.xslt
     ${CMAKE_CURRENT_SOURCE_DIR}/esdl2java_srvbase.xslt
     ${CMAKE_CURRENT_SOURCE_DIR}/esdl2java_srvdummy.xslt
     ${CMAKE_CURRENT_SOURCE_DIR}/esdl2cpp_srvbasehpp.xslt

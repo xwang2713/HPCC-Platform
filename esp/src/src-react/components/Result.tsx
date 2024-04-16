@@ -3,11 +3,12 @@ import * as ReactDOM from "react-dom";
 import { Checkbox, CommandBar, ContextualMenuItemType, DefaultButton, Dialog, DialogFooter, DialogType, ICommandBarItemProps, PrimaryButton, SpinButton, Stack } from "@fluentui/react";
 import { useConst } from "@fluentui/react-hooks";
 import { Result as CommsResult, XSDXMLNode } from "@hpcc-js/comms";
+import { scopedLogger } from "@hpcc-js/util";
 import { WUResult } from "@hpcc-js/eclwatch";
 import nlsHPCC from "src/nlsHPCC";
 import { ESPBase } from "src/ESPBase";
 import { csvEncode } from "src/Utility";
-import { useFavorite } from "../hooks/favorite";
+import { useWorkunit, useMyAccount, useConfirm } from "../hooks/index";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { AutosizeHpccJSComponent } from "../layouts/HpccJSAdapter";
 import { pushParams } from "../util/history";
@@ -16,6 +17,8 @@ import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
 
 import "src-react-css/components/DojoGrid.css";
+
+const logger = scopedLogger("src-react/components/Result.tsx");
 
 function eclTypeTPL(type: string, isSet: boolean) {
     const prefix = isSet ? "SET OF " : "";
@@ -193,11 +196,22 @@ ${copyCSVRowsTPL(rows)} \
     }
 }
 
-function doDownload(type: string, wuid: string, sequence?: number, logicalName?: string) {
+interface doDownloadOpts {
+    type: string;
+    wuid?: string;
+    resultName?: string;
+    sequence?: number;
+    logicalName?: string;
+}
+
+function doDownload(opts: doDownloadOpts) {
     const base = new ESPBase();
-    if (sequence !== undefined) {
+    const { type, wuid, resultName, sequence, logicalName } = { ...opts };
+    if (wuid && resultName) {
+        window.open(base.getBaseURL() + "/WUResultBin?Format=" + type + "&Wuid=" + wuid + "&ResultName=" + resultName, "_blank");
+    } else if (wuid && sequence !== undefined) {
         window.open(base.getBaseURL() + "/WUResultBin?Format=" + type + "&Wuid=" + wuid + "&Sequence=" + sequence, "_blank");
-    } else if (logicalName !== undefined) {
+    } else if (logicalName) {
         window.open(base.getBaseURL() + "/WUResultBin?Format=" + type + "&LogicalName=" + logicalName, "_blank");
     }
 }
@@ -206,6 +220,7 @@ interface ResultProps {
     wuid?: string;
     resultName?: string;
     logicalFile?: string;
+    cluster?: string;
     filter?: { [key: string]: any };
 }
 
@@ -215,27 +230,34 @@ export const Result: React.FunctionComponent<ResultProps> = ({
     wuid,
     resultName,
     logicalFile,
+    cluster,
     filter = emptyFilter
 }) => {
 
-    const resultTable: ResultWidget = useConst(new ResultWidget()
+    const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
+    const [renderHTML, setRenderHTML] = React.useState(false);
+
+    const resultTable: ResultWidget = useConst(() => new ResultWidget()
         .baseUrl("")
         .wuid(wuid)
         .resultName(resultName)
-        .logicalFile(resultName)
+        .nodeGroup(cluster)
+        .logicalFile(logicalFile)
         .pagination(true)
         .pageSize(50) as ResultWidget
     );
 
     resultTable
         .filter(filter)
+        .renderHtml(renderHTML)
         .lazyRender()
         ;
 
+    const { currentUser } = useMyAccount();
+    const [wu] = useWorkunit(wuid);
     const [result] = React.useState<CommsResult>(resultTable.calcResult());
     const [FilterFields, setFilterFields] = React.useState<Fields>({});
     const [showFilter, setShowFilter] = React.useState(false);
-    const [isFavorite, addFavorite, removeFavorite] = useFavorite(window.location.hash);
 
     React.useEffect(() => {
         result?.fetchXMLSchema().then(() => {
@@ -248,11 +270,36 @@ export const Result: React.FunctionComponent<ResultProps> = ({
                 };
             });
             setFilterFields(filterFields);
-        });
+        }).catch(err => logger.error(err));
     }, [result]);
 
+    //  Filter  ---
+    const [filterFields, hasHtml] = React.useMemo(() => {
+        const filterFields: Fields = {};
+        let hasHtml = false;
+        for (const fieldID in FilterFields) {
+            filterFields[fieldID] = { ...FilterFields[fieldID], value: filter[fieldID] };
+            if (fieldID.indexOf("__html") >= 0) {
+                hasHtml = true;
+            }
+        }
+        return [filterFields, hasHtml];
+    }, [FilterFields, filter]);
+
+    const securityMessageHTML = React.useMemo(() => nlsHPCC.SecurityMessageHTML.split("{__placeholder__}").join(wu?.Owner ? wu?.Owner : nlsHPCC.Unknown).split("\n"), [wu?.Owner]);
+    const [ViewHTMLConfirm, showViewHTMLConfirm] = useConfirm({
+        title: nlsHPCC.SecurityWarning,
+        message: securityMessageHTML[0],
+        items: securityMessageHTML.slice(1),
+        onSubmit: React.useCallback(() => {
+            setRenderHTML(true);
+            showViewHTMLConfirm(false);
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [])
+    });
+
     //  Command Bar  ---
-    const buttons: ICommandBarItemProps[] = [
+    const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
             onClick: () => {
@@ -262,18 +309,27 @@ export const Result: React.FunctionComponent<ResultProps> = ({
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
-            key: "filter", text: nlsHPCC.Filter, iconProps: { iconName: "Filter" },
+            key: "filter", text: nlsHPCC.Filter, iconProps: { iconName: hasFilter ? "FilterSolid" : "Filter" },
             onClick: () => {
                 setShowFilter(true);
             }
         },
-    ];
-
-    //  Filter  ---
-    const filterFields: Fields = {};
-    for (const fieldID in FilterFields) {
-        filterFields[fieldID] = { ...FilterFields[fieldID], value: filter[fieldID] };
-    }
+        { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+        {
+            key: "html", text: nlsHPCC.HTML, iconProps: { iconName: "FileHTML" }, canCheck: true, checked: renderHTML, disabled: !hasHtml,
+            onClick: (ev, item) => {
+                if (!renderHTML) {
+                    if (!currentUser?.username || (currentUser?.username !== wu?.Owner)) {
+                        showViewHTMLConfirm(true);
+                    } else {
+                        setRenderHTML(true);
+                    }
+                } else {
+                    setRenderHTML(false);
+                }
+            }
+        }
+    ], [currentUser?.username, hasFilter, hasHtml, renderHTML, resultTable, showViewHTMLConfirm, wu?.Owner]);
 
     const rightButtons: ICommandBarItemProps[] = [
         {
@@ -289,32 +345,23 @@ export const Result: React.FunctionComponent<ResultProps> = ({
             key: "download", text: nlsHPCC.DownloadToCSV, iconOnly: true, iconProps: { iconName: "Download" },
             subMenuProps: {
                 items: [
-                    { key: "zip", text: nlsHPCC.Zip, onClick: () => doDownload("zip", wuid, result.Sequence) },
-                    { key: "gzip", text: nlsHPCC.GZip, onClick: () => doDownload("gzip", wuid, result.Sequence) },
-                    { key: "xls", text: nlsHPCC.XLS, onClick: () => doDownload("xls", wuid, result.Sequence) },
-                    { key: "csv", text: nlsHPCC.CSV, onClick: () => doDownload("csv", wuid, result.Sequence) },
+                    { key: "zip", text: nlsHPCC.Zip, onClick: () => doDownload({ type: "zip", wuid, resultName: result.ResultName, sequence: result.Sequence, logicalName: result.LogicalFileName }) },
+                    { key: "gzip", text: nlsHPCC.GZip, onClick: () => doDownload({ type: "gzip", wuid, resultName: result.ResultName, sequence: result.Sequence, logicalName: result.LogicalFileName }) },
+                    { key: "json", text: nlsHPCC.JSON, onClick: () => doDownload({ type: "json", wuid, resultName: result.ResultName, sequence: result.Sequence, logicalName: result.LogicalFileName }) },
+                    { key: "xls", text: nlsHPCC.XLS, title: nlsHPCC.DownloadToCSVNonFlatWarning, onClick: () => doDownload({ type: "xls", wuid, resultName: result.ResultName, sequence: result.Sequence, logicalName: result.LogicalFileName }) },
+                    { key: "csv", text: nlsHPCC.CSV, title: nlsHPCC.DownloadToCSVNonFlatWarning, onClick: () => doDownload({ type: "csv", wuid, resultName: result.ResultName, sequence: result.Sequence, logicalName: result.LogicalFileName }) },
                 ]
             }
-        },
-        {
-            key: "star", iconProps: { iconName: isFavorite ? "FavoriteStarFill" : "FavoriteStar" },
-            onClick: () => {
-                if (isFavorite) {
-                    removeFavorite();
-                } else {
-                    addFavorite();
-                }
-            }
-        },
-
+        }
     ];
 
     return <HolyGrail
-        header={<CommandBar items={buttons} overflowButtonProps={{}} farItems={rightButtons} />}
+        header={<CommandBar items={buttons} farItems={rightButtons} />}
         main={
             <>
                 <AutosizeHpccJSComponent widget={resultTable} />
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
+                <ViewHTMLConfirm />
             </>
         }
     />;

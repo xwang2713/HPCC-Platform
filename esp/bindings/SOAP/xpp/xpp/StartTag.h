@@ -39,11 +39,26 @@ namespace xpp {
   public:
     StartTag() { init(); }
 
+    StartTag(const StartTag& src) {
+      *this = src;
+    }
+
     ~StartTag() {
       if(attArr != NULL) {
         delete [] attArr;
       }
       attArr = NULL;
+    }
+
+    StartTag& operator = (const StartTag& src) {
+      uri = src.uri;
+      localName = src.localName;
+      qName = src.qName;
+      attEnd = attSize = src.attEnd;
+      attArr = new Attribute[attEnd];
+      for (int idx = 0; idx < attEnd; idx++)
+        attArr[idx] = src.attArr[idx];
+      return *this;
     }
 
     void clear () { 
@@ -206,7 +221,7 @@ namespace xpp {
                
   protected:
     
-    friend ostream& operator<<(ostream& output, 
+    friend std::ostream& operator<<(std::ostream& output,
       const StartTag& startTag);
           
 
@@ -267,11 +282,11 @@ namespace xpp {
     Attribute* attArr;
   };
 
-inline ostream& operator<<(ostream& output, 
+inline std::ostream& operator<<(std::ostream& output,
   const StartTag& startTag) 
 {
   const SXT_STRING s = startTag.toString();
-  output << s << endl;
+  output << s << std::endl;
   return output;
 }
 

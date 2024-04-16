@@ -323,6 +323,11 @@ public:
         heap->releaseAllRows();
     }
 
+    virtual void emptyCache() override
+    {
+        heap->emptyCache();
+    }
+
 protected:
     Owned<roxiemem::IFixedRowHeap> heap;
 };
@@ -386,6 +391,11 @@ public:
     {
         //It is not legal to call releaseAllRows on a variable size allocator - they are not allocated in a single heap
         throwUnexpected();
+    }
+
+    virtual void emptyCache() override
+    {
+        //Variable length rows do not support blocked/caching
     }
 
 protected:
@@ -478,9 +488,12 @@ public:
             CAllocatorCacheItem *container = _lookup(meta, activityId, flags);
             if (container)
             {
-                if (0 == (roxiemem::RHFunique & flags))
+                if (0 == ((roxiemem::RHFunique|roxiemem::RHFblocked) & flags))
                     return LINK(&container->queryElement());
-                // if in cache but unique, reuse allocatorId
+                // If in cache but unique, reuse allocatorId, but create a unique allocator (and heap)
+                // If blocked the allocator must not be commoned up!  (The underlying heap will be within roxiemem.)
+                // This is very unusual, but can happen if a library is used more than once within the same query
+                // since you will have multiple activity instances with the same activityId.
                 SpinUnblock b(allAllocatorsLock);
                 return callback->createAllocator(this, meta, activityId, container->queryAllocatorId(), flags);
             }
@@ -730,7 +743,7 @@ protected:
 
     void testSetup()
     {
-        setTotalMemoryLimit(false, true, false, 40*HEAP_ALIGNMENT_SIZE, 0, NULL, NULL);
+        setTotalMemoryLimit(false, true, false, false, 40*HEAP_ALIGNMENT_SIZE, 0, NULL, NULL);
     }
 
     void testCleanup()

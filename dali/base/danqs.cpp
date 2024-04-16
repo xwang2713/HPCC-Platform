@@ -15,7 +15,6 @@
     limitations under the License.
 ############################################################################## */
 
-#define da_decl DECL_EXPORT
 #include "platform.h"
 #include "jlib.hpp"
 #include "jsuperhash.hpp"
@@ -28,23 +27,17 @@
 #include "mputil.hpp"
 #include "daserver.hpp"
 #include "danqs.hpp"
+#include "jmetrics.hpp"
 
 #ifdef _MSC_VER
 #pragma warning (disable : 4355)
 #endif
 
-// # HELP nq_requests The total number of Dali NQ requests handled
-// # TYPE nq_requests counter
-// Probably requires this counter to be held in a __int64 scalar.
+static auto pNqRequestsCount = hpccMetrics::registerCounterMetric("dali.nq.requests.received", "The total number of Dali NQ requests received", SMeasureCount);
 
-// # HELP nq_active_requests Current number of active NQ requests being handled.
-// # TYPE nq_active_requests gauge
-// A unsigned scalar should suffice, i.e. never going to have that many active transactions
-
-
-enum MQueueRequestKind { 
+enum MQueueRequestKind {
     MQR_ADD_QUEUE,
-    MQR_GET_QUEUE, 
+    MQR_GET_QUEUE,
     MQR_PROBE,
     MQR_CANCEL_SUB,     // prior to cancel subscription
     MQR_COMMIT_TRANSACTION,
@@ -124,7 +117,7 @@ private:
 
 
 class CNamedQueueHandler: public CInterface
-{ 
+{
     // client side simple handler
 protected: friend class CNamedQueueSubscriptionProxy;
     SubscriptionId id;
@@ -142,12 +135,12 @@ public:
         transaction = _transaction;
     }
     bool get( MemoryBuffer &mbout)
-    { 
+    {
         // no timeout - 0 length q item returned equates with cancel
         bool osdummy = true; // serverside always one shot currently
         CMessageBuffer mb;
         mb.append((int)MQR_GET_QUEUE).append(id).append(name).append(priority).append(osdummy).append(transaction);
-        if (!queryCoven().sendRecv(mb,RANK_RANDOM,MPTAG_DALI_NAMED_QUEUE_REQUEST)) 
+        if (!queryCoven().sendRecv(mb,RANK_RANDOM,MPTAG_DALI_NAMED_QUEUE_REQUEST))
             mb.clear();
         mbout.swapWith(mb);
         return mbout.length()!=0;
@@ -160,7 +153,7 @@ public:
 };
 
 class CNamedQueueSubscriptionProxy: public Thread
-{   
+{
     // client side subscription handler
     CQueueChannel *owner;
     Linked<INamedQueueSubscription> subs;
@@ -169,12 +162,12 @@ class CNamedQueueSubscriptionProxy: public Thread
 
 public:
 
-    CNamedQueueSubscriptionProxy(CQueueChannel *_owner,INamedQueueSubscription *_subs,const char *_name, int _priority, bool _oneshot, SessionId _transaction) 
+    CNamedQueueSubscriptionProxy(CQueueChannel *_owner,INamedQueueSubscription *_subs,const char *_name, int _priority, bool _oneshot, SessionId _transaction)
         : handler(_name, _priority, _oneshot, _transaction), subs(_subs)
     {
         owner = _owner;
         finished = false;
-        start();
+        start(false);
     }
 
     ~CNamedQueueSubscriptionProxy();
@@ -193,7 +186,7 @@ public:
 
         }
         catch (IException *e)
-        {   
+        {
             // server error
             EXCLOG(e, "CNamedQueueSubscriptionProxy");
             e->Release();
@@ -235,7 +228,7 @@ class CQueueChannel: implements IQueueChannel, public CInterface
     Owned<CNamedQueueConnection> parent;
     SubscriptionId getsid;
     CheckedCriticalSection proxysect;
-    CIArrayOf<CNamedQueueSubscriptionProxy> proxies;
+    IArrayOf<CNamedQueueSubscriptionProxy> proxies;
 
 
 public:
@@ -299,7 +292,7 @@ public:
                 return 0;
             }
         } timeoutthread(this,timeout);
-        timeoutthread.start();
+        timeoutthread.start(false);
         bool ret = handler.get(buf);
         timeoutthread.sem.signal();
         timeoutthread.join();
@@ -337,13 +330,13 @@ public:
             buf->swapWith(mb);
             const byte *base = (const byte *)buf->toByteArray();
             size32_t *sizes = (size32_t *)(base + sizeof(size32_t));
-            for (unsigned i=0;i<ret;i++) 
+            for (unsigned i=0;i<ret;i++)
                 ptrs->append((void *)(base+sizes[i]));
         }
         return ret;
     }
 
-    
+
     unsigned probe()
     {
         return doprobe(NULL,NULL);
@@ -362,7 +355,7 @@ public:
 
     void remove(CNamedQueueSubscriptionProxy *e)
     {
-        Linked<CNamedQueueSubscriptionProxy> l = e; 
+        Linked<CNamedQueueSubscriptionProxy> l = e;
         {
             CHECKEDCRITICALBLOCK(proxysect,60000);
             proxies.zap(*e);
@@ -378,7 +371,7 @@ public:
                 queryCoven().sendRecv(mb,RANK_RANDOM,MPTAG_DALI_NAMED_QUEUE_REQUEST);
             }
             catch (IException *e)
-            {   
+            {
                 // server error
                 EXCLOG(e, "cancelSubscription");
                 e->Release();
@@ -404,7 +397,7 @@ void CNamedQueueSubscriptionProxy::stop()
     if (!finished) {
         finished = true;
         CQueueChannel *o = owner;
-        owner = NULL;               
+        owner = NULL;
         o->cancelSubscription(handler.id);
         join();
     }
@@ -432,10 +425,10 @@ INamedQueueConnection *createNamedQueueConnection(SecurityToken tok)
 
 class CDaliNamedQueueServer: public IDaliServer, public Thread, implements IConnectionMonitor
 {  // Server side
-    
+
 
     class CNamedQueueSubscriptionStub: public CInterface
-    {   
+    {
         mptag_t replytag;
         SocketEndpoint client;
         SubscriptionId id;
@@ -451,7 +444,7 @@ class CDaliNamedQueueServer: public IDaliServer, public Thread, implements IConn
             mb.read(id).read(name).read(priority).read(oneshot).read(transactionId);
         }
 
-        ~CNamedQueueSubscriptionStub() 
+        ~CNamedQueueSubscriptionStub()
         {
             // abort? TBD
         }
@@ -460,15 +453,15 @@ class CDaliNamedQueueServer: public IDaliServer, public Thread, implements IConn
         int getPriority() { return priority; }
         const char * queryName() { return name.get(); }
         SocketEndpoint &queryClient() { return client; }
-        void notify(MemoryBuffer &buf) 
-        { 
+        void notify(MemoryBuffer &buf)
+        {
             CMessageBuffer mb;
             mb.init(client,MPTAG_DALI_NAMED_QUEUE_REQUEST,replytag);
             mb.swapWith(buf);
             queryCoven().reply(mb);     // may fail
         }
-        void cancel() 
-        { 
+        void cancel()
+        {
             // just send back zero length
             MemoryBuffer mb;
             notify(mb);
@@ -483,7 +476,7 @@ class CDaliNamedQueueServer: public IDaliServer, public Thread, implements IConn
     CheckedCriticalSection subsect;
     int fn = 0;
 public:
-    IMPLEMENT_IINTERFACE;
+    IMPLEMENT_IINTERFACE_USING(Thread);
 
     CDaliNamedQueueServer()
         : Thread("CDaliNamedQueueServer")
@@ -500,13 +493,13 @@ public:
 
     void start()
     {
-        Thread::start();
+        Thread::start(false);
     }
 
     void ready()
     {
     }
-    
+
     void suspend()
     {
     }
@@ -529,18 +522,10 @@ public:
         stopped = false;
         while (!stopped) {
             try {
-                // 1) Need to increment nq_requests here
-                // NB: it will never be decremented. This is total for life of this instance.
-
-                // 2) Need to increment nq_active_requests here
-                // and ensure it's scoped, such that it is guaranteed
-                // to decrement when processMessage() is complete.
-                // NB: NQ activeRequests are always synchronously handled by processMessage()
-
                 mb.clear();
                 if (coven.recv(mb,RANK_ALL,MPTAG_DALI_NAMED_QUEUE_REQUEST,NULL)) {
                     processMessage(mb); // synchronous to ensure queue operations handled in correct order
-                }   
+                }
                 else
                     stopped = true;
             }
@@ -556,13 +541,15 @@ public:
 
     void processMessage(CMessageBuffer &mb)
     {
+        pNqRequestsCount->fastInc(1);
+
         // single threaded by caller
         ICoven &coven=queryCoven();
         mb.read(fn);
         unsigned ret = 0;
         try {
             switch (fn) {
-            case MQR_ADD_QUEUE:                     
+            case MQR_ADD_QUEUE:
                 {
                     bool add = true;
                     StringAttr name;
@@ -578,42 +565,42 @@ public:
                     ret = 0;
                 }
                 break;
-            case MQR_GET_QUEUE:                         
-                {   
+            case MQR_GET_QUEUE:
+                {
                     add(mb);
                     return; // not reply wanted
                 }
                 break;
-            case MQR_PROBE:                     
+            case MQR_PROBE:
                 {
-                    CHECKEDCRITICALBLOCK(subsect,60000);                    
+                    CHECKEDCRITICALBLOCK(subsect,60000);
                     StringAttr name;
                     mb.read(name);
                     size32_t maxsz=0;
-                    if (mb.length()>=mb.getPos()+sizeof(size32_t)) 
+                    if (mb.length()>=mb.getPos()+sizeof(size32_t))
                         mb.read(maxsz);
-                    probeSDSget(name,mb.clear(),maxsz);     
-                    coven.reply(mb); 
+                    probeSDSget(name,mb.clear(),maxsz);
+                    coven.reply(mb);
                     return;
                 }
                 break;
-            case MQR_CANCEL_SUB:                        
+            case MQR_CANCEL_SUB:
                 {
-                    CHECKEDCRITICALBLOCK(subsect,60000);                    
+                    CHECKEDCRITICALBLOCK(subsect,60000);
                     SubscriptionId id;
                     mb.read(id);
                     cancel(id);
                     ret = 0;
                 }
                 break;
-            case MQR_COMMIT_TRANSACTION:               
+            case MQR_COMMIT_TRANSACTION:
                 {
                     DALI_UID transactionId;
                     mb.read(transactionId);
                     ret = stopTransaction(transactionId, false);
                 }
                 break;
-            case MQR_ROLLBACK_TRANSACTION:               
+            case MQR_ROLLBACK_TRANSACTION:
                 {
                     DALI_UID transactionId;
                     mb.read(transactionId);
@@ -631,19 +618,19 @@ public:
             mb.clear();
             if (fn==MQR_PROBE)
                 mb.append((unsigned)0).append(s.str()); // error will just return nothing from probe
-            else if (fn!=MQR_GET_QUEUE) // error will just cancel get_queue 
+            else if (fn!=MQR_GET_QUEUE) // error will just cancel get_queue
                 mb.append(e->errorCode()).append(s.str());
             e->Release();
         }
         fn = 0;
-        coven.reply(mb); 
+        coven.reply(mb);
 
-    }   
+    }
 
     bool checkNotifySubscriptions(char const * name, int priority, size32_t qblen, byte const * data)
     {
         CIArrayOf<CNamedQueueSubscriptionStub> toremove;
-        CHECKEDCRITICALBLOCK(subsect,60000);                    
+        CHECKEDCRITICALBLOCK(subsect,60000);
         MemoryBuffer qb;
         for(unsigned i=0; i<stubs.ordinality(); i++)
         {
@@ -659,7 +646,7 @@ public:
                 catch (IException *e)
                 {
                     // should just be aborted exceptions, but remove subscription whatever the error.
-                    LOG(MCdebugInfo, unknownJob, e, "Named Queue Server - MQR_ADD_QUEUE notify");                   
+                    LOG(MCdebugInfo, e, "Named Queue Server - MQR_ADD_QUEUE notify");
                     e->Release();
                     stubs.remove(i,true);
                     toremove.append(stub);
@@ -670,12 +657,12 @@ public:
                     stubs.remove(i,true);
                     toremove.append(stub);
                     i--;
-                }   
-                toremove.kill();    
+                }
+                toremove.kill();
                 return true;
             }
         }
-        toremove.kill();    
+        toremove.kill();
         return false;
     }
 
@@ -705,7 +692,7 @@ public:
                 return;
             }
         }
-        CHECKEDCRITICALBLOCK(subsect,60000);                    
+        CHECKEDCRITICALBLOCK(subsect,60000);
         ForEachItemIn(i,stubs) {
             CNamedQueueSubscriptionStub &stub = stubs.item(i);
             if (stub.getPriority()<nstub->getPriority())
@@ -716,18 +703,18 @@ public:
 
     void remove(SubscriptionId id)
     {
-        CHECKEDCRITICALBLOCK(subsect,60000);                    
+        CHECKEDCRITICALBLOCK(subsect,60000);
         unsigned i=find(id);
-        if (i!=NotFound) 
+        if (i!=NotFound)
             stubs.remove(i);
     }
 
     void cancel(SubscriptionId id)
     {
-        CHECKEDCRITICALBLOCK(subsect,60000);                    
+        CHECKEDCRITICALBLOCK(subsect,60000);
         unsigned i=find(id);
         if (i!=NotFound)  {
-            stubs.item(i).cancel(); 
+            stubs.item(i).cancel();
             stubs.remove(i);
         }
     }
@@ -736,7 +723,7 @@ public:
     void onClose(SocketEndpoint &ep)        // MP connection monitor
     {
         // mark subs closed
-        CHECKEDCRITICALBLOCK(subsect,60000);                    
+        CHECKEDCRITICALBLOCK(subsect,60000);
         ForEachItemInRev(i,stubs) {
             CNamedQueueSubscriptionStub &stub = stubs.item(i);
             if (ep.equals(stub.queryClient())) {
@@ -751,7 +738,7 @@ public:
         // single threaded by caller
         StringBuffer path;
         path.appendf("/Queues/Queue[@name=\"%s\"]",name);
-        IRemoteConnection *conn = querySDS().connect(path.str(),0,0,(unsigned)-1); 
+        IRemoteConnection *conn = querySDS().connect(path.str(),0,0,(unsigned)-1);
         if (!conn&&create) {
             path.clear();
             conn = querySDS().connect("/Queues/Queue",0,RTM_CREATE_ADD,(unsigned)-1);
@@ -812,7 +799,7 @@ public:
             Owned<IPropertyTree> topitem;
             {
                 Owned<IPropertyTreeIterator> iter = root->getElements("Item");
-                ForEach(*iter) { 
+                ForEach(*iter) {
                     i++;
                     IPropertyTree &item = iter->query();
                     int p = item.getPropInt("@priority");
@@ -865,7 +852,7 @@ public:
                 StringBuffer pname;
                 Owned<IPropertyTreeIterator> iter = conn->queryRoot()->getElements("Item");
                 unsigned i = 0;
-                ForEach(*iter) { 
+                ForEach(*iter) {
                     IPropertyTree &item = iter->query();
                     size32_t p = mb.length();
                     mb.writeDirect(i*sizeof(size32_t)+sizeof(unsigned),sizeof(size32_t),&p);
@@ -888,10 +875,10 @@ public:
         root->removeProp(pname.appendf("Item[%d]",idx).str());
         root->setPropInt("@count", root->getPropInt("@count") - 1);
         if (!root->hasProp("Item[1]")) {
-            conn->close(true); 
+            conn->close(true);
         }
     }
-                
+
     unsigned countSDS()
     {
         // single threaded by caller
@@ -937,7 +924,7 @@ public:
     bool stopTransaction(DALI_UID transactionId, bool rollback)
     {
         {
-            CHECKEDCRITICALBLOCK(subsect,60000);                    
+            CHECKEDCRITICALBLOCK(subsect,60000);
             for(unsigned i=0; i<stubs.ordinality(); i++)
                 if(stubs.item(i).queryTransactionId() == transactionId) return false;
         }
@@ -1010,5 +997,3 @@ IDaliServer *createDaliNamedQueueServer()
     daliNamedQueueServer = new CDaliNamedQueueServer();
     return daliNamedQueueServer;
 }
-
-

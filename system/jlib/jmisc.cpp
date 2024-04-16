@@ -68,7 +68,6 @@ void _rev(size32_t len, void * _ptr)
 Mutex printMutex;
 FILE *logFile;
 FILE *stdlog = stderr;
-HiresTimer logTimer;
 class CStdLogIntercept: public ILogIntercept
 {
     bool nl;
@@ -252,7 +251,7 @@ jlib_decl void PrintMemoryStatusLog()
 #ifdef _WIN32
     MEMORYSTATUS mS;
     GlobalMemoryStatus(&mS);
-    LOG(MCdebugInfo, unknownJob, "Available Physical Memory = %dK", (unsigned)(mS.dwAvailPhys/1024));
+    LOG(MCdebugInfo, "Available Physical Memory = %dK", (unsigned)(mS.dwAvailPhys/1024));
 #ifdef FRAGMENTATION_CHECK
     // see if fragmented
     size32_t sz = MAX_TRY_SIZE;
@@ -268,7 +267,7 @@ jlib_decl void PrintMemoryStatusLog()
     }
     sz *= 2;
     if ((sz<MAX_TRY_SIZE)&&(sz<mS.dwAvailPhys/4)) {
-        LOG(MCdebugInfo, unknownJob, "WARNING: Could not allocate block size %d", sz);
+        LOG(MCdebugInfo, "WARNING: Could not allocate block size %d", sz);
        _HEAPINFO hinfo;
        int heapstatus;
        hinfo._pentry = NULL;
@@ -281,8 +280,8 @@ jlib_decl void PrintMemoryStatusLog()
                 fragments++;
            }
        }
-       LOG(MCdebugInfo, unknownJob, "Largest unused fragment = %d", max);
-       LOG(MCdebugInfo, unknownJob, "Number of fragments = %d", fragments);
+       LOG(MCdebugInfo, "Largest unused fragment = %d", max);
+       LOG(MCdebugInfo, "Number of fragments = %d", fragments);
     }
 #endif
 #endif
@@ -646,39 +645,20 @@ void close_program(HANDLE handle)
 
 #endif
 
-#ifndef _WIN32
-bool CopyFile(const char *file, const char *newfile, bool fail)
+bool wait_program_timeout(HANDLE handle,DWORD &runcode,unsigned timeoutMs)
 {
-    struct stat s;
-    if ((fail) && (0 == stat((char *)newfile, &s))) return false;
-    FILE *in=fopen(file,"rb"), *out=fopen(newfile,"wb");
-    try
+    CTimeMon timer(timeoutMs);
+    while (true)
     {
-        if (!in)
-            throw MakeStringException(-1, "failed to open %s for copy",file);
-        if (!out)
-            throw MakeStringException(-1, "failed to create %s",newfile);
-        char b[1024];
-        while (true)
-        {
-            int c=fread(b,1,sizeof(b),in);
-            if (!c) break;
-            if (!fwrite(b,c,1,out)) throw MakeStringException(-1, "failed to copy file %s to %s",file,newfile);
-        }
-        fclose(in);
-        fclose(out);
-        stat((char *)file, &s);
-        chmod(newfile, s.st_mode);
-    } catch (...)
-    {
-        if (in)  fclose(in);
-        if (out) fclose(out);
-        return false;
+        if (wait_program(handle,runcode,false))
+            break;
+        unsigned remaining;
+        if (timer.timedout(&remaining))
+            return false;
+        MilliSleep(remaining > 1000 ? 1000 : remaining);
     }
-
     return true;
 }
-#endif
 
 //========================================================================================================================
 
@@ -1020,4 +1000,34 @@ jlib_decl char **getSystemEnv()
 #else
     return environ;
 #endif
+}
+
+
+// checks if 'name' is an internal environment variable (prefixed with 'HPCC_')
+// if !matches : returns null
+// if matches  : returns allocated copy of configured value or defaultValue if not set.
+// NB: Only HPCC_DEPLOYMENT currently supported, but could be extended.
+char *getHPCCEnvVal(const char *name, const char *defaultValue)
+{
+    constexpr const char *builtinPrefix = "HPCC_";
+    if (!startsWith(name, builtinPrefix))
+        return nullptr;
+    const char *hpccEnvVar = name+strlen(builtinPrefix);
+    StringBuffer val;
+    bool valSet = false;
+    if (streq(hpccEnvVar, "DEPLOYMENT"))
+    {
+        if (isContainerized())
+            valSet = getGlobalConfigSP()->getProp("@deploymentName", val);
+        else
+            valSet = queryEnvironmentConf().getProp("deploymentName", val);
+    }
+    // else - just "DEPLOYMENT" for now.
+
+    if (valSet)
+        return val.detach();
+    else if (defaultValue)
+        return strdup(defaultValue);
+    else
+        return strdup("");
 }

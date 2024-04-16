@@ -20,6 +20,7 @@
 #include "thbufdef.hpp"
 #include "mptag.hpp"
 #include "dadfs.hpp"
+#include "jstats.h"
 #include "thexception.hpp"
 
 #include "../hashdistrib/thhashdistrib.ipp"
@@ -30,12 +31,14 @@ class CFetchActivityMaster : public CMasterActivity
     Owned<CSlavePartMapping> mapping;
     MemoryBuffer offsetMapMb;
     SocketEndpoint *endpoints;
+    unsigned fileStatsTableStart = NotFound;
 
 protected:
+    Owned<IDistributedFile> fetchFile;
     IHThorFetchArg *helper;
 
 public:
-    CFetchActivityMaster(CMasterGraphElement *info) : CMasterActivity(info)
+    CFetchActivityMaster(CMasterGraphElement *info) : CMasterActivity(info, diskReadActivityStatistics)
     {
         endpoints = NULL;
         if (!container.queryLocalOrGrouped())
@@ -47,15 +50,15 @@ public:
     {
         if (endpoints) free(endpoints);
     }
-    virtual void init()
+    virtual void init() override
     {
         CMasterActivity::init();
         OwnedRoxieString fname(helper->getFileName());
-        Owned<IDistributedFile> fetchFile = queryThorFileManager().lookup(container.queryJob(), fname, false, 0 != (helper->getFetchFlags() & FFdatafileoptional), false, container.activityIsCodeSigned());
+        fetchFile.setown(lookupReadFile(fname, AccessMode::readRandom, false, false, 0 != (helper->getFetchFlags() & FFdatafileoptional), reInit, diskReadRemoteStatistics, &fileStatsTableStart));
         if (fetchFile)
         {
             if (isFileKey(fetchFile))
-                throw MakeActivityException(this, TE_FileTypeMismatch, "Attempting to read index as a flat file: %s", fname.get());
+                throw MakeActivityException(this, ENGINEERR_FILE_TYPE_MISMATCH, "Attempting to read index as a flat file: %s", fname.get());
             Owned<IFileDescriptor> fileDesc = getConfiguredFileDescriptor(*fetchFile);
             void *ekey;
             size32_t ekeylen;
@@ -73,12 +76,17 @@ public:
             }
             else if (encrypted)
                 throw MakeActivityException(this, 0, "File '%s' was published as encrypted but no encryption key provided", fetchFile->queryLogicalName());
-            mapping.setown(getFileSlaveMaps(fetchFile->queryLogicalName(), *fileDesc, container.queryJob().queryUserDescriptor(), container.queryJob().querySlaveGroup(), container.queryLocalOrGrouped(), false, NULL, fetchFile->querySuperFile()));
+            IDistributedSuperFile *super = fetchFile->querySuperFile();
+            mapping.setown(getFileSlaveMaps(fetchFile->queryLogicalName(), *fileDesc, container.queryJob().queryUserDescriptor(), container.queryJob().querySlaveGroup(), container.queryLocalOrGrouped(), false, NULL, super));
             mapping->serializeFileOffsetMap(offsetMapMb);
-            addReadFile(fetchFile);
         }
     }
-    virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave)
+    virtual void kill() override
+    {
+        CMasterActivity::kill();
+        fetchFile.clear();
+    }
+    virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave) override
     {
         if (mapping)
         {
@@ -92,6 +100,28 @@ public:
         }
         if (!container.queryLocalOrGrouped())
             dst.append((int)mpTag);
+        dst.append(fileStatsTableStart);
+    }
+    virtual void deserializeStats(unsigned node, MemoryBuffer &mb) override
+    {
+        CMasterActivity::deserializeStats(node, mb);
+        unsigned numFilesToRead;
+        mb.read(numFilesToRead);
+        assertex(numFilesToRead<=fileStats.size());
+        for (unsigned i=0; i<numFilesToRead; i++)
+            fileStats[i]->deserialize(node, mb);
+    }
+    virtual void getActivityStats(IStatisticGatherer & stats) override
+    {
+        CMasterActivity::getActivityStats(stats);
+        diskAccessCost = calcFileReadCostStats(false);
+        if (diskAccessCost)
+            stats.addStatistic(StCostFileAccess, diskAccessCost);
+    }
+    virtual void done() override
+    {
+        diskAccessCost = calcFileReadCostStats(true);
+        CMasterActivity::done();
     }
 };
 
@@ -102,7 +132,6 @@ public:
     virtual void serializeSlaveData(MemoryBuffer &dst, unsigned slave)
     {
         CFetchActivityMaster::serializeSlaveData(dst, slave);
-        IDistributedFile *fetchFile = queryReadFile(0);
         if (fetchFile)
             fetchFile->queryAttributes().serialize(dst);
     }

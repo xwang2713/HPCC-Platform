@@ -48,6 +48,8 @@ interface IRoxieAgentContext : extends IRoxieContextLogger
     virtual ICodeContext *queryCodeContext() = 0;
     virtual void checkAbort() = 0;
     virtual void notifyAbort(IException *E) = 0;
+    virtual void notifyException(IException *E) = 0; // Non aborting exception - to be rethrown later by throwPendingException()
+    virtual void throwPendingException() = 0;
     virtual IActivityGraph * queryChildGraph(unsigned id) = 0;
     virtual void noteChildGraph(unsigned id, IActivityGraph *childGraph) = 0;
     virtual roxiemem::IRowManager &queryRowManager() = 0;
@@ -55,7 +57,7 @@ interface IRoxieAgentContext : extends IRoxieContextLogger
     virtual void addAgentsReplyLen(unsigned len, unsigned duplicates, unsigned resends) = 0;
     virtual const char *queryAuthToken() = 0;
     virtual const IResolvedFile *resolveLFN(const char *filename, bool isOpt, bool isPrivilegedUser) = 0;
-    virtual IRoxieWriteHandler *createLFN(const char *filename, bool overwrite, bool extend, const StringArray &clusters, bool isPrivilegedUser) = 0;
+    virtual IRoxieWriteHandler *createWriteHandler(const char *filename, bool overwrite, bool extend, const StringArray &clusters, bool isPrivilegedUser) = 0;
     virtual void onFileCallback(const RoxiePacketHeader &header, const char *lfn, bool isOpt, bool isLocal, bool isPrivilegedUser) = 0;
     virtual IActivityGraph * getLibraryGraph(const LibraryCallFactoryExtra &extra, IRoxieServerActivity *parentActivity) = 0;
     virtual IProbeManager *queryProbeManager() const = 0;
@@ -69,7 +71,7 @@ interface IRoxieAgentContext : extends IRoxieContextLogger
     virtual IWorkUnitRowReader *getWorkunitRowReader(const char *wuid, const char * name, unsigned sequence, IXmlToRowTransformer * xmlTransformer, IEngineRowAllocator *rowAllocator, bool isGrouped) = 0;
     virtual IEngineRowAllocator * getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, roxiemem::RoxieHeapFlags flags) const = 0;
     virtual unsigned checkInterval() const = 0;
-
+    virtual void noteLibrary(IQueryFactory *library) = 0;
 };
 
 interface IRoxieServerContext : extends IInterface
@@ -79,7 +81,6 @@ interface IRoxieServerContext : extends IInterface
     virtual void appendResultDeserialized(const char *name, unsigned sequence, size32_t count, const byte **data, bool extend, IOutputMetaData *meta) = 0;
     virtual void appendResultRawContext(const char *name, unsigned sequence, int len, const void * data, int numRows, bool extend, bool saveInContext) = 0;
     virtual roxiemem::IRowManager &queryRowManager() = 0;
-
     virtual void process() = 0;
     virtual void done(bool failed) = 0;
     virtual void finalize(unsigned seqNo) = 0;
@@ -97,6 +98,8 @@ interface IRoxieServerContext : extends IInterface
     virtual IRoxieDaliHelper *checkDaliConnection() = 0;
     virtual const IProperties *queryXmlns(unsigned seqNo) = 0;
     virtual IHpccProtocolResponse *queryProtocol() = 0;
+    virtual const char *queryStatsWuid() const = 0;
+    virtual IRowAllocatorMetaActIdCache & queryAllocatorCache() = 0;
 };
 
 interface IDeserializedResultStore : public IInterface

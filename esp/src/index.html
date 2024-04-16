@@ -60,7 +60,8 @@
                                 document.cookie = ("ESPSessionState=false");
                         }
                     } else {
-                        alert('Authorization Request Error.');
+                        document.cookie = ("ESPSessionState=false");
+                        console.error('Authorization Request Error:  ' + this.status + ' ' + this.statusText);
                     }
                 }
                 xhttp.open('GET', '/esp/getauthtype', true);
@@ -71,7 +72,10 @@
 </head>
 
 <body class="flat">
+    <!-- overlay -->
     <div id="placeholder"></div>
+    <div id="loadingOverlay" class="loadingOverlay pageOverlay"></div>
+    <!-- application -->
     <script src="/esp/files/dist/index.eclwatch.js" charset="utf-8"></script>
 </body>
 

@@ -34,17 +34,21 @@ if(NOT TARGET lzma)
   add_subdirectory(${HPCC_SOURCE_DIR}/system/lzma ${CMAKE_BINARY_DIR}/system/lzma)
 endif(NOT TARGET lzma)
 
-if(NOT TARGET lz4)
-  add_subdirectory(${HPCC_SOURCE_DIR}/system/lz4_sm ${CMAKE_BINARY_DIR}/system/lz4_sm)
-endif(NOT TARGET lz4)
+find_package(lz4 CONFIG REQUIRED)
 
 if(NOT TARGET libbase58)
   add_subdirectory(${HPCC_SOURCE_DIR}/system/libbase58 ${CMAKE_BINARY_DIR}/system/libbase58)
 endif(NOT TARGET libbase58)
 
-if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG)
-  SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wno-switch -Wno-unused-parameter -Werror -Wno-error=delete-non-virtual-dtor")
-endif()
+find_package(yaml CONFIG REQUIRED)
+
+find_package(Protobuf REQUIRED)
+find_package(CURL CONFIG REQUIRED)
+find_package(gRPC CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(opentelemetry-cpp CONFIG REQUIRED)
+
+SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STRICT_CXX_FLAGS}")
 
 set (    SRCS
     ${SCM_GENERATED_INCLUDES}
@@ -54,6 +58,8 @@ set (    SRCS
          jbsocket.cpp
          jbuff.cpp
          jcomp.cpp
+         jconfig.cpp
+         jcontainerized.cpp
          jcrc.cpp
          jdebug.cpp
          jencrypt.cpp
@@ -87,14 +93,17 @@ set (    SRCS
          jsmartsock.cpp
          jsocket.cpp
          jsort.cpp
+         jsort2.cpp
          jstats.cpp
          jstream.cpp
          jstring.cpp
          jsuperhash.cpp
+         jtask.cpp
          jthread.cpp
          jtime.cpp
          junicode.cpp
          jutil.cpp
+         jtrace.cpp
          ${HPCC_SOURCE_DIR}/system/globalid/lnuid.cpp
          ${HPCC_SOURCE_DIR}/system/codesigner/codesigner.cpp
          ${HPCC_SOURCE_DIR}/system/codesigner/gpgcodesigner.cpp
@@ -111,6 +120,8 @@ set (    INCLUDES
         jbuff.hpp
         jcomp.hpp
         jcomp.ipp
+        jconfig.hpp
+        jcontainerized.hpp
         jcrc.hpp
         jdebug.hpp
         jelogtype.hpp
@@ -170,17 +181,22 @@ set (    INCLUDES
         jstream.ipp
         jstring.hpp
         jsuperhash.hpp
+        jtask.hpp
         jthread.hpp
         jtime.hpp
         jtime.ipp
         junicode.hpp
         jutil.hpp
+        jtrace.hpp
         ${HPCC_SOURCE_DIR}/system/httplib/httplib.h
+        ${HPCC_SOURCE_DIR}/system/security/shared/opensslcommon.hpp
         ${HPCC_SOURCE_DIR}/system/security/cryptohelper/cryptocommon.cpp
         ${HPCC_SOURCE_DIR}/system/security/cryptohelper/digisign.cpp
         ${HPCC_SOURCE_DIR}/system/security/cryptohelper/pke.cpp
         ${HPCC_SOURCE_DIR}/system/security/cryptohelper/ske.cpp
         )
+
+set_source_files_properties(jmd5.cpp jsort.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG)
     set_property (SOURCE jencrypt.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-strict-aliasing")
@@ -197,22 +213,22 @@ include_directories (
          ${HPCC_SOURCE_DIR}/system/win32
          ${HPCC_SOURCE_DIR}/system/include
          ${HPCC_SOURCE_DIR}/system/lzma
-         ${HPCC_SOURCE_DIR}/system/lz4_sm/lz4/lib
          ${HPCC_SOURCE_DIR}/system/globalid
+         ${HPCC_SOURCE_DIR}/system/security/shared
          ${HPCC_SOURCE_DIR}/system/security/cryptohelper
-         ${HPCC_SOURCE_DIR}/system/yaml/libyaml/include
          ${HPCC_SOURCE_DIR}/system/httplib
+         ${OPENTELEMETRY_CPP_INCLUDE_DIRS}
          ${CMAKE_CURRENT_BINARY_DIR}  # for generated jelog.h file
          ${CMAKE_BINARY_DIR}
          ${CMAKE_BINARY_DIR}/oss
     )
 
-ADD_DEFINITIONS( -DLOGMSGCOMPONENT=1 -D_USRDLL -DJLIB_EXPORTS )
+ADD_DEFINITIONS( -D_USRDLL -DJLIB_EXPORTS )
 HPCC_ADD_LIBRARY( jlib SHARED ${SRCS} ${INCLUDES} )
 
 target_link_libraries ( jlib
         lzma
-        lz4
+        lz4::lz4
         libbase58
         yaml
        )
@@ -225,9 +241,45 @@ if ( ${HAVE_LIBCRYPT} )
 target_link_libraries ( jlib crypt)
 endif ( ${HAVE_LIBCRYPT} )
 
+target_link_libraries ( jlib
+        
+        opentelemetry-cpp::ostream_span_exporter
+        opentelemetry-cpp::api #                               - Imported target of opentelemetry-cpp::api
+        opentelemetry-cpp::sdk #                              - Imported target of opentelemetry-cpp::sdk
+        opentelemetry-cpp::ext #                              - Imported target of opentelemetry-cpp::ext
+        opentelemetry-cpp::logs #                             - Imported target of opentelemetry-cpp::logs
+        opentelemetry-cpp::in_memory_span_exporter #          - Imported target of opentelemetry-cpp::in_memory_span_exporter
+        opentelemetry-cpp::otlp_grpc_client #                 - Imported target of opentelemetry-cpp::otlp_grpc_client
+        opentelemetry-cpp::otlp_grpc_exporter #               - Imported target of opentelemetry-cpp::otlp_grpc_exporter
+        opentelemetry-cpp::ostream_log_record_exporter #      - Imported target of opentelemetry-cpp::ostream_log_record_exporter
+        ###These Otel import targets are not trivial to find, developers can save time by uncommenting as needed
+        #   opentelemetry-cpp::version                           - Imported target of opentelemetry-cpp::version
+        #   opentelemetry-cpp::common                            - Imported target of opentelemetry-cpp::common
+        #   opentelemetry-cpp::trace                             - Imported target of opentelemetry-cpp::trace
+        #   opentelemetry-cpp::metrics                           - Imported target of opentelemetry-cpp::metrics
+        #   opentelemetry-cpp::otlp_recordable                   - Imported target of opentelemetry-cpp::otlp_recordable
+        #   opentelemetry-cpp::otlp_grpc_log_record_exporter     - Imported target of opentelemetry-cpp::otlp_grpc_log_record_exporter
+        #   opentelemetry-cpp::otlp_grpc_metrics_exporter        - Imported target of opentelemetry-cpp::otlp_grpc_metrics_exporter
+        #   opentelemetry-cpp::otlp_http_client                  - Imported target of opentelemetry-cpp::otlp_http_client
+        opentelemetry-cpp::otlp_http_exporter #                  - Imported target of opentelemetry-cpp::otlp_http_exporter
+        #   opentelemetry-cpp::otlp_http_log_record_exporter     - Imported target of opentelemetry-cpp::otlp_http_log_record_exporter
+        #   opentelemetry-cpp::otlp_http_metric_exporter         - Imported target of opentelemetry-cpp::otlp_http_metric_exporter
+        #   opentelemetry-cpp::ostream_metrics_exporter          - Imported target of opentelemetry-cpp::ostream_metrics_exporter
+        #   opentelemetry-cpp::ostream_span_exporter             - Imported target of opentelemetry-cpp::ostream_span_exporter
+        #   opentelemetry-cpp::elasticsearch_log_record_exporter - Imported target of opentelemetry-cpp::elasticsearch_log_record_exporter
+        #   opentelemetry-cpp::etw_exporter                      - Imported target of opentelemetry-cpp::etw_exporter
+        #   opentelemetry-cpp::zpages                            - Imported target of opentelemetry-cpp::zpages
+        #   opentelemetry-cpp::http_client_curl                  - Imported target of opentelemetry-cpp::http_client_curl
+        #   opentelemetry-cpp::opentracing_shim                  - Imported target of opentelemetry-cpp::opentracing_shim
+        )
+
 IF (USE_OPENSSL)
 target_link_libraries ( jlib ${OPENSSL_LIBRARIES})
 endif (USE_OPENSSL)
+
+IF (WIN32 AND USE_ZLIB)
+target_link_libraries ( jlib ZLIB::ZLIB )
+endif (WIN32 AND USE_ZLIB)
 
 if (WIN32)
  target_link_libraries ( jlib ws2_32 mpr.lib Winmm.lib psapi.lib )
@@ -241,18 +293,18 @@ if (NOT PLUGIN)
         FILE(TO_NATIVE_PATH "${CMAKE_CURRENT_BINARY_DIR}" WINDOWS_CMAKE_CURRENT_BINARY_DIR)
         FILE(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}\\jelog.mc" WINDOWS_CMAKE_CURRENT_SOURCE_DIR)
         add_custom_command ( DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/jelog.mc
-                         OUTPUT ${EXECUTABLE_OUTPUT_PATH}/${CMAKE_CFG_INTDIR}/jelog.dll ${CMAKE_CURRENT_BINARY_DIR}/jelog.h
+                         OUTPUT ${EXECUTABLE_OUTPUT_PATH}/$<CONFIG>/jelog.dll ${CMAKE_CURRENT_BINARY_DIR}/jelog.h
                          COMMAND echo mc -r ${WINDOWS_CMAKE_CURRENT_BINARY_DIR} -h ${WINDOWS_CMAKE_CURRENT_BINARY_DIR} ${WINDOWS_CMAKE_CURRENT_SOURCE_DIR}
                          COMMAND echo rc -r -fo ${CMAKE_CURRENT_BINARY_DIR}/jelog.res ${CMAKE_CURRENT_BINARY_DIR}/jelog.rc
-                         COMMAND echo link -dll -noentry -machine:IX86 -out:${EXECUTABLE_OUTPUT_PATH}/${CMAKE_CFG_INTDIR}/jelog.dll ${CMAKE_CURRENT_BINARY_DIR}/jelog.res
+                         COMMAND echo link -dll -noentry -machine:IX86 -out:${EXECUTABLE_OUTPUT_PATH}/$<CONFIG>/jelog.dll ${CMAKE_CURRENT_BINARY_DIR}/jelog.res
                          COMMAND mc -r ${WINDOWS_CMAKE_CURRENT_BINARY_DIR} -h ${WINDOWS_CMAKE_CURRENT_BINARY_DIR} ${WINDOWS_CMAKE_CURRENT_SOURCE_DIR}
                          COMMAND rc -r -fo ${CMAKE_CURRENT_BINARY_DIR}/jelog.res ${CMAKE_CURRENT_BINARY_DIR}/jelog.rc
-                         COMMAND link -dll -noentry -machine:IX86 -out:${EXECUTABLE_OUTPUT_PATH}/${CMAKE_CFG_INTDIR}/jelog.dll ${CMAKE_CURRENT_BINARY_DIR}/jelog.res
+                         COMMAND link -dll -noentry -machine:IX86 -out:${EXECUTABLE_OUTPUT_PATH}/$<CONFIG>/jelog.dll ${CMAKE_CURRENT_BINARY_DIR}/jelog.res
                         )
-        add_custom_target ( jelog ALL DEPENDS ${EXECUTABLE_OUTPUT_PATH}/${CMAKE_CFG_INTDIR}/jelog.dll )
+        add_custom_target ( jelog ALL DEPENDS ${EXECUTABLE_OUTPUT_PATH}/$<CONFIG>/jelog.dll )
         add_dependencies( jlib jelog )
-        install ( PROGRAMS ${EXECUTABLE_OUTPUT_PATH}/${CMAKE_BUILD_TYPE}/jelog.dll DESTINATION ${EXEC_DIR} )
+        install ( PROGRAMS ${EXECUTABLE_OUTPUT_PATH}/$<CONFIG>/jelog.dll DESTINATION ${EXEC_DIR} )
     endif ()
-    install ( TARGETS jlib RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} )
+    install ( TARGETS jlib RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} CALC_DEPS )
     install ( FILES ${CMAKE_CURRENT_SOURCE_DIR}/jscm.hpp DESTINATION componentfiles/cl/include COMPONENT Runtime )
 endif()

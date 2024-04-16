@@ -515,8 +515,18 @@ shakespeareStream := normalizeWordFormat(convertTextFileToInversion(4, Directory
 //have different characteristics.  Bible has ~74 "documents", encyclopedia has
     inputStream := bibleStream + encyclopediaStream;
 
+    boolean generateAllVariants := true; // Enable to test generating indexes with different compression formats
     doCreateSearchIndex() := FUNCTION
         RETURN ORDERED(
+            IF (generateAllVariants,
+                ORDERED(
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_default', OVERWRITE),
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace', compressed('inplace'), OVERWRITE),
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_row', compressed('inplace:randrow'), OVERWRITE),
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_lzw', compressed('inplace:lzw'), OVERWRITE),
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_lz4hc', compressed('inplace:lz4hc'), OVERWRITE)
+                )
+            ),
             BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex, OVERWRITE,
         #if (useLocal=true)
                 NOROOT,

@@ -32,7 +32,8 @@ interface jlib_decl IPropertyIteratorOf : extends IInterface
     virtual bool first() = 0;
     virtual bool next() = 0;
     virtual bool isValid() = 0;
-    virtual PTYPE getPropKey() = 0;
+    virtual PTYPE getPropKey() const = 0;
+    virtual const char * queryPropValue() const = 0;
 };
 
 template <class PTYPE, class PITER>
@@ -43,6 +44,7 @@ interface jlib_decl IPropertiesOf : extends serializable
     virtual const char *queryProp(PTYPE propname) const = 0;
     virtual void setProp(PTYPE propname, int val) = 0;
     virtual void setProp(PTYPE propname, const char *val) = 0;
+    virtual void setNonEmptyProp(PTYPE propname, const char *val) = 0;
     virtual void appendProp(PTYPE propname, const char *val) = 0;
     virtual bool hasProp(PTYPE propname) const = 0;
     virtual PITER *getIterator() const = 0;
@@ -63,7 +65,6 @@ interface jlib_decl IPropertiesOf : extends serializable
 #endif
 
 interface IPropertyIterator : public IPropertyIteratorOf<char_ptr> { };
-interface IAtomPropertyIterator : public IPropertyIteratorOf<IAtom *> { };
 interface IProperties : public IPropertiesOf<char_ptr, IPropertyIterator> { };
 
 #ifdef _MSC_VER
@@ -72,8 +73,15 @@ interface IProperties : public IPropertiesOf<char_ptr, IPropertyIterator> { };
 
 extern jlib_decl IProperties *createProperties(bool nocase = false);
 extern jlib_decl IProperties *createProperties(const char *filename, bool nocase = false);
+extern jlib_decl IProperties *cloneProperties(const IProperties * properties, bool nocase = false);
 extern jlib_decl IProperties *querySystemProperties();
 extern jlib_decl IProperties *getSystemProperties();
+extern jlib_decl void extractHeaders(IProperties * target, const StringArray & httpHeaders, char separator = ':');
+extern jlib_decl IProperties * getHeadersAsProperties(const StringArray & httpHeaders, char separator = ':');
+
+extern jlib_decl void getPropertiesAsXml(StringBuffer & out, const IProperties * properties);
+extern jlib_decl void printProperties(const IProperties * properties);
+extern jlib_decl void dbglogProperties(const IProperties * properties, const char * prefix);
 
 #endif
 

@@ -391,7 +391,7 @@ void Cws_machineEx::processValue(const char *oid, const char *value, const bool 
    
   pField->Hide = !bShow;
 
-  myfieldMap.insert(pair<const char*, CField*>( oid, pField) );
+  myfieldMap.insert(std::pair<const char*, CField*>( oid, pField) );
 
   synchronized block(myfieldInfoMap.m_mutex);
   CFieldInfoMap::iterator i = myfieldInfoMap.find(oid);
@@ -404,7 +404,7 @@ void Cws_machineEx::processValue(const char *oid, const char *value, const bool 
      pFieldInfo->SumSquaredDeviations = 0;
       pFieldInfo->Hide = !bShow;
 
-     myfieldInfoMap.insert( pair<const char*, CFieldInfo*>(oid, pFieldInfo) );
+     myfieldInfoMap.insert( std::pair<const char*, CFieldInfo*>(oid, pFieldInfo) );
   }
   else
   {
@@ -439,7 +439,7 @@ void Cws_machineEx::doPostProcessing(CFieldInfoMap& myfieldInfoMap, CFieldMap&  
         {
             CField* pField = new CField;
             pField->Undefined = true;
-            myfieldMap.insert(pair<const char*, CField*>( fieldName, pField ));
+            myfieldMap.insert(std::pair<const char*, CField*>( fieldName, pField ));
         }
         else
         {
@@ -518,7 +518,7 @@ bool Cws_machineEx::onGetMetrics(IEspContext &context, IEspMetricsRequest &req,
         {
             IpAddress ip;
             ip.setNetAddress(sizeof(unsigned),lptr++);
-            ip.getIpText(ipBuf.clear());
+            ip.getHostText(ipBuf.clear());
             
             CMetricsThreadParam* pThreadReq = 
                     new CMetricsThreadParam(ipBuf.str(), req.getSecurityString(), 
@@ -620,7 +620,7 @@ bool Cws_machineEx::onGetMetrics(IEspContext &context, IEspMetricsRequest &req,
         {
             IpAddress ip;
             ip.setNetAddress(sizeof(unsigned),lptr++);
-            ip.getIpText(ipBuf.clear());
+            ip.getHostText(ipBuf.clear());
             ipList.append(ipBuf.str());
         }
 

@@ -30,8 +30,6 @@ typedef CopyReferenceArrayOf<ISocket> SocketPortArray;
 class CEspTerminator : public Thread
 {
 public:
-    IMPLEMENT_IINTERFACE;
-
     virtual int run()
     {
         sleep(15);
@@ -148,7 +146,7 @@ public:
 
         // YMA: there'll be a leak here, but it's ok.
         CEspTerminator* terminator = new CEspTerminator;  
-        terminator->start();
+        terminator->start(false);
 
         m_exiting=true;
         if(!m_useDali)
@@ -188,7 +186,7 @@ public:
         {
             va_list args;
             va_start(args, fmt);
-            VALOG(MCdebugInfo, unknownJob, fmt, args);
+            VALOG(MCdebugInfo, fmt, args);
             va_end(args);
         }
     }
@@ -205,7 +203,7 @@ public:
         if (host != NULL)
             strIP.append(host);
         else
-            m_address.getIpText(strIP);
+            m_address.getHostText(strIP);
 
         LOG(MCprogress, "binding %s, on %s:%d", name, strIP.str(), port);
 
@@ -238,6 +236,8 @@ public:
             add(socket, SELECTMODE_READ | SELECTMODE_WRITE, dynamic_cast<ISocketSelectNotify*>(&protocol));
             LOG(MCprogress, "  Socket(%d) listening.", socket->OShandle());
         }
+
+        m_config->addBindingForSDSSession(port);
 
         if (socket)
         {

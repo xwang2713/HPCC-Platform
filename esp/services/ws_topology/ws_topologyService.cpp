@@ -236,6 +236,16 @@ bool CWsTopologyEx::onTpLogFile(IEspContext &context,IEspTpLogFileRequest  &req,
     return true;
 }
 
+void CWsTopologyEx::validateFilePath(const char *file, const char *fileType, const char *compType, const char *compName)
+{
+    StringBuffer actualPath;
+    splitUNCFilename(file, nullptr, &actualPath, nullptr, nullptr);
+    if (containsRelPaths(actualPath)) //Detect a path like: /home/lexis/runtime/var/log/HPCCSystems/myesp/../../../
+        throw makeStringExceptionV(ECLWATCH_INVALID_INPUT, "Invalid file path %s", actualPath.str());
+    if (!validateConfigurationDirectory(nullptr, fileType, compType, compName, actualPath))
+        throw makeStringExceptionV(ECLWATCH_INVALID_INPUT, "Invalid file path %s", actualPath.str());
+}
+
 bool CWsTopologyEx::onSystemLog(IEspContext &context,IEspSystemLogRequest  &req, IEspSystemLogResponse &resp)
 {
     try
@@ -254,6 +264,7 @@ bool CWsTopologyEx::onSystemLog(IEspContext &context,IEspSystemLogRequest  &req,
         }
         else
         {
+            validateFilePath(name, "log", nullptr, nullptr);
             logname = name;
         }
 
@@ -771,7 +782,7 @@ void CWsTopologyEx::readLogFileToArray(const char *logname, OwnedIFileIO rIO, Re
     }
 
     StringBuffer logLine, textLine, logFieldTime, logFieldTimeNextLine; //A logLine may has multiple textLines.
-    Owned<IFileIOStream> ios = createIOStream(rIO);
+    Owned<IFileIOStream> ios = createBufferedIOStream(rIO);
     Owned<IStreamLineReader> lineReader = createLineReader(ios, true);
     bool eof = lineReader->readLine(logLine);
     if (eof)
@@ -1117,7 +1128,10 @@ void CWsTopologyEx::readTpLogFile(IEspContext &context,const char* fileName, con
 {
     StringBuffer logname;
     if (strcmp(fileType,"thormaster_log"))
+    {
+        validateFilePath(fileName, "log", nullptr, nullptr);
         logname = fileName;
+    }
     else
         logname.append(CCluster(fileName)->queryRoot()->queryProp("LogFile"));
 
@@ -1522,12 +1536,13 @@ bool CWsTopologyEx::onTpMachineQuery(IEspContext &context, IEspTpMachineQueryReq
         const char* directory = req.getDirectory();
 
         bool hasThorSpareProcess = false;
-        const char* type = req.getType();
-        if (!type || !*type || (strcmp(eqAllNodes,type) == 0))
+        const CTpMachineType type = req.getType();
+//        if (!type || !*type || (strcmp(eqAllNodes,type) == 0))
+        if (type == TpMachineType_Undefined || type == CTpMachineType_All )
         {
-            m_TpWrapper.getClusterMachineList(version, eqTHORMACHINES, path, directory, MachineList, hasThorSpareProcess);
-            m_TpWrapper.getClusterMachineList(version, eqHOLEMACHINES, path, directory, MachineList, hasThorSpareProcess);
-            m_TpWrapper.getClusterMachineList(version, eqROXIEMACHINES,path, directory, MachineList, hasThorSpareProcess);
+            m_TpWrapper.getClusterMachineList(version, CTpMachineType_Thor, path, directory, MachineList, hasThorSpareProcess);
+            m_TpWrapper.getClusterMachineList(version, CTpMachineType_Hole, path, directory, MachineList, hasThorSpareProcess);
+            m_TpWrapper.getClusterMachineList(version, CTpMachineType_Roxie,path, directory, MachineList, hasThorSpareProcess);
         }
         else
         {
@@ -1711,7 +1726,7 @@ bool CWsTopologyEx::onTpGetComponentFile(IEspContext &context, IEspTpGetComponen
                     {
                         StringBuffer ipStr;
                         IpAddress ipaddr = queryHostIP();
-                        ipaddr.getIpText(ipStr);
+                        ipaddr.getHostText(ipStr);
                         if (ipStr.length() > 0)
                         {
                             netAddressStr = ipStr.str();
@@ -1751,6 +1766,8 @@ bool CWsTopologyEx::onTpGetComponentFile(IEspContext &context, IEspTpGetComponen
 
         StringBuffer uncPath;
         uncPath.append(pathSepChar).append(pathSepChar).append(netAddress).append(sDir).append(fileName);
+
+        validateFilePath(uncPath, (stricmp(fileType, "log") == 0) ? "log" : "run", nullptr, nullptr);
 
         if (stricmp(fileType, "log") == 0)
         {
@@ -1955,6 +1972,20 @@ bool CWsTopologyEx::onTpDropZoneQuery(IEspContext &context, IEspTpDropZoneQueryR
         context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_TOPOLOGY_ACCESS_DENIED, "WsTopology::TpDropZoneQuery: Permission denied.");
 
         m_TpWrapper.getTpDropZones(context.getClientVersion(), req.getName(), req.getECLWatchVisibleOnly(), resp.getTpDropZones());
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e,  ECLWATCH_INTERNAL_ERROR);
+    }
+    return false;
+}
+
+bool CWsTopologyEx::onTpListLogFiles(IEspContext &context, IEspTpListLogFilesRequest &req, IEspTpListLogFilesResponse &resp)
+{
+    try
+    {
+        context.ensureFeatureAccess(FEATURE_URL, SecAccess_Read, ECLWATCH_TOPOLOGY_ACCESS_DENIED, "WsTopology::onTpListLogFile: Permission denied.");
+        m_TpWrapper.listLogFiles(req.getNetworkAddress(), req.getPath(), resp.getFiles());
     }
     catch(IException* e)
     {

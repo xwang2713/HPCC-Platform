@@ -196,20 +196,6 @@ void getStretchedValue(MemoryBuffer & target, const RtlTypeInfo & newType, const
 
 //---------------------------------------------------------------------------------------------------------------------
 
-static bool incrementBuffer(byte *buf, size32_t size)
-{
-    int i = size;
-    while (i--)
-    {
-        buf[i]++;
-        if (buf[i]!=0)
-            return true;
-    }
-    return false;
-}
-
-//---------------------------------------------------------------------------------------------------------------------
-
 bool needToApplySubString(const RtlTypeInfo & type, const byte * value, size32_t subLength)
 {
     if (subLength == MatchFullString)
@@ -2173,12 +2159,14 @@ void RowFilter::addFilter(const IFieldFilter & filter)
 
 const IFieldFilter & RowFilter::addFilter(const RtlRecord & record, const char * filterText)
 {
-    IFieldFilter & filter = *deserializeFieldFilter(record, filterText);
-    filters.append(filter);
-    unsigned fieldNum = filter.queryFieldIndex();
+    IFieldFilter * filter = deserializeFieldFilter(record, filterText);
+    if (!filter)
+        throw makeStringExceptionV(0, "Could not process filter %s", filterText);
+    filters.append(*filter);
+    unsigned fieldNum = filter->queryFieldIndex();
     if (fieldNum >= numFieldsRequired)
         numFieldsRequired = fieldNum+1;
-    return filter;
+    return *filter;
 }
 
 bool RowFilter::matches(const RtlRow & row) const

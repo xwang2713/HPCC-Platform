@@ -30,7 +30,7 @@
 #include "jmutex.hpp"
 #include "jfile.hpp"
 #include "jhtree.hpp"
-
+#include "jsecrets.hpp"
 
 #include "rtldynfield.hpp"
 #include "rtlds_imp.hpp"
@@ -49,7 +49,6 @@
 
 #include "rmtclient_impl.hpp"
 #include "rmtfile.hpp"
-
 
 //----------------------------------------------------------------------------
 
@@ -223,10 +222,13 @@ CDaliServixFilter *createDaliServixFilter(IPropertyTree &filterProps)
     return filter;
 }
 
+
 class CDaliServixIntercept: public CInterface, implements IDaFileSrvHook
 {
     CIArrayOf<CDaliServixFilter> filters;
     StringAttr forceRemotePattern;
+    CriticalSection secretCrit;
+    std::unordered_map<std::string, std::tuple<unsigned, std::string>> endpointMap;
 
     void addFilter(CDaliServixFilter *filter)
     {
@@ -245,10 +247,17 @@ public:
     virtual IFile * createIFile(const RemoteFilename & filename)
     {
         SocketEndpoint ep = filename.queryEndpoint();
+
         bool noport = (ep.port==0);
         setDafsEndpointPort(ep);
         if (!filename.isLocal()||(ep.port!=DAFILESRV_PORT && ep.port!=SECURE_DAFILESRV_PORT)) // assume standard port is running on local machine
         {
+            // check 1st if this is a secret based url
+            StringBuffer storageSecret;
+            getSecretBased(storageSecret, filename);
+            if (storageSecret.length())
+                return createDaliServixFile(filename, storageSecret);
+
 #ifdef __linux__
 #ifndef USE_SAMBA
             if (noport && filters.ordinality())
@@ -292,7 +301,15 @@ public:
             filename.getLocalPath(localPath);
             // must be local to be here, check if matches forceRemotePattern
             if (WildMatch(localPath, forceRemotePattern, false))
-                return createDaliServixFile(filename);
+            {
+                // check 1st if this is a secret based url
+                StringBuffer storageSecret;
+                getSecretBased(storageSecret, filename);
+                if (storageSecret.length())
+                    return createDaliServixFile(filename, storageSecret);
+                else
+                    return createDaliServixFile(filename);
+            }
         }
         return NULL;
     }
@@ -340,6 +357,44 @@ public:
     virtual void clearFilters()
     {
         filters.kill();
+    }
+    virtual StringBuffer &getSecretBased(StringBuffer &storageSecret, const RemoteFilename & filename) override
+    {
+        if (!endpointMap.empty())
+        {
+            const SocketEndpoint &ep = filename.queryEndpoint();
+
+            StringBuffer endpointStr;
+            ep.getEndpointHostText(endpointStr);
+
+            CriticalBlock b(secretCrit);
+            auto it = endpointMap.find(endpointStr.str());
+            if (it != endpointMap.end())
+            {
+                storageSecret.append(std::get<1>(it->second).c_str());
+                if (0 == storageSecret.length())
+                {
+                    VStringBuffer secureUrl("https://%s", endpointStr.str());
+                    generateDynamicUrlSecretName(storageSecret, secureUrl, nullptr);
+                }
+            }
+        }
+        return storageSecret;
+    }
+    virtual void addSecretEndpoint(const char *endpoint, const char *optSecret) override
+    {
+        CriticalBlock b(secretCrit);
+        auto it = endpointMap.find(endpoint);
+        if (it == endpointMap.end())
+            endpointMap[endpoint] = { 1, optSecret ? optSecret : "" };
+    }
+    virtual void removeSecretEndpoint(const char *endpoint) override
+    {
+        CriticalBlock b(secretCrit);
+        auto it = endpointMap.find(endpoint);
+        assertex(it != endpointMap.end());
+        if (--std::get<0>(it->second) == 0)
+            endpointMap.erase(it);
     }
 } *DaliServixIntercept = NULL;
 
@@ -664,11 +719,8 @@ class CRemoteFile : public CRemoteBase, implements IFile
     StringAttr remotefilename;
     unsigned flags;
     bool isShareSet;
-public:
-    IMPLEMENT_IINTERFACE_O_USING(CRemoteBase);
 
-    CRemoteFile(const SocketEndpoint &_ep, const char * _filename)
-        : CRemoteBase(_ep, _filename)
+    void commonInit()
     {
         flags = ((unsigned)IFSHread)|((S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH)<<16);
         isShareSet = false;
@@ -677,6 +729,20 @@ public:
             VStringBuffer winDriveFilename("%c:%s", filename[1], filename+3);
             filename.set(winDriveFilename);
         }
+    }
+public:
+    IMPLEMENT_IINTERFACE_O_USING(CRemoteBase);
+
+    CRemoteFile(const SocketEndpoint &_ep, const char * _filename)
+        : CRemoteBase(_ep, _filename)
+    {
+        commonInit();
+    }
+
+    CRemoteFile(const SocketEndpoint &ep, const char *filename, const char *storageSecret)
+        : CRemoteBase(ep, storageSecret, filename)
+    {
+        commonInit();
     }
 
     bool exists()
@@ -1305,7 +1371,7 @@ public:
     bool reopen()
     {
         StringBuffer s;
-        PROGLOG("Attempting reopen of %s on %s",parent->queryLocalName(),parent->queryEp().getUrlStr(s).str());
+        PROGLOG("Attempting reopen of %s on %s",parent->queryLocalName(),parent->queryEp().getEndpointHostText(s).str());
         if (open(mode,compatmode,extraFlags))
             return true;
         return false;
@@ -1402,7 +1468,7 @@ public:
                     if (errCode)
                     {
                         StringBuffer msg;
-                        parent->ep.getUrlStr(msg.append('[')).append("] ");
+                        parent->ep.getEndpointHostText(msg.append('[')).append("] ");
                         if (replyBuffer.getPos()<replyBuffer.length())
                         {
                             StringAttr s;
@@ -1752,6 +1818,13 @@ IFile *createDaliServixFile(const RemoteFilename & file)
     return createRemoteFile(ep, path.str());
 }
 
+IFile *createDaliServixFile(const RemoteFilename & file, const char *storageSecret)
+{
+    StringBuffer path;
+    file.getLocalPath(path);
+    return new CRemoteFile(file.queryEndpoint(), path.str(), storageSecret);
+}
+
 void clientDisconnectRemoteIoOnExit(IFileIO *fileio, bool set)
 {
     CRemoteFileIO *cfileio = QUERYINTERFACE(fileio,CRemoteFileIO);
@@ -1969,7 +2042,7 @@ public:
                         size32_t rd = fileio->read(0,sizeof(buf)-1,buf);
                         if ((rd!=sz)||(memcmp(buf,ds.str(),sz)!=0)) {
                             StringBuffer s;
-                            ep.getIpText(s);
+                            ep.getHostText(s);
                             throw MakeStringException(-1,"Data discrepancy on disk read of %s of %s",path.str(),s.str());
                         }
                     }
@@ -2170,6 +2243,11 @@ public:
     CRemoteFilteredFileIOBase(SocketEndpoint &ep, const char *filename, IOutputMetaData *actual, IOutputMetaData *projected, const RowFilter &fieldFilters, unsigned __int64 chooseN)
         : CRemoteBase(ep, filename)
     {
+        // populate secret if there is one
+        RemoteFilename rfn;
+        rfn.setPath(ep, filename);
+        queryDaFileSrvHook()->getSecretBased(storageSecret, rfn);
+
         // NB: inputGrouped == outputGrouped for now, but may want output to be ungrouped
 
         openRequest();
@@ -2526,10 +2604,6 @@ public:
         pending = true;
         return prefetchBuffer.queryRow();
     }
-    virtual unsigned querySeeks() const override { return 0; } // not sure how best to handle these, perhaps should log/record somewhere on server-side
-    virtual unsigned queryScans() const override { return 0; }
-    virtual unsigned querySkips() const override { return 0; }
-    virtual unsigned queryWildSeeks() const override { return 0; }
 };
 
 

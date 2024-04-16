@@ -42,7 +42,7 @@ LogicFileWrapper::~LogicFileWrapper()
 void LogicFileWrapper::FindClusterName(const char* logicalName, StringBuffer& returnCluster, IUserDescriptor* udesc)
 {
     try {
-        Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, udesc, false, false, false, nullptr, defaultPrivilegedUser) ;
+        Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser) ;
         if(!df)
             throw MakeStringException(-1,"Could not find logical file");
         df->getClusterName(0,returnCluster);    // ** TBD other cluster
@@ -72,7 +72,7 @@ bool LogicFileWrapper::doDeleteFile(const char* logicalName,const char *cluster,
     {
         IDistributedFileDirectory &fdir = queryDistributedFileDirectory();
         {
-            Owned<IDistributedFile> df = fdir.lookup(cname.str(), udesc, true, false, false, nullptr, defaultPrivilegedUser) ;
+            Owned<IDistributedFile> df = fdir.lookup(cname.str(), udesc, AccessMode::tbdWrite, false, false, nullptr, defaultPrivilegedUser) ;
             if(!df)
             {
                 returnStr.appendf("<Message><Value>File %s not found</Value></Message>", cname.str());
@@ -95,40 +95,7 @@ bool LogicFileWrapper::doDeleteFile(const char* logicalName,const char *cluster,
     return false;
 }
 
-bool LogicFileWrapper::doCompressFile(const char* name,StringBuffer& returnStr, IUserDescriptor* udesc)
-{
-    try
-    {
-        Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(name, udesc, false, false, false, nullptr, defaultPrivilegedUser) ;
-        if(!df)
-            return false;
-
-        ErrorReceiver err;
-        TaskQueue tq(200,&err);
-
-        Owned<IDistributedFilePartIterator> pi = df->getIterator();
-        ForEach(*pi)
-        {
-            tq.put(new CompressTask(&pi->query()));
-        }
-
-        tq.join();
-        err.getErrors(returnStr);
-    }
-    catch(IException* e){   
-      StringBuffer msg;
-      e->errorMessage(msg);
-        IWARNLOG("%s", msg.str());
-        e->Release();
-    }
-    catch(...){
-        IWARNLOG("Unknown Exception caught within doCompressFile");
-    }
-
-    return true; 
-}
-
-IDistributedFile* lookupLogicalName(IEspContext& context, const char* logicalName, bool writeattr, bool hold,
+IDistributedFile* lookupLogicalName(IEspContext& context, const char* logicalName, AccessMode accessMode, bool hold,
     bool lockSuperOwner, IDistributedFileTransaction* transaction, bool privilegedUser, unsigned timeout)
 {
     StringBuffer userID;
@@ -140,14 +107,14 @@ IDistributedFile* lookupLogicalName(IEspContext& context, const char* logicalNam
         userDesc->set(userID, context.queryPassword(), context.querySignature());
     }
 
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, userDesc, writeattr,
+    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(logicalName, userDesc, accessMode,
         hold, lockSuperOwner, transaction, privilegedUser, timeout);
     return df.getClear();
 }
 
 void getNodeGroupFromLFN(IEspContext& context, const char* lfn, StringBuffer& nodeGroup)
 {
-    Owned<IDistributedFile> df = lookupLogicalName(context, lfn, false, false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> df = lookupLogicalName(context, lfn, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
     if (!df)
         throw makeStringExceptionV(ECLWATCH_FILE_NOT_EXIST, "Failed to find file: %s", lfn);
     df->getClusterGroupName(0, nodeGroup);

@@ -208,6 +208,12 @@ protected:
     bool optStableInput = true; // is the input forced to ordered?
     bool optUnstableInput = false;  // is the input forced to unordered?
     bool optUnordered = false; // is the output specified as unordered?
+    CriticalSection statsCs; // to be used to protect objects refernce during stat. collection
+    CRuntimeStatisticCollection inactiveStats; // stats collected from previous iteration, to be combined with current 'stats'
+    // fileStats is mutable as it is updated by gatherActiveStats (const member func)
+    // fileStats is in this base class as it used by multiple derived classes (both slave and master) but not all.
+    // (Having it in the base class aids setup and resizing.)
+    mutable std::vector<OwnedPtr<CRuntimeStatisticCollection>> fileStats;
 
 protected:
     unsigned __int64 queryLocalCycles() const;
@@ -217,7 +223,8 @@ protected:
     void setLookAhead(unsigned index, IStartableEngineRowStream *lookAhead, bool persistent);
     void startLookAhead(unsigned index);
     bool isLookAheadActive(unsigned index) const;
-
+    void setupSpace4FileStats(unsigned where, bool statsForMultipleFiles, bool isSuper, unsigned numSubs, const StatisticsMapping & statsMapping);
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const { }
 public:
     IMPLEMENT_IINTERFACE_USING(CActivityBase)
 
@@ -293,8 +300,88 @@ public:
     virtual void setInputStream(unsigned index, CThorInput &input, bool consumerOrdered) override;
     virtual void processDone(MemoryBuffer &mb) override { };
     virtual void reset() override;
+
+friend class CStatsCtxLoggerDeltaUpdater;
 };
 
+class CStatsDeltaUpdater
+{
+protected:
+    CRuntimeStatisticCollection startStats;
+    cycle_t timeThreshold = 0;
+    cycle_t lastUpdate = 0;
+
+public:
+    inline CStatsDeltaUpdater(const StatisticsMapping &mapping, unsigned timeThresholdSecs=0) : startStats(mapping)
+    {
+        constexpr unsigned defaultTimeThresholdSecs = 10;
+        if (0 == timeThresholdSecs)
+            timeThresholdSecs = defaultTimeThresholdSecs;
+        timeThreshold = timeThresholdSecs * queryOneSecCycles();
+    }
+    inline void timedUpdate()
+    {
+        dbgassertex(timeThreshold);
+        cycle_t now = get_cycles_now();
+        if ((now - lastUpdate) > timeThreshold) // NB: rollover is not problematic
+        {
+            update();
+            lastUpdate = now;
+        }
+    }
+    virtual void resetStart() = 0;
+    virtual void update() = 0; // NB: must perform reset of start also
+};
+
+class CStatsCtxLoggerDeltaUpdater : public CStatsDeltaUpdater
+{
+protected:
+    CSlaveActivity &activity;
+    CStatsContextLogger &ctxLogger;
+
+public:
+    inline CStatsCtxLoggerDeltaUpdater(const StatisticsMapping &mapping, CSlaveActivity &_activity, CStatsContextLogger &_ctxLogger, unsigned timeThresholdSecs=0)
+        : CStatsDeltaUpdater(mapping, timeThresholdSecs), activity(_activity), ctxLogger(_ctxLogger)
+    {
+        resetStart();
+    }
+    virtual void resetStart() override
+    {
+        CriticalBlock b(activity.statsCs); // probably unneeded, not likely to be contended at this point
+        startStats.set(ctxLogger.queryStats());
+    }
+    virtual void update() override
+    {
+        CriticalBlock b(activity.statsCs);
+        ctxLogger.updateStatsDeltaTo(activity.inactiveStats, startStats); // NB: updates startStats to new values
+    }
+};
+
+class CStatsScopedDeltaUpdater
+{
+     CStatsDeltaUpdater &updater;
+public:
+    inline CStatsScopedDeltaUpdater(CStatsDeltaUpdater &_updater) : updater(_updater)
+    {
+    }
+    inline ~CStatsScopedDeltaUpdater()
+    {
+        updater.update();
+    }
+};
+
+class CStatsScopedThresholdDeltaUpdater
+{
+    CStatsDeltaUpdater &updater;
+public:
+    inline CStatsScopedThresholdDeltaUpdater(CStatsDeltaUpdater &_updater) : updater(_updater)
+    {
+    }
+    inline ~CStatsScopedThresholdDeltaUpdater()
+    {
+        updater.timedUpdate();
+    }
+};
 
 class graphslave_decl CSlaveLateStartActivity : public CSlaveActivity
 {
@@ -428,6 +515,7 @@ class graphslave_decl CSlaveGraph : public CGraphBase
     CriticalSection progressCrit;
     bool doneInit = false;
     std::atomic_bool progressActive;
+    ProcessInfo processStartInfo;
 
 public:
 
@@ -450,6 +538,7 @@ public:
     virtual void abort(IException *e) override;
     virtual void reset() override;
     virtual void done() override;
+    virtual cost_type getDiskAccessCost() override { UNIMPLEMENTED; }
     virtual IThorGraphResults *createThorGraphResults(unsigned num);
 
 // IExceptionHandler
@@ -479,8 +568,6 @@ class graphslave_decl CJobSlave : public CJobBase
     unsigned actInitWaitTimeMins = DEFAULT_MAX_ACTINITWAITTIME_MINS;
 
 public:
-    IMPLEMENT_IINTERFACE;
-
     CJobSlave(ISlaveWatchdog *_watchdog, IPropertyTree *workUnitInfo, const char *graphName, ILoadedDllEntry *querySo, mptag_t _slavemptag);
 
     virtual CJobChannel *addChannel(IMPServer *mpServer) override;
@@ -494,11 +581,12 @@ public:
     void reportGraphEnd(graph_id gid);
 
     virtual mptag_t deserializeMPTag(MemoryBuffer &mb);
-    virtual __int64 getWorkUnitValueInt(const char *prop, __int64 defVal) const;
-    virtual StringBuffer &getWorkUnitValue(const char *prop, StringBuffer &str) const;
-    virtual bool getWorkUnitValueBool(const char *prop, bool defVal) const;
-    virtual IThorAllocator *getThorAllocator(unsigned channel);
-    virtual void debugRequest(MemoryBuffer &msg, const char *request) const;
+    virtual __int64 getWorkUnitValueInt(const char *prop, __int64 defVal) const override;
+    virtual StringBuffer &getWorkUnitValue(const char *prop, StringBuffer &str) const override;
+    virtual bool getWorkUnitValueBool(const char *prop, bool defVal) const override;
+    virtual double getWorkUnitValueReal(const char *prop, double defVal) const override;
+    virtual IThorAllocator *getThorAllocator(unsigned channel) override;
+    virtual void debugRequest(MemoryBuffer &msg, const char *request) const override;
 
 // IExceptionHandler
     virtual bool fireException(IException *e)
@@ -527,7 +615,7 @@ public:
     {
         CMessageBuffer msg;
         msg.append((int)smt_errorMsg);
-        msg.append(queryMyRank()-1);
+        msg.append(queryMyRank()); // leave as 1-based. 0 means channel unknown (see CThreadExceptionCatcher)
         IThorException *te = QUERYINTERFACE(e, IThorException);
         bool userOrigin = false;
         if (te)

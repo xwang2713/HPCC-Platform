@@ -53,8 +53,6 @@ enum MessageLogFlag
 #define HTTP_HEADER_CONTENT_ENCODING  "Content-Encoding"
 #define HTTP_HEADER_TRANSFER_ENCODING "Transfer-Encoding"
 #define HTTP_HEADER_ACCEPT_ENCODING   "Accept-Encoding"
-#define HTTP_HEADER_HPCC_GLOBAL_ID    "Global-Id"
-#define HTTP_HEADER_HPCC_CALLER_ID    "Caller-Id"
 
 class esp_http_decl CHttpMessage : implements IHttpMessage, public CInterface
 {
@@ -68,9 +66,12 @@ protected:
     StringBuffer m_content;
     StringBuffer m_header;
     OwnedIFileIOStream m_content_stream;
+    Linked<IPropertyTree> m_content_ptree;
+    bool m_addXMLHeaderToContent = false, m_addXMLStylesheetToContent = false;
     StringAttr   m_version;
     StringAttr   m_host;
     int          m_port;
+    bool         hasPortInHost = false;
     StringAttr   m_paramstr;
     int m_supportClientXslt;
     bool         m_isForm;
@@ -139,6 +140,7 @@ public:
     virtual void setownContent(char* content);
     virtual void setownContent(unsigned len, char* content);
     virtual void setContent(IFileIOStream* stream);
+    virtual void setContent(IPropertyTree* ptree, bool addXMLHeaderToContent = false, bool addXMLStylesheetToContent = false);
     //virtual void appendContent(const char* content);
     virtual StringBuffer& getContentType(StringBuffer& contenttype);
     virtual void setContentType(const char* contenttype);
@@ -146,8 +148,9 @@ public:
     virtual void setHost(const char* host) {m_host.set(host);};
     virtual StringBuffer& getHost(StringBuffer& host) {return host.append(m_host.get());};
     const char *queryHost(){return m_host.get();}
-    virtual void setPort(int port) {m_port = port;};
-    virtual int getPort() {return m_port;};
+    void setPort(int port) {m_port = port;}
+    int getPort() {return m_port;}
+    bool getHasPortInHost() const {return hasPortInHost;}
 
     void getServAddress(StringBuffer &host, short &port)
     {
@@ -171,6 +174,7 @@ public:
     virtual int getAttachmentCount(){return m_attachCount;}
     virtual IProperties *queryParameters();
     virtual IProperties *getParameters();
+    virtual int getParameterInt(const char* name, int defaultValue);
     virtual MapStrToBuf *queryAttachments()
     {
         return &m_attachments;
@@ -365,7 +369,9 @@ public:
 
     virtual int receive(IMultiException *me);
 
+    ISpan * createServerSpan(const char * serviceName, const char * methodName);
     void updateContext();
+    void annotateSpan(const char * key, const char * value);
 
     virtual void setMaxRequestEntityLength(int len) {m_MaxRequestEntityLength = len;}
     virtual int getMaxRequestEntityLength() { return m_MaxRequestEntityLength; }
@@ -404,6 +410,8 @@ public:
     virtual bool httpContentFromFile(const char *filepath);
     virtual bool handleExceptions(IXslProcessor *xslp, IMultiException *me, const char *serv, const char *meth, const char *errorXslt);
     virtual void handleExceptions(IXslProcessor *xslp, IMultiException *me, const char *serv, const char *meth, const char *errorXslt, bool logHandleExceptions);
+    virtual void setErrorMessageContent(const char* message, ESPSerializationFormat format);
+    virtual void setLogAccessErrorMessageContent(const char* message, LogAccessLogFormat format);
 
     virtual void redirect(CHttpRequest &req, const char *url)
     {

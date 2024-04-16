@@ -27,7 +27,7 @@ Pass in dict with root and me
 */}}
 {{- define "hpcc.agentConfigMap" }}
 {{- $apptype := .me.type | default "hthor" -}}
-{{- $appJobName := printf "%s-_HPCC_JOBNAME_" $apptype }}
+{{- $appJobName := printf "%s-job-_HPCC_JOBNAME_" $apptype }}
 apiVersion: v1
 metadata:
   name: {{ .me.name }}-configmap
@@ -35,17 +35,19 @@ data:
   {{ .me.name }}.yaml:
     version: 1.0
     eclagent:
-{{ toYaml (omit .me "logging" "env") | indent 6 }}
+{{ toYaml (omit .me "logging" "tracing" "env") | indent 6 }}
 {{- include "hpcc.generateLoggingConfig" . | indent 6 }}
+{{- include "hpcc.generateTracingConfig" . | indent 6 }}
     {{ $apptype }}:
-{{ toYaml (omit .me "logging" "env") | indent 6 }}
+{{ toYaml (omit .me "logging" "tracing" "env") | indent 6 }}
 {{- include "hpcc.generateLoggingConfig" . | indent 6 }}
+{{- include "hpcc.generateTracingConfig" . | indent 6 }}
 {{ include "hpcc.generateVaultConfig" . | indent 6 }}
     global:
 {{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
 {{- if not .me.useChildProcesses }}
 {{- $misc := .root.Values.global.misc | default dict }}
-  {{ $apptype }}-jobspec.yaml:
+  {{ $apptype }}-job.yaml:
     apiVersion: batch/v1
     kind: Job
     metadata:
@@ -55,22 +57,24 @@ data:
       template:
         metadata:
           labels:
+            {{- include "hpcc.addStandardLabels" (dict "root" $ "component" $apptype "name" "eclagent" "instance" $appJobName "instanceOf" (printf "%s-job" .me.name)) | indent 12 }}
             accessDali: "yes"
             accessEsp: "yes"
-            helmVersion: 8.3.0-trunk0
+            helmVersion: 9.7.0-trunk0
 {{- if hasKey .me "labels" }}
 {{ toYaml .me.labels | indent 12 }}
 {{- end }}
-{{- if hasKey .me "annotations" }}
           annotations:
-{{ toYaml .me.annotations | indent 12 }}
-{{- end }}
+            {{- include "hpcc.generateAnnotations" . | indent 12 }}
         spec:
           {{- include "hpcc.placementsByJobTargetType" (dict "root" .root "job" $appJobName "target" .me.name "type" "eclagent") | indent 10 }}
-          serviceAccountName: "hpcc-default"
+          serviceAccountName: "hpcc-agent"
 {{- if $misc.postJobCommandViaSidecar }}
           shareProcessNamespace: true
 {{- end }}            
+          initContainers:
+          {{- include "hpcc.createConfigInitContainers" . | indent 10 }}
+          {{- include "hpcc.addImagePullSecrets" . | nindent 10 -}}
           containers:
 {{- if $misc.postJobCommandViaSidecar }}
 {{ include "hpcc.addWaitAndRunContainer" (. | merge (dict "command" $misc.postJobCommand)) | indent 10 }}
@@ -78,29 +82,30 @@ data:
           - name: {{ $appJobName }}
 {{- include "hpcc.addSecurityContext" . | indent 12 }}
 {{ include "hpcc.addImageAttrs" . | indent 12 }}
+{{- $omitResources := hasKey .root.Values.global "omitResources" | ternary .root.Values.global.omitResources .root.Values.global.privileged }}
+{{- if not $omitResources }}
 {{- include "hpcc.addResources" (dict "me" .me.resources) | indent 12 }}
-{{- $appCmd := printf "%s %s %s _HPCC_ARGS_" $apptype (include "hpcc.configArg" .me) (include "hpcc.daliArg" .root) }}
+{{- end }}
+{{- $appCmd := printf "%s %s %s _HPCC_ARGS_" $apptype (include "hpcc.configArg" .me) (include "hpcc.daliArg" (dict "root" .root "component" "ECL Agent" "optional" false )) }}
 {{ include "hpcc.addCommandAndLifecycle" (. | merge (dict "command" $appCmd)) | indent 12 }}
-{{- if .env }}
             env:
 {{ include "hpcc.mergeEnvironments" .env | indent 12 }}
-{{- end }}
             workingDir: /var/lib/HPCCSystems
             volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" .me | indent 12 }}
-{{ include "hpcc.addDataVolumeMount" . | indent 12 }}
-{{ include "hpcc.addDllVolumeMount" . | indent 12 }}
+{{ include "hpcc.addVolumeMounts" . | indent 12 }}
 {{ include "hpcc.addSecretVolumeMounts" . | indent 12 }}
-{{ include "hpcc.addCertificateVolumeMount" (dict "root" .root "name" .me.name "component" $apptype) | indent 12 }}
+{{ include "hpcc.addVaultClientCertificateVolumeMounts" . | indent 12 }}
+{{ include "hpcc.addCertificateVolumeMount" (dict "root" .root "name" .me.name "component" $apptype "includeRemote" true) | indent 12 }}
 {{- if $misc.postJobCommandViaSidecar }}
 {{ include "hpcc.addWaitAndRunVolumeMount" . | indent 12 }}
 {{- end }}
           volumes:
 {{ include "hpcc.addConfigMapVolume" .me | indent 10 }}
-{{ include "hpcc.addDataVolume" . | indent 10 }}
-{{ include "hpcc.addDllVolume" . | indent 10 }}
+{{ include "hpcc.addVolumes" . | indent 10 }}
 {{ include "hpcc.addSecretVolumes" . | indent 10 }}
-{{ include "hpcc.addCertificateVolume" (dict "root" .root "name" .me.name "component" $apptype) | indent 10 }}
+{{ include "hpcc.addVaultClientCertificateVolumes" . | indent 10 }}
+{{ include "hpcc.addCertificateVolume" (dict "root" .root "name" .me.name "component" $apptype "includeRemote" true) | indent 10 }}
 {{- if $misc.postJobCommandViaSidecar }}
 {{ include "hpcc.addWaitAndRunVolume" . | indent 10 }}
 {{- end }}
@@ -113,8 +118,10 @@ data:
 {{- if not .disabled -}}
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
 {{- $apptype := .type | default "hthor" -}}
-{{- $secretsCategories := list "system" "ecl-user" "ecl" "storage" }}
-{{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories "env" $env }}
+{{- $secretsCategories := list "system" "eclUser" "ecl" "storage" }}
+{{- $enginePlaneDetails := dict -}}
+{{- $_ := include "hpcc.getEnginePlanes" (dict "root" $ "me" . "result" $enginePlaneDetails) -}}
+{{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories "includeCategories" $enginePlaneDetails.planeCategories "includeNames" $enginePlaneDetails.namedPlanes "env" $env }}
 {{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.agentConfigMap" "component" "eclagent" "excludeKeys" (print "global," $apptype ".replicas"))) }}
 {{- include "hpcc.checkDefaultStoragePlane" $commonCtx }}
 apiVersion: apps/v1
@@ -129,30 +136,30 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "hpcc.addStandardLabels" (dict "root" $ "component" $apptype "name" "eclagent" "instance" .name) | indent 8 }}
         run: {{ .name | quote }}
         accessDali: "yes"
         accessEsp: {{ .useChildProcesses | default false | ternary "yes" "no" | quote }}
-        helmVersion: 8.3.0-trunk0
+        helmVersion: 9.7.0-trunk0
 {{- if hasKey . "labels" }}
 {{ toYaml .labels | indent 8 }}
 {{- end }}
       annotations:
         checksum/config: {{ $configSHA }}
-{{- if hasKey . "annotations" }}
-{{ toYaml .annotations | indent 8 }}
-{{- end }}
+        {{- include "hpcc.generateAnnotations" $commonCtx | indent 8 }}
     spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" .name "target" .name "type" "eclagent") | indent 6 }}
-      serviceAccountName: {{ .useChildProcesses | default false | ternary "hpcc-default" "hpcc-agent" }}
+      serviceAccountName: "hpcc-agent"
       initContainers:
-        {{- include "hpcc.checkDataMount" $commonCtx | indent 6 }}
+      {{- include "hpcc.createConfigInitContainers" $commonCtx | indent 6 }}
+      {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ .name | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ agentexec ] 
-        args: [ 
+        command: [ {{ include "hpcc.componentCommand" (dict "me" . "root" $ "process" "agentexec") }} ] 
+        args: [ {{- include "hpcc.componentStartArgs" (dict "me" . "root" $ "process" "agentexec") | nindent 16 }}
                 {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }}
+                {{ include "hpcc.daliArg" (dict "root" $ "component" "ECL Agent" "optional" false) }}
               ]
         env:
 {{ include "hpcc.mergeEnvironments" $env | indent 8 -}}
@@ -160,30 +167,38 @@ spec:
           value: "/tmp/{{ .name }}.sentinel"
 {{ include "hpcc.addSentinelProbes" . | indent 8 }}
 {{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
-{{- if .useChildProcesses }}
+{{- $omitResources := hasKey $.Values.global "omitResources" | ternary $.Values.global.omitResources $.Values.global.privileged }}
+{{- if not $omitResources }}
+{{-  if .useChildProcesses }}
 {{- include "hpcc.addResources" (dict "me" .resources) | indent 8 }}
-{{- else if not $.Values.global.privileged }}
-{{- include "hpcc.addStubResources" . | indent 8 }}
+{{-  else }}
+{{- include "hpcc.addStubResources" ($commonCtx | merge (dict "instances" .maxActive)) | indent 8 }}
+{{-  end }}
 {{- end }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
-{{ include "hpcc.addDataVolumeMount" $commonCtx | indent 8 }}
-{{ include "hpcc.addDllVolumeMount" $commonCtx | indent 8 }}
+{{ include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
-{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "name" .name "component" "eclagent") | indent 8 }}
+{{ include "hpcc.addVaultClientCertificateVolumeMounts" $commonCtx | indent 8 }}
+{{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "name" .name "component" $apptype "includeRemote" true) | indent 8 }}
       volumes:
 {{ include "hpcc.addConfigMapVolume" . | indent 6 }}
-{{ include "hpcc.addDataVolume" $commonCtx | indent 6 }}
-{{ include "hpcc.addDllVolume" $commonCtx | indent 6 }}
+{{ include "hpcc.addVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
-{{ include "hpcc.addCertificateVolume" (dict "root" $ "name" .name "component" "eclagent") | indent 6 }}
+{{ include "hpcc.addVaultClientCertificateVolumes" $commonCtx | indent 6 }}
+{{ include "hpcc.addCertificateVolume" (dict "root" $ "name" .name "component" $apptype "includeRemote" true) | indent 6 }}
+---
+{{- if and (hasKey . "hpa") .useChildProcesses }}
+ {{- include "hpcc.addHorizontalPodAutoscaler" (dict "name" .name "kind" "Deployment" "hpa" .hpa) }}
+{{- end }}
 ---
 kind: ConfigMap 
 {{ include "hpcc.generateConfig" ($commonCtx | merge (dict "configMapHelper" "hpcc.agentConfigMap")) }}
 ---
-{{ include "hpcc.addCertificate" (dict "root" $ "name" .name "component" "eclagent") }}
-{{ include "hpcc.addCertificate" (dict "root" $ "name" .name "component" $apptype) }}
-
+{{ include "hpcc.addCertificate" (dict "root" $ "name" .name "component" $apptype "includeRemote" true) }}
+---
+{{- $egressedPodLabels := list (ternary .name (printf "%s-job" .name) (.useChildProcesses | default false)) -}}
+{{- include "hpcc.addEgress" (dict "root" $ "me" . "labels" $egressedPodLabels) | nindent 0 -}}
 {{- end }}
 {{- end }}

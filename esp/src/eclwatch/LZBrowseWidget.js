@@ -3,6 +3,8 @@ define([
     "dojo/_base/lang",
     "src/nlsHPCC",
     "dojo/_base/array",
+    "dojo/dom",
+    "dojo/query",
     "dojo/dom-form",
     "dojo/dom-class",
     "dojo/request/iframe",
@@ -31,6 +33,7 @@ define([
     "hpcc/TargetComboBoxWidget",
     "hpcc/SelectionGridWidget",
     "hpcc/FilterDropDownWidget",
+    "dijit/Dialog",
     "dijit/layout/BorderContainer",
     "dijit/layout/TabContainer",
     "dijit/layout/ContentPane",
@@ -52,7 +55,7 @@ define([
     "dojox/form/uploader/FileList",
 
     "hpcc/TableContainer"
-], function (declare, lang, nlsHPCCMod, arrayUtil, domForm, domClass, iframe, topic,
+], function (declare, lang, nlsHPCCMod, arrayUtil, dom, query, domForm, domClass, iframe, topic,
     registry, MenuItem, TextBox, ValidationTextBox,
     tree, editor, selector,
     _TabContainerWidget, FileSpray, ESPUtil, ESPRequest, ESPDFUWorkunit, DelayLoadWidget, Utility,
@@ -68,6 +71,8 @@ define([
         dropZoneTarget2Select: null,
         serverFilterSelect: null,
         replicateEnabled: null,
+
+        dzExpanded: "",
 
         postCreate: function (args) {
             this.inherited(arguments);
@@ -253,6 +258,7 @@ define([
                 var target = context.dropZoneTargetSelect.get("row");
                 FileSpray.FileList({
                     request: {
+                        DropZoneName: target.value,
                         Netaddr: target.machine.Netaddress,
                         Path: context.getUploadPath()
                     }
@@ -296,7 +302,8 @@ define([
 
         _onUploadSubmit: function (event) {
             var target = this.dropZoneTargetSelect.get("row");
-            this.uploader.set("uploadUrl", "/FileSpray/UploadFile.json?upload_&rawxml_=1&NetAddress=" + target.machine.Netaddress + "&OS=" + target.machine.OS + "&Path=" + this.getUploadPath());
+            var uploadUrl = `/FileSpray/UploadFile.json?upload_&rawxml_=1&NetAddress=${target.machine.Netaddress}&OS=${target.machine.OS}&Path=${this.getUploadPath()}&DropZoneName=${target.value}`;
+            this.uploader.set("uploadUrl", uploadUrl);
             this.uploader.upload();
         },
 
@@ -310,7 +317,7 @@ define([
             arrayUtil.forEach(this.landingZonesGrid.getSelected(), function (item, idx) {
                 var downloadIframeName = "downloadIframe_" + item.calculatedID;
                 var frame = iframe.create(downloadIframeName);
-                var url = ESPRequest.getBaseURL("FileSpray") + "/DownloadFile?Name=" + encodeURIComponent(item.name) + "&NetAddress=" + item.NetAddress + "&Path=" + encodeURIComponent(item.fullFolderPath) + "&OS=" + item.OS;
+                var url = `${ESPRequest.getBaseURL("FileSpray")}/DownloadFile?Name=${encodeURIComponent(item.name)}&NetAddress=${item.NetAddress}&Path=${encodeURIComponent(item.fullFolderPath)}&OS=${item.OS}&DropZoneName=${item.DropZone.Name}`;
                 iframe.setSrc(frame, url, true);
             });
         },
@@ -328,6 +335,7 @@ define([
                     } else {
                         FileSpray.DeleteDropZoneFile({
                             request: {
+                                DropZoneName: item.DropZone.Name,
                                 NetAddress: item.NetAddress,
                                 Path: item.fullFolderPath,
                                 OS: item.OS,
@@ -366,12 +374,18 @@ define([
             if (registry.byId(this.id + formID).validate()) {
                 var selections = this.landingZonesGrid.getSelected();
                 var context = this;
+                var fields = query("input", dom.byId(this.id + formID));
                 arrayUtil.forEach(selections, function (item, idx) {
                     var request = domForm.toObject(context.id + formID);
                     lang.mixin(request, {
                         sourceIP: item.NetAddress,
                         sourcePath: item.fullPath,
                         destLogicalName: request.namePrefix + (request.namePrefix && !context.endsWith(request.namePrefix, "::") && item.targetName && !context.startsWith(item.targetName, "::") ? "::" : "") + item.targetName
+                    });
+                    fields.filter(input => input.type === "checkbox").forEach(input => {
+                        if (input.name && !request[input.name]) {
+                            request[input.name] = input.checked;
+                        }
                     });
                     doSpray(request, item);
                 });
@@ -385,9 +399,9 @@ define([
                 if (selections.length) {
                     var request = domForm.toObject(this.id + formID);
                     var item = selections[0];
+                    var fields = query("input", dom.byId(this.id + formID));
                     lang.mixin(request, {
                         sourceIP: item.NetAddress,
-                        nosplit: true
                     });
                     var sourcePath = "";
                     arrayUtil.forEach(selections, function (item, idx) {
@@ -397,6 +411,11 @@ define([
                     });
                     lang.mixin(request, {
                         sourcePath: sourcePath
+                    });
+                    fields.filter(input => input.type === "checkbox").forEach(input => {
+                        if (input.name && !request[input.name]) {
+                            request[input.name] = input.checked;
+                        }
                     });
                     doSpray(request, item);
                     registry.byId(this.id + dropDownID).closeDropDown();
@@ -430,7 +449,8 @@ define([
             var context = this;
             this._spraySelectedOneAtATime("SprayFixedDropDown", "SprayFixedForm", function (request, item) {
                 lang.mixin(request, {
-                    sourceRecordSize: item.targetRecordLength
+                    sourceRecordSize: item.targetRecordLength,
+                    destNumParts: item.targetNumParts
                 });
                 FileSpray.SprayFixed({
                     request: request
@@ -443,6 +463,9 @@ define([
         _onSprayDelimited: function (event) {
             var context = this;
             this._spraySelectedOneAtATime("SprayDelimitedDropDown", "SprayDelimitedForm", function (request, item) {
+                lang.mixin(request, {
+                    destNumParts: item.targetNumParts
+                });
                 FileSpray.SprayVariable({
                     request: request
                 }).then(function (response) {
@@ -455,7 +478,8 @@ define([
             var context = this;
             this._spraySelectedOneAtATime("SprayXmlDropDown", "SprayXmlForm", function (request, item) {
                 lang.mixin(request, {
-                    sourceRowTag: item.targetRowTag
+                    sourceRowTag: item.targetRowTag,
+                    destNumParts: item.targetNumParts
                 });
                 FileSpray.SprayVariable({
                     request: request
@@ -470,6 +494,7 @@ define([
             this._spraySelectedOneAtATime("SprayJsonDropDown", "SprayJsonForm", function (request, item) {
                 lang.mixin(request, {
                     sourceRowPath: item.targetRowPath,
+                    destNumParts: item.targetNumParts,
                     isJSON: true
                 });
                 FileSpray.SprayVariable({
@@ -483,6 +508,9 @@ define([
         _onSprayVariable: function (event) {
             var context = this;
             this._spraySelectedOneAtATime("SprayVariableDropDown", "SprayVariableForm", function (request, item) {
+                lang.mixin(request, {
+                    destNumParts: item.targetNumParts
+                });
                 FileSpray.SprayFixed({
                     request: request
                 }).then(function (response) {
@@ -494,6 +522,9 @@ define([
         _onSprayBlob: function (event) {
             var context = this;
             this._spraySelected("SprayBlobDropDown", "SprayBlobForm", function (request, item) {
+                lang.mixin(request, {
+                    destNumParts: item.targetNumParts
+                });
                 FileSpray.SprayFixed({
                     request: request
                 }).then(function (response) {
@@ -612,6 +643,23 @@ define([
             });
 
             this.checkReplicate();
+
+            if (dojoConfig.isContainer) {
+                const groupSelectIds = [
+                    context.sprayFixedDestinationSelect.id ?? "",
+                    context.sprayDelimitedDestinationSelect.id ?? "",
+                    context.sprayXmlDestinationSelect.id ?? "",
+                    context.sprayJsonDestinationSelect.id ?? "",
+                    context.sprayVariableDestinationSelect.id ?? "",
+                    context.sprayBlobDestinationSelect.id ?? ""
+                ];
+                groupSelectIds.forEach(selectId => {
+                    const label = selectId ? document.querySelector("[for='" + selectId + "']") : null;
+                    if (label) {
+                        label.innerText = this.i18n.TargetPlane + ":";
+                    }
+                });
+            }
         },
 
         checkReplicate: function (value, checkBoxValue) {
@@ -691,6 +739,13 @@ define([
                     displayName: tree({
                         label: this.i18n.Name,
                         sortable: false,
+                        shouldExpand: function (row, level) {
+                            if ((context.dzExpanded === "" || context.dzExpanded === row.data.DropZone?.Name) && level <= 1) {
+                                context.dzExpanded = row.data.DropZone.Name;
+                                return true;
+                            }
+                            return false;
+                        },
                         formatter: function (_name, row) {
                             var img = "";
                             var name = _name;
@@ -747,6 +802,7 @@ define([
                 columns: {
                     targetName: editor({
                         label: this.i18n.TargetName,
+                        width: 80,
                         autoSave: true,
                         editor: "text",
                         editorArgs: {
@@ -758,9 +814,17 @@ define([
                             required: true,
                             placeholder: this.i18n.RequiredForFixedSpray,
                             promptMessage: this.i18n.RequiredForFixedSpray,
-                            style: "width: 100%;"
                         },
                         label: this.i18n.RecordLength,
+                        width: 60,
+                        autoSave: true,
+                    }, ValidationTextBox),
+                    targetNumParts: editor({
+                        editorArgs: {
+                            promptMessage: this.i18n.ValidationErrorEnterNumber,
+                        },
+                        label: this.i18n.NumberofParts,
+                        width: 40,
                         autoSave: true,
                     }, ValidationTextBox)
                 }
@@ -771,10 +835,21 @@ define([
                 columns: {
                     targetName: editor({
                         label: this.i18n.TargetName,
-                        width: 144,
+                        width: 80,
                         autoSave: true,
-                        editor: "text"
-                    })
+                        editor: "text",
+                        editorArgs: {
+                            style: "width: 100%;"
+                        }
+                    }, TextBox),
+                    targetNumParts: editor({
+                        editorArgs: {
+                            promptMessage: this.i18n.ValidationErrorEnterNumber,
+                        },
+                        label: this.i18n.NumberofParts,
+                        width: 36,
+                        autoSave: true,
+                    }, ValidationTextBox)
                 }
             });
 
@@ -783,15 +858,26 @@ define([
                 columns: {
                     targetName: editor({
                         label: this.i18n.TargetName,
-                        width: 120,
+                        width: 80,
                         autoSave: true,
-                        editor: "text"
-                    }),
+                        editor: "text",
+                        editorArgs: {
+                            style: "width: 100%;"
+                        }
+                    }, TextBox),
                     targetRowTag: editor({
                         label: this.i18n.RowTag,
-                        width: 100,
+                        width: 60,
                         autoSave: true
-                    })
+                    }, TextBox),
+                    targetNumParts: editor({
+                        editorArgs: {
+                            promptMessage: this.i18n.ValidationErrorEnterNumber
+                        },
+                        label: this.i18n.NumberofParts,
+                        width: 36,
+                        autoSave: true,
+                    }, ValidationTextBox)
                 }
             });
 
@@ -800,16 +886,27 @@ define([
                 columns: {
                     targetName: editor({
                         label: this.i18n.TargetName,
-                        width: 144,
+                        width: 80,
                         autoSave: true,
-                        editor: "text"
-                    }),
+                        editor: "text",
+                        editorArgs: {
+                            style: "width: 100%;"
+                        }
+                    }, TextBox),
                     targetRowPath: editor({
                         label: this.i18n.RowPath,
-                        width: 72,
+                        width: 60,
                         autoSave: true,
                         editor: "text"
-                    })
+                    }, TextBox),
+                    targetNumParts: editor({
+                        editorArgs: {
+                            promptMessage: this.i18n.ValidationErrorEnterNumber,
+                        },
+                        label: this.i18n.NumberofParts,
+                        width: 40,
+                        autoSave: true,
+                    }, ValidationTextBox)
                 }
             });
 
@@ -818,10 +915,21 @@ define([
                 columns: {
                     targetName: editor({
                         label: this.i18n.TargetName,
-                        width: 144,
+                        width: 100,
                         autoSave: true,
-                        editor: "text"
-                    })
+                        editor: "text",
+                        editorArgs: {
+                            style: "width: 100%;"
+                        }
+                    }, TextBox),
+                    targetNumParts: editor({
+                        editorArgs: {
+                            promptMessage: this.i18n.ValidationErrorEnterNumber,
+                        },
+                        label: this.i18n.NumberofParts,
+                        width: 40,
+                        autoSave: true,
+                    }, ValidationTextBox)
                 }
             });
 
@@ -830,10 +938,21 @@ define([
                 columns: {
                     fullPath: editor({
                         label: this.i18n.SourcePath,
-                        width: 144,
+                        width: 100,
                         autoSave: true,
-                        editor: "text"
-                    })
+                        editor: "text",
+                        editorArgs: {
+                            style: "width: 100%;"
+                        }
+                    }, TextBox),
+                    targetNumParts: editor({
+                        editorArgs: {
+                            promptMessage: this.i18n.ValidationErrorEnterNumber,
+                        },
+                        label: this.i18n.NumberofParts,
+                        width: 40,
+                        autoSave: true,
+                    }, ValidationTextBox)
                 }
             });
 
@@ -870,6 +989,7 @@ define([
                     lang.mixin(item, lang.mixin({
                         targetName: item.displayName,
                         targetRecordLength: "",
+                        targetNumParts: "",
                         targetRowTag: "Row",
                         targetRowPath: "/"
                     }, item));

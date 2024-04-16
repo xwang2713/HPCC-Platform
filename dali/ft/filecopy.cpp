@@ -22,7 +22,6 @@
 #include "jlib.hpp"
 #include "jio.hpp"
 #include <math.h>
-
 #include "jmutex.hpp"
 #include "jfile.hpp"
 #include "jsocket.hpp"
@@ -62,7 +61,7 @@ inline void setCanAccessDirectly(RemoteFilename & file)
 
 #endif
 
-#define DEFAULT_MAX_CONNECTIONS 800
+#define DEFAULT_MAX_TRANSFERS 800
 #define PARTITION_RECOVERY_LIMIT 1000
 #define EXPECTED_RESPONSE_TIME          (60 * 1000)
 #define RESPONSE_TIME_TIMEOUT           (60 * 60 * 1000)
@@ -98,6 +97,8 @@ inline void setCanAccessDirectly(RemoteFilename & file)
 #define ANencryptKey        "@encryptKey"
 #define ANdecryptKey        "@decryptKey"
 #define ANumask             "@umask"
+#define ANuseFtSlave        "@useFtSlave"
+#define ANsprayServiceName  "@sprayServiceName"
 
 #define PNpartition         "partition"
 #define PNprogress          "progress"
@@ -114,8 +115,6 @@ inline void setCanAccessDirectly(RemoteFilename & file)
 const unsigned operatorUpdateFrequency = 5000;      // time between updates in ms
 const unsigned abortCheckFrequency = 20000;         // time between updates in ms
 const unsigned sdsUpdateFrequency = 20000;          // time between updates in ms
-const unsigned maxSlaveUpdateFrequency = 1000;      // time between updates in ms - small number of nodes.
-const unsigned minSlaveUpdateFrequency = 5000;      // time between updates in ms - large number of nodes.
 
 
 bool TargetLocation::canPull()
@@ -125,13 +124,13 @@ bool TargetLocation::canPull()
 
 //----------------------------------------------------------------------------
 
-FilePartInfo::FilePartInfo(const RemoteFilename & _filename)
+FilePartInfo::FilePartInfo(const RemoteFilename & _filename, unsigned _partNum) : partNum(_partNum)
 {
     filename.set(_filename);
     init();
 }
 
-FilePartInfo::FilePartInfo()
+FilePartInfo::FilePartInfo(unsigned _partNum) : partNum(_partNum)
 {
     init();
 }
@@ -179,7 +178,7 @@ void FilePartInfo::init()
 
 //----------------------------------------------------------------------------
 
-void shuffle(CIArray & array)
+static void shuffle(TransferArray & array)
 {
     //Use our own seeded random number generator, so that multiple dfu at the same time are less likely to clash.
     Owned<IRandomNumberGenerator> random = createRandomNumberGenerator();
@@ -201,10 +200,13 @@ FileTransferThread::FileTransferThread(FileSprayer & _sprayer, byte _action, con
     calcCRC = _calcCRC;
     action = _action;
     ep.set(_ep);
+    if (isContainerized())
+        url.set(sprayer.sprayServiceHost);
+    else
+        ep.getEndpointHostText(url);
 //  progressInfo = _progressInfo;
     sem = NULL;
     ok = false;
-    job = unknownJob;
     allDone = false;
     started = false;
 }
@@ -231,7 +233,7 @@ void FileTransferThread::go(Semaphore & _sem)
     else
     {
 #ifdef RUN_SLAVES_ON_THREADS
-        start();
+        start(true);
 #else
         transferAndSignal();
 #endif
@@ -247,8 +249,6 @@ void FileTransferThread::logIfRunning(StringBuffer &list)
 {
     if (started && !allDone && !error)
     {
-        StringBuffer url;
-        ep.getUrlStr(url);
         DBGLOG("Still waiting for slave %s", url.str());
         if (list.length())
             list.append(',');
@@ -293,14 +293,176 @@ bool FileTransferThread::catchReadBuffer(ISocket * socket, MemoryBuffer & msg, u
     }
 }
 
+void FileTransferThread::prepareCmd(MemoryBuffer &msg, unsigned version)
+{
+    //Send message and wait for response...
+    msg.append(action);
+
+    if (0 == version) // 0 indicates command is destined to ftslave not dafilesrv
+    {
+        // send 0 for password info that was in <= 7.6 versions
+        unsigned zero = 0;
+        msg.append(zero);
+    }
+    ep.serialize(msg);
+    sprayer.srcFormat.serialize(msg);
+    sprayer.tgtFormat.serialize(msg);
+    msg.append(sprayer.calcInputCRC());
+    msg.append(calcCRC);
+    serialize(partition, msg);
+    msg.append(sprayer.numConcurrentTransfers);
+    msg.append(sprayer.slaveUpdateFrequency);
+    msg.append(sprayer.replicate); // NB: controls whether FtSlave copies source timestamp
+    msg.append(sprayer.mirroring);
+    msg.append(sprayer.isSafeMode);
+
+    msg.append(progress.ordinality());
+    ForEachItemIn(i, progress)
+        progress.item(i).serializeCore(msg);
+
+    msg.append(sprayer.throttleNicSpeed);
+    msg.append(sprayer.compressedInput);
+    msg.append(sprayer.compressOutput);
+    msg.append(sprayer.copyCompressed);
+    msg.append(sprayer.transferBufferSize);
+    msg.append(sprayer.encryptKey);
+    msg.append(sprayer.decryptKey);
+
+    sprayer.srcFormat.serializeExtra(msg, 1);
+    sprayer.tgtFormat.serializeExtra(msg, 1);
+
+    ForEachItemIn(i2, progress)
+        progress.item(i2).serializeExtra(msg, 1);
+
+    //NB: Any extra data must be appended at the end...
+
+    msg.append(sprayer.fileUmask);
+
+    ForEachItemIn(i3, progress)
+        progress.item(i3).serializeExtra(msg, 2);
+}
+
+bool FileTransferThread::launchFtSlaveCmd()
+{
+    Owned<ISocket> socket;
+    MemoryBuffer msg;
+    msg.setEndian(__BIG_ENDIAN);
+    SocketEndpoint connectEP;
+    HANDLE localFtSlaveHandle = 0; // used only if ftslave is launched on this host
+    Owned<IException> exception;
+    try
+    {
+        if (sprayer.useFtSlave)
+        {
+            StringBuffer tmp;
+            if (isContainerized())
+            {
+                //In containerized world all ftslave processes are executed locally
+                connectEP.set("localhost");
+            }
+            else
+                connectEP.set(ep);
+            socket.setown(spawnRemoteChild(SPAWNdfu, sprayer.querySlaveExecutable(ep, tmp), connectEP, DAFT_VERSION, queryFtSlaveLogDir(), this, wuid, &localFtSlaveHandle));
+            if (!socket)
+                throwError1(DFTERR_FailedStartSlave, url.str());
+
+            prepareCmd(msg, 0);
+            if (!catchWriteBuffer(socket, msg))
+                throwError1(RFSERR_TimeoutWaitConnect, url.str());
+        }
+        else
+        {
+            if (isContainerized())
+                connectEP.set(sprayer.sprayServiceHost);
+            else
+            {
+                connectEP.set(ep);
+                setDafsEndpointPort(connectEP);
+                if (connectEP.isNull())
+                    return false;
+            }
+            // allow a relatively long time in case service is overloaded (unable to cope with # parallel requests)
+            constexpr unsigned timeoutMs = 1000*60*30; // 30 mins
+            CTimeMon tm(timeoutMs);
+            unsigned remaining;
+            while (true)
+            {
+                try
+                {
+                    socket.setown(connectDafs(connectEP, 60000, sprayer.sprayServiceConfig));
+                    if (socket)
+                        break;
+                }
+                catch (IException *e)
+                {
+                    if (e->errorCode() != JSOCKERR_connection_failed || tm.timedout(&remaining))
+                        throw;
+                    PROGLOG("Dafilesrv spray service not responding, retrying..");
+                }
+            }
+            if (!socket)
+                throwError1(DFTERR_FailedStartSlave, url.str());
+            prepareCmd(msg, daFileSrvCommandVersion);
+            sendDaFsFtSlaveCmd(socket, msg);
+        }
+        bool done;
+        for (;;)
+        {
+            msg.clear();
+            if (!catchReadBuffer(socket, msg, FTTIME_PROGRESS))
+                throwError1(RFSERR_TimeoutWaitSlave, url.str());
+
+            msg.setEndian(__BIG_ENDIAN);
+            msg.read(done);
+            if (done)
+                break;
+
+            OutputProgress newProgress;
+            newProgress.deserializeCore(msg);
+            newProgress.deserializeExtra(msg, 1);
+            newProgress.deserializeExtra(msg, 2);
+            sprayer.updateProgress(newProgress);
+
+            LOG(MCdebugProgress(10000), "Update %s: %d %" I64F "d->%" I64F "d", url.str(), newProgress.whichPartition, newProgress.inputLength, newProgress.outputLength);
+            if (isAborting())
+            {
+                if (!sendRemoteAbort(socket))
+                    throwError1(RFSERR_TimeoutWaitSlave, url.str());
+            }
+        }
+        msg.read(ok);
+        setErrorOwn(deserializeException(msg));
+
+        LOG(MCdebugProgressDetail, "Finished generating part %s [%p] ok(%d) error(%d)", url.str(), this, (int)ok, (int)(error!=NULL));
+
+        // if communicating with ftslave, the process has a final ack wait
+        if (sprayer.useFtSlave)
+        {
+            // ftslave sends back a final ack.
+            msg.clear().append(true);
+            catchWriteBuffer(socket, msg);
+            if (sprayer.options->getPropInt("@fail", 0)) // probably used as a debug testing option
+                throwError1(DFTERR_CopyFailed, "unknown reason");
+        }
+    }
+    catch (IException *e)
+    {
+        exception.set(e);
+    }
+    if (localFtSlaveHandle)
+    {
+        DWORD runcode;
+        if (!wait_program_timeout(localFtSlaveHandle, runcode, 5000))
+            WARNLOG("FileTransferThread::launchFtSlaveCmd - Timed out waiting for local FtSlave process to exit");
+    }
+    if (exception)
+        throw exception.getClear();
+    return ok;
+}
 
 bool FileTransferThread::performTransfer()
 {
-    bool ok = false;
-    StringBuffer url;
-    ep.getUrlStr(url);
-
-    LOG(MCdebugProgress, job, "Transferring part %s [%p]", url.str(), this);
+    LOG(MCdebugProgress, "Transferring part %s [%p]", url.str(), this);
     started = true;
     allDone = true;
     if (sprayer.isSafeMode || action == FTactionpush)
@@ -330,113 +492,19 @@ bool FileTransferThread::performTransfer()
 
     if (allDone)
     {
-        LOG(MCdebugInfo, job, "Creation of part %s already completed", url.str());
+        LOG(MCdebugInfo, "Creation of part %s already completed", url.str());
         return true;
     }
 
     if (partition.empty())
     {
-        LOG(MCdebugInfo, job, "No elements to transfer for this slave");
+        LOG(MCdebugInfo, "No elements to transfer for this slave");
         return true;
     }
 
-    LOG(MCdebugProgressDetail, job, "Start generate part %s [%p]", url.str(), this);
-    StringBuffer tmp;
-    Owned<ISocket> socket = spawnRemoteChild(SPAWNdfu, sprayer.querySlaveExecutable(ep, tmp), ep, DAFT_VERSION, queryFtSlaveLogDir(), this, wuid);
-    if (socket)
-    {
-        MemoryBuffer msg;
-        msg.setEndian(__BIG_ENDIAN);
-
-        //MORE: Allow this to be configured by an option.
-        unsigned slaveUpdateFrequency = minSlaveUpdateFrequency;
-        if (sprayer.numParallelSlaves() < 5)
-            slaveUpdateFrequency = maxSlaveUpdateFrequency;
-
-        //Send message and wait for response...
-        msg.append(action);
-
-        // send 0 for password info that was in <= 7.6 versions
-        unsigned zero = 0;
-        msg.append(zero);
-
-        ep.serialize(msg);
-        sprayer.srcFormat.serialize(msg);
-        sprayer.tgtFormat.serialize(msg);
-        msg.append(sprayer.calcInputCRC());
-        msg.append(calcCRC);
-        serialize(partition, msg);
-        msg.append(sprayer.numParallelSlaves());
-        msg.append(slaveUpdateFrequency);
-        msg.append(sprayer.replicate); // NB: controls whether FtSlave copies source timestamp
-        msg.append(sprayer.mirroring);
-        msg.append(sprayer.isSafeMode);
-
-        msg.append(progress.ordinality());
-        ForEachItemIn(i, progress)
-            progress.item(i).serializeCore(msg);
-
-        msg.append(sprayer.throttleNicSpeed);
-        msg.append(sprayer.compressedInput);
-        msg.append(sprayer.compressOutput);
-        msg.append(sprayer.copyCompressed);
-        msg.append(sprayer.transferBufferSize);
-        msg.append(sprayer.encryptKey);
-        msg.append(sprayer.decryptKey);
-
-        sprayer.srcFormat.serializeExtra(msg, 1);
-        sprayer.tgtFormat.serializeExtra(msg, 1);
-
-        ForEachItemIn(i2, progress)
-            progress.item(i2).serializeExtra(msg, 1);
-
-        //NB: Any extra data must be appended at the end...
-
-        msg.append(sprayer.fileUmask);
-
-        if (!catchWriteBuffer(socket, msg))
-            throwError1(RFSERR_TimeoutWaitConnect, url.str());
-
-        bool done;
-        for (;;)
-        {
-            msg.clear();
-            if (!catchReadBuffer(socket, msg, FTTIME_PROGRESS))
-                throwError1(RFSERR_TimeoutWaitSlave, url.str());
-
-            msg.setEndian(__BIG_ENDIAN);
-            msg.read(done);
-            if (done)
-                break;
-
-            OutputProgress newProgress;
-            newProgress.deserializeCore(msg);
-            newProgress.deserializeExtra(msg, 1);
-            sprayer.updateProgress(newProgress);
-
-            LOG(MCdebugProgress(10000), job, "Update %s: %d %" I64F "d->%" I64F "d", url.str(), newProgress.whichPartition, newProgress.inputLength, newProgress.outputLength);
-
-            if (isAborting())
-            {
-                if (!sendRemoteAbort(socket))
-                    throwError1(RFSERR_TimeoutWaitSlave, url.str());
-            }
-        }
-        msg.read(ok);
-        setErrorOwn(deserializeException(msg));
-
-        LOG(MCdebugProgressDetail, job, "Finished generating part %s [%p] ok(%d) error(%d)", url.str(), this, (int)ok, (int)(error!=NULL));
-
-        msg.clear().append(true);
-        catchWriteBuffer(socket, msg);
-        if (sprayer.options->getPropInt("@fail", 0))
-            throwError(DFTERR_CopyFailed);
-    }
-    else
-    {
-        throwError1(DFTERR_FailedStartSlave, url.str());
-    }
-    LOG(MCdebugProgressDetail, job, "Stopped generate part %s [%p]", url.str(), this);
+    LOG(MCdebugProgressDetail, "Start generate part %s [%p]", url.str(), this);
+    bool ok = launchFtSlaveCmd();
+    LOG(MCdebugProgressDetail, "Stopped generate part %s [%p]", url.str(), this);
 
     allDone = true;
     return ok;
@@ -447,7 +515,7 @@ void FileTransferThread::setErrorOwn(IException * e)
 {
     error.setown(e);
     if (error)
-        sprayer.setError(ep, error);
+        sprayer.setError(url, error);
 }
 
 bool FileTransferThread::transferAndSignal()
@@ -461,7 +529,7 @@ bool FileTransferThread::transferAndSignal()
         }
         catch (IException * e)
         {
-            FLLOG(MCexception(e), job, e, "Transferring files");
+            FLLOG(MCexception(e), e, "Transferring files");
             setErrorOwn(e);
         }
     }
@@ -605,7 +673,6 @@ FileSprayer::FileSprayer(IPropertyTree * _options, IPropertyTree * _progress, IR
     allowRecovery = !options->getPropBool(ANnoRecover) && !querySplitPrefix();
     isRecovering = allowRecovery && progressTree->hasProp(ANhasProgress);
     isSafeMode = options->getPropBool(ANsafe);
-    job = unknownJob;
     progressReport = NULL;
     abortChecker = NULL;
     sizeToBeRead = 0;
@@ -615,18 +682,22 @@ FileSprayer::FileSprayer(IPropertyTree * _options, IPropertyTree * _progress, IR
     calcedInputCRC = false;
     aborting = false;
     totalLengthRead = 0;
+    totalNumReads = 0;
+    totalNumWrites = 0;
     throttleNicSpeed = 0;
     compressedInput = false;
     compressOutput = options->getPropBool(ANcompress);
     copyCompressed = false;
     transferBufferSize = options->getPropInt(ANtransferBufferSize);
     if (transferBufferSize)
-        LOG(MCdebugProgressDetail, job, "Using transfer buffer size %d", transferBufferSize);
+        LOG(MCdebugProgressDetail, "Using transfer buffer size %d", transferBufferSize);
     else // zero is default
         transferBufferSize = DEFAULT_STD_BUFFER_SIZE;
     progressDone = false;
     encryptKey.set(options->queryProp(ANencryptKey));
     decryptKey.set(options->queryProp(ANdecryptKey));
+    useFtSlave = options->getPropBool(ANuseFtSlave);
+    sprayServiceName.set(options->queryProp(ANsprayServiceName));
 
     fileUmask = -1;
     const char *umaskStr = options->queryProp(ANumask);
@@ -637,7 +708,7 @@ FileSprayer::FileSprayer(IPropertyTree * _options, IPropertyTree * _progress, IR
         fileUmask = (int)strtol(umaskStr, &eptr, 8);
         if (errno || *eptr != '\0')
         {
-            LOG(MCdebugInfo, job, "Invalid umask value <%s> ignored", umaskStr);
+            LOG(MCdebugInfo, "Invalid umask value <%s> ignored", umaskStr);
             fileUmask = -1;
         }
         else
@@ -690,7 +761,7 @@ void FileSprayer::addEmptyFilesToPartition(unsigned from, unsigned to)
 {
     for (unsigned i = from; i < to ; i++)
     {
-        LOG(MCdebugProgressDetail, job, "Insert a dummy entry for target %d", i);
+        LOG(MCdebugProgressDetail, "Insert a dummy entry for target %d", i);
         PartitionPoint & next = createLiteral(0, NULL, 0);
         next.whichOutput = i;
         partition.append(next);
@@ -718,7 +789,7 @@ void FileSprayer::afterTransfer()
 {
     if (calcInputCRC())
     {
-        LOG(MCdebugProgressDetail, job, "Checking input CRCs");
+        LOG(MCdebugProgressDetail, "Checking input CRCs");
         CRC32Merger partCRC;
 
         unsigned startCurSource = 0;
@@ -729,7 +800,7 @@ void FileSprayer::afterTransfer()
 
             if (!curProgress.hasInputCRC)
             {
-                LOG(MCdebugProgressDetail, job, "Could not calculate input CRCs - cannot check");
+                LOG(MCdebugProgressDetail, "Could not calculate input CRCs - cannot check");
                 break;
             }
             partCRC.addChildCRC(curProgress.inputLength, curProgress.inputCRC, false);
@@ -896,9 +967,9 @@ void FileSprayer::beforeTransfer()
             }
         }
         catch (IException *e) {
-            FLLOG(MCexception(e), job, e, "Creating Directory");
+            FLLOG(MCexception(e), e, "Creating Directory");
             e->Release();
-            LOG(MCdebugInfo, job, "Ignoring create directory error");
+            LOG(MCdebugInfo, "Ignoring create directory error");
         }
 
         // If pushing files, and not recovering, then need to delete the target files, because the slaves might be writing in any order
@@ -961,14 +1032,14 @@ void FileSprayer::beforeTransfer()
         Owned<IEnvironmentFactory> factory = getEnvironmentFactory(true);
         Owned<IConstEnvironment> env = factory->openEnvironment();
         StringBuffer ipText;
-        targets.item(0).filename.queryIP().getIpText(ipText);
+        targets.item(0).filename.queryIP().getHostText(ipText);
         Owned<IConstMachineInfo> machine = env->getMachineByAddress(ipText.str());
         if (machine)
         {
             if (machine->getOS() == MachineOsW2K)
             {
                 throttleNicSpeed = machine->getNicSpeedMbitSec();
-                LOG(MCdebugInfo, job, "Throttle target speed to %dMbit/sec", throttleNicSpeed);
+                LOG(MCdebugInfo, "Throttle target speed to %dMbit/sec", throttleNicSpeed);
             }
         }
     }
@@ -1009,7 +1080,7 @@ bool FileSprayer::calcInputCRC()
 
 void FileSprayer::calculateOne2OnePartition()
 {
-    LOG(MCdebugProgressDetail, job, "Setting up one2One partition");
+    LOG(MCdebugProgressDetail, "Setting up one2One partition");
     if (sources.ordinality() != targets.ordinality())
         throwError(DFTERR_ReplicateNumPartsDiffer);
     if (!srcFormat.equals(tgtFormat))
@@ -1080,7 +1151,7 @@ void FileSprayer::calculateSplitPrefixPartition(const char * splitPrefix)
     if (!srcFormat.equals(tgtFormat))
        throwError(DFTERR_SplitPrefixSameFormat);
 
-    LOG(MCdebugProgressDetail, job, "Setting up split prefix partition");
+    LOG(MCdebugProgressDetail, "Setting up split prefix partition");
 
     Owned<TargetLocation> target = &targets.popGet();       // remove target, add lots of new ones
     RemoteFilename blobTarget;
@@ -1094,7 +1165,7 @@ void FileSprayer::calculateSplitPrefixPartition(const char * splitPrefix)
 
     AsyncExtractBlobInfo extractor(splitPrefix, *this);
     unsigned numSources = sources.ordinality();
-    extractor.For(numSources, numParallelConnections(numSources), true, false);
+    extractor.For(numSources, numPartitionThreads(numSources), true, false);
 
     ForEachItemIn(idx, sources)
     {
@@ -1109,7 +1180,7 @@ void FileSprayer::calculateSplitPrefixPartition(const char * splitPrefix)
             remoteFilename.append(curBlob.filename);
             blobTarget.clear();
             blobTarget.setRemotePath(remoteFilename);
-            targets.append(* new TargetLocation(blobTarget));
+            targets.append(* new TargetLocation(blobTarget, target->partNum));
             partition.append(*new PartitionPoint(idx, targets.ordinality()-1, curBlob.offset, curBlob.length, curBlob.length));
         }
     }
@@ -1117,7 +1188,7 @@ void FileSprayer::calculateSplitPrefixPartition(const char * splitPrefix)
 
 void FileSprayer::calculateMany2OnePartition()
 {
-    LOG(MCdebugProgressDetail, job, "Setting up many2one partition");
+    LOG(MCdebugProgressDetail, "Setting up many2one partition");
     const char *partSeparator = srcFormat.getPartSeparatorString();
     offset_t partSeparatorLength = ( partSeparator == nullptr ? 0 : strlen(partSeparator));
     offset_t lastContentLength = 0;
@@ -1149,7 +1220,7 @@ void FileSprayer::calculateMany2OnePartition()
 
 void FileSprayer::calculateNoSplitPartition()
 {
-    LOG(MCdebugProgressDetail, job, "Setting up no split partition");
+    LOG(MCdebugProgressDetail, "Setting up no split partition");
     if (!usePullOperation() && !srcFormat.equals(tgtFormat))
         throwError(DFTERR_NoSplitPushChangeFormat);
 
@@ -1212,7 +1283,7 @@ void FileSprayer::calculateNoSplitPartition()
 
 void FileSprayer::calculateSprayPartition()
 {
-    LOG(MCdebugProgressDetail, job, "Calculating N:M partition");
+    LOG(MCdebugProgressDetail, "Calculating N:M partition");
 
     bool calcOutput = needToCalcOutput();
     FormatPartitionerArray partitioners;
@@ -1227,13 +1298,13 @@ void FileSprayer::calculateSprayPartition()
     }
 
     unsigned numProcessors = partitioners.ordinality();
-    unsigned maxConnections = numParallelConnections(numProcessors);
+    unsigned numThreads = numPartitionThreads(numProcessors);
 
     //Throttle maximum number of concurrent transfers by starting n threads, and
     //then waiting for one to complete before going on to the next
     Semaphore sem;
     unsigned goIndex;
-    for (goIndex=0; goIndex < maxConnections; goIndex++)
+    for (goIndex=0; goIndex < numThreads; goIndex++)
         partitioners.item(goIndex).calcPartitions(&sem);
 
     for (; goIndex<numProcessors; goIndex++)
@@ -1242,7 +1313,7 @@ void FileSprayer::calculateSprayPartition()
         partitioners.item(goIndex).calcPartitions(&sem);
     }
 
-    for (unsigned waitCount=0; waitCount < maxConnections;waitCount++)
+    for (unsigned waitCount=0; waitCount < numThreads; waitCount++)
         sem.wait();
 
     ForEachItemIn(idx2, partitioners)
@@ -1274,11 +1345,11 @@ IFormatPartitioner * FileSprayer::createPartitioner(aindex_t index, bool calcOut
     StringBuffer remoteFilename;
     FilePartInfo & cur = sources.item(index);
     cur.filename.getRemotePath(remoteFilename.clear());
-    LOG(MCdebugInfoDetail, job, "Partition %d(%s)", index, remoteFilename.str());
+    LOG(MCdebugInfoDetail, "Partition %d(%s)", index, remoteFilename.str());
 
     srcFormat.quotedTerminator = options->getPropBool("@quotedTerminator", true);
     const SocketEndpoint & ep = cur.filename.queryEndpoint();
-    IFormatPartitioner * partitioner = createFormatPartitioner(ep, srcFormat, tgtFormat, calcOutput, queryFixedSlave(), wuid);
+    IFormatPartitioner * partitioner = createFormatPartitioner(*this, ep, srcFormat, tgtFormat, calcOutput, queryFixedSlave(), wuid);
 
     // CSV record structure discovery of the first source
     bool isRecordStructurePresent = options->getPropBool("@recordStructurePresent", false);
@@ -1306,7 +1377,7 @@ void FileSprayer::examineCsvStructure()
         storeCsvRecordStructure(*partitioner);
     }
     else
-        LOG(MCdebugInfoDetail, job, "No source CSV file to examine.");
+        LOG(MCdebugInfoDetail, "No source CSV file to examine.");
 }
 
 void FileSprayer::calculateOutputOffsets()
@@ -1415,6 +1486,9 @@ void FileSprayer::calibrateProgress()
 
 void FileSprayer::checkForOverlap()
 {
+    if (distributedSource && distributedSource->isExternal())
+        return;
+
     unsigned num = std::min(sources.ordinality(), targets.ordinality());
 
     for (unsigned idx = 0; idx < num; idx++)
@@ -1448,6 +1522,41 @@ void FileSprayer::cleanupRecovery()
 bool FileSprayer::usePushWholeOperation() const
 {
     return targets.item(0).filename.isUrl();
+}
+
+IAPICopyClient * FileSprayer::getAPICopyClient()
+{
+    bool needCalcCRC = calcCRC();
+    if (needCalcCRC && !sources.item(0).hasCRC)
+        return nullptr;
+
+    if (!distributedSource)
+        return nullptr;
+
+    StringBuffer sourceClusterName;
+    distributedSource->getClusterName(0, sourceClusterName);
+    Owned<IStoragePlane> sourcePlane = getDataStoragePlane(sourceClusterName.str(), false);
+    if (!sourcePlane)
+        return nullptr;
+
+    Owned<IStorageApiInfo> sourceAPIInfo = sourcePlane->getStorageApiInfo();
+    if (!sourceAPIInfo)
+        return nullptr;
+
+    if (!distributedTarget)
+        return nullptr;
+
+    StringBuffer targetClusterName;
+    distributedTarget->getClusterName(0, targetClusterName);
+    Owned<IStoragePlane> targetPlane = getDataStoragePlane(targetClusterName.str(), false);
+    if (!targetPlane)
+        return nullptr;
+
+    Owned<IStorageApiInfo> targetAPIInfo = targetPlane->getStorageApiInfo();
+    if (!targetAPIInfo)
+        return nullptr;
+
+    return createApiCopyClient(sourceAPIInfo, targetAPIInfo);
 }
 
 bool FileSprayer::canRenameOutput() const
@@ -1559,7 +1668,7 @@ void FileSprayer::analyseFileHeaders(bool setcurheadersize)
         FilePartInfo & cur = sources.item(idx);
         StringBuffer s;
         cur.filename.getPath(s);
-        LOG(MCdebugInfo, job, "Examine header of file %s", s.str());
+        LOG(MCdebugInfo, "Examine header of file %s", s.str());
 
         Owned<IFile> file = createIFile(cur.filename);
         Owned<IFileIO> io = file->open(IFOread);
@@ -1817,14 +1926,14 @@ void FileSprayer::displayPartition()
 
 #ifdef _DEBUG
         if ((partition.item(idx).whichInput >= 0) && (partition.item(idx).whichInput < sources.ordinality()) )
-            LOG(MCdebugInfoDetail, unknownJob,
+            LOG(MCdebugInfoDetail,
                      "   Header size: %" I64F "u, XML header size: %" I64F "u, XML footer size: %" I64F "u",
                      sources.item(partition.item(idx).whichInput).headerSize,
                      sources.item(partition.item(idx).whichInput).xmlHeaderLength,
                      sources.item(partition.item(idx).whichInput).xmlFooterLength
             );
         else
-            LOG(MCdebugInfoDetail, unknownJob,"   No source file for this partition");
+            LOG(MCdebugInfoDetail, "   No source file for this partition");
 #endif
     }
 }
@@ -1852,7 +1961,7 @@ void FileSprayer::gatherFileSizes(bool errorIfMissing)
 {
     FilePartInfoArray fileSizeQueue;
 
-    LOG(MCdebugProgress, job, "Start gathering file sizes...");
+    LOG(MCdebugProgress, "Start gathering file sizes...");
 
     ForEachItemIn(idx, sources)
     {
@@ -1862,7 +1971,7 @@ void FileSprayer::gatherFileSizes(bool errorIfMissing)
     }
 
     gatherFileSizes(fileSizeQueue, errorIfMissing);
-    LOG(MCdebugProgress, job, "Finished gathering file sizes...");
+    LOG(MCdebugProgress, "Finished gathering file sizes...");
 }
 
 void FileSprayer::afterGatherFileSizes()
@@ -1874,7 +1983,7 @@ void FileSprayer::afterGatherFileSizes()
         {
             FilePartInfo & cur = sources.item(idx2);
 
-            LOG(MCdebugProgress, job, "%9u:%s (size: %llu bytes)",
+            LOG(MCdebugProgress, "%9u:%s (size: %llu bytes)",
                                        idx2, cur.filename.getTail(tailStr.clear()).str(), cur.size
                                        );
             cur.offset = totalSize;
@@ -1888,8 +1997,8 @@ void FileSprayer::afterGatherFileSizes()
                     throwError2(DFTERR_InputIsInvalidMultiple, cur.filename.getRemotePath(s).str(), srcFormat.getUnitSize());
             }
         }
-        LOG(MCdebugProgress, job, "----------------------------------------------");
-        LOG(MCdebugProgress, job, "All together: %llu bytes in %u file(s)", totalSize, sources.ordinality());
+        LOG(MCdebugProgress, "----------------------------------------------");
+        LOG(MCdebugProgress, "All together: %llu bytes in %u file(s)", totalSize, sources.ordinality());
     }
 }
 
@@ -1898,19 +2007,19 @@ void FileSprayer::gatherFileSizes(FilePartInfoArray & fileSizeQueue, bool errorI
 {
     if (fileSizeQueue.ordinality())
     {
-        CIArrayOf<FileSizeThread> threads;
+        IArrayOf<FileSizeThread> threads;
         CriticalSection fileSizeCS;
 
         //Is this a good guess?  start square root of number of files threads??
         unsigned numThreads = (unsigned)sqrt((float)fileSizeQueue.ordinality());
         if (numThreads>20)
             numThreads = 20;
-        LOG(MCdebugProgress, job, "Gathering %d file sizes on %d threads", fileSizeQueue.ordinality(), numThreads);
+        LOG(MCdebugProgress, "Gathering %d file sizes on %d threads", fileSizeQueue.ordinality(), numThreads);
         unsigned idx;
         for (idx = 0; idx < numThreads; idx++)
             threads.append(*new FileSizeThread(fileSizeQueue, fileSizeCS, compressedInput&&!copyCompressed, errorIfMissing));
         for (idx = 0; idx < numThreads; idx++)
-            threads.item(idx).start();
+            threads.item(idx).start(true);
         for (;;) {
             bool alldone = true;
             StringBuffer err;
@@ -1922,6 +2031,8 @@ void FileSprayer::gatherFileSizes(FilePartInfoArray & fileSizeQueue, bool errorI
             if (alldone)
                 break;
         }
+        for (idx = 0; idx < numThreads; idx++)
+            threads.item(idx).join();
         for (idx = 0; idx < numThreads; idx++)
             threads.item(idx).queryThrowError();
     }
@@ -1945,7 +2056,7 @@ void FileSprayer::gatherMissingSourceTarget(IFileDescriptor * source)
             {
                 for (unsigned copy=0; copy < numCopies; copy++)
                 {
-                    FilePartInfo & next = * new FilePartInfo;
+                    FilePartInfo & next = * new FilePartInfo(idx1);
                     source->getFilename(idx1, copy, next.filename);
                     if (copy==0)
                         primparts.append(next);
@@ -1987,7 +2098,7 @@ void FileSprayer::gatherMissingSourceTarget(IFileDescriptor * source)
                 }
                 else if (secondarySize != -1)
                 {
-                    LOG(MCwarning, unknownJob, "Replicate - primary and secondary copies have different sizes (%" I64F "d v %" I64F "d) for part %u", primarySize, secondarySize, idx);
+                    LOG(MCwarning, "Replicate - primary and secondary copies have different sizes (%" I64F "d v %" I64F "d) for part %u", primarySize, secondarySize, idx);
                     continue; // ignore copy
                 }
             }
@@ -1995,7 +2106,7 @@ void FileSprayer::gatherMissingSourceTarget(IFileDescriptor * source)
             {
                 if (primarySize == -1)
                 {
-                    LOG(MCwarning, unknownJob, "Replicate - neither primary or secondary copies exist for part %u", idx);
+                    LOG(MCwarning, "Replicate - neither primary or secondary copies exist for part %u", idx);
                     primarySize = 0;        // to stop later failure to gather the file size
                 }
                 continue; // ignore copy
@@ -2011,9 +2122,18 @@ void FileSprayer::gatherMissingSourceTarget(IFileDescriptor * source)
                     break;
                 }
             }
-            if (!done) {
-                sources.append(* new FilePartInfo(*((sourceCopy == 0)? &primary.filename : &secondary.filename)));
-                targets.append(* new TargetLocation(*dst));
+            if (!done)
+            {
+                if (sourceCopy == 0)
+                {
+                    sources.append(* new FilePartInfo(primary.filename, primary.partNum));
+                    targets.append(* new TargetLocation(*dst, primary.partNum));
+                }
+                else
+                {
+                    sources.append(* new FilePartInfo(secondary.filename, secondary.partNum));
+                    targets.append(* new TargetLocation(*dst, secondary.partNum));
+                }
                 sources.tos().size = (sourceCopy == 0) ? primarySize : secondarySize;
             }
         }
@@ -2362,7 +2482,7 @@ void FileSprayer::insertHeaders()
             }
             addPrefix(filePrefix.length(), filePrefix.toByteArray(), idx, partitionWork);
         }
-        LOG(MCdebugProgress, job, "Publish headers");
+        LOG(MCdebugProgress, "Publish headers");
         partition.swapWith(partitionWork);
     }
 }
@@ -2373,50 +2493,62 @@ bool FileSprayer::needToCalcOutput()
     return !usePullOperation() || options->getPropBool(ANverify);
 }
 
-unsigned FileSprayer::numParallelConnections(unsigned limit)
+unsigned FileSprayer::numPartitionThreads(unsigned limit)
 {
     unsigned maxConnections = options->getPropInt(ANmaxConnections, limit);
-    if ((maxConnections == 0) || (maxConnections > limit)) maxConnections = limit;
+    if ((maxConnections == 0) || (maxConnections > limit))
+        maxConnections = limit;
     return maxConnections;
 }
 
-unsigned FileSprayer::numParallelSlaves()
+void FileSprayer::calcNumConcurrentTransfers()
 {
-    unsigned numPullers = transferSlaves.ordinality();
-    unsigned maxConnections = DEFAULT_MAX_CONNECTIONS;
+    unsigned failure = options->getPropInt("@fail", 0);
+    if (failure)
+    {
+        numConcurrentTransfers = 1;
+        return;
+    }
+
+    unsigned numTransferParts = transferSlaves.ordinality();  // == number of target or source parts (depending on whether pulling or pushing)
+    numConcurrentTransfers = DEFAULT_MAX_TRANSFERS;
     unsigned connectOption = options->getPropInt(ANmaxConnections, 0);
     if (connectOption)
-        maxConnections = connectOption;
-    else if (mirroring && (maxConnections * 3 < numPullers))
-        maxConnections = numPullers/3;
-    if (maxConnections > numPullers) maxConnections = numPullers;
-    return maxConnections;
+        numConcurrentTransfers = connectOption;
+    else if (mirroring && (numConcurrentTransfers * 3 < numTransferParts))
+        numConcurrentTransfers = numTransferParts/3;
+    if (numConcurrentTransfers > numTransferParts)
+        numConcurrentTransfers = numTransferParts;
+    LOG(MCdebugInfo, "numTransferParts: %u, numConcurrentTransfers: %u", numTransferParts, numConcurrentTransfers);
 }
 
 void FileSprayer::performTransfer()
 {
+    //MORE: Allow this to be configured by an option.
+    slaveUpdateFrequency = minSlaveUpdateFrequency;
+    calcNumConcurrentTransfers();
+    if (numConcurrentTransfers < 5)
+        slaveUpdateFrequency = maxSlaveUpdateFrequency;
+
     unsigned numSlaves = transferSlaves.ordinality();
-    unsigned maxConnections = numParallelSlaves();
-    unsigned failure = options->getPropInt("@fail", 0);
-    if (failure) maxConnections = 1;
 
     calibrateProgress();
     numSlavesCompleted = 0;
-    if (maxConnections > 1)
+    if (numConcurrentTransfers > 1)
         shuffle(transferSlaves);
 
     if (progressReport)
         progressReport->setRange(getSizeReadAlready(), sizeToBeRead, transferSlaves.ordinality());
 
 
-    LOG(MCdebugInfo, job, "Begin to transfer parts (%d threads)\n", maxConnections);
+    LOG(MCdebugInfo, "Begin to transfer parts (%d threads)\n", numConcurrentTransfers);
 
     //Throttle maximum number of concurrent transfers by starting n threads, and
     //then waiting for one to complete before going on to the next
     lastProgressTick = msTick();
     Semaphore sem;
     unsigned goIndex;
-    for (goIndex=0; goIndex<maxConnections; goIndex++)
+    for (goIndex=0; goIndex<numConcurrentTransfers; goIndex++)
         transferSlaves.item(goIndex).go(sem);
 
     //MORE: Should abort early if we get an error on one of the transfers...
@@ -2428,11 +2560,17 @@ void FileSprayer::performTransfer()
         transferSlaves.item(goIndex).go(sem);
     }
 
-    for (unsigned waitCount=0; waitCount<maxConnections;waitCount++)
+    for (unsigned waitCount=0; waitCount<numConcurrentTransfers;waitCount++)
     {
         waitForTransferSem(sem);
         numSlavesCompleted++;
     }
+
+#ifdef RUN_SLAVES_ON_THREADS
+    //Ensure that the transfer slave threads have terminated before continuing
+    ForEachItemIn(idx4, transferSlaves)
+        transferSlaves.item(idx4).join();
+#endif
 
     if (error)
         throw LINK(error);
@@ -2449,14 +2587,14 @@ void FileSprayer::performTransfer()
         if (isAborting())
             throwError(DFTERR_CopyAborted);
         else
-            throwError(DFTERR_CopyFailed);
+            throwError1(DFTERR_CopyFailed, "unknown reason");
     }
 }
 
 void FileSprayer::pullParts()
 {
     bool needCalcCRC = calcCRC();
-    LOG(MCdebugInfoDetail, job, "Calculate CRC = %d", needCalcCRC);
+    LOG(MCdebugInfoDetail, "Calculate CRC = %d", needCalcCRC);
     ForEachItemIn(idx, targets)
     {
         FileTransferThread & next = * new FileTransferThread(*this, FTactionpull, targets.item(idx).filename.queryEndpoint(), needCalcCRC, wuid);
@@ -2478,7 +2616,7 @@ void FileSprayer::pullParts()
 void FileSprayer::pushWholeParts()
 {
     bool needCalcCRC = calcCRC();
-    LOG(MCdebugInfoDetail, job, "Calculate CRC = %d", needCalcCRC);
+    LOG(MCdebugInfoDetail, "Calculate CRC = %d", needCalcCRC);
     //Create a slave for each of the target files, but execute it on the node corresponding to the first source file
     //For container mode this will need to execute on this node, or on a load balanced service
     ForEachItemIn(idx, targets)
@@ -2528,10 +2666,120 @@ void FileSprayer::pushParts()
     performTransfer();
 }
 
+void FileSprayer::transferUsingAPI(IAPICopyClient * copyClient)
+{
+    LOG(MCdebugInfo, "Transfer files using api: %s", copyClient->name());
+
+    OwnedPointerArrayOf<IAPICopyClientOp> apiClients;
+    unsigned failCount = 0;
+    StringBuffer failedReason;
+    const unsigned copyNum = 0; // Use copyNum=0 for all parts (may need to change this later)
+    try
+    {
+        ForEachItemIn(idx1, partition)
+        {
+            PartitionPoint & cur = partition.item(idx1);
+            OutputProgress & curProgress = progress.item(idx1);
+            if (curProgress.status==OutputProgress::StatusCopied)
+            {
+                apiClients.append(nullptr); // represents parts already copied
+                continue;
+            }
+
+            unsigned inputPartNum = sources.item(cur.whichInput).partNum;
+            IDistributedFilePart & srcDistFilePart = distributedSource->queryPart(inputPartNum);
+            StringBuffer sourcePath;
+            srcDistFilePart.getStorageFilePath(sourcePath, copyNum);
+            unsigned sourceStripeNum = srcDistFilePart.getStripeNum(copyNum);
+
+            unsigned outputPartNum = targets.item(cur.whichOutput).partNum;
+            IDistributedFilePart & tgtDistFilePart = distributedTarget->queryPart(outputPartNum);
+            StringBuffer targetPath;
+            tgtDistFilePart.getStorageFilePath(targetPath, copyNum);
+            unsigned targetStripeNum = tgtDistFilePart.getStripeNum(copyNum);
+
+            Owned<IAPICopyClientOp> apiClient;
+            apiClient.setown(copyClient->startCopy(sourcePath, sourceStripeNum, targetPath, targetStripeNum));
+            apiClients.append(apiClient.getClear());
+
+            curProgress.status = OutputProgress::StatusActive;
+            curProgress.numReads++;
+            curProgress.numWrites++;
+            if (isAborting())
+                break;
+        }
+    }
+    catch (IException * e)
+    {
+        failCount++;
+        e->errorMessage(failedReason); // Will need this later to throw exception (after aborting pending copy op)
+        e->Release();
+    }
+    // Update progress of copy operations
+    while (!isAborting() && !failCount)
+    {
+        bool anyRemaining = false;
+        ForEachItemIn(idx2, apiClients)
+        {
+            IAPICopyClientOp * apiClient = apiClients.item(idx2);
+            if (apiClient==nullptr || apiClient->getStatus()==ApiCopyStatus::Success)
+                continue;
+            OutputProgress & curProgress = progress.item(idx2);
+            CDateTime dateTime;
+            int64_t outputLength;
+            ApiCopyStatus status = apiClient->getProgress(dateTime, outputLength);
+            OutputProgress newProgress;
+            newProgress.set(curProgress);
+            if (status != ApiCopyStatus::Aborted && status!= ApiCopyStatus::Failed)
+            {
+                newProgress.resultTime = dateTime;
+                newProgress.outputLength = outputLength;
+                newProgress.inputLength = outputLength; // bytes read==bytes outputted
+            }
+            switch(status)
+            {
+            case ApiCopyStatus::Success:
+                newProgress.status = OutputProgress::StatusCopied;
+                newProgress.outputCRC = curProgress.inputCRC;
+                break;
+            case ApiCopyStatus::Pending:
+                anyRemaining = true;
+                break;
+            case ApiCopyStatus::Failed:
+            case ApiCopyStatus::Aborted:
+                failedReason.append("unknown");
+                failCount++;
+                newProgress.status = OutputProgress::StatusBegin;
+                newProgress.outputLength = 0;
+                newProgress.inputLength = 0;
+                break;
+            }
+            updateProgress(newProgress);
+        }
+        if (isAborting() || !anyRemaining || failCount)
+            break;
+        MilliSleep(1000);
+    }
+    // Something went wrong or abort requested, so abort all pending copy operations & delete any successful copies
+    if (isAborting() || failCount)
+    {
+        ForEachItemIn(idx3, apiClients)
+        {
+            IAPICopyClientOp * apiClient = apiClients.item(idx3);
+            if (apiClient==nullptr)
+                continue;
+            apiClient->abortCopy();
+            OutputProgress & curProgress = progress.item(idx3);
+            curProgress.status = OutputProgress::StatusBegin;
+        }
+        if (failCount)
+            throw makeStringExceptionV(DFTERR_CopyFailed, DFTERR_CopyFailed_Text, failedReason.str());
+    }
+}
 
 void FileSprayer::removeSource()
 {
-    LOG(MCwarning, job, "Source file removal not yet implemented");
+    LOG(MCwarning, "Source file removal not yet implemented");
 }
 
 bool FileSprayer::restorePartition()
@@ -2578,14 +2826,13 @@ void FileSprayer::setCopyCompressedRaw()
 }
 
 
-void FileSprayer::setError(const SocketEndpoint & ep, IException * e)
+void FileSprayer::setError(const char *host, IException * e)
 {
     CriticalBlock lock(errorCS);
     if (!error)
     {
-        StringBuffer url;
-        ep.getUrlStr(url);
-        error.setown(MakeStringException(e->errorCode(), "%s", e->errorMessage(url.append(": ")).str()));
+        VStringBuffer errMsg("%s: ", host);
+        error.setown(MakeStringException(e->errorCode(), "%s", e->errorMessage(errMsg).str()));
     }
 }
 
@@ -2626,7 +2873,7 @@ void FileSprayer::setSource(IDistributedFile * source)
     {
         Owned<IDistributedFilePart> curPart = source->getPart(idx);
         RemoteFilename rfn;
-        FilePartInfo & next = * new FilePartInfo(curPart->getFilename(rfn));
+        FilePartInfo & next = * new FilePartInfo(curPart->getFilename(rfn), idx);
         next.extractExtra(*curPart);
         if (curPart->numCopies()>1)
             next.mirrorFilename.set(curPart->getFilename(rfn,1));
@@ -2675,7 +2922,7 @@ void FileSprayer::setSource(IFileDescriptor * source, unsigned copy, unsigned mi
             ForEachItemIn(i, multi)
             {
                 const RemoteFilename &rfn = multi.item(i);
-                FilePartInfo & next = * new FilePartInfo(rfn);
+                FilePartInfo & next = * new FilePartInfo(rfn, idx);
                 Owned<IPartDescriptor> part = source->getPart(idx);
                 next.extractExtra(*part);
                 // If size doesn't set here it will be forced to check the file size on disk (expensive)
@@ -2688,7 +2935,7 @@ void FileSprayer::setSource(IFileDescriptor * source, unsigned copy, unsigned mi
         else
         {
             source->getFilename(idx, copy, filename);
-            FilePartInfo & next = * new FilePartInfo(filename);
+            FilePartInfo & next = * new FilePartInfo(filename,idx);
             Owned<IPartDescriptor> part = source->getPart(idx);
             next.extractExtra(*part);
             if (mirrorCopy != (unsigned)-1)
@@ -2699,7 +2946,7 @@ void FileSprayer::setSource(IFileDescriptor * source, unsigned copy, unsigned mi
     }
 
     if (sources.ordinality() == 0)
-        LOG(MCuserWarning, unknownJob, "The wildcarded source did not match any filenames");
+        LOG(MCuserWarning, "The wildcarded source did not match any filenames");
 //      throwError(DFTERR_NoFilesMatchWildcard);
 
     //Now get the size of the files directly (to check they exist).  If they don't exist then switch to the backup instead.
@@ -2714,7 +2961,7 @@ void FileSprayer::setSource(IDistributedFilePart * part)
 
     unsigned copy = 0;
     RemoteFilename rfn;
-    sources.append(* new FilePartInfo(part->getFilename(rfn,copy)));
+    sources.append(* new FilePartInfo(part->getFilename(rfn,copy), part->getPartIndex()));
     if (compressedInput)
     {
         calcedInputCRC = true;
@@ -2764,7 +3011,7 @@ void FileSprayer::setTarget(IDistributedFile * target)
 
     compressOutput = target->isCompressed();
 
-    LOG(MCdebugInfo, unknownJob, "FileSprayer::setTarget: compressedInput:%s, compressOutput:%s",
+    LOG(MCdebugInfo, "FileSprayer::setTarget: compressedInput:%s, compressOutput:%s",
                                 boolToStr(compressedInput),
                                 boolToStr(compressOutput));
 
@@ -2793,7 +3040,7 @@ void FileSprayer::setTarget(IDistributedFile * target)
     {
         Owned<IDistributedFilePart> curPart(target->getPart(idx));
         RemoteFilename rfn;
-        TargetLocation & next = * new TargetLocation(curPart->getFilename(rfn,copy));
+        TargetLocation & next = * new TargetLocation(curPart->getFilename(rfn,copy), idx);
         targets.append(next);
     }
 
@@ -2815,7 +3062,7 @@ void FileSprayer::setTarget(IFileDescriptor * target, unsigned copy)
     for (unsigned idx=0; idx < numParts; idx++)
     {
         target->getFilename(idx, copy, filename);
-        targets.append(*new TargetLocation(filename));
+        targets.append(*new TargetLocation(filename, idx));
     }
 
     checkSprayOptions();
@@ -2828,6 +3075,8 @@ void FileSprayer::updateProgress(const OutputProgress & newProgress)
     OutputProgress & curProgress = progress.item(newProgress.whichPartition);
 
     totalLengthRead += (newProgress.inputLength - curProgress.inputLength);
+    totalNumReads += (newProgress.numReads - curProgress.numReads);
+    totalNumWrites += (newProgress.numWrites - curProgress.numWrites);
     curProgress.set(newProgress);
     if (curProgress.tree)
         curProgress.save(curProgress.tree);
@@ -2853,7 +3102,7 @@ void FileSprayer::updateSizeRead()
         unsigned numCompleted = (sizeReadSoFar == sizeToBeRead) ? transferSlaves.ordinality() : numSlavesCompleted;
         if (done || (nowTick - lastOperatorTick >= operatorUpdateFrequency))
         {
-            progressReport->onProgress(sizeReadSoFar, sizeToBeRead, numCompleted);
+            progressReport->onProgress(sizeReadSoFar, sizeToBeRead, numCompleted, totalNumReads, totalNumWrites);
             lastOperatorTick = nowTick;
             progressDone = done;
         }
@@ -2876,7 +3125,7 @@ void FileSprayer::waitForTransferSem(Semaphore & sem)
         unsigned timeSinceProgress = msTick() - lastProgressTick;
         if (timeSinceProgress > EXPECTED_RESPONSE_TIME)
         {
-            LOG(MCwarning, unknownJob, "No response from any slaves in last %d seconds.", timeSinceProgress/1000);
+            LOG(MCwarning, "No response from any slaves in last %d seconds.", timeSinceProgress/1000);
 
             CriticalBlock block(soFarCrit);
             StringBuffer list;
@@ -2900,7 +3149,7 @@ void FileSprayer::addTarget(unsigned idx, INode * node)
     filename.set(sources.item(idx).filename);
     filename.setEp(node->endpoint());
 
-    targets.append(* new TargetLocation(filename));
+    targets.append(* new TargetLocation(filename, idx));
 
     checkSprayOptions();
 }
@@ -2915,7 +3164,7 @@ bool FileSprayer::isAborting()
     {
         if (abortChecker->abortRequested())
         {
-            LOG(MCdebugInfo, unknownJob, "Abort requested via callback");
+            LOG(MCdebugInfo, "Abort requested via callback");
             aborting = true;
         }
         lastAbortCheckTick = nowTick;
@@ -2937,7 +3186,8 @@ const char * FileSprayer::querySlaveExecutable(const IpAddress &ip, StringBuffer
     return ret.append("ftslave").str();
 #else
     const char * slave = queryFixedSlave();
-    try {
+    try
+    {
         queryFtSlaveExecutable(ip, ret);
         if (ret.length())
             return ret.str();
@@ -2988,7 +3238,6 @@ inline bool nonempty(IPropertyTree *pt, const char *p) { const char *s = pt->que
 bool FileSprayer::disallowImplicitReplicate()
 {
     return options->getPropBool(ANsplit) ||
-           options->getPropBool(ANnosplit) ||
            querySplitPrefix() ||
            nonempty(options,"@header") ||
            nonempty(options,"@footer") ||
@@ -3015,13 +3264,15 @@ void FileSprayer::spray()
            progressTree->setPropBool("@noFileMatch", true);
     }
 
-    LOG(MCdebugInfo, job, "compressedInput:%d, compressOutput:%d", compressedInput, compressOutput);
+    LOG(MCdebugInfo, "compressedInput:%d, compressOutput:%d", compressedInput, compressOutput);
+    LOG(MCdebugInfo, "noCommon:%s", boolToStr(options->getPropBool(ANnocommon)));
+    LOG(MCdebugInfo, "maxConnections option:%d", options->getPropInt(ANmaxConnections));
 
     LocalAbortHandler localHandler(daftAbortHandler);
 
     if (allowRecovery && progressTree->getPropBool(ANcomplete))
     {
-        LOG(MCdebugInfo, job, "Command completed successfully in previous invocation");
+        LOG(MCdebugInfo, "Command completed successfully in previous invocation");
         return;
     }
 
@@ -3044,6 +3295,21 @@ void FileSprayer::spray()
         allowRecovery = false;
     }
 
+    // in containerized mode, redirect to dafilesrv service or local (if useFtSlave=true)
+    if (isContainerized())
+    {
+        if (useFtSlave)
+        {
+            //In containerized world all ftslave processes are executed locally, so make sure we try and connect to a local instance
+            sprayServiceHost.set("localhost");
+        }
+        else
+        {
+            // use dafilesrv service for spray commands
+            sprayServiceConfig.setown(getSprayService());
+            sprayServiceHost.clear().append(sprayServiceConfig->queryProp("@name")).append(':').append(sprayServiceConfig->getPropInt("@port"));
+        }
+    }
 
     gatherFileSizes(true);
     if (!replicate||copySource) // NB: When copySource=true, analyseFileHeaders mainly just sets srcFormat.type
@@ -3055,11 +3321,11 @@ void FileSprayer::spray()
 
     if (restorePartition())
     {
-        LOG(MCdebugProgress, job, "Partition restored from recovery information");
+        LOG(MCdebugProgress, "Partition restored from recovery information");
     }
     else
     {
-        LOG(MCdebugProgress, job, "Calculate partition information");
+        LOG(MCdebugProgress, "Calculate partition information");
         if (replicate || copySource)
             calculateOne2OnePartition();
         else if (!allowSplit())
@@ -3077,7 +3343,7 @@ void FileSprayer::spray()
     assignPartitionFilenames();     // assign source filenames - used in insertHeaders..
     if (!replicate && !copySource)
     {
-        LOG(MCdebugProgress, job, "Insert headers");
+        LOG(MCdebugProgress, "Insert headers");
         insertHeaders();
     }
     addEmptyFilesToPartition();
@@ -3091,16 +3357,42 @@ void FileSprayer::spray()
     throwExceptionIfAborting();
 
     beforeTransfer();
-    if (usePushWholeOperation())
-        pushWholeParts();
-    else if (usePullOperation())
-        pullParts();
-    else
-        pushParts();
+    bool copiedAlready = false;
+    if ((replicate || copySource))
+    {
+        Owned<IAPICopyClient> copyClient = getAPICopyClient();
+        if (copyClient)
+        {
+            try
+            {
+                transferUsingAPI(copyClient);
+                copiedAlready=true;
+            }
+            catch (IException *e)
+            {
+                StringBuffer reason;
+                e->errorMessage(reason);
+                // Log this failure (don't re-throw) as it should fall back to the older method to copy
+                OERRLOG("Transfer using API failed: %s (error %d)", reason.str(), e->errorCode());
+                e->Release();
+            }
+        }
+    }
+    if (!copiedAlready)
+    {
+        if (usePushWholeOperation())
+            pushWholeParts();
+        else if (usePullOperation())
+            pullParts();
+        else
+            pushParts();
+    }
     afterTransfer();
 
     //If got here then we have succeeded
+    //Note: On failure, costs will not be updated.  Future: would be useful to have a way to update costs on failure.
     updateTargetProperties();
+
     StringBuffer copyEventText;     // [logical-source] > [logical-target]
     if (distributedSource)
         copyEventText.append(distributedSource->queryLogicalName());
@@ -3109,7 +3401,7 @@ void FileSprayer::spray()
         copyEventText.append(distributedTarget->queryLogicalName());
 
     //MORE: use new interface to send 'file copied' event
-    //LOG(MCevent, unknownJob, EVENT_FILECOPIED, copyEventText.str());
+    //LOG(MCevent, EVENT_FILECOPIED, copyEventText.str());
 
     cleanupRecovery();
 }
@@ -3153,6 +3445,7 @@ void FileSprayer::updateTargetProperties()
 {
     TimeSection timer("FileSprayer::updateTargetProperties() time");
     Owned<IException> error;
+    cost_type totalWriteCost = 0;
     if (distributedTarget)
     {
         StringBuffer failedParts;
@@ -3165,6 +3458,7 @@ void FileSprayer::updateTargetProperties()
         bool sameSizeHeaderFooter = isSameSizeHeaderFooter();
         bool sameSizeSourceTarget = (sources.ordinality() == distributedTarget->numParts());
         offset_t partCompressedLength = 0;
+        IDistributedSuperFile * superTgt = distributedTarget->querySuperFile();
 
         ForEachItemIn(idx, partition)
         {
@@ -3269,7 +3563,9 @@ void FileSprayer::updateTargetProperties()
                                     strieq(aname,"@node") ||
                                     strieq(aname,"@num")  ||
                                     strieq(aname,"@size") ||
+                                    strieq(aname,"@compressedSize") ||
                                     strieq(aname,"@name") ) ||
+                                    (!sameSizeHeaderFooter && (strieq(aname, FPheaderLength) || strieq(aname, FPfooterLength))) ||
                                     ( strieq(aname,"@recordCount") && (sources.ordinality() == targets.ordinality()) )
                                )
                                 curProps.setProp(aname,aiter->queryValue());
@@ -3281,6 +3577,39 @@ void FileSprayer::updateTargetProperties()
                 partLength = 0;
                 partCompressedLength = 0;
             }
+
+            // Update @writeCost and @numWrites in subfile properties and update totalWriteCost
+            if (superTgt && superTgt->numSubFiles() > 0)
+            {
+                if (cur.whichOutput != (unsigned)-1)
+                {
+                    IDistributedFile *subfile;
+                    if (superTgt->numSubFiles() > 1)
+                    {
+                        Owned<IFileDescriptor> fDesc = superTgt->getFileDescriptor();
+                        ISuperFileDescriptor *superFDesc = fDesc->querySuperFileDescriptor();
+                        unsigned subfileNum, subFilePartNum;
+                        superFDesc->mapSubPart(targets.item(cur.whichOutput).partNum, subfileNum, subFilePartNum);
+                        subfile = superTgt->querySubPart(subfileNum, subFilePartNum);
+                    }
+                    else
+                    {
+                        // If there is a single subfile, it is not necessary to map part to subfile
+                        // (also, querySuperFileDescriptor return nullptr if num subfile == 1)
+                        subfile = &superTgt->querySubFile(0);
+                    }
+                    DistributedFilePropertyLock lock(subfile);
+                    IPropertyTree &subFileProps = lock.queryAttributes();
+                    cost_type prevNumWrites = subFileProps.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites));
+                    cost_type prevWriteCost = subFileProps.getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost));
+                    cost_type curWriteCost = calcFileAccessCost(subfile, curProgress.numWrites, 0);
+                    subFileProps.setPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), prevWriteCost + curWriteCost);
+                    subFileProps.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), prevNumWrites + curProgress.numWrites);
+                    totalWriteCost += curWriteCost;
+                }
+                else // not sure if tgt superfile can have whichOutput==-1 (but if so, the following cost calc works)
+                    totalWriteCost += calcFileAccessCost(distributedTarget, curProgress.numWrites, 0);
+            }
         }
 
         if (failedParts.length())
@@ -3288,6 +3617,12 @@ void FileSprayer::updateTargetProperties()
 
         DistributedFilePropertyLock lock(distributedTarget);
         IPropertyTree &curProps = lock.queryAttributes();
+
+        if (!superTgt)
+            totalWriteCost = calcFileAccessCost(distributedTarget, totalNumWrites, 0);
+        curProps.setPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), totalWriteCost);
+        curProps.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), totalNumWrites);
+
         if (calcCRC())
             curProps.setPropInt(FAcrc, totalCRC.get());
         curProps.setPropInt64(FAsize, totalLength);
@@ -3407,7 +3742,8 @@ void FileSprayer::updateTargetProperties()
             ForEach(*iter)
             {
                 const char *aname = iter->query().queryName();
-                if (stricmp(aname, "Protect") != 0)
+                if (!(strieq(aname, "Protect")||
+                      strieq(aname, "_remoteStoragePlane")))
                     curProps.addPropTree(aname, createPTreeFromIPT(&iter->query()));
             }
 
@@ -3463,6 +3799,65 @@ void FileSprayer::updateTargetProperties()
         if (expireDays != -1)
             curProps.setPropInt("@expireDays", expireDays);
     }
+    // Update file readCost and numReads in file properties and do the same for subfiles
+    // Update totalReadCost
+    cost_type totalReadCost = 0;
+    if (distributedSource)
+    {
+        IDistributedSuperFile * superSrc = distributedSource->querySuperFile();
+        if (superSrc && superSrc->numSubFiles() > 0)
+        {
+            Owned<IFileDescriptor> fDesc = superSrc->getFileDescriptor();
+            ISuperFileDescriptor *superFDesc = fDesc->querySuperFileDescriptor();
+            ForEachItemIn(idx, partition)
+            {
+                PartitionPoint & cur = partition.item(idx);
+                OutputProgress & curProgress = progress.item(idx);
+                if (cur.whichInput != (unsigned)-1)
+                {
+                    IDistributedFile *subfile;
+                    if (superFDesc)
+                    {
+                        unsigned subfileNum, subFilePartNum;
+                        superFDesc->mapSubPart(sources.item(cur.whichInput).partNum, subfileNum, subFilePartNum);
+                        subfile = superSrc->querySubPart(subfileNum, subFilePartNum);
+                    }
+                    else
+                    {
+                        // superFDesc==nullptr if there is a single file
+                        // so query the first (and only) subfile
+                        subfile = &superSrc->querySubFile(0);
+                    }
+                    DistributedFilePropertyLock lock(subfile);
+                    IPropertyTree &subFileProps = lock.queryAttributes();
+                    stat_type prevNumReads = subFileProps.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
+                    cost_type legacyReadCost = getLegacyReadCost(subfile->queryAttributes(), subfile);
+                    cost_type prevReadCost = subFileProps.getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), 0);
+                    cost_type curReadCost = calcFileAccessCost(subfile, 0, curProgress.numReads);
+                    subFileProps.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), prevNumReads + curProgress.numReads);
+                    subFileProps.setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + prevReadCost + curReadCost);
+                    totalReadCost += curReadCost;
+                }
+                else
+                {
+                    // not sure if src superfile can have whichInput==-1 (but if so, this is best effort to calc cost)
+                    totalReadCost += calcFileAccessCost(distributedSource, 0, curProgress.numReads);
+                }
+            }
+        }
+        else
+        {
+            totalReadCost = calcFileAccessCost(distributedSource, 0, totalNumReads);
+        }
+        DistributedFilePropertyLock lock(distributedSource);
+        IPropertyTree &curProps = lock.queryAttributes();
+        stat_type prevNumReads = curProps.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
+        cost_type legacyReadCost = getLegacyReadCost(curProps, distributedSource);
+        cost_type prevReadCost = curProps.getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), 0);
+        curProps.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), prevNumReads + totalNumReads);
+        curProps.setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + prevReadCost + totalReadCost);
+    }
+    progressReport->setFileAccessCost(totalReadCost+totalWriteCost);
     if (error)
         throw error.getClear();
 }
@@ -3479,7 +3874,7 @@ void FileSprayer::splitAndCollectFileInfo(IPropertyTree * newRecord, RemoteFilen
 
     if (drive.isEmpty())
     {
-        remoteFileName.queryIP().getIpText(drive.clear());
+        remoteFileName.queryIP().getHostText(drive.clear());
         newRecord->setProp("@ip", drive.str());
     }
     else
@@ -3510,6 +3905,30 @@ dfu_operation FileSprayer::getOperation() const
 const char * FileSprayer::getOperationTypeString() const
 {
     return DfuOperationStr[operation];
+}
+
+IPropertyTree *FileSprayer::getSprayService() const
+{
+    Owned<IPropertyTree> serviceTree;
+    if (!isEmptyString(sprayServiceName))
+    {
+        VStringBuffer serviceQualifier("services[@name='%s']", sprayServiceName.get());
+        serviceTree.setown(getGlobalConfigSP()->getPropTree(serviceQualifier));
+        if (!serviceTree)
+            throw makeStringExceptionV(0, "launchFtSlaveCmd: failed to find dafilesrv service named: '%s'", sprayServiceName.get());
+        const char *serviceAppType = serviceTree->queryProp("@application");
+        if (!strsame("spray", serviceAppType))
+            throw makeStringExceptionV(0, "launchFtSlaveCmd: configured service '%s' is of application type '%s' ('spray' type required)", sprayServiceName.get(), nullIfEmptyString(serviceAppType));
+    }
+    else // find 1st of type 'spray'
+    {
+        Owned<IPropertyTreeIterator> sprayServices = getGlobalConfigSP()->getElements("services[@type='spray']");
+        if (sprayServices->first())
+            serviceTree.set(&sprayServices->query());
+        else
+            throw makeStringException(0, "launchFtSlaveCmd: no 'spray' dafilesrv services found");
+    }
+    return serviceTree.getClear();
 }
 
 bool FileSprayer::usePullOperation() const
@@ -3548,7 +3967,7 @@ bool FileSprayer::calcUsePull() const
     if (allowRecovery && progressTree->hasProp(ANpull))
     {
         bool usePull = progressTree->getPropBool(ANpull);
-        LOG(MCdebugInfo, job, "Pull = %d from recovery", (int)usePull);
+        LOG(MCdebugInfo, "Pull = %d from recovery", (int)usePull);
         return usePull;
     }
 
@@ -3557,12 +3976,12 @@ bool FileSprayer::calcUsePull() const
 
     if (options->getPropBool(ANpull, false))
     {
-        LOG(MCdebugInfo, job, "Use pull since explicitly specified");
+        LOG(MCdebugInfo, "Use pull since explicitly specified");
         return true;
     }
     if (options->getPropBool(ANpush, false))
     {
-        LOG(MCdebugInfo, job, "Use push since explicitly specified");
+        LOG(MCdebugInfo, "Use push since explicitly specified");
         return false;
     }
 
@@ -3571,16 +3990,16 @@ bool FileSprayer::calcUsePull() const
         if (!sources.item(idx2).canPush())
         {
             StringBuffer s;
-            sources.item(idx2).filename.queryIP().getIpText(s);
-            LOG(MCdebugInfo, job, "Use pull operation because %s cannot push", s.str());
+            sources.item(idx2).filename.queryIP().getHostText(s);
+            LOG(MCdebugInfo, "Use pull operation because %s cannot push", s.str());
             return true;
         }
     }
     if (!canLocateSlaveForNode(sources.item(0).filename.queryIP()))
     {
         StringBuffer s;
-        sources.item(0).filename.queryIP().getIpText(s);
-        LOG(MCdebugInfo, job, "Use pull operation because %s doesn't appear to have an ftslave", s.str());
+        sources.item(0).filename.queryIP().getHostText(s);
+        LOG(MCdebugInfo, "Use pull operation because %s doesn't appear to have an ftslave", s.str());
         return true;
     }
 
@@ -3589,8 +4008,8 @@ bool FileSprayer::calcUsePull() const
         if (!targets.item(idx).canPull())
         {
             StringBuffer s;
-            targets.item(idx).queryIP().getIpText(s);
-            LOG(MCdebugInfo, job, "Use push operation because %s cannot pull", s.str());
+            targets.item(idx).queryIP().getHostText(s);
+            LOG(MCdebugInfo, "Use push operation because %s cannot pull", s.str());
             return false;
         }
     }
@@ -3598,19 +4017,19 @@ bool FileSprayer::calcUsePull() const
     if (!canLocateSlaveForNode(targets.item(0).queryIP()))
     {
         StringBuffer s;
-        targets.item(0).queryIP().getIpText(s);
-        LOG(MCdebugInfo, job, "Use push operation because %s doesn't appear to have an ftslave", s.str());
+        targets.item(0).queryIP().getHostText(s);
+        LOG(MCdebugInfo, "Use push operation because %s doesn't appear to have an ftslave", s.str());
         return false;
     }
 
     //Use push if going to a single node.
     if ((targets.ordinality() == 1) && (sources.ordinality() > 1))
     {
-        LOG(MCdebugInfo, job, "Use push operation because going to a single node from many");
+        LOG(MCdebugInfo, "Use push operation because going to a single node from many");
         return false;
     }
 
-    LOG(MCdebugInfo, job, "Use pull operation as default");
+    LOG(MCdebugInfo, "Use pull operation as default");
     return true;
 }
 
