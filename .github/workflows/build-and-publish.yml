@@ -39,7 +39,7 @@ jobs:
   ml-builds:
     needs: build
     runs-on: ubuntu-20.04
-    if: github.repository == 'xwang2713build-and-publish.yml/HPCC-Platform'
+    if: github.repository == 'xwang2713/HPCC-Platform'
     strategy:
       matrix:
         engine: ['ml', 'gnn', 'gnn-gpu', 'test']
