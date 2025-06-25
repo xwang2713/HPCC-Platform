@@ -5,7 +5,7 @@ import * as arrayUtil from "dojo/_base/array";
 import * as domConstruct from "dojo/dom-construct";
 import * as entities from "dojox/html/entities";
 import { darkTheme } from "../src-react/themes";
-import nlsHPCC from "src/nlsHPCC";
+import nlsHPCC from "./nlsHPCC";
 
 declare const dojoConfig;
 declare const ActiveXObject;
@@ -139,7 +139,6 @@ export function valueCleanUp(intsize): string {
 }
 
 export function removeSpecialCharacters(stringToConvert): string {
-    // eslint-disable-next-line no-useless-escape
     return stringToConvert.replace(/[\!\@\#\$\%\^\&\*\)\(\+\=\.\<\>\{\}\[\]\:\;\'\"\|\~\`\_\-]/g, "");
 }
 
@@ -235,6 +234,7 @@ export function espSkew2NumberTests() {
 export interface Column {
     selectorType?: string;
     id?: string;
+    csvFormatter?: (value: any, row: any) => string;
     field: string;
     label: string;
 }
@@ -260,7 +260,11 @@ export function formatAsDelim(columns: ColumnMap, rows: any, delim = ",") {
         const cells: any[] = [];
         for (const key in columns) {
             if (key !== columns[key].id && columns[key].selectorType !== "checkbox") {
-                const cell = row[columns[key].field] ?? row[key];
+                let value = row[key];
+                if ("csvFormatter" in columns[key]) {
+                    value = columns[key].csvFormatter(row[key], row);
+                }
+                const cell = row[columns[key].field] ?? value;
                 cells.push(csvEncode(cell ?? ""));
             }
         }
@@ -302,9 +306,9 @@ export function downloadToCSV(grid, rows, fileName) {
         const a = document.createElement("a");
         mimeType = mimeType || "application/octet-stream";
 
-        // @ts-ignore
+        // @ts-expect-error
         if (navigator.msSaveBlob) { // IE10
-            // @ts-ignore
+            // @ts-expect-error
             return navigator.msSaveBlob(new Blob([content], { type: mimeType }), fileName);
         } else if ("download" in a) {
             a.href = "data:" + mimeType + "," + encodeURIComponent(content);
@@ -329,122 +333,197 @@ export function downloadToCSV(grid, rows, fileName) {
     download(csvContent, fileName, "text/csv");
 }
 
-export function isObjectEmpty(obj) {
-    for (const prop in obj) {
-        if (obj.hasOwnProperty(prop))
-            return false;
-    }
-    return true;
+export function isObjectEmpty(obj: object): boolean {
+    return Object.keys(obj).length === 0;
+}
+//  -----------------------------------------------------------------------------------------------
+//  Modified from alphanum-sort:  https://github.com/TrySound/alphanum-sort © Bogdan Chadkin
+//  The MIT License (MIT)
+const zero = "0".charCodeAt(0);
+const plus = "+".charCodeAt(0);
+const minus = "-".charCodeAt(0);
+
+function isWhitespace(code: number) {
+    return code <= 32;
 }
 
-/* alphanum.js (C) Brian Huisman
- * Based on the Alphanum Algorithm by David Koelle
- * The Alphanum Algorithm is discussed at http://www.DaveKoelle.com
- *
- * Distributed under same license as original
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
- */
+function isDigit(code: number) {
+    return 48 <= code && code <= 57;
+}
 
-/* ********************************************************************
- * Alphanum sort() function version - case sensitive
- *  - Slower, but easier to modify for arrays of objects which contain
- *    string properties
- *
- */
-export function alphanum(a, b) {
-    function chunkify(t) {
-        const tz = [];
-        let x = 0;
-        let y = -1;
-        let n = false;
-        let i;
-        let j;
+function isSign(code: number) {
+    return code === minus || code === plus;
+}
 
-        // eslint-disable-next-line no-cond-assign
-        while (i = (j = t.charAt(x++)).charCodeAt(0)) {
-            // tslint:disable-next-line: triple-equals
-            const m = (i == 46 || (i >= 48 && i <= 57));
-            if (m !== n) {
-                tz[++y] = "";
-                n = m;
+function compare(a, b, opts: { sign: boolean }) {
+    const checkSign = opts.sign;
+    let ia = 0;
+    let ib = 0;
+    const ma = a.length;
+    const mb = b.length;
+    let ca, cb; // character code
+    let za, zb; // leading zero count
+    let na, nb; // number length
+    let sa, sb; // number sign
+    let ta, tb; // temporary
+    let bias;
+
+    while (ia < ma && ib < mb) {
+        ca = a.charCodeAt(ia);
+        cb = b.charCodeAt(ib);
+        za = zb = 0;
+        na = nb = 0;
+        sa = sb = true;
+        bias = 0;
+
+        // skip over leading spaces
+        while (isWhitespace(ca)) {
+            ia += 1;
+            ca = a.charCodeAt(ia);
+        }
+        while (isWhitespace(cb)) {
+            ib += 1;
+            cb = b.charCodeAt(ib);
+        }
+
+        // skip and save sign
+        if (checkSign) {
+            ta = a.charCodeAt(ia + 1);
+            if (isSign(ca) && isDigit(ta)) {
+                if (ca === minus) {
+                    sa = false;
+                }
+                ia += 1;
+                ca = ta;
             }
-            tz[y] += j;
-        }
-        return tz;
-    }
-
-    const aa = chunkify(a);
-    const bb = chunkify(b);
-
-    for (let x = 0; aa[x] && bb[x]; x++) {
-        if (aa[x] !== bb[x]) {
-            const c = Number(aa[x]);
-            const d = Number(bb[x]);
-            // tslint:disable-next-line: triple-equals
-            if (c == aa[x] && d == bb[x]) {
-                return c - d;
-            } else return (aa[x] > bb[x]) ? 1 : -1;
-        }
-    }
-    return aa.length - bb.length;
-}
-
-/* ********************************************************************
- * Alphanum sort() function version - case insensitive
- *  - Slower, but easier to modify for arrays of objects which contain
- *    string properties
- *
- */
-export function alphanumCase(a, b) {
-    function chunkify(t) {
-        const tz = [];
-        let x = 0;
-        let y = -1;
-        let n = false;
-        let i;
-        let j;
-
-        // eslint-disable-next-line no-cond-assign
-        while (i = (j = t.charAt(x++)).charCodeAt(0)) {
-            // tslint:disable-next-line: triple-equals
-            const m = (i == 46 || (i >= 48 && i <= 57));    // jshint ignore:line
-            if (m !== n) {
-                tz[++y] = "";
-                n = m;
+            tb = b.charCodeAt(ib + 1);
+            if (isSign(cb) && isDigit(tb)) {
+                if (cb === minus) {
+                    sb = false;
+                }
+                ib += 1;
+                cb = tb;
             }
-            tz[y] += j;
         }
-        return tz;
+
+        // compare digits with other symbols
+        if (isDigit(ca) && !isDigit(cb)) {
+            return -1;
+        }
+        if (!isDigit(ca) && isDigit(cb)) {
+            return 1;
+        }
+
+        // compare negative and positive
+        if (!sa && sb) {
+            return -1;
+        }
+        if (sa && !sb) {
+            return 1;
+        }
+
+        // count leading zeros
+        while (ca === zero) {
+            za += 1;
+            ia += 1;
+            ca = a.charCodeAt(ia);
+        }
+        while (cb === zero) {
+            zb += 1;
+            ib += 1;
+            cb = b.charCodeAt(ib);
+        }
+
+        // count numbers
+        while (isDigit(ca) || isDigit(cb)) {
+            if (isDigit(ca) && isDigit(cb) && bias === 0) {
+                if (sa) {
+                    if (ca < cb) {
+                        bias = -1;
+                    } else if (ca > cb) {
+                        bias = 1;
+                    }
+                } else {
+                    if (ca > cb) {
+                        bias = -1;
+                    } else if (ca < cb) {
+                        bias = 1;
+                    }
+                }
+            }
+            if (isDigit(ca)) {
+                ia += 1;
+                na += 1;
+                ca = a.charCodeAt(ia);
+            }
+            if (isDigit(cb)) {
+                ib += 1;
+                nb += 1;
+                cb = b.charCodeAt(ib);
+            }
+        }
+
+        // compare number length
+        if (sa) {
+            if (na < nb) {
+                return -1;
+            }
+            if (na > nb) {
+                return 1;
+            }
+        } else {
+            if (na > nb) {
+                return -1;
+            }
+            if (na < nb) {
+                return 1;
+            }
+        }
+
+        // compare numbers
+        if (bias) {
+            return bias;
+        }
+
+        // compare leading zeros
+        if (sa) {
+            if (za > zb) {
+                return -1;
+            }
+            if (za < zb) {
+                return 1;
+            }
+        } else {
+            if (za < zb) {
+                return -1;
+            }
+            if (za > zb) {
+                return 1;
+            }
+        }
+
+        // compare ascii codes
+        if (ca < cb) {
+            return -1;
+        }
+        if (ca > cb) {
+            return 1;
+        }
+
+        ia += 1;
+        ib += 1;
     }
 
-    const aa = chunkify(a.toLowerCase());
-    const bb = chunkify(b.toLowerCase());
-
-    for (let x = 0; aa[x] && bb[x]; x++) {
-        if (aa[x] !== bb[x]) {
-            const c = Number(aa[x]);
-            const d = Number(bb[x]);
-            // tslint:disable-next-line: triple-equals
-            if (c == aa[x] && d == bb[x]) {   // jshint ignore:line
-                return c - d;
-            } else return (aa[x] > bb[x]) ? 1 : -1;
-        }
+    // compare length
+    if (ma < mb) {
+        return -1;
     }
-    return aa.length - bb.length;
+    if (ma > mb) {
+        return 1;
+    }
+    return 0;
 }
+//  -----------------------------------------------------------------------------------------------
 
 export function onDomMutate(domNode, callback, observerOpts) {
     observerOpts = observerOpts || { attributes: true, attributeFilter: ["style"] };
@@ -458,8 +537,10 @@ export function onDomMutate(domNode, callback, observerOpts) {
     observer.observe(domNode, observerOpts);
 }
 
-export function alphanumCompare(l, r, caseInsensitive: boolean = true, reverse: boolean = true): number {
-    const cmp = caseInsensitive ? alphanumCase(l, r) : alphanum(l, r);
+export function alphanumCompare(_l, _r, caseInsensitive: boolean = true, reverse: boolean = true): number {
+    const l = caseInsensitive && typeof _l === "string" ? _l.toLocaleLowerCase() : _l;
+    const r = caseInsensitive && typeof _r === "string" ? _r.toLocaleLowerCase() : _r;
+    const cmp = compare(l, r, { sign: false });
     if (cmp !== 0) {
         return cmp * (reverse ? -1 : 1);
     }
@@ -545,7 +626,7 @@ export function resolve(hpccWidget, callback) {
             require(["hpcc/viz/DojoD3NDChart"], doLoad);
             break;
         case "DataPatternsWidget":
-            require(["src/DataPatternsWidget"], doLoad);
+            require(["./DataPatternsWidget"], doLoad);
             break;
         case "DynamicESDLDefinitionDetailsWidget":
             require(["hpcc/DynamicESDLDefinitionDetailsWidget"], doLoad);
@@ -569,7 +650,7 @@ export function resolve(hpccWidget, callback) {
             require(["hpcc/ECLPlaygroundWidget"], doLoad);
             break;
         case "ECLArchiveWidget":
-            require(["src/ECLArchiveWidget"], doLoad);
+            require(["./ECLArchiveWidget"], doLoad);
             break;
         case "ECLSourceWidget":
             require(["hpcc/ECLSourceWidget"], doLoad);
@@ -624,13 +705,13 @@ export function resolve(hpccWidget, callback) {
             require(["hpcc/GraphsLFWidget"], doLoad);
             break;
         case "GraphTreeWidget":
-            require(["src/GraphTreeWidget"], doLoad);
+            require(["./GraphTreeWidget"], doLoad);
             break;
         case "GraphTree7Widget":
-            require(["src/GraphTree7Widget"], doLoad);
+            require(["./GraphTree7Widget"], doLoad);
             break;
         case "Graph7Widget":
-            require(["src/Graph7Widget"], doLoad);
+            require(["./Graph7Widget"], doLoad);
             break;
         case "GridDetailsWidget":
             require(["hpcc/GridDetailsWidget"], doLoad);
@@ -827,6 +908,9 @@ export function resolve(hpccWidget, callback) {
         case "WorkflowsWidget":
             require(["hpcc/WorkflowsWidget"], doLoad);
             break;
+        case "ProcessesWidget":
+            require(["hpcc/ProcessesWidget"], doLoad);
+            break;
         case "WUDetailsWidget":
             require(["hpcc/WUDetailsWidget"], doLoad);
             break;
@@ -910,7 +994,7 @@ export function DynamicDialogForm(object) {
 
     for (const key in object) {
         const tr = domConstruct.create("tr", {}, table);
-        if (object.hasOwnProperty(key)) {
+        if (key in object) {
             const td = domConstruct.create("td", {
                 style: "width: 30%;"
             }, tr);
@@ -936,7 +1020,7 @@ export function DynamicDialogTable(headingsArr, rows) {
     }, table);
 
     arrayUtil.forEach(headingsArr, function (row, idx) {
-        //  @ts-ignore
+        // @ts-expect-error
         const th = domConstruct.create("th", {
             innerHTML: row,
             style: "text-align: left; padding-left:5px;"
@@ -948,7 +1032,7 @@ export function DynamicDialogTable(headingsArr, rows) {
             style: "padding: 5px 0 5px 0;"
         }, table);
         for (const key in row) {
-            //  @ts-ignore
+            // @ts-expect-error
             const td = domConstruct.create("td", {
                 innerHTML: key === "ServiceName" ? "<a href=" + row.Protocol + "://" + location.hostname + ":" + row.Port + " target='_blank'>" + row[key] + "</a>" : row[key], // TODO improve the ability to add link in any cell
                 style: "style: width: 30%; padding: 5px 0 5px 5px; border: 1px solid #dddddd;"
@@ -1156,6 +1240,29 @@ export function format(labelTpl, obj) {
         .join("\n")
         ;
 }
+
+const TEN_TRILLION = 10000000000000;
+export function nanosToMillis(timestamp: number): number {
+    if (timestamp > TEN_TRILLION) {
+        return Math.round(timestamp / 1000000);
+    } else {
+        return timestamp;
+    }
+}
+
+export function timestampToDate(timestamp: number): Date {
+    const millis = nanosToMillis(timestamp);
+    return new Date(millis);
+}
+
+export function formatDateString(dateStr: string): string {
+    const matches = dateStr.match(/([0-9]{4}(?:-[0-9]{1,2})+)([T\s])((?:[0-9]{1,2}:)+[0-9]{1,2}\.[0-9]{1,3})(Z*)/);
+    if (matches) {
+        return `${matches[1]}T${matches[3]}${matches[4] ? matches[4] : "Z"}`;
+    }
+    return dateStr;
+}
+
 const theme = getTheme();
 const { semanticColors } = theme;
 
@@ -1217,4 +1324,29 @@ export function wuidToDate(wuid: string): string {
 
 export function wuidToTime(wuid: string): string {
     return `${wuid.substring(10, 12)}:${wuid.substring(12, 14)}:${wuid.substring(14, 16)}`;
+}
+
+export function wuidToDateTime(wuid: string): Date {
+    return new Date(`${wuidToDate(wuid)}T${wuidToTime(wuid)}Z`);
+}
+
+export function removeAllExcept(arr: any, keysToKeep: string[]): void {
+    for (const key of Object.keys(arr)) {
+        if (keysToKeep.indexOf(key) < 0) {
+            delete arr[key];
+        }
+    }
+}
+function pad(n: number): string {
+    return n.toString().padStart(2, "0");
+}
+
+export function formatDate(date: Date, useUTC: boolean): string {
+    const mm = pad(useUTC ? date.getUTCMonth() + 1 : date.getMonth() + 1);
+    const dd = pad(useUTC ? date.getUTCDate() : date.getDate());
+    const yyyy = useUTC ? date.getUTCFullYear() : date.getFullYear();
+    const hh = pad(useUTC ? date.getUTCHours() : date.getHours());
+    const min = pad(useUTC ? date.getUTCMinutes() : date.getMinutes());
+    const sec = pad(useUTC ? date.getUTCSeconds() : date.getSeconds());
+    return `${mm}/${dd}/${yyyy} ${hh}:${min}:${sec}`;
 }

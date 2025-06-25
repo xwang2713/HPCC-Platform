@@ -1,23 +1,26 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Image, Link } from "@fluentui/react";
-import { SizeMe } from "react-sizeme";
-import { scopedLogger } from "@hpcc-js/util";
-import { CreateWUQueryStore, Get, WUQueryStore } from "src/ESPWorkunit";
+import { CommandBar, ContextualMenuItemType, DetailsRow, ICommandBarItemProps, IDetailsRowProps, Icon, Image, Link } from "@fluentui/react";
+import { hsl as d3Hsl } from "@hpcc-js/common";
+import { Workunit } from "@hpcc-js/comms";
+import { SizeMe } from "../layouts/SizeMe";
+import { defaultSort, emptyFilter, getStateImage, WUQueryStore, formatQuery } from "src/ESPWorkunit";
 import * as WsWorkunits from "src/WsWorkunits";
 import { formatCost } from "src/Session";
+import { userKeyValStore } from "src/KeyValStore";
+import { QuerySortItem } from "src/store/Store";
 import nlsHPCC from "src/nlsHPCC";
 import { useConfirm } from "../hooks/confirm";
 import { useMyAccount } from "../hooks/user";
-import { pushParams } from "../util/history";
+import { useUserStore } from "../hooks/store";
+import { useLogicalClustersPalette } from "../hooks/platform";
+import { calcSearch, pushParams } from "../util/history";
 import { useHasFocus, useIsMounted } from "../hooks/util";
 import { HolyGrail } from "../layouts/HolyGrail";
+import { CreateWUQueryStore } from "../comms/workunit";
 import { FluentPagedGrid, FluentPagedFooter, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
 import { ShortVerticalDivider } from "./Common";
-import { QuerySortItem } from "src/store/Store";
-
-const logger = scopedLogger("src-react/components/Workunits.tsx");
 
 const FilterFields: Fields = {
     "Type": { type: "checkbox", label: nlsHPCC.ArchivedOnly },
@@ -25,8 +28,11 @@ const FilterFields: Fields = {
     "Wuid": { type: "string", label: nlsHPCC.WUID, placeholder: "W20200824-060035" },
     "Owner": { type: "string", label: nlsHPCC.Owner, placeholder: nlsHPCC.jsmi },
     "Jobname": { type: "string", label: nlsHPCC.JobName, placeholder: nlsHPCC.log_analysis_1 },
-    "Cluster": { type: "target-cluster", label: nlsHPCC.Cluster, placeholder: "" },
+    "Cluster": { type: "target-cluster", label: nlsHPCC.Cluster, placeholder: "", multiSelect: true },
     "State": { type: "workunit-state", label: nlsHPCC.State, placeholder: "" },
+    "MinimumCompileCost": { type: "string", label: nlsHPCC.MinimumCompileCost, placeholder: "0.001" },
+    "MinimumExecuteCost": { type: "string", label: nlsHPCC.MinimumExecuteCost, placeholder: "0.0002" },
+    "MinimumFileAccessCost": { type: "string", label: nlsHPCC.MinimumFileAccessCost, placeholder: "0.03" },
     "ECL": { type: "string", label: nlsHPCC.ECL, placeholder: nlsHPCC.dataset },
     "LogicalFile": { type: "string", label: nlsHPCC.LogicalFile, placeholder: nlsHPCC.somefile },
     "LogicalFileSearchType": { type: "logicalfile-type", label: nlsHPCC.LogicalFileType, placeholder: "", disabled: (params: Fields) => !params.LogicalFile.value },
@@ -34,36 +40,6 @@ const FilterFields: Fields = {
     "StartDate": { type: "datetime", label: nlsHPCC.FromDate },
     "EndDate": { type: "datetime", label: nlsHPCC.ToDate },
 };
-
-function formatQuery(_filter): { [id: string]: any } {
-    const filter = { ..._filter };
-    if (filter.LastNDays) {
-        const end = new Date();
-        const start = new Date();
-        start.setDate(end.getDate() - filter.LastNDays);
-        filter.StartDate = start.toISOString();
-        filter.EndDate = end.toISOString();
-        delete filter.LastNDays;
-    } else {
-        if (filter.StartDate) {
-            filter.StartDate = new Date(filter.StartDate).toISOString();
-        }
-        if (filter.EndDate) {
-            filter.EndDate = new Date(filter.EndDate).toISOString();
-        }
-    }
-    if (filter.Type === true) {
-        filter.Type = "archived workunits";
-    }
-    if (filter.Type === true) {
-        filter.Type = "archived workunits";
-    }
-    if (filter.Protected === true) {
-        filter.Protected = "Protected";
-    }
-    logger.debug(filter);
-    return filter;
-}
 
 const defaultUIState = {
     hasSelection: false,
@@ -75,15 +51,19 @@ const defaultUIState = {
     hasNotCompleted: false
 };
 
+const WORKUNITS_SHOWTIMELINE = "workunits_showTimeline";
+
+export function resetWorkunitOptions() {
+    const store = userKeyValStore();
+    return store?.delete(WORKUNITS_SHOWTIMELINE);
+}
+
 interface WorkunitsProps {
     filter?: { [id: string]: any };
     sort?: QuerySortItem;
     store?: WUQueryStore;
     page?: number;
 }
-
-const emptyFilter: { [id: string]: any } = {};
-export const defaultSort = { attribute: "Wuid", descending: true };
 
 export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
     filter = emptyFilter,
@@ -97,12 +77,14 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
     const [showFilter, setShowFilter] = React.useState(false);
     const { currentUser } = useMyAccount();
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
+    const [showTimeline, setShowTimeline] = useUserStore<boolean>(WORKUNITS_SHOWTIMELINE, true);
     const {
         selection, setSelection,
         pageNum, setPageNum,
         pageSize, setPageSize,
         total, setTotal,
         refreshTable } = useFluentStoreState({ page });
+    const [, , palette] = useLogicalClustersPalette();
 
     //  Refresh on focus  ---
     const isMounted = useIsMounted();
@@ -139,17 +121,18 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
                         return <Icon iconName="LockSolid" />;
                     }
                     return "";
-                }
+                },
+                field: nlsHPCC.Protected,
             },
             Wuid: {
                 label: nlsHPCC.WUID, width: 120,
                 sortable: true,
-                formatter: (Wuid, row) => {
-                    const wu = Get(Wuid);
+                formatter: (Wuid: string, wu: Workunit) => {
+                    const search = calcSearch(filter);
                     return <>
-                        <Image src={wu.getStateImage()} styles={{ root: { minWidth: "16px" } }} />
+                        <Image src={getStateImage(wu.StateID, wu.isComplete(), wu.Archived)} styles={{ root: { minWidth: "16px" } }} />
                         &nbsp;
-                        <Link href={`#/workunits/${Wuid}`}>{Wuid}</Link>
+                        <Link href={search ? `#/workunits!${calcSearch(filter)}/${Wuid}` : `#/workunits/${Wuid}`}>{Wuid}</Link >
                     </>;
                 }
             },
@@ -165,26 +148,23 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
             "Compile Cost": {
                 label: nlsHPCC.CompileCost, width: 100,
                 justify: "right",
-                formatter: (cost, row) => {
-                    return `${formatCost(row.CompileCost)}`;
-                }
+                formatter: (cost, row) => `${formatCost(row.CompileCost)}`,
+                csvFormatter: (cost, row) => row.CompileCost,
             },
             "Execution Cost": {
                 label: nlsHPCC.ExecuteCost, width: 100,
                 justify: "right",
-                formatter: (cost, row) => {
-                    return `${formatCost(row.ExecuteCost)}`;
-                }
+                formatter: (cost, row) => `${formatCost(row.ExecuteCost)}`,
+                csvFormatter: (cost, row) => row.ExecuteCost,
             },
             "File Access Cost": {
                 label: nlsHPCC.FileAccessCost, width: 100,
                 justify: "right",
-                formatter: (cost, row) => {
-                    return `${formatCost(row.FileAccessCost)}`;
-                }
+                formatter: (cost, row) => `${formatCost(row.FileAccessCost)}`,
+                csvFormatter: (cost, row) => row.FileAccessCost,
             }
         };
-    }, []);
+    }, [filter]);
 
     const copyButtons = useCopyButtons(columns, selection, "workunits");
 
@@ -243,7 +223,7 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
             key: "setFailed", text: nlsHPCC.SetToFailed, disabled: !uiState.hasNotProtected,
-            onClick: () => { WsWorkunits.WUAction(selection, "SetToFailed"); }
+            onClick: () => { WsWorkunits.WUAction(selection, "SetToFailed").then(() => refreshTable.call()); }
         },
         {
             key: "abort", text: nlsHPCC.Abort, disabled: !uiState.hasNotCompleted,
@@ -278,7 +258,15 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
                 pushParams(filter);
             }
         },
-    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowAbortConfirm, setShowDeleteConfirm, store, total, uiState.hasNotCompleted, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
+        { key: "divider_5", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+        {
+            key: "timeline", text: nlsHPCC.Timeline, canCheck: true, checked: showTimeline, iconProps: { iconName: "TimelineProgress" },
+            onClick: () => {
+                setShowTimeline(!showTimeline);
+                refreshTable.call();
+            }
+        },
+    ], [currentUser.username, filter, hasFilter, refreshTable, selection, setShowAbortConfirm, setShowDeleteConfirm, setShowTimeline, showTimeline, store, total, uiState.hasNotCompleted, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
 
     //  Selection  ---
     React.useEffect(() => {
@@ -309,11 +297,39 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         setUIState(state);
     }, [selection]);
 
+    const renderRowTimings = React.useCallback((props: IDetailsRowProps, size: { readonly width: number; readonly height: number; }) => {
+        if (showTimeline && props?.item?.__timeline_timings) {
+            const total = props.item.__timeline_timings.page.end - props.item.__timeline_timings.page.start;
+            const startPct = 100 - (props.item.__timeline_timings.start - props.item.__timeline_timings.page.start) / total * 100;
+            const endPct = 100 - (props.item.__timeline_timings.end - props.item.__timeline_timings.page.start) / total * 100;
+            const backgroundColor = palette(props.item.Cluster);
+            const borderColor = d3Hsl(backgroundColor).darker().toString();
+
+            return <div style={{ position: "relative", width: `${size.width - 4}px` }}>
+                <DetailsRow {...props} />
+                <div style={{
+                    position: "absolute",
+                    top: 4,
+                    bottom: 4,
+                    left: `${endPct}%`,
+                    width: `${startPct - endPct}%`,
+                    backgroundColor,
+                    borderColor,
+                    borderWidth: 1,
+                    borderStyle: "solid",
+                    opacity: .33,
+                    pointerEvents: "none"
+                }} />
+            </div>;
+        }
+        return <DetailsRow {...props} />;
+    }, [palette, showTimeline]);
+
     return <HolyGrail
         header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
             <>
-                <SizeMe monitorHeight>{({ size }) =>
+                <SizeMe>{({ size }) =>
                     <div style={{ width: "100%", height: "100%" }}>
                         <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
                             <FluentPagedGrid
@@ -328,6 +344,7 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
                                 setSelection={setSelection}
                                 setTotal={setTotal}
                                 refresh={refreshTable}
+                                onRenderRow={showTimeline ? props => renderRowTimings(props, size) : undefined}
                             ></FluentPagedGrid>
                         </div>
                     </div>
@@ -344,7 +361,7 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
             setPageNum={setPageNum}
             setPageSize={setPageSize}
             total={total}
-        ></FluentPagedFooter>}
+        ></FluentPagedFooter >}
         footerStyles={{}}
     />;
 };

@@ -66,6 +66,8 @@ class CRowStreamLookAhead : public CSimpleInterfaceOf<IStartableEngineRowStream>
     rowcount_t required;
     Semaphore startSem;
     Owned<IException> getexception;
+    LookAheadOptions options;
+    bool newLookAhead = false;
 
     class CThread: public Thread
     {
@@ -94,12 +96,19 @@ public:
     {
         try
         {
-            StringBuffer temp;
-            if (allowspill)
-                GetTempFilePath(temp,"lookahd");
             assertex(bufsize);
             if (allowspill)
-                smartbuf.setown(createSmartBuffer(&activity, temp.str(), bufsize, rowIf));
+            {
+                StringBuffer temp;
+                GetTempFilePath(temp,"lookahd");
+                if (newLookAhead)
+                {
+                    ICompressHandler *compressHandler = options.totalCompressionBufferSize ? queryDefaultCompressHandler() : nullptr;
+                    smartbuf.setown(createCompressedSpillingRowStream(&activity, temp.str(), preserveGrouping, rowIf, options, compressHandler));
+                }
+                else
+                    smartbuf.setown(createSmartBuffer(&activity, temp.str(), bufsize, rowIf));
+            }
             else
                 smartbuf.setown(createSmartInMemoryBuffer(&activity, rowIf, bufsize));
             startSem.signal();
@@ -110,15 +119,23 @@ public:
             {
                 while (requiredLeft&&running)
                 {
-                    OwnedConstThorRow row = inputStream->nextRow();
-                    if (!row)
+                    OwnedConstThorRow row;
+                    bool eog = false;
                     {
+                        LookAheadTimer timer(activity.getActivityTimerAccumulator(), activity.queryTimeActivities());
                         row.setown(inputStream->nextRow());
                         if (!row)
-                            break;
-                        else
-                            writer->putRow(NULL); // eog
+                        {
+                            row.setown(inputStream->nextRow());
+                            if (!row)
+                                break;
+                            eog = true;
+                        }
                     }
+
+                    if (unlikely(eog))
+                        writer->putRow(NULL);
+
                     ++count;
                     writer->putRow(row.getClear());
                     if (requiredLeft!=RCUNBOUND)
@@ -129,7 +146,11 @@ public:
             {
                 while (requiredLeft&&running)
                 {
-                    OwnedConstThorRow row = inputStream->ungroupedNextRow();
+                    OwnedConstThorRow row;
+                    {
+                        LookAheadTimer timer(activity.getActivityTimerAccumulator(), activity.queryTimeActivities());
+                        row.setown(inputStream->ungroupedNextRow());
+                    }
                     if (!row)
                         break;
                     ++count;
@@ -167,7 +188,7 @@ public:
                 {
                     if (threaded.join(60000))
                         break;
-                    PROGLOG("Still waiting on lookahead CNotifyThread thread to complete");
+                    DBGLOG("Still waiting on lookahead CNotifyThread thread to complete");
                 }
             }
         // IThreaded impl.
@@ -207,6 +228,15 @@ public:
         running = true;
         required = _required;
         count = 0;
+
+        newLookAhead = activity.getOptBool("newlookahead", false);
+        if (activity.getOptBool("forcenewlookahead"))
+        {
+            newLookAhead = true;
+            allowspill = true;
+        }
+
+        populateLookAheadOptions(activity, options);
     }
     ~CRowStreamLookAhead()
     {
@@ -216,7 +246,15 @@ public:
 // IEngineRowStream
     virtual const void *nextRow() override
     {
-        OwnedConstThorRow row = smartbuf->nextRow();
+        OwnedConstThorRow row;
+        {
+            // smartbuf->nextRow should return immediately if a row is available.
+            // smartbuf->nextRow will take time if blocked, so record time taken as blocked time.
+            // N.b. smartbuf->next may take a trivial amount of time if row is available but
+            // for the purposes of stats this will still be considered blocked.
+            BlockedActivityTimer timer(activity.getActivityTimerAccumulator(), activity.queryTimeActivities());
+            row.setown(smartbuf->nextRow());
+        }
         if (getexception)
             throw getexception.getClear();
         if (!row)
@@ -706,7 +744,7 @@ public:
         }
         catch (IException *e)
         {
-            EXCLOG(e, "CWriteHandler::beforeDispose");
+            DISLOG(e, "CWriteHandler::beforeDispose");
             e->Release();
         }
     }
@@ -723,6 +761,13 @@ public:
         checkAndHandleClose();
     }
 };
+
+// This function creates an output stream for writing, and wraps it in a class that renames the file, and copies it
+// to any other copies when the stream is destroyed.
+// GH->JCS. If there are no copies, and the file is not being renamed this could be avoided.
+// GH->JCS. Now that we always call close, should this log an error if close is not called before beforeDispose()?
+// GH->JCS. It would be better if this wrapped the base IFileIO, rather than the compressed IFileIO - otherwise each write goes through
+//          an extra layer of virtual calls.
 
 IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc, unsigned recordSize, unsigned twFlags, bool &compress, ICompressor *ecomp, ICopyFileProgress *iProgress, bool *aborted, StringBuffer *_outLocationName)
 {
@@ -760,14 +805,20 @@ IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc,
             GetTempFilePath(outLocationName, "partial");
 
         assertex(outLocationName.length());
-        ensureDirectoryForFile(outLocationName.str());
     }
+    ensureDirectoryForFile(outLocationName.str());
+
+    StringBuffer planeName;
+    partDesc.queryOwner().queryClusterNum(0)->getGroupName(planeName);
+    size32_t blockedIoSize = getBlockedFileIOSize(planeName, (size32_t)-1);
+
     OwnedIFile file = createIFile(outLocationName.str());
     Owned<IFileIO> fileio;
     if (compress)
     {
         unsigned compMethod = COMPRESS_METHOD_LZ4;
         // rowdif used if recordSize > 0, else fallback to compMethod
+        IFEflags fileIOExtaFlags = IFEnone;
         if (!ecomp)
         {
             if (twFlags & TW_Temporary)
@@ -790,7 +841,8 @@ IFileIO *createMultipleWrite(CActivityBase *activity, IPartDescriptor &partDesc,
             else if (activity->getOptBool(THOROPT_COMP_FORCELZ4HC, false))
                 compMethod = COMPRESS_METHOD_LZ4HC;
         }
-        fileio.setown(createCompressedFileWriter(file, recordSize, 0 != (twFlags & TW_Extend), true, ecomp, compMethod));
+        size32_t compressBlockSize = 0; // i.e. default.
+        fileio.setown(createCompressedFileWriter(file, recordSize, 0 != (twFlags & TW_Extend), true, ecomp, compMethod, compressBlockSize, blockedIoSize, fileIOExtaFlags));
         if (!fileio)
         {
             compress = false;
@@ -847,73 +899,64 @@ StringBuffer &locateFilePartPath(CActivityBase *activity, const char *logicalFil
     return filePath;
 }
 
-
-IRowStream *createSequentialPartHandler(CPartHandler *partHandler, IArrayOf<IPartDescriptor> &partDescs, bool grouped)
+CSeqPartHandler::CSeqPartHandler(CPartHandler *_partHandler, IArrayOf<IPartDescriptor> &_partDescs, bool _grouped)
+    : partDescs(_partDescs), partHandler(_partHandler), grouped(_grouped)
 {
-    class CSeqPartHandler : implements IRowStream, public CSimpleInterface
+    part = 0;
+    someInGroup = false;
+    if (0==numParts())
     {
-        IArrayOf<IPartDescriptor> &partDescs;
-        int part, parts;
-        bool eof, grouped, someInGroup;
-        Linked<CPartHandler> partHandler;
+        eof = true;
+    }
+    else
+    {
+        eof = false;
+        partHandler->setPart(&partDescs.item(0));
+    }
+}
 
-        IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
-    public:
-        CSeqPartHandler(CPartHandler *_partHandler, IArrayOf<IPartDescriptor> &_partDescs, bool _grouped) 
-            : partDescs(_partDescs), partHandler(_partHandler), grouped(_grouped)
+void CSeqPartHandler::stop()
+{
+    if (partHandler)
+    {
+        partHandler->stop();
+        partHandler.clear();
+    }
+}
+
+const void * CSeqPartHandler::nextRow()
+{
+    if (unlikely(eof))
+    {
+        return NULL;
+    }
+    for (;;)
+    {
+        OwnedConstThorRow row = partHandler->nextRow();
+        if (likely(row))
         {
-            part = 0;
-            parts = partDescs.ordinality();
+            someInGroup = true;
+            return row.getClear();
+        }
+        if (grouped && someInGroup)
+        {
             someInGroup = false;
-            if (0==parts)
-            {
-                eof = true;
-            }
-            else
-            {
-                eof = false;
-                partHandler->setPart(&partDescs.item(0));
-            }
+            return NULL;
         }
-        virtual void stop()
+        ++part;
+        if (part >= numParts())
         {
-            if (partHandler)
-            {
-                partHandler->stop();
-                partHandler.clear();
-            }
+            partHandler->stop();
+            partHandler.clear();
+            eof = true;
+            return NULL;
         }
-        const void *nextRow()
-        {
-            if (eof)
-            {
-                return NULL;
-            }
-            for (;;)
-            {
-                OwnedConstThorRow row = partHandler->nextRow();
-                if (row)
-                {
-                    someInGroup = true;
-                    return row.getClear();
-                }
-                if (grouped && someInGroup)
-                {
-                    someInGroup = false;
-                    return NULL;
-                }
-                ++part;
-                if (part >= parts)
-                {
-                    partHandler->stop();
-                    partHandler.clear();
-                    eof = true;
-                    return NULL;
-                }
-                partHandler->setPart(&partDescs.item(part));
-            }
-        }
-    };
+        partHandler->setPart(&partDescs.item(part));
+    }
+}
+
+CSeqPartHandler *createSequentialPartHandler(CPartHandler *partHandler, IArrayOf<IPartDescriptor> &partDescs, bool grouped)
+{
     return new CSeqPartHandler(partHandler, partDescs, grouped);
 }
 

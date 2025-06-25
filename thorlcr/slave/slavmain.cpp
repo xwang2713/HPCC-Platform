@@ -53,6 +53,8 @@
 #include "rtlcommon.hpp"
 #include "../activities/keyedjoin/thkeyedjoincommon.hpp"
 
+bool recvShutdown = false;
+
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
@@ -71,7 +73,7 @@ void enableThorSlaveAsDaliClient()
     {
         try
         {
-            LOG(MCdebugProgress, "calling initClientProcess");
+            DBGLOG("calling initClientProcess");
             initClientProcess(serverGroup,DCR_ThorSlave, getFixedPort(TPORT_mp));
             break;
         }
@@ -83,7 +85,7 @@ void enableThorSlaveAsDaliClient()
             if (retry++>10)
                 throw;
             e->Release();
-            LOG(MCdebugProgress, "Retrying");
+            DBGLOG("Retrying");
             Sleep(retry*2000);
         }
     }
@@ -353,6 +355,8 @@ class CKJService : public CSimpleInterfaceOf<IKJService>, implements IThreaded, 
                     translator.setown(createRecordTranslator(projectedFormat->queryRecordAccessor(true), publishedFormat->queryRecordAccessor(true)));
                     if (!translator->canTranslate())
                         throw MakeStringException(0, "Untranslatable record layout mismatch detected for: %s", tracing);
+                    if (RecordTranslationMode::PayloadRemoveOnly == translationMode && translator->hasNewFields())
+                        throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", tracing);
                 }
                 DBGLOG("Record layout translator created for %s", tracing);
                 translator->describe();
@@ -384,7 +388,7 @@ class CKJService : public CSimpleInterfaceOf<IKJService>, implements IThreaded, 
         CKeyLookupContext(CKJService &_service, CActivityContext *_activityCtx, const CLookupKey &_key)
             : CContext(_service, _activityCtx), key(_key)
         {
-            keyIndex.setown(createKeyIndex(key.fname, key.crc, false));
+            keyIndex.setown(createKeyIndex(key.fname, key.crc, false, 0));
             expectedFormat.set(activityCtx->queryHelper()->queryIndexRecordSize());
             expectedFormatCrc = activityCtx->queryHelper()->getIndexFormatCrc();
         }
@@ -414,7 +418,7 @@ class CKJService : public CSimpleInterfaceOf<IKJService>, implements IThreaded, 
         unsigned handle = 0;
         Owned<const IDynamicTransform> translator;
         Owned<ISourceRowPrefetcher> prefetcher;
-        Owned<ISerialStream> ioStream;
+        Owned<IBufferedSerialInputStream> ioStream;
         CThorContiguousRowBuffer prefetchSource;
         bool initialized = false;
 
@@ -565,7 +569,7 @@ class CKJService : public CSimpleInterfaceOf<IKJService>, implements IThreaded, 
         }
         void replyError(IException *e)
         {
-            EXCLOG(e, "CLookupRequest");
+            IERRLOG(e, "CLookupRequest");
             if (replyAttempt)
                 return;
             byte errorCode = kjse_exception;
@@ -1495,20 +1499,21 @@ public:
             }
             catch (IMP_Exception *e)
             {
-                EXCLOG(e, nullptr);
+                if (!recvShutdown)
+                    IERRLOG(e);
                 e->Release();
                 break;
             }
             catch (IJSOCK_Exception *e)
             {
-                EXCLOG(e, nullptr);
+                IERRLOG(e);
                 e->Release();
                 break;
             }
             catch (IException *e)
             {
                 if (replyAttempt)
-                    EXCLOG(e, "CKJService: failed to send reply");
+                    IERRLOG(e, "CKJService: failed to send reply");
                 else if (TAG_NULL == replyTag)
                 {
                     StringBuffer msg("CKJService: Exception without reply tag. Received from slave: ");
@@ -1516,7 +1521,7 @@ public:
                         msg.append("<unknown>");
                     else
                         msg.append(sender-1);
-                    EXCLOG(e, msg.str());
+                    IERRLOG(e, msg.str());
                     msg.clear();
                 }
                 else
@@ -1532,7 +1537,7 @@ public:
             {
                 if (!queryNodeComm().send(msg, sender, replyTag, LONGTIMEOUT))
                 {
-                    OERRLOG("CKJService: Failed to send error response");
+                    IERRLOG("CKJService: Failed to send error response");
                     break;
                 }
             }
@@ -1577,7 +1582,7 @@ public:
         processorPool->stopAll(true);
         processorPool->joinAll(true);
         while (!threaded.join(60000, false))
-            PROGLOG("Receiver waiting on remote handlers to signal completion");
+            DBGLOG("Receiver waiting on remote handlers to signal completion");
         if (aborted)
             return;
         aborted = true;
@@ -1587,7 +1592,7 @@ public:
     virtual bool fireException(IException *e) override
     {
         // exceptions should always be handled by processor
-        EXCLOG(e, nullptr);
+        IERRLOG(e);
         e->Release();
         return true;
     }
@@ -1623,7 +1628,7 @@ class CJobListener : public CSimpleInterface
                 CriticalBlock b(jobListener.crit);
                 if (0 == jobListener.jobs.count())
                 {
-                    EXCLOG(e, "No job active exception: ");
+                    IERRLOG(e, "No job active exception: ");
                     return true;
                 }
                 IThorException *te = QUERYINTERFACE(e, IThorException);
@@ -1645,14 +1650,14 @@ class CJobListener : public CSimpleInterface
             try
             {
                 if (!queryNodeComm().sendRecv(msg, 0, mptag, LONGTIMEOUT))
-                    EXCLOG(e, "Failed to send exception to master");
+                    IERRLOG(e, "Failed to send exception to master");
             }
             catch (IException *e2)
             {
                 StringBuffer str("Error whilst sending exception '");
                 e->errorMessage(str);
                 str.append("' to master");
-                EXCLOG(e2, str.str());
+                IERRLOG(e2, str.str());
                 e2->Release();
             }
             return true;
@@ -1664,7 +1669,7 @@ public:
     {
         stopped = true;
         channelsPerSlave = globals->getPropInt("@channelsPerSlave", 1);
-        unsigned localThorPortInc = globals->getPropInt("@localThorPortInc", DEFAULT_SLAVEPORTINC);
+        unsigned localThorPortInc = globals->getPropInt("@localThorPortInc", DEFAULT_WORKERPORTINC);
         mpServers.append(* getMPServer());
         bool reconnect = globals->getPropBool("@MPChannelReconnect");
         for (unsigned sc=1; sc<channelsPerSlave; sc++)
@@ -1694,7 +1699,7 @@ public:
     }
     void stop()
     {
-        queryNodeComm().cancel(0, masterSlaveMpTag);
+        queryNodeComm().cancel(0, managerWorkerMpTag);
     }
     void slaveMain(ILogMsgHandler *logHandler)
     {
@@ -1770,7 +1775,7 @@ public:
 
         OwnedPtr<CThorPerfTracer> perf;
         JobNameScope activeJobName;
-        while (!stopped && queryNodeComm().recv(msg, 0, masterSlaveMpTag))
+        while (!stopped && queryNodeComm().recv(msg, 0, managerWorkerMpTag))
         {
             doReply = true;
             try
@@ -1829,6 +1834,7 @@ public:
                                     iFile->setCreateFlags(S_IRWXU);
                                     Owned<IFileIO> iFileIO = iFile->open(IFOwrite);
                                     iFileIO->write(0, size, queryPtr);
+                                    iFileIO->close();
                                 }
                                 catch (IException *e)
                                 {
@@ -1885,18 +1891,21 @@ public:
 
                         unsigned defaultConfigLogLevel = getComponentConfigSP()->getPropInt("logging/@detail", DefaultDetail);
                         unsigned maxLogDetail = workUnitInfo->getPropInt("Debug/maxlogdetail", defaultConfigLogLevel);
-                        ILogMsgFilter *existingLogHandler = queryLogMsgManager()->queryMonitorFilter(logHandler);
-                        dbgassertex(existingLogHandler);
-                        verifyex(queryLogMsgManager()->changeMonitorFilterOwn(logHandler, getCategoryLogMsgFilter(existingLogHandler->queryAudienceMask(), existingLogHandler->queryClassMask(), maxLogDetail)));
+                        ILogMsgFilter *existingLogFilter = queryLogMsgManager()->queryMonitorFilter(logHandler);
+                        dbgassertex(existingLogFilter);
+                        if (existingLogFilter->queryMaxDetail() != maxLogDetail)
+                            verifyex(queryLogMsgManager()->changeMonitorFilterOwn(logHandler, getCategoryLogMsgFilter(existingLogFilter->queryAudienceMask(), existingLogFilter->queryClassMask(), maxLogDetail)));
 
                         activeJobName.set(wuid);
 
                         PROGLOG("Started wuid=%s, user=%s, graph=%s [log detail level=%u]", wuid.get(), user.str(), graphName.get(), maxLogDetail);
-                        PROGLOG("Using query: %s", soPath.str());
+                        DBGLOG("Using query: %s", soPath.str());
 
-                        if (!getExpertOptBool("slaveDaliClient") && workUnitInfo->getPropBool("Debug/slavedaliclient", false))
+                        // slaveDaliClient option deprecated, but maintained for compatibility
+                        if (!getExpertOptBool("allowDaliAccess") && !getExpertOptBool("slaveDaliClient") &&
+                            (workUnitInfo->getPropBool("Debug/allowdaliaccess", false) || workUnitInfo->getPropBool("Debug/slavedaliclient", false)))
                         {
-                            PROGLOG("Workunit option 'slaveDaliClient' enabled");
+                            PROGLOG("Workunit option 'allowDaliAccess' enabled");
                             enableThorSlaveAsDaliClient();
                         }
 
@@ -1928,10 +1937,12 @@ public:
 
                         PROGLOG("Finished wuid=%s, graph=%s", wuid.get(), graphName.get());
 
-                        if (!getExpertOptBool("slaveDaliClient") && job->getWorkUnitValueBool("slaveDaliClient", false))
+                        // slaveDaliClient option deprecated, but maintained for compatibility
+                        if (!getExpertOptBool("allowDaliAccess") && !getExpertOptBool("slaveDaliClient") &&
+                            (job->getWorkUnitValueBool("Debug/allowdaliaccess", false) || job->getWorkUnitValueBool("Debug/slavedaliclient", false)))
                             disableThorSlaveAsDaliClient();
 
-                        PROGLOG("QueryDone, removing %s from jobs", key.get());
+                        DBGLOG("QueryDone, removing %s from jobs", key.get());
                         Owned<IException> exception;
                         try
                         {
@@ -1942,10 +1953,12 @@ public:
                             exception.setown(e);
                         }
                         jobs.removeExact(job);
-                        PROGLOG("QueryDone, removed %s from jobs", key.get());
+                        DBGLOG("QueryDone, removed %s from jobs", key.get());
 
                         // reset for next job
                         setProcessAborted(false);
+
+                        saveWuidToFile(""); // clear wuid file. Signifies that no wuid is running.
 
                         if (exception)
                             throw exception.getClear(); // NB: this will cause exception to be part of the reply to master
@@ -2092,6 +2105,7 @@ public:
                     case Shutdown:
                     {
                         stopped = true;
+                        recvShutdown = true;
                         PROGLOG("Shutdown received");
                         if (watchdog)
                             watchdog->stop();
@@ -2106,7 +2120,7 @@ public:
                     {
                         StringAttr jobKey;
                         msg.read(jobKey);
-                        PROGLOG("GraphGetResult: %s", jobKey.get());
+                        DBGLOG("GraphGetResult: %s", jobKey.get());
                         CJobSlave *job = jobs.find(jobKey.get());
                         if (job)
                         {
@@ -2156,7 +2170,7 @@ public:
             }
             catch (IException *e)
             {
-                EXCLOG(e, NULL);
+                IERRLOG(e);
                 if (doReply && TAG_NULL != msg.getReplyTag())
                 {
                     doReply = false;
@@ -2220,7 +2234,7 @@ class CFileInProgressHandler : public CSimpleInterface, implements IFileInProgre
         catch (IException *e)
         {
             StringBuffer errStr("FileInProgressHandler, failed to remove: ");
-            EXCLOG(e, errStr.append(fip).str());
+            IERRLOG(e, errStr.append(fip).str());
             e->Release();
         }
     }
@@ -2277,7 +2291,7 @@ public:
         iFileIO.setown(iFile->open(IFOreadwrite));
         if (!iFileIO)
         {
-            PROGLOG("Failed to open/create backup file: %s", path.str());
+            IWARNLOG("Failed to open/create backup file: %s", path.str());
             return;
         }
         MemoryBuffer mb;
@@ -2409,6 +2423,6 @@ void slaveMain(bool &jobListenerStopped, ILogMsgHandler *logHandler)
 void abortSlave()
 {
     if (clusterInitialized())
-        queryNodeComm().cancel(0, masterSlaveMpTag);
+        queryNodeComm().cancel(0, managerWorkerMpTag);
 }
 

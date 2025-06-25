@@ -1,6 +1,8 @@
 import * as React from "react";
 import { Route, RouterContext } from "universal-router";
-import { initialize, parsePage, parseSearch, parseSort, pushUrl, replaceUrl } from "./util/history";
+import { initialize, parsePage, parseSearch, parseSort, parseFullscreen, pushUrl, replaceUrl } from "./util/history";
+
+declare const dojoConfig;
 
 export type MainNav = "activities" | "workunits" | "files" | "queries" | "topology" | "operations";
 
@@ -10,6 +12,47 @@ export interface RouteEx<R = any, C extends RouterContext = RouterContext> exten
 
 type RoutesEx<R = any, C extends RouterContext = RouterContext> = Array<RouteEx<R, C>>;
 
+const workunitsChildren: Route[] = [
+    {
+        path: "", action: (ctx) => import("./components/Workunits").then(_ => {
+            return <_.Workunits filter={parseSearch(ctx.search) as any} sort={parseSort(ctx.search)} page={parsePage(ctx.search)} />;
+        })
+    },
+    {
+        path: "/dashboard", action: (ctx) => import("./components/WorkunitsDashboard").then(_ => {
+            return <_.WorkunitsDashboard filterProps={parseSearch(ctx.search) as any} />;
+        })
+    },
+    {
+        path: "/:Wuid", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
+            return <_.WorkunitDetails wuid={params.Wuid as string} parentUrl={params.parentUrl as string} fullscreen={parseFullscreen(ctx.search)} queryParams={{ summary: parseSearch(ctx.search) as any }} />;
+        })
+    },
+    {
+        path: "/:Wuid/:Tab", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
+            return <_.WorkunitDetails wuid={params.Wuid as string} parentUrl={params.parentUrl as string} fullscreen={parseFullscreen(ctx.search)} tab={params.Tab as string} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
+        })
+    },
+    {
+        path: "/:Wuid/:Tab/:State", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
+            let state;
+            switch (params.Tab) {
+                case "metrics":
+                    state = { [params.Tab as string]: { selection: (params.State as string).split(",") } };
+                    break;
+                default:
+                    state = { [params.Tab as string]: (params.State as string) };
+            }
+            return <_.WorkunitDetails wuid={params.Wuid as string} parentUrl={params.parentUrl as string} fullscreen={parseFullscreen(ctx.search)} tab={params.Tab as string} state={state} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
+        })
+    },
+    {
+        path: "/:Wuid/:Tab/:State/:State2", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
+            return <_.WorkunitDetails wuid={params.Wuid as string} parentUrl={params.parentUrl as string} fullscreen={parseFullscreen(ctx.search)} tab={params.Tab as string} state={{ [params.Tab as string]: { lineageSelection: params.State, selection: (params.State2 as string).split(",") } }} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
+        })
+    },
+];
+
 export const routes: RoutesEx = [
     {
         mainNav: [],
@@ -17,12 +60,17 @@ export const routes: RoutesEx = [
         path: "/login",
         action: (ctx) => import("./components/forms/Login").then(_ => <_.Login />)
     },
+    {
+        mainNav: [],
+        name: "reset",
+        path: "/reset",
+        action: (ctx) => import("./components/Reset").then(_ => <_.ResetDialog />)
+    },
     //  Main  ---
     {
         mainNav: ["activities"],
         path: "",
         action: (context) => pushUrl("/activities")
-
     },
     {
         mainNav: ["activities"],
@@ -54,46 +102,28 @@ export const routes: RoutesEx = [
     {
         mainNav: ["workunits"],
         path: "/workunits",
-        children: [
-            {
-                path: "", action: (ctx) => import("./components/Workunits").then(_ => {
-                    return <_.Workunits filter={parseSearch(ctx.search) as any} sort={parseSort(ctx.search)} page={parsePage(ctx.search)} />;
-                })
-            },
-            {
-                path: "/dashboard", action: (ctx) => import("./components/WorkunitsDashboard").then(_ => {
-                    return <_.WorkunitsDashboard filterProps={parseSearch(ctx.search) as any} />;
-                })
-            },
-            {
-                path: "/:Wuid", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
-                    return <_.WorkunitDetails wuid={params.Wuid as string} />;
-                })
-            },
-            {
-                path: "/:Wuid/:Tab", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
-                    return <_.WorkunitDetails wuid={params.Wuid as string} tab={params.Tab as string} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
-                })
-            },
-            {
-                path: "/:Wuid/:Tab/:State", action: (ctx, params) => import("./components/WorkunitDetails").then(_ => {
-                    return <_.WorkunitDetails wuid={params.Wuid as string} tab={params.Tab as string} state={{ [params.Tab as string]: (params.State as string) }} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
-                })
-            },
-        ]
+        children: workunitsChildren
+    },
+    {
+        mainNav: ["workunits"],
+        path: "/workunits!:context",
+        action: (ctx, params) => {
+            params.parentUrl = `/workunits!${params.context}`;
+        },
+        children: workunitsChildren
     },
     {
         mainNav: ["workunits"],
         path: ["/play", "/playground"],
         children: [
             {
-                path: "", action: () => import("./components/ECLPlayground").then(_ => {
-                    return <_.ECLPlayground />;
+                path: "", action: (ctx, params) => import("./components/ECLPlayground").then(_ => {
+                    return <_.ECLPlayground ecl={parseSearch(ctx.search)?.ecl as string} />;
                 })
             },
             {
                 path: "/:Wuid", action: (ctx, params) => import("./components/ECLPlayground").then(_ => {
-                    return <_.ECLPlayground wuid={params.Wuid as string} />;
+                    return <_.ECLPlayground wuid={params.Wuid as string} filter={parseSearch(ctx.search) as any} />;
                 })
             },
         ]
@@ -114,17 +144,17 @@ export const routes: RoutesEx = [
             },
             {
                 path: "/:Name", action: (ctx, params) => import("./components/FileDetails").then(_ => {
-                    return <_.FileDetails cluster={undefined} logicalFile={params.Name as string} />;
+                    return <_.FileDetails cluster={undefined} logicalFile={params.Name as string} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
             {
                 path: "/:NodeGroup/:Name", action: (ctx, params) => import("./components/FileDetails").then(_ => {
-                    return <_.FileDetails cluster={params.NodeGroup as string} logicalFile={params.Name as string} />;
+                    return <_.FileDetails cluster={params.NodeGroup as string} logicalFile={params.Name as string} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
             {
                 path: "/:NodeGroup/:Name/:Tab", action: (ctx, params) => import("./components/FileDetails").then(_ => {
-                    return <_.FileDetails cluster={params.NodeGroup as string} logicalFile={params.Name as string} tab={params.Tab as string} sort={{ [params.Tab as string]: parseSort(ctx.search) }} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
+                    return <_.FileDetails cluster={params.NodeGroup as string} logicalFile={params.Name as string} tab={params.Tab as string} sort={{ [params.Tab as string]: parseSort(ctx.search) }} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
         ]
@@ -211,22 +241,27 @@ export const routes: RoutesEx = [
             },
             {
                 path: "/:QuerySetId/:Id", action: (ctx, params) => import("./components/QueryDetails").then(_ => {
-                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} />;
+                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
             {
                 path: "/:QuerySetId/:Id/:Tab", action: (ctx, params) => import("./components/QueryDetails").then(_ => {
-                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab={params.Tab as string} />;
+                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab={params.Tab as string} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
             {
                 path: "/:QuerySetId/:Id/metrics/:MetricsTab", action: (ctx, params) => import("./components/QueryDetails").then(_ => {
-                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="metrics" state={{ metricsTab: params.MetricsTab as string }} />;
+                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="metrics" state={{ metricsTab: params.MetricsTab as string }} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
             {
                 path: "/:QuerySetId/:Id/metrics/:MetricsTab/:Selection", action: (ctx, params) => import("./components/QueryDetails").then(_ => {
-                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="metrics" state={{ metricsTab: params.MetricsTab as string }} queryParams={{ metricsSelection: params.Selection as string }} />;
+                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="metrics" state={{ metricsTab: params.MetricsTab as string }} queryParams={{ metricsSelection: params.Selection as string }} fullscreen={parseFullscreen(ctx.search)} />;
+                })
+            },
+            {
+                path: "/:QuerySetId/:Id/metrics/:MetricsTab/:Lineage/:Selection", action: (ctx, params) => import("./components/QueryDetails").then(_ => {
+                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="metrics" state={{ metricsTab: params.MetricsTab as string }} queryParams={{ lineageSelection: params.Lineage as string, metricsSelection: params.Selection as string }} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
             {
@@ -236,7 +271,7 @@ export const routes: RoutesEx = [
             },
             {
                 path: "/:QuerySetId/:Id/testPages/:Tab", action: (ctx, params) => import("./components/QueryDetails").then(_ => {
-                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="testPages" state={{ testTab: params.Tab as string }} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} />;
+                    return <_.QueryDetails querySet={params.QuerySetId as string} queryId={params.Id as string} tab="testPages" state={{ testTab: params.Tab as string }} queryParams={{ [params.Tab as string]: parseSearch(ctx.search) as any }} fullscreen={parseFullscreen(ctx.search)} />;
                 })
             },
         ]
@@ -311,7 +346,14 @@ export const routes: RoutesEx = [
                 })
             },
             {
+                path: "/wu-summary", action: (ctx) => import("./components/WUSSummary").then(_ => {
+                    const filter = parseSearch(ctx.search) as any;
+                    return <_.WUSSummary from={filter?.from} to={filter?.to} />;
+                })
+            },
+            {
                 path: "/security",
+                action: () => { if (!dojoConfig.isAdmin) { replaceUrl("/topology"); } },
                 children: [
                     {
                         path: "", action: (ctx, params) => import("./components/Security").then(_ => {
@@ -392,15 +434,15 @@ export const routes: RoutesEx = [
             },
             {
                 path: "/sasha",
-                        children: [
-                            {
-                                path: "", action: (ctx, params) => import("./components/Sasha").then(_ => {
-                                    return <_.Sasha />;
-                                })
-                            },
-                        ]
+                children: [
+                    {
+                        path: "", action: (ctx, params) => import("./components/Sasha").then(_ => {
+                            return <_.Sasha />;
+                        })
                     },
                 ]
+            },
+        ]
     },
     {
         mainNav: ["operations"],
@@ -455,8 +497,15 @@ export const routes: RoutesEx = [
                 }]
             },
             {
+                path: "/wu-summary", action: (ctx) => import("./components/WUSSummary").then(_ => {
+                    const filter = parseSearch(ctx.search) as any;
+                    return <_.WUSSummary from={filter?.from} to={filter?.to} />;
+                })
+            },
+            {
 
                 path: "/security",
+                action: () => { if (!dojoConfig.isAdmin) { replaceUrl("/operations"); } },
                 children: [
                     {
                         path: "", action: (ctx, params) => import("./components/Security").then(_ => {
@@ -528,7 +577,7 @@ export const routes: RoutesEx = [
     },
     {
         mainNav: [],
-        path: "/log", action: () => import("./components/LogViewer").then(_ => <_.LogViewer />)
+        path: "/log", action: (ctx) => import("./components/LogViewer").then(_ => <_.LogViewer sort={parseSort(ctx.search)} />)
     },
     //  Other
     {

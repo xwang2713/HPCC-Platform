@@ -15,6 +15,7 @@
     limitations under the License.
 ############################################################################## */
 
+#include <cmath>
 #include "thactivityutil.ipp"
 #include "thcompressutil.hpp"
 #include "thexception.hpp"
@@ -142,7 +143,7 @@ class CBroadcaster : public CSimpleInterface
             }
             catch (IException *e)
             {
-                EXCLOG(e, "CRecv");
+                IWARNLOG(e, "CRecv");
                 abort(false);
                 broadcaster.cancel(e);
                 e->Release();
@@ -155,6 +156,8 @@ class CBroadcaster : public CSimpleInterface
         CThreadedPersistent threaded;
         SimpleInterThreadQueueOf<CSendItem, true> broadcastQueue;
         Owned<IException> exception;
+        unsigned myNode;
+        unsigned nodes;
         bool aborted;
         void clearQueue()
         {
@@ -169,6 +172,14 @@ class CBroadcaster : public CSimpleInterface
         CSend(CBroadcaster &_broadcaster) : threaded("CBroadcaster::CSend", this), broadcaster(_broadcaster)
         {
             aborted = false;
+            myNode = broadcaster.activity.queryJob().queryMyNodeRank()-1; // 0 based
+            nodes = broadcaster.activity.queryJob().queryNodes();
+
+            // in theory each worker could be sending log(n) packets, with the broadcaster on each blocking waiting for acks
+            unsigned limit = 0; // disabled for now (see HPCC-34240) [ limit = nodes * std::ceil(std::log2(nodes)); ]
+            limit = broadcaster.activity.getOptInt("lookupJoinBroadcastQLimit", limit);
+            if (0 != limit)
+                broadcastQueue.setLimit(limit);
         }
         ~CSend()
         {
@@ -182,7 +193,27 @@ class CBroadcaster : public CSimpleInterface
                     sendItem->Release();
                 throw exception.getClear();
             }
-            broadcastQueue.enqueue(sendItem); // will block if queue full
+            // check if anywhere else to send to
+            if (sendItem)
+            {
+                unsigned origin = sendItem->queryNode();
+                unsigned pseudoNode = (myNode<origin) ? nodes-origin+myNode : myNode-origin;
+                unsigned t = broadcaster.target(0, pseudoNode);
+                if (t>=nodes)
+                {
+                    sendItem->Release();
+                    return;
+                }
+            }
+            while (!broadcastQueue.enqueue(sendItem, 20000)) // will timeout if queue full
+            {
+                if (broadcastQueue.queryStopped())
+                {
+                    DBGLOG("broadcastQueue stopped");
+                    break;
+                }
+                DBGLOG("CSend::addBlock() - broadcastQueue full, waiting for space");
+            }
         }
         void start()
         {
@@ -221,7 +252,7 @@ class CBroadcaster : public CSimpleInterface
             }
             catch (IException *e)
             {
-                EXCLOG(e, "CSend");
+                IWARNLOG(e, "CSend");
                 exception.setown(e);
                 abort(false);
                 broadcaster.cancel(e);
@@ -272,6 +303,8 @@ class CBroadcaster : public CSimpleInterface
         mptag_t rt = ::createReplyTag();
         unsigned origin = sendItem->queryNode();
         unsigned pseudoNode = (myNode<origin) ? nodes-origin+myNode : myNode-origin;
+
+        // NB: could in theory spot if all descendents that this would end up propagating to have stopped, and not send
         CMessageBuffer replyMsg;
         // sends to all in 1st pass, then waits for ack from all
         for (unsigned sendRecv=0; sendRecv<2 && !activity.queryAbortSoon(); sendRecv++)
@@ -306,6 +339,10 @@ class CBroadcaster : public CSimpleInterface
 #endif
                     if (!activity.receiveMsg(comm, replyMsg, t, rt))
                         break;
+                    bool isStopping;
+                    replyMsg.read(isStopping);
+                    if (isStopping) // effectively a shortcut to mark asap that sender is stopping because the receiver has been requested to stop
+                        setStopping(t-1);
 #ifdef _TRACEBROADCAST
                     ActPrintLog(&activity, "Broadcast node %d Sent to node %d, origin node %d, origin slave %d, size %d, code=%d - received ack", myNode+1, t, origin+1, sendItem->querySlave()+1, sendLen, (unsigned)sendItem->queryCode());
 #endif
@@ -330,6 +367,11 @@ class CBroadcaster : public CSimpleInterface
         }
         return false;
     }
+    // recieve loop, receives CSendItem packets, adds them to broadcaster thread ('sender'), and processes the packet via 'bCastReceive'.
+    // bcast_sendStopping are regular row packets that inform us that the sender is stopping (something upstream has asked it to stop())
+    // - If all workers have signalled stopping, 'allRequestStop' will be set and will curtail the broadcast of more packets.
+    // - Or, if the broadcaster has explicitly been stopped (occurs via failover to local lookup), this will also curtail the broadcast of more packets.
+    // bcast_stop contains no row data, it signals that the sender has finished sending data.
     void recvLoop()
     {
         // my sender is implicitly stopped (never sends to self)
@@ -349,16 +391,20 @@ class CBroadcaster : public CSimpleInterface
                 break;
             }
             mptag_t replyTag = msg.getReplyTag();
-            CMessageBuffer ackMsg;
             Owned<CSendItem> sendItem = new CSendItem(msg);
 #ifdef _TRACEBROADCAST
             ActPrintLog(&activity, "Broadcast node %d received from node %d, origin node %d, origin slave %d, size %d, code=%d", myNode+1, (unsigned)sendRank, sendItem->queryNode()+1, sendItem->querySlave()+1, sendItem->length(), (unsigned)sendItem->queryCode());
 #endif
+            CMessageBuffer ackMsg;
+            bool stopping = isStopping(); // this is effectively a shortcut to inform sender asap. bcast_sendStopping/bcast_stop will be queued soon
+            ackMsg.append(stopping);
             comm.send(ackMsg, sendRank, replyTag); // send ack
 #ifdef _TRACEBROADCAST
             ActPrintLog(&activity, "Broadcast node %d, sent ack to node %d, replyTag=%d", myNode+1, (unsigned)sendRank, (unsigned)replyTag);
 #endif
-            sender.addBlock(sendItem.getLink());
+            // if all stopping, then suppress broadcasting (except stop packets)
+            if (!allRequestStop || (bcast_stop == sendItem->queryCode()))
+                sender.addBlock(sendItem.getLink());
             assertex(myNode != sendItem->queryNode());
             switch (sendItem->queryCode())
             {
@@ -806,6 +852,7 @@ class CInMemJoinBase : public CSlaveActivity, public CAllOrLookupHelper<HELPER>,
 {
     typedef CSlaveActivity PARENT;
 
+    JoinMatchStats matchStats;
     Owned<IException> leftexception;
 
     bool eos, eog, someSinceEog;
@@ -904,13 +951,13 @@ protected:
             catch (IException *e)
             {
                 exception.setown(e);
-                EXCLOG(e, "CRowProcessor");
+                IWARNLOG(e, "CRowProcessor");
                 owner.broadcaster->cancel(e);
             }
         }
     } *rowProcessor;
 
-    CriticalSection rhsRowLock;
+    mutable CriticalSection rhsRowLock;
     Owned<CBroadcaster> broadcaster;
     CBroadcaster *channel0Broadcaster;
     CriticalSection *broadcastLock;
@@ -949,6 +996,7 @@ protected:
     unsigned keepLimit;
     unsigned joined;
     unsigned joinCounter;
+    unsigned candidateCounter;
     OwnedConstThorRow defaultLeft;
 
     bool leftMatch, grouped;
@@ -1051,7 +1099,10 @@ protected:
         {
             CThorSpillableRowArray *rows = rhsSlaveRows.item(a);
             if (rows)
+            {
+                mergeRemappedStats(inactiveStats, rows, diskToTempStatsMap);
                 rows->kill();
+            }
         }
         rhs.kill();
     }
@@ -1165,10 +1216,12 @@ protected:
     inline const void *denormalizeNextRow()
     {
         ConstPointerArray filteredRhs;
+        unsigned candidates = 0;
         while (rhsNext)
         {
             if (abortSoon)
                 return NULL;
+            candidates++;
             if (!fuzzyMatch || (HELPERBASE::match(leftRow, rhsNext)))
             {
                 leftMatch = true;
@@ -1187,6 +1240,7 @@ protected:
             }
             rhsNext = tableProxy->getNextRHS(currentHashEntry); // NB: currentHashEntry only used for Lookup,Many case
         }
+        matchStats.noteGroup(1, candidates);
         if (filteredRhs.ordinality() || (!leftMatch && 0!=(flags & JFleftouter)))
         {
             unsigned rcCount = 0;
@@ -1238,6 +1292,7 @@ protected:
                 {
                     leftRow.setown(left->nextRow());
                     joinCounter = 0;
+                    candidateCounter = 0;
                     if (leftRow)
                     {
                         eog = false;
@@ -1273,6 +1328,7 @@ protected:
                     RtlDynamicRowBuilder rowBuilder(allocator);
                     while (rhsNext)
                     {
+                        candidateCounter++;
                         if (!fuzzyMatch || HELPERBASE::match(leftRow, rhsNext))
                         {
                             leftMatch = true;
@@ -1289,12 +1345,15 @@ protected:
                                         rhsNext = NULL;
                                     else
                                         rhsNext = tableProxy->getNextRHS(currentHashEntry); // NB: currentHashEntry only used for Lookup,Many case
+                                    if (!rhsNext)
+                                        matchStats.noteGroup(1, candidateCounter);
                                     return row.getClear();
                                 }
                             }
                         }
                         rhsNext = tableProxy->getNextRHS(currentHashEntry); // NB: currentHashEntry used for Lookup,Many or All cases
                     }
+                    matchStats.noteGroup(1, candidateCounter);
                     if (!leftMatch && NULL == rhsNext && 0!=(flags & JFleftouter))
                     {
                         size32_t sz = HELPERBASE::joinTransform(rowBuilder, leftRow, defaultRight, 0, JTFmatchedleft);
@@ -1330,6 +1389,7 @@ public:
 
         joined = 0;
         joinCounter = 0;
+        candidateCounter = 0;
         leftMatch = false;
         returnMany = false;
 
@@ -1385,11 +1445,17 @@ public:
     }
     HTHELPER *queryTable() { return table; }
     IBitSet *queryRhsChannelStopSet() { dbgassertex(0 == queryJobChannelNumber()); return rhsChannelStop; }
-    void startLeftInput()
+    void startLeftInput(bool async=false)
     {
         try
         {
-            startInput(0);
+            if (async)
+            {
+                LookAheadTimer t(slaveTimerStats, timeActivities);
+                startInput(0);
+            }
+            else
+                startInput(0);
             if (ensureStartFTLookAhead(0))
                 setLookAhead(0, createRowStreamLookAhead(this, inputStream, queryRowInterfaces(input), LOOKUPJOINL_SMART_BUFFER_SIZE, ::canStall(input), grouped, RCUNBOUND, this), false);
             left.set(inputStream); // can be replaced by loader stream
@@ -1470,8 +1536,10 @@ public:
     }
     virtual void start() override
     {
+        ActivityTimer s(slaveTimerStats, timeActivities);
         joined = 0;
         joinCounter = 0;
+        candidateCounter = 0;
         leftMatch = false;
         rhsNext = NULL;
 
@@ -1501,7 +1569,7 @@ public:
         }
         else
         {
-            CAsyncCallStart asyncLeftStart(std::bind(&CInMemJoinBase::startLeftInput, this));
+            CAsyncCallStart asyncLeftStart(std::bind(&CInMemJoinBase::startLeftInput, this, true));
             try
             {
                 startInput(1);
@@ -1631,6 +1699,11 @@ public:
     {
         ActPrintLog("LHS input finished, %" RCPF "d rows read", count);
     }
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const override
+    {
+        PARENT::gatherActiveStats(activeStats);
+        matchStats.gatherStats(activeStats);
+    }
 };
 
 
@@ -1751,7 +1824,9 @@ protected:
 
     // NB: Only used by channel 0
     Owned<CFileOwner> overflowWriteFile;
-    Owned<IRowWriter> overflowWriteStream;
+    Owned<ILogicalRowWriter> overflowWriteStream;
+    OwnedIFileIO overflowWriteFileIO;
+    mutable CriticalSection critOverflowWriteFileIO;
     rowcount_t overflowWriteCount;
     OwnedMalloc<IChannelDistributor *> channelDistributors;
     unsigned nextRhsToSpill = 0;
@@ -1878,10 +1953,10 @@ protected:
                         VStringBuffer tempPrefix("spill_%d", container.queryId());
                         StringBuffer tempName;
                         GetTempFilePath(tempName, tempPrefix.str());
-                        file.setown(new CFileOwner(createIFile(tempName.str())));
+                        file.setown(container.queryActivity()->createOwnedTempFile(tempName.str()));
                         VStringBuffer spillPrefixStr("clearAllNonLocalRows(%d)", SPILL_PRIORITY_SPILLABLE_STREAM);
                         // 3rd param. is skipNulls = true, the row arrays may have had the non-local rows delete already.
-                        rows.save(file->queryIFile(), spillCompInfo, true, spillPrefixStr.str()); // saves committed rows
+                        rows.save(*file, spillCompInfo, true, spillPrefixStr.str()); // saves committed rows
                         rows.flushMarker = 0; // reset because array will be moved as a consequence of further adds, so next scan must be from start
                     }
 
@@ -2040,7 +2115,6 @@ protected:
             if (isSmart())
             {
                 overflowWriteCount = 0;
-                overflowWriteFile.clear();
                 overflowWriteStream.clear();
                 rightRowManager->addRowBuffer(this);
             }
@@ -2051,7 +2125,15 @@ protected:
                 CriticalBlock b(broadcastSpillingLock);
                 rhsRows = getGlobalRHSTotal(); // flushes all rhsSlaveRows arrays to calculate total.
                 if (hasFailedOverToLocal())
+                {
+                    if (overflowWriteFileIO)
+                    {
+                        mergeRemappedStats(PARENT::inactiveStats, overflowWriteFileIO, diskToTempStatsMap);
+                        overflowWriteFile->noteSize(overflowWriteFileIO->getStatistic(StSizeDiskWrite));
+                        overflowWriteFileIO.clear();
+                    }
                     overflowWriteStream.clear(); // broadcast has finished, no more can be written
+                }
             }
             if (!hasFailedOverToLocal())
             {
@@ -2099,6 +2181,7 @@ protected:
                     ForEachItemIn(a, rhsSlaveRows)
                     {
                         CThorSpillableRowArray &rows = *rhsSlaveRows.item(a);
+                        mergeRemappedStats(PARENT::inactiveStats, &rows, diskToTempStatsMap);
                         rhs.appendRows(rows, true); // NB: This should not cause spilling, rhs is already sized and we are only copying ptrs in
                         rows.kill(); // free up ptr table asap
                     }
@@ -2399,7 +2482,7 @@ protected:
         }
         catch (IException *e)
         {
-            EXCLOG(e, "During channel distribution");
+            IWARNLOG(e, "During channel distribution");
             exception.setown(e);
         }
 
@@ -2423,6 +2506,7 @@ protected:
         Owned<IThorRowLoader> rowLoader = createThorRowLoader(*this, queryRowInterfaces(leftITDL), helper->isLeftAlreadyLocallySorted() ? NULL : compareLeft);
         rowLoader->setTracingPrefix("Join left");
         left.setown(rowLoader->load(left, abortSoon, false));
+        mergeRemappedStats(PARENT::inactiveStats, rowLoader, diskToTempStatsMap);
         leftITDL = queryInput(0); // reset
         ActPrintLog("LHS loaded/sorted");
 
@@ -2494,6 +2578,7 @@ protected:
          */
 
         Owned<IThorRowCollector> rightCollector;
+        Owned<IException> exception;
         try
         {
             CMarker marker(*this);
@@ -2618,12 +2703,19 @@ protected:
         catch (IException *e)
         {
             if (!isOOMException(e))
-                throw e;
-            IOutputMetaData *inputOutputMeta = rightITDL->queryFromActivity()->queryContainer().queryHelper()->queryOutputMeta();
-            // rows may either be in separate slave row arrays or in single rhs array, or split.
-            rowcount_t total = rightCollector ? rightCollector->numRows() : (getGlobalRHSTotal() + rhs.ordinality());
-            throw checkAndCreateOOMContextException(this, e, "gathering RHS rows for lookup join", total, inputOutputMeta, NULL);
+                exception.setown(e);
+            else
+            {
+                IOutputMetaData *inputOutputMeta = rightITDL->queryFromActivity()->queryContainer().queryHelper()->queryOutputMeta();
+                // rows may either be in separate slave row arrays or in single rhs array, or split.
+                rowcount_t total = rightCollector ? rightCollector->numRows() : (getGlobalRHSTotal() + rhs.ordinality());
+                exception.setown(checkAndCreateOOMContextException(this, e, "gathering RHS rows for lookup join", total, inputOutputMeta, NULL));
+            }
         }
+        if (rightCollector && rightCollector->hasSpilt())
+            mergeRemappedStats(PARENT::inactiveStats, rightCollector, diskToTempStatsMap);
+        if (exception)
+            throw exception.getClear();
     }
 public:
     static bool needDedup(IHThorHashJoinArg *helper)
@@ -2744,6 +2836,15 @@ public:
     {
         PARENT::start();
         dbgassertex(isSmart() || (leftITDL->isGrouped() == grouped)); // std. lookup join expects these to match
+    }
+    virtual unsigned __int64 queryLookAheadCycles() const
+    {
+        cycle_t lookAheadCycles = PARENT::queryLookAheadCycles();
+        if (rhsDistributor)
+            lookAheadCycles += rhsDistributor->queryLookAheadCycles();
+        if (lhsDistributor)
+            lookAheadCycles += lhsDistributor->queryLookAheadCycles();
+        return lookAheadCycles;
     }
     virtual void reset() override
     {
@@ -2887,7 +2988,7 @@ public:
                 return true;
         }
         CriticalBlock b(rhsRowLock);
-        if (overflowWriteFile)
+        if (overflowWriteFileIO)
         {
             /* Tried to do outside crit above, but if empty, and now overflow, need to inside
              * Will be one off if at all
@@ -2900,6 +3001,7 @@ public:
             overflowWriteCount += rhsInRowsTemp.ordinality();
             ForEachItemIn(r, rhsInRowsTemp)
                 overflowWriteStream->putRow(rhsInRowsTemp.getClear(r));
+            overflowWriteFile->noteSize(overflowWriteFileIO->getStatistic(StSizeDiskWrite));
             return true;
         }
         if (hasFailedOverToLocal())
@@ -2943,13 +3045,14 @@ public:
         StringBuffer tempFilename;
         GetTempFilePath(tempFilename, "lookup_local");
         ActPrintLog("Overflowing RHS broadcast rows to spill file: %s", tempFilename.str());
-        OwnedIFile iFile = createIFile(tempFilename.str());
-        overflowWriteFile.setown(new CFileOwner(iFile.getLink()));
-        overflowWriteStream.setown(createRowWriter(iFile, queryRowInterfaces(rightITDL), rwFlags));
+        overflowWriteFile.setown(container.queryActivity()->createOwnedTempFile(tempFilename.str()));
+        overflowWriteFileIO.setown(overflowWriteFile->queryIFile().open(IFOcreate));
+        overflowWriteStream.setown(createRowWriter(overflowWriteFileIO, queryRowInterfaces(rightITDL), rwFlags));
 
         overflowWriteCount += rhsInRowsTemp.ordinality();
         ForEachItemIn(r, rhsInRowsTemp)
             overflowWriteStream->putRow(rhsInRowsTemp.getClear(r));
+        overflowWriteFile->noteSize(overflowWriteFileIO->getStatistic(StSizeDiskWrite));
         return true;
     }
     virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
@@ -2960,6 +3063,19 @@ public:
             if (isGlobal())
                 activeStats.setStatistic(StNumSmartJoinDegradedToLocal, aggregateFailoversToLocal); // NB: is going to be same for all slaves.
             activeStats.setStatistic(StNumSmartJoinSlavesDegradedToStd, aggregateFailoversToStandard);
+        }
+        {
+            CriticalBlock b(critOverflowWriteFileIO);
+            if (overflowWriteFileIO)
+                mergeRemappedStats(activeStats, overflowWriteFileIO, diskToTempStatsMap);
+        }
+        {
+            CriticalBlock b(rhsRowLock);
+            ForEachItemIn(a, rhsSlaveRows)
+            {
+                CThorSpillableRowArray &rows = *rhsSlaveRows.item(a);
+                mergeRemappedStats(activeStats, &rows, diskToTempStatsMap);
+            }
         }
     }
 };
@@ -3303,6 +3419,7 @@ protected:
                     ForEachItemIn(a, rhsSlaveRows)
                     {
                         CThorSpillableRowArray &rows = *rhsSlaveRows.item(a);
+                        mergeRemappedStats(PARENT::inactiveStats, &rows, diskToTempStatsMap);
                         rhs.appendRows(rows, true);
                         rows.kill(); // free up ptr table asap
                     }
@@ -3358,7 +3475,7 @@ protected:
         }
     }
 public:
-    CAllJoinSlaveActivity(CGraphElementBase *_container) : PARENT(_container)
+    CAllJoinSlaveActivity(CGraphElementBase *_container) : PARENT(_container, allJoinActivityStatistics)
     {
         returnMany = true;
     }

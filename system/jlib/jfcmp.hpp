@@ -20,6 +20,7 @@
 
 #include "platform.h"
 #include "jlzw.hpp"
+#include "jexcept.hpp"
 
 #define COMMITTED ((size32_t)-1)
 
@@ -117,6 +118,13 @@ public:
 
     virtual void close() override
     {
+        //Protect against close() being called more than once on a compressor
+        if (!inbuf)
+        {
+            if (isDebugBuild())
+                throwUnexpectedX("CFCmpCompressor::close() called more than once");
+            return;
+        }
         if (inlenblk!=COMMITTED)
         {
             inlen = inlenblk; // transaction failed
@@ -191,6 +199,11 @@ public:
         return 0;
     }
 
+    virtual size32_t compressDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src, size32_t * numCompressed) override
+    {
+        throwUnimplemented();
+    }
+
     virtual void * bufptr() override
     {
         assertex(!inbuf);  // i.e. closed
@@ -217,6 +230,7 @@ protected:
     size32_t outlen;
     size32_t bufalloc;
     const size32_t *in = nullptr;
+    const void * original = nullptr;
 
 public:
     CFcmpExpander()
@@ -234,6 +248,7 @@ public:
 
     virtual size32_t init(const void *blk)
     {
+        original = blk;
         const size32_t *expsz = (const size32_t *)blk;
         outlen = *expsz;
         in = (expsz+1);
@@ -433,6 +448,12 @@ public:
     virtual unsigned __int64 getStatistic(StatisticKind kind)
     {
         return baseio->getStatistic(kind);
+    }
+
+    virtual void close() override
+    {
+        flush();
+        baseio->close();
     }
 };
 

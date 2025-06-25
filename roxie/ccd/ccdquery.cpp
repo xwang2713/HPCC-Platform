@@ -318,9 +318,11 @@ protected:
 
 QueryOptions::QueryOptions()
 {
-    priority = 0;
+    priority = QUERY_LOW_PRIORITY_VALUE;
+    dynPriority = QUERY_LOW_PRIORITY_VALUE;
     timeLimit = defaultTimeLimit[0];
     warnTimeLimit = defaultWarnTimeLimit[0];
+    minTimeLimit = defaultMinTimeLimit[0];
 
     memoryLimit = defaultMemoryLimit;
 
@@ -358,8 +360,10 @@ QueryOptions::QueryOptions()
 QueryOptions::QueryOptions(const QueryOptions &other)
 {
     priority = other.priority;
+    dynPriority = other.dynPriority.load();
     timeLimit = other.timeLimit;
     warnTimeLimit = other.warnTimeLimit;
+    minTimeLimit = other.minTimeLimit;
 
     memoryLimit = other.memoryLimit;
 
@@ -394,21 +398,42 @@ QueryOptions::QueryOptions(const QueryOptions &other)
     numWorkflowThreads = other.numWorkflowThreads;
 }
 
+void QueryOptions::updateDynPriority(int _priority)
+{
+    dynPriority = _priority;
+    if (dynPriority < QUERY_LOW_PRIORITY_VALUE)
+    {
+        // use LOW queue time limits ...
+        timeLimit = defaultTimeLimit[0];
+        warnTimeLimit = defaultWarnTimeLimit[0];
+        minTimeLimit = defaultMinTimeLimit[0];
+    }
+    else
+    {
+        timeLimit = defaultTimeLimit[_priority];
+        warnTimeLimit = defaultWarnTimeLimit[_priority];
+        minTimeLimit = defaultMinTimeLimit[_priority];
+    }
+}
+
 void QueryOptions::setFromWorkUnit(IConstWorkUnit &wu, const IPropertyTree *stateInfo)
 {
     // calculate priority before others since it affects the defaults of others
     updateFromWorkUnit(priority, wu, "priority");
     if (stateInfo)
         updateFromContext(priority, stateInfo, "@priority");
-    timeLimit = defaultTimeLimit[priority];
-    warnTimeLimit = defaultWarnTimeLimit[priority];
+
+    updateDynPriority((int)priority);
+
     updateFromWorkUnit(timeLimit, wu, "timeLimit");
     updateFromWorkUnit(warnTimeLimit, wu, "warnTimeLimit");
+    updateFromWorkUnit(minTimeLimit, wu, "minTimeLimit");
     updateFromWorkUnitM(memoryLimit, wu, "memoryLimit");
     if (stateInfo)
     {
         updateFromContext(timeLimit, stateInfo, "@timeLimit");
         updateFromContext(warnTimeLimit, stateInfo, "@warnTimeLimit");
+        updateFromContext(minTimeLimit, stateInfo, "@minTimeLimit");
         updateFromContextM(memoryLimit, stateInfo, "@memoryLimit");
     }
 
@@ -486,8 +511,23 @@ void QueryOptions::setFromContext(const IPropertyTree *ctx)
     if (ctx)
     {
         // Note: priority cannot be set at context level
+        // b/c this is after activities have been created, but we could
+        // dynamically adj priority in the header activityId before sending
+        int tmpPriority = (int)priority;
+        updateFromContext(tmpPriority, ctx, "@priority", "_Priority");
+
+        if (tmpPriority > queryMaxPriorityValue)
+            tmpPriority = queryMaxPriorityValue;
+        if (tmpPriority < queryMinPriorityValue)
+            tmpPriority = queryMinPriorityValue;
+
+        // only adjust lower ...
+        if (tmpPriority < (int)priority)
+            updateDynPriority(tmpPriority);
+
         updateFromContext(timeLimit, ctx, "@timeLimit", "_TimeLimit");
         updateFromContext(warnTimeLimit, ctx, "@warnTimeLimit", "_WarnTimeLimit");
+        updateFromContext(minTimeLimit, ctx, "@minTimeLimit", "_MinTimeLimit");
         updateFromContextM(memoryLimit, ctx, "@memoryLimit", "_MemoryLimit");
         updateFromContext(parallelJoinPreload, ctx, "@parallelJoinPreload", "_ParallelJoinPreload");
         updateFromContext(fullKeyedJoinPreload, ctx, "@fullKeyedJoinPreload", "_FullKeyedJoinPreload");
@@ -615,19 +655,11 @@ protected:
 
         if (isSuspended)
             return createRoxieServerDummyActivityFactory(id, subgraphId, *this, NULL, TAKnone, node, false); // Is there actually any point?
-        switch (options.priority)
-        {
-        case 1:
-            rid |= ROXIE_HIGH_PRIORITY;
-            break;
-        case 2:
-            rid |= ROXIE_SLA_PRIORITY;
-            break;
-        }
+
+        rid |= getPriorityMask(options.priority);
+
         StringBuffer helperName;
-        node.getProp("att[@name=\"helper\"]/@value", helperName);
-        if (!helperName.length())
-            helperName.append("fAc").append(id);
+        helperName.append("fAc").append(id);
         HelperFactory *helperFactory = dll->getFactory(helperName);
         if (!helperFactory)
             throw MakeStringException(ROXIE_INTERNAL_ERROR, "Internal error: helper function %s not exported", helperName.str());
@@ -1850,6 +1882,11 @@ public:
         else
             return NULL;
     }
+
+    virtual IPropertyTree *getQueryStats(time_t from, time_t to) override
+    {
+        return queryStats->getStats(from, to);
+    }
 };
 
 unsigned checkWorkunitVersionConsistency(const IConstWorkUnit *wu)
@@ -1997,9 +2034,7 @@ class CAgentQueryFactory : public CQueryFactory
             else
             {
                 StringBuffer helperName;
-                node.getProp("att[@name=\"helper\"]/@value", helperName);
-                if (!helperName.length())
-                    helperName.append("fAc").append(node.getPropInt("@id", 0));
+                helperName.append("fAc").append(node.getPropInt("@id", 0));
                 HelperFactory *helperFactory = dll->getFactory(helperName.str());
                 if (!helperFactory)
                     throw MakeStringException(ROXIE_INTERNAL_ERROR, "Internal error: helper function %s not exported", helperName.str());

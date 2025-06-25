@@ -632,7 +632,7 @@ static bool forceLegacyMapping(IHqlExpression * expr)
 class SourceBuilder
 {
 public:
-    SourceBuilder(HqlCppTranslator & _translator, IHqlExpression *_tableExpr, IHqlExpression *_nameExpr, bool canReadGenerically, bool forceReadGenerically)
+    SourceBuilder(HqlCppTranslator & _translator, IHqlExpression *_tableExpr, IHqlExpression *_nameExpr, bool canReadWriteGenerically, bool forceReadWriteGenerically)
         : tableExpr(_tableExpr), newInputMapping(false), translator(_translator)
     { 
         nameExpr.setown(foldHqlExpression(_nameExpr));
@@ -660,8 +660,13 @@ public:
         useImplementationClass = false;
         isUnfilteredCount = false;
         requiresOrderedMerge = false;
-        genericDiskReads = translator.queryOptions().genericDiskReads;
-        genericDiskRead = (genericDiskReads && canReadGenerically) || forceReadGenerically;
+        if (canReadWriteGenerically || forceReadWriteGenerically)
+        {
+            if (tableExpr && tableExpr->queryChild(2)->getOperator() == no_filetype)
+                useGenericDiskReadWrite = true;
+            else
+                useGenericDiskReadWrite = translator.queryOptions().genericDiskReadWrites;
+        }
         rootSelfRow = NULL;
         activityKind = TAKnone;
 
@@ -672,7 +677,7 @@ public:
             else
                 newInputMapping = translator.queryOptions().newDiskReadMapping;
 
-            if (!genericDiskRead && forceLegacyMapping(tableExpr))
+            if (!useGenericDiskReadWrite && forceLegacyMapping(tableExpr))
                 newInputMapping = false;
 
             //If this index has been translated using the legacy method then ensure we continue to use that method
@@ -803,8 +808,7 @@ public:
     bool            requiresOrderedMerge;
     bool            newInputMapping;
     bool            extractCanMatch = false;
-    bool            genericDiskReads = false;
-    bool            genericDiskRead = false;
+    bool            useGenericDiskReadWrite = false;
     bool            hasDynamicOptions = false;
 
 protected:
@@ -1174,7 +1178,27 @@ void SourceBuilder::rebindFilepositons(BuildCtx & ctx, IHqlExpression * dataset,
 void SourceBuilder::buildFilenameMember()
 {
     //---- virtual const char * getFileName() { return "x.d00"; } ----
-    translator.buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", nameExpr, translator.hasDynamicFilename(tableExpr));
+    SummaryType summaryType = SummaryType::ReadFile;
+    switch (activityKind)
+    {
+        case TAKindexread:
+        case TAKindexnormalize:
+        case TAKindexaggregate:
+        case TAKindexcount:
+        case TAKindexgroupaggregate:
+            summaryType = SummaryType::ReadIndex;
+            break;
+        case TAKspillread:
+            summaryType = SummaryType::SpillFile;
+            break;
+    }
+    if (tableExpr->hasAttribute(_spill_Atom))
+        summaryType = SummaryType::SpillFile;
+    else if (tableExpr->hasAttribute(jobTempAtom))
+        summaryType = SummaryType::JobTemp;
+    else if (tableExpr->hasAttribute(_workflowPersist_Atom))
+        summaryType = SummaryType::PersistFile;
+    translator.buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", nameExpr, translator.hasDynamicFilename(tableExpr), summaryType, tableExpr->hasAttribute(optAtom), tableExpr->hasAttribute(_signed_Atom));
 }
 
 void SourceBuilder::buildReadMembers(IHqlExpression * expr)
@@ -1211,7 +1235,7 @@ void SourceBuilder::buildTransformBody(BuildCtx & transformCtx, IHqlExpression *
     if (tableExpr && bindInputRow)
     {
         IHqlExpression * mode = (tableExpr->getOperator() == no_table) ? tableExpr->queryChild(2) : NULL;
-        if (mode && mode->getOperator() == no_csv && !genericDiskRead)
+        if (mode && mode->getOperator() == no_csv && !useGenericDiskReadWrite)
         {
             translator.bindCsvTableCursor(transformCtx, tableExpr, "Src", no_none, NULL, true, queryCsvEncoding(mode));
         }
@@ -1817,7 +1841,7 @@ void SourceBuilder::analyseGraph(IHqlExpression * expr)
 {
     analyse(expr);
     SourceFieldUsage * fieldUsage = translator.querySourceFieldUsage(tableExpr);
-    if (fieldUsage && !fieldUsage->seenAll())
+    if (fieldUsage && !fieldUsage->isComplete())
     {
         if (expr->queryNormalizedSelector() == tableExpr->queryNormalizedSelector())
             fieldUsage->noteAll();
@@ -1832,7 +1856,7 @@ void SourceBuilder::gatherFieldUsage(SourceFieldUsage * fieldUsage, IHqlExpressi
     {
         if (expr->queryBody() == tableExpr->queryBody())
             return;
-        if (fieldUsage->seenAll())
+        if (fieldUsage->isComplete())
             return;
 
         IHqlExpression * ds = expr->queryChild(0);
@@ -1843,7 +1867,7 @@ void SourceBuilder::gatherFieldUsage(SourceFieldUsage * fieldUsage, IHqlExpressi
                 assertex(ds->queryBody() == tableExpr->queryBody());
                 IHqlExpression * selSeq = querySelSeq(expr);
                 OwnedHqlExpr left = createSelector(no_left, ds, selSeq);
-                ::gatherFieldUsage(fieldUsage, expr, left);
+                ::gatherFieldUsage(fieldUsage, expr, left, false);
                 return;
             }
         }
@@ -2115,7 +2139,7 @@ ABoundActivity * SourceBuilder::buildActivity(BuildCtx & ctx, IHqlExpression * e
             else
                 throwError1(HQLERR_ReadSpillBeforeWrite, spillName.str());
         }
-        translator.addFilenameConstructorParameter(*instance, WaFilename, nameExpr);
+        translator.addFilenameConstructorParameter(*instance, WaFilename, nameExpr, SummaryType::SpillFile);
     }
 
     if (steppedExpr)
@@ -2847,15 +2871,15 @@ void SourceBuilder::gatherSteppingMeta(IHqlExpression * expr, SourceSteppingInfo
 class DiskReadBuilderBase : public SourceBuilder
 {
 public:
-    DiskReadBuilderBase(HqlCppTranslator & _translator, IHqlExpression *_tableExpr, IHqlExpression *_nameExpr, bool canReadGenerically, bool forceReadGenerically)
-        : SourceBuilder(_translator, _tableExpr, _nameExpr, canReadGenerically, forceReadGenerically), monitors(_tableExpr, _translator, 0, true, true)
+    DiskReadBuilderBase(HqlCppTranslator & _translator, IHqlExpression *_tableExpr, IHqlExpression *_nameExpr, bool canReadWriteGenerically, bool forceReadWriteGenerically)
+        : SourceBuilder(_translator, _tableExpr, _nameExpr, canReadWriteGenerically, forceReadWriteGenerically), monitors(_tableExpr, _translator, 0, true, true)
     {
         fpos.setown(getFilepos(tableExpr, false));
         lfpos.setown(getFilepos(tableExpr, true));
         logicalFilenameMarker.setown(getFileLogicalName(tableExpr));
         mode = tableExpr->queryChild(2);
         modeOp = mode->getOperator();
-        includeFormatCrc = ((modeOp != no_csv) || genericDiskRead) && (modeOp != no_pipe);
+        includeFormatCrc = ((modeOp != no_csv) || useGenericDiskReadWrite) && (modeOp != no_pipe);
     }
 
     virtual void buildMembers(IHqlExpression * expr);
@@ -2907,24 +2931,21 @@ void DiskReadBuilderBase::buildMembers(IHqlExpression * expr)
             throwError1(HQLERR_ReadSpillBeforeWrite, spillName.str());
     }
 
-    if (genericDiskRead)
+    if (useGenericDiskReadWrite)
     {
-        if ((modeOp != no_thor) && (modeOp != no_flat))
+        StringBuffer format;
+        if (modeOp != no_filetype)
         {
-            StringBuffer format;
-            if (modeOp != no_filetype)
-            {
-                format.append(getOpString(modeOp)).toLowerCase();
-            }
-            else
-            {
-                // Pluggable file type; cite the file type name
-                IHqlExpression * fileType = queryAttributeChild(mode, fileTypeAtom, 0);
-                getStringValue(format, fileType);
-                format.toLowerCase();
-            }
-            instance->startctx.addQuotedF("virtual const char * queryFormat() { return \"%s\"; }", format.str());
+            format.append(getOpString(modeOp)).toLowerCase();
         }
+        else
+        {
+            // Pluggable file type; cite the file type name
+            IHqlExpression * fileType = queryAttributeChild(mode, fileTypeAtom, 0);
+            getStringValue(format, fileType);
+            format.toLowerCase();
+        }
+        instance->startctx.addQuotedF("virtual const char * queryFormat() { return \"%s\"; }", format.str());
     }
 
     //---- virtual bool canMatchAny() { return <value>; } ----
@@ -2975,7 +2996,7 @@ void DiskReadBuilderBase::buildFlagsMember(IHqlExpression * expr)
     if (tableExpr->hasAttribute(unsortedAtom)) flags.append("|TDRunsorted");
     if (tableExpr->hasAttribute(optAtom)) flags.append("|TDRoptional");
     if (tableExpr->hasAttribute(_workflowPersist_Atom)) flags.append("|TDXupdateaccessed");
-    if (genericDiskRead) flags.append("|TDXgeneric");
+    if (useGenericDiskReadWrite) flags.append("|TDXgeneric");
 
     if (isPreloaded) flags.append("|TDRpreload");
     if (monitors.isKeyed()) flags.append("|TDRkeyed");
@@ -3022,7 +3043,7 @@ void DiskReadBuilderBase::buildFlagsMember(IHqlExpression * expr)
 
 void DiskReadBuilderBase::buildTransformFpos(BuildCtx & transformCtx)
 {
-    if ((modeOp == no_csv) && !genericDiskRead)
+    if ((modeOp == no_csv) && !useGenericDiskReadWrite)
         associateFilePositions(transformCtx, "fpp", "dataSrc[0]");
     else
         associateFilePositions(transformCtx, "fpp", "left");
@@ -3110,7 +3131,7 @@ public:
     {
         extractCanMatch = (modeOp == no_thor) || (modeOp == no_flat) ||
                           (modeOp == no_filetype) ||
-                          ((modeOp == no_csv) && genericDiskRead);
+                          ((modeOp == no_csv) && useGenericDiskReadWrite);
     }
 
 protected:
@@ -3118,9 +3139,7 @@ protected:
     virtual void buildMembers(IHqlExpression * expr) override;
     virtual void analyseGraph(IHqlExpression * expr) override;
 
-    void buildFormatOption(BuildCtx & ctx, IHqlExpression * name, IHqlExpression * value);
-    void buildFormatOptions(BuildCtx & fixedCtx, BuildCtx & dynCtx, IHqlExpression * expr);
-    void buildFormatOptions(IHqlExpression * expr);
+    void buildFormatOptionsFunction(IHqlExpression * expr);
 };
 
 
@@ -3154,7 +3173,7 @@ void DiskReadBuilder::analyseGraph(IHqlExpression * expr)
 
 void DiskReadBuilder::buildMembers(IHqlExpression * expr)
 {
-    if ((modeOp == no_csv) && !genericDiskRead)
+    if ((modeOp == no_csv) && !useGenericDiskReadWrite)
         buildFilenameMember();
     else if (modeOp != no_pipe)
         buildReadMembers(expr);
@@ -3214,66 +3233,10 @@ void DiskReadBuilder::buildMembers(IHqlExpression * expr)
     }
 }
 
-
-void DiskReadBuilder::buildFormatOption(BuildCtx & ctx, IHqlExpression * name, IHqlExpression * value)
+void DiskReadBuilder::buildFormatOptionsFunction(IHqlExpression * expr)
 {
-    if (value->isAttribute())
-    {
-    }
-    else if (value->isList())
-    {
-        node_operator op = value->getOperator();
-        if ((op == no_list) && value->numChildren())
-        {
-            ForEachChild(i, value)
-                buildFormatOption(ctx, name, value->queryChild(i));
-        }
-        else if ((op == no_list) || (op == no_null))
-        {
-            //MORE: There should be a better way of doing this!
-            translator.buildXmlSerializeBeginNested(ctx, name, false);
-            translator.buildXmlSerializeEndNested(ctx, name);
-        }
-    }
-    else
-    {
-        translator.buildXmlSerializeScalar(ctx, value, name);
-    }
-}
-
-void DiskReadBuilder::buildFormatOptions(BuildCtx & fixedCtx, BuildCtx & dynCtx, IHqlExpression * expr)
-{
-    IHqlExpression * pluggableFileTypeAtom = expr->queryAttribute(fileTypeAtom); // null if pluggable file type not used
-    
-    ForEachChild(i, expr)
-    {
-        IHqlExpression * cur = expr->queryChild(i);
-
-        // Skip if expression is a pluggable file type (we don't want it appearing as an option)
-        // or if it is not an attribute
-        if (cur != pluggableFileTypeAtom && cur->isAttribute())
-        {
-            OwnedHqlExpr name = createConstant(str(cur->queryName()));
-            if (cur->numChildren())
-            {
-                BuildCtx & ctx = cur->isConstant() ? fixedCtx : dynCtx;
-                ForEachChild(c, cur)
-                    buildFormatOption(ctx, name, cur->queryChild(c));
-            }
-            else
-                translator.buildXmlSerializeScalar(fixedCtx, queryBoolExpr(true), name);
-        }
-    }
-}
-
-void DiskReadBuilder::buildFormatOptions(IHqlExpression * expr)
-{
-    MemberFunction fixedFunc(translator, instance->createctx, "virtual void getFormatOptions(IXmlWriter & out) override", MFopt);
-    MemberFunction dynFunc(translator, instance->startctx, "virtual void getFormatDynOptions(IXmlWriter & out) override", MFopt);
-
-    buildFormatOptions(fixedFunc.ctx, dynFunc.ctx, expr);
-
-    if (!dynFunc.isEmpty())
+    translator.buildFormatOptionsFunction(instance->createctx, expr);
+    if (!expr->isConstant())
         hasDynamicOptions = true;
 }
 
@@ -3295,7 +3258,7 @@ void DiskReadBuilder::buildTransform(IHqlExpression * expr)
         return;
     }
 
-    if ((modeOp == no_csv) && !genericDiskRead)
+    if ((modeOp == no_csv) && !useGenericDiskReadWrite)
     {
         translator.buildCsvParameters(instance->nestedctx, mode, NULL, true);
 
@@ -3315,8 +3278,8 @@ void DiskReadBuilder::buildTransform(IHqlExpression * expr)
         return;
     }
 
-    if (genericDiskRead)
-        buildFormatOptions(mode);
+    if (useGenericDiskReadWrite)
+        buildFormatOptionsFunction(mode);
 
     MemberFunction func(translator, instance->startctx);
     if ((instance->kind == TAKdiskread) || (instance->kind == TAKspillread) || (instance->kind == TAKnewdiskread))
@@ -3344,7 +3307,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityDiskRead(BuildCtx & ctx, IHqlE
     info.deduceDiskRecords();
 
     unsigned optFlags = (options.foldOptimized ? HOOfold : 0);
-    if (info.newInputMapping && ((modeOp != no_csv) || options.genericDiskReads) && (modeOp != no_xml) && (modeOp != no_pipe))
+    if (info.newInputMapping && ((modeOp != no_csv) || options.genericDiskReadWrites) && (modeOp != no_xml) && (modeOp != no_pipe))
     {
         //The projected disk information (which is passed to the transform) uses the in memory format IFF
         // - The disk read is a trivial slimming transform (so no transform needs calling on the projected disk format.
@@ -3401,7 +3364,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityDiskRead(BuildCtx & ctx, IHqlE
     if (isPiped)
         return info.buildActivity(ctx, expr, TAKpiperead, "PipeRead", NULL);
     ensureDiskAccessAllowed(tableExpr);
-    if (info.genericDiskRead)
+    if (info.useGenericDiskReadWrite)
         return info.buildActivity(ctx, expr, TAKnewdiskread, "NewDiskRead", NULL);
     if (modeOp == no_csv)
         return info.buildActivity(ctx, expr, TAKcsvread, "CsvRead", NULL);
@@ -4027,6 +3990,10 @@ void IndexReadBuilderBase::buildMembers(IHqlExpression * expr)
         MemberFunction func(translator, instance->startctx, "virtual void createSegmentMonitors(IIndexReadContext *irc) override");
         monitors.buildSegments(func.ctx, "irc", false);
     }
+
+    SourceFieldUsage * fieldUsage = translator.querySourceFieldUsage(tableExpr);
+    if (fieldUsage)
+        monitors.noteKeyedFieldUsage(fieldUsage);
 
     buildLimits(instance->startctx, expr, instance->activityId);
     if (!limitExpr && !keyedLimitExpr && !choosenValue && (instance->kind == TAKindexread || instance->kind == TAKindexnormalize) && !steppedExpr)
@@ -4843,7 +4810,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityXmlRead(BuildCtx & ctx, IHqlEx
         fieldUsage->noteAll();
 
     //---- virtual const char * getFileName() { return "x.d00"; } ----
-    buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", filename, hasDynamicFilename(tableExpr));
+    buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", filename, hasDynamicFilename(tableExpr), SummaryType::ReadIndex, tableExpr->hasAttribute(optAtom), tableExpr->hasAttribute(_signed_Atom));
     buildEncryptHelper(instance->startctx, tableExpr->queryAttribute(encryptAtom));
 
     bool usesContents = false;

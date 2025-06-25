@@ -18,10 +18,33 @@ if [[ -z $gitroot ]]; then
    exit 2
 fi
 
+major_minor=$(echo "$1" | grep -oE '^[0-9]+\.[0-9]+')
+if [[ -z $major_minor ]]; then
+   echo "Invalid version format. Expected N.N.x"
+   exit 2
+fi
+
+point=$(echo "$1" | grep -oE '\.([0-9]+|x)$' | sed 's/\.//')
+if [[ -z $point ]]; then
+   echo "Invalid version format. Expected N.N.x or N.N.N"
+   exit 2
+fi
+
 scriptdir=$(dirname -- "$( readlink -f -- ""$0""; )")
 hpccdir=$scriptdir/../..
 gitroot="${gitroot/#\~/$HOME}"
 version=candidate-$1
+
+if [[ $point == "x" ]]; then
+   pushd "$gitroot/hpcc" > /dev/null
+   git fetch origin 'refs/tags/community_'$major_minor'.*:refs/tags/community_'$major_minor'.*'
+   if ! git tag --list "community_${major_minor}.0-1" | grep -q .; then
+      echo "community_${major_minor}.0-1 does not exist.  Did you mean './gorc.sh $major_minor.0'"
+      exit 2
+   fi
+   popd > /dev/null
+fi
+
 shift
 
 echo Create new RC $version

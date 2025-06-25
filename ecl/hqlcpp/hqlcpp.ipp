@@ -140,7 +140,7 @@ public:
 class HQLCPP_API HqlCppInstance : public IHqlCppInstance, public CInterface
 {
 public:
-    HqlCppInstance(IWorkUnit * _workunit, const char * _wupathname);
+    HqlCppInstance(IWorkUnit * _workunit, const char * _wupathname, CompilerType _compiler);
     IMPLEMENT_IINTERFACE
 
     virtual HqlStmts * ensureSection(IAtom * section);
@@ -193,6 +193,7 @@ public:
     Owned<IPropertyTree> plugins;
     Owned<IFileIOStream> hintFile;
     CIArrayOf<CppFileInfo> cppInfo;
+    CompilerType        compilerType;
 };
 
 //---------------------------------------------------------------------------
@@ -484,11 +485,11 @@ public:
 class GlobalFileTracker : public IHqlDelayedCodeGenerator, public CInterface
 {
 public:
-    GlobalFileTracker(IHqlExpression * _filename, IPropertyTree * _graphNode)
+    GlobalFileTracker(IHqlExpression * _filename, IPropertyTree * _graphNode, unsigned _requiredGraph)
+    : requiredGraph(_requiredGraph)
     {
         filename.set(_filename->queryBody());
         graphNode.set(_graphNode);
-        usageCount = 0;
     }
     IMPLEMENT_IINTERFACE
 
@@ -496,12 +497,14 @@ public:
     virtual void generateCpp(StringBuffer & out) { out.append(usageCount); }
 
     bool checkMatch(IHqlExpression * searchFilename);
+    bool checkRequiredGraph(unsigned graphSeqNumber) const;
     void writeToGraph();
 
 public:
-    unsigned usageCount;
+    unsigned usageCount = 0;
     OwnedHqlExpr filename;
     Owned<IPropertyTree> graphNode;
+    unsigned requiredGraph = 0;
 };
 
 //===========================================================================
@@ -759,6 +762,7 @@ struct HqlCppOptions
     bool                forceVariableWuid = false;
     bool                okToDeclareAndAssign = false;       // long time ago gcc had problems doing this for very complex functions
     bool                noteRecordSizeInGraph = false;
+    bool                noteFieldsInGraph = false;
     bool                convertRealAssignToMemcpy = false;
     bool                allowActivityForKeyedJoin = false;
     bool                forceActivityForKeyedJoin = false;
@@ -791,6 +795,7 @@ struct HqlCppOptions
     bool                reportFieldUsage = false;
     bool                reportFileUsage = false;
     bool                recordFieldUsage = false;
+    bool                recordUnusedFields = false;
     bool                subsortLocalJoinConditions = false;
     bool                projectNestedTables = false;
     bool                showSeqInGraph = false;
@@ -840,7 +845,7 @@ struct HqlCppOptions
     bool                newIndexReadMapping = false;
     bool                diskReadsAreSimple = false;
     bool                allKeyedFiltersOptional = false;
-    bool                genericDiskReads = false;
+    bool                genericDiskReadWrites = false;
     bool                generateActivityFormats = false;
     bool                generateDiskFormats = false;
     bool                generateIR = false;
@@ -1417,6 +1422,11 @@ public:
     void noteResultAccessed(BuildCtx & ctx, IHqlExpression * seq, IHqlExpression * name);
     void noteResultDefined(BuildCtx & ctx, ActivityInstance * activityInstance, IHqlExpression * seq, IHqlExpression * name, bool alwaysExecuted);
 
+// File type formatting option handling
+    void buildFormatOption(BuildCtx & ctx, IHqlExpression * name, IHqlExpression * value);
+    void buildFormatOptions(BuildCtx & ctx, IHqlExpression * expr);
+    void buildFormatOptionsFunction(BuildCtx & ctx, IHqlExpression * expr);
+
 //Expressions:
     void doBuildExprAbs(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt);
     void doBuildExprAdd(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt);
@@ -1675,6 +1685,8 @@ public:
     IHqlExpression * getFirstCharacter(IHqlExpression * source);
     bool hasAddress(BuildCtx & ctx, IHqlExpression * expr);
 
+    void buildTimerBase(BuildCtx & ctx, CHqlBoundExpr & boundTimer, const char * name, int statsOption);
+    void buildHelperTimer(BuildCtx & ctx, CHqlBoundExpr & boundTimer, const char * name, int statsOption);
     void buildStartTimer(BuildCtx & ctx, CHqlBoundExpr & boundTimer, CHqlBoundExpr & boundStart, const char * name);
     void buildStopTimer(BuildCtx & ctx, const CHqlBoundExpr & boundTimer, const CHqlBoundExpr & boundStart);
 
@@ -1739,7 +1751,7 @@ public:
 
     void doBuildNewRegexFindReplace(BuildCtx & ctx, const CHqlBoundTarget * target, IHqlExpression * expr, CHqlBoundExpr * bound);
     
-    IHqlExpression * doBuildRegexCompileInstance(BuildCtx & ctx, IHqlExpression * pattern, bool unicode, bool caseSensitive);
+    IHqlExpression * doBuildRegexCompileInstance(BuildCtx & ctx, IHqlExpression * pattern, ITypeInfo * stringType, bool caseSensitive);
     IHqlExpression * doBuildRegexFindInstance(BuildCtx & ctx, IHqlExpression * compiled, IHqlExpression * search, bool cloneSearch);
     
     IHqlExpression * doCreateGraphLookup(BuildCtx & declarectx, BuildCtx & resolvectx, unique_id_t id, const char * activity, bool isChild);
@@ -1886,8 +1898,8 @@ public:
     void doBuildFunctionReturn(BuildCtx & ctx, ITypeInfo * type, IHqlExpression * value);
     void doBuildUserFunctionReturn(BuildCtx & ctx, ITypeInfo * type, IHqlExpression * value);
 
-    void addFilenameConstructorParameter(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr);
-    void buildFilenameFunction(ActivityInstance & instance, BuildCtx & classctx, WuAttr attr, const char * name, IHqlExpression * expr, bool isDynamic);
+    void addFilenameConstructorParameter(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr, SummaryType summaryType);
+    void buildFilenameFunction(ActivityInstance & instance, BuildCtx & classctx, WuAttr attr, const char * name, IHqlExpression * expr, bool isDynamic, SummaryType summaryType, bool isOpt, bool isSigned);
     void buildRefFilenameFunction(ActivityInstance & instance, BuildCtx & classctx, WuAttr attr, const char * name, IHqlExpression * dataset);
     void createAccessFunctions(StringBuffer & helperFunc, BuildCtx & declarectx, unsigned prio, const char * interfaceName, const char * object);
 
@@ -1911,7 +1923,7 @@ protected:
     void buildIteratorNext(BuildCtx & ctx, IHqlExpression * iter, IHqlExpression * row);
     bool shouldEvaluateSelectAsAlias(BuildCtx & ctx, IHqlExpression * expr);
     IWUResult * createWorkunitResult(int sequence, IHqlExpression * nameExpr);
-    void noteFilename(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr, bool isDynamic);
+    void noteFilename(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr, bool isDynamic, SummaryType summaryType, bool isOpt, bool isSigned);
     bool checkGetResultContext(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt);
     void buildGetResultInfo(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr * boundTarget, const CHqlBoundTarget * targetAssign);
     void buildGetResultSetInfo(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr * boundTarget, const CHqlBoundTarget * targetAssign);
@@ -1986,6 +1998,7 @@ protected:
     void doReportWarning(WarnErrorCategory category, ErrorSeverity explicitSeverity, IHqlExpression * location, unsigned id, const char * msg);
 
     void optimizePersists(HqlExprArray & exprs);
+    void optimizeSingleGraphGlobals(WorkflowItem & curWorkflow);
     IHqlExpression * convertSetResultToExtract(IHqlExpression * expr);
     void allocateSequenceNumbers(HqlExprArray & exprs);
     void transformNestedSequential(HqlExprArray & exprs);
@@ -2038,14 +2051,15 @@ protected:
     bool isNeverDistributed(IHqlExpression * expr);
 
     void ensureWorkUnitUpdated();
+    void addWorkunitSummaries();
     bool getDebugFlag(const char * name, bool defValue);
     void initOptions();
     void postProcessOptions();
-    SourceFieldUsage * querySourceFieldUsage(IHqlExpression * expr);
     void noteAllFieldsUsed(IHqlExpression * expr);
     IHqlExpression * translateGetGraphResult(BuildCtx & ctx, IHqlExpression * expr);
 
 public:
+    SourceFieldUsage * querySourceFieldUsage(IHqlExpression * expr);
     IHqlExpression * convertToPhysicalIndex(IHqlExpression * tableExpr);
     IHqlExpression * buildIndexFromPhysical(IHqlExpression * expr);
     //MORE: At some point the global getUniqueId() should be killed so there are only local references.
@@ -2140,6 +2154,29 @@ protected:
     Owned<ITimeReporter> timeReporter;
     CIArrayOf<SourceFieldUsage> trackedSources;
     HqlExprArray tracedActivities;
+
+    // These are used to generate workunit summary info, to avoid having to walk the xgmml to get it
+    SummaryMap summaries[(int) SummaryType::NumItems];
+    void noteSummaryInfo(const char *name, SummaryType type, bool isOpt, bool isSigned)
+    {
+        if (type == SummaryType::None)
+            return;
+        //Spill files are meaningless in roxie, and no current benefit in recording them for hthor/thor
+        if (type == SummaryType::SpillFile)
+            return;
+
+        SummaryMap &map = summaries[(int) type];
+        SummaryFlags flags = SummaryFlags::None;
+        if (isOpt)
+            flags |= SummaryFlags::IsOpt;
+        if (isSigned)
+            flags |= SummaryFlags::IsSigned;
+        auto match = map.find(name);
+        if (match == map.end())
+            map[name] = flags;
+        else
+            match->second &= flags;
+    }
 };
 
 

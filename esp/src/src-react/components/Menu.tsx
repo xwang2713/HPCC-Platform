@@ -1,53 +1,129 @@
 import * as React from "react";
-import { IconButton, IContextualMenuItem, INavLink, INavLinkGroup, Link, mergeStyleSets, Nav, Stack } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
+import { ToggleButton } from "@fluentui/react-components";
+import { NavDrawer, NavDrawerBody, NavDrawerFooter, NavItem } from "@fluentui/react-nav-preview";
+import { makeStyles, tokens } from "@fluentui/react-components";
+import {
+    Home20Filled, Home20Regular, TextGrammarLightning20Filled, TextGrammarLightning20Regular,
+    DatabaseWindow20Filled, DatabaseWindow20Regular,
+    Globe20Filled, Globe20Regular,
+    Organization20Filled, Organization20Regular,
+    ShieldBadge20Filled, ShieldBadge20Regular,
+    WeatherSunnyRegular, WeatherMoonRegular,
+    bundleIcon, FluentIcon
+} from "@fluentui/react-icons";
+import { IconButton, IContextualMenuItem, Link, mergeStyleSets, Stack } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
-import { hasLogAccess } from "src/ESPLog";
 import { containerized, bare_metal } from "src/BuildInfo";
+import { navCategory } from "../util/history";
 import { MainNav, routes } from "../routes";
 import { useFavorite, useFavorites, useHistory } from "../hooks/favorite";
+import { useLogAccessInfo } from "../hooks/platform";
+import { useSessionStore } from "../hooks/store";
 import { useUserTheme } from "../hooks/theme";
-import { usePivotItemDisable } from "../layouts/pivot";
+import { useCheckEnvAuthType, useMyAccount } from "../hooks/user";
 import { Breadcrumbs } from "./Breadcrumbs";
 
+export interface NextPrevious {
+    next: () => void;
+    previous: () => void;
+}
+export type NextPreviousT = NextPrevious | undefined;
+
+export function useNextPrev(val?: NextPrevious): [NextPreviousT, (val: NextPrevious) => void] {
+    const [nextPrev, setNextPrev] = useSessionStore<NextPreviousT>("NEXT_PREV_KEY", val, true);
+    return [nextPrev, setNextPrev];
+}
+
 //  Top Level Nav  ---
-function navLinkGroups(): INavLinkGroup[] {
-    let links: INavLink[] = [
+
+const useStyles = makeStyles({
+    root: {
+        overflow: "hidden",
+        display: "flex",
+        height: "100%"
+    },
+    nav: {
+        maxWidth: "200px",
+    },
+    navSmall: {
+        maxWidth: "48px", // changed from 52px to 48px
+        minWidth: "48px", // add this to enforce fixed width
+        width: "48px",    // add this to enforce fixed width
+    },
+    content: {
+        flex: "1",
+        padding: "16px",
+        display: "grid",
+        justifyContent: "flex-start",
+        alignItems: "flex-start",
+    },
+    field: {
+        display: "flex",
+        marginTop: "4px",
+        marginLeft: "8px",
+        flexDirection: "column",
+        gridRowGap: tokens.spacingVerticalS,
+    },
+});
+
+interface NavItemData {
+    name: string;
+    href: string;
+    icon: FluentIcon;
+    key: string;
+    value: string;
+}
+
+const Home = bundleIcon(Home20Filled, Home20Regular);
+const TextGrammarLightning = bundleIcon(TextGrammarLightning20Filled, TextGrammarLightning20Regular);
+const DatabaseWindow = bundleIcon(DatabaseWindow20Filled, DatabaseWindow20Regular);
+const Globe = bundleIcon(Globe20Filled, Globe20Regular);
+const Organization = bundleIcon(Organization20Filled, Organization20Regular);
+const ShieldBadge = bundleIcon(ShieldBadge20Filled, ShieldBadge20Regular);
+
+function navLinkGroups(): NavItemData[] {
+    let links: NavItemData[] = [
         {
             name: nlsHPCC.Activities,
-            url: "#/activities",
-            icon: "Home",
-            key: "activities"
+            href: "#/activities",
+            icon: Home,
+            key: "activities",
+            value: "activities"
         },
         {
             name: nlsHPCC.ECL,
-            url: "#/workunits",
-            icon: "SetAction",
-            key: "workunits"
+            href: "#/workunits",
+            icon: TextGrammarLightning,
+            key: "workunits",
+            value: "workunits"
         },
         {
             name: nlsHPCC.Files,
-            url: "#/files",
-            icon: "PageData",
-            key: "files"
+            href: "#/files",
+            icon: DatabaseWindow,
+            key: "files",
+            value: "files"
         },
         {
             name: nlsHPCC.PublishedQueries,
-            url: "#/queries",
-            icon: "Globe",
-            key: "queries"
+            href: "#/queries",
+            icon: Globe,
+            key: "queries",
+            value: "queries"
         },
         {
             name: nlsHPCC.Topology,
-            url: "#/topology",
-            icon: "Org",
-            key: "topology"
+            href: "#/topology",
+            icon: Organization,
+            key: "topology",
+            value: "topology"
         },
         {
             name: nlsHPCC.Operations,
-            url: "#/operations",
-            icon: "Admin",
-            key: "operations"
+            href: "#/operations",
+            icon: ShieldBadge,
+            key: "operations",
+            value: "operations"
         }
     ];
     if (!containerized) {
@@ -56,17 +132,22 @@ function navLinkGroups(): INavLinkGroup[] {
     if (!bare_metal) {
         links = links.filter(l => l.key !== "operations");
     }
-    return [{ links }];
+    return links;
 }
 
-const navIdx: { [id: string]: MainNav[] } = {};
+const _navIdx: { [id: string]: MainNav[] } = {};
+
+function navIdx(id: string) {
+    id = id.split("!")[0];
+    if (!_navIdx[id]) {
+        _navIdx[id] = [];
+    }
+    return _navIdx[id];
+}
 
 function append(route, path) {
-    if (!navIdx[path]) {
-        navIdx[path] = [];
-    }
     route.mainNav?.forEach(item => {
-        navIdx[path].push(item);
+        navIdx(path).push(item);
     });
 }
 
@@ -81,52 +162,13 @@ routes.forEach((route: any) => {
 });
 
 function navSelectedKey(hashPath) {
-    const rootPath = navIdx[`/${hashPath?.split("/")[1]}`];
+    const rootPath = navIdx(`/${navCategory(hashPath)?.split("/")[1]}`);
     if (rootPath?.length) {
         return rootPath[0];
     }
     return null;
 }
 
-const FIXED_WIDTH = 38;
-
-interface MainNavigationProps {
-    hashPath: string;
-}
-
-export const MainNavigation: React.FunctionComponent<MainNavigationProps> = ({
-    hashPath
-}) => {
-
-    const menu = useConst(() => [...navLinkGroups()]);
-    const { theme, setTheme, isDark } = useUserTheme();
-
-    const selKey = React.useMemo(() => {
-        return navSelectedKey(hashPath);
-    }, [hashPath]);
-
-    return <Stack verticalAlign="space-between" styles={{ root: { width: `${FIXED_WIDTH}px`, height: "100%", position: "relative", backgroundColor: theme.palette.themeLighterAlt } }}>
-        <Stack.Item>
-            <Nav selectedKey={selKey} groups={menu} />
-        </Stack.Item>
-        <Stack.Item>
-            <IconButton
-                iconProps={{ iconName: isDark ? "Sunny" : "ClearNight" }}
-                onClick={() => {
-                    setTheme(isDark ? "light" : "dark");
-                    const themeChangeEvent = new CustomEvent("eclwatch-theme-toggle", {
-                        detail: { dark: !isDark }
-                    });
-                    document.dispatchEvent(themeChangeEvent);
-                }}
-            />
-            {/* Disable Theme editor button for launch of 9.0 */}
-            {/* <IconButton iconProps={{ iconName: "Equalizer" }} onClick={() => { }} /> */}
-        </Stack.Item>
-    </Stack>;
-};
-
-//  Second Level Nav  ---
 interface SubMenu {
     headerText: string;
     itemKey: string;
@@ -147,7 +189,7 @@ const subMenuItems: SubMenuItems = {
     "files": [
         { headerText: nlsHPCC.LogicalFiles, itemKey: "/files" },
         { headerText: nlsHPCC.LandingZones, itemKey: "/landingzone" },
-        { headerText: nlsHPCC.Workunits, itemKey: "/dfuworkunits" },
+        { headerText: nlsHPCC.title_GetDFUWorkunits, itemKey: "/dfuworkunits" },
         { headerText: nlsHPCC.XRef + " (L)", itemKey: "/xref" },
     ],
     "queries": [
@@ -159,6 +201,7 @@ const subMenuItems: SubMenuItems = {
         { headerText: nlsHPCC.Pods, itemKey: "/topology/pods" },
         { headerText: nlsHPCC.Services, itemKey: "/topology/services" },
         { headerText: nlsHPCC.Logs, itemKey: "/topology/logs" },
+        { headerText: nlsHPCC.WUSummary, itemKey: "/topology/wu-summary" },
         { headerText: nlsHPCC.Security + " (L)", itemKey: "/topology/security" },
         { headerText: nlsHPCC.DESDL + " (L)", itemKey: "/topology/desdl" },
         { headerText: nlsHPCC.DaliAdmin, itemKey: "/topology/daliadmin" },
@@ -170,42 +213,132 @@ const subMenuItems: SubMenuItems = {
         { headerText: nlsHPCC.TargetClusters + " (L)", itemKey: "/operations/clusters" },
         { headerText: nlsHPCC.ClusterProcesses + " (L)", itemKey: "/operations/processes" },
         { headerText: nlsHPCC.SystemServers + " (L)", itemKey: "/operations/servers" },
+        { headerText: nlsHPCC.WUSummary, itemKey: "/operations/wu-summary" },
         { headerText: nlsHPCC.Security + " (L)", itemKey: "/operations/security" },
         { headerText: nlsHPCC.DESDL + " (L)", itemKey: "/operations/desdl" },
     ],
 };
 
-const subNavIdx: { [id: string]: string[] } = {};
-
+const _subNavIdx: { [id: string]: string[] } = {};
 for (const key in subMenuItems) {
     const subNav = subMenuItems[key];
     subNav.forEach(item => {
-        if (!subNavIdx[item.itemKey]) {
-            subNavIdx[item.itemKey] = [];
+        if (!_subNavIdx[item.itemKey]) {
+            _subNavIdx[item.itemKey] = [];
         }
-        subNavIdx[item.itemKey].push(key);
+        _subNavIdx[item.itemKey].push(key);
     });
 }
 
 function subNavSelectedKey(hashPath) {
-    const hashCategory = hashPath.split("/").slice(0, 3).join("/");
-    return !!subNavIdx[hashCategory] ? hashCategory : null;
+    const category2 = navCategory(hashPath, 2);
+    if (_subNavIdx[category2]) {
+        return category2;
+    }
+    const category = navCategory(hashPath);
+    if (_subNavIdx[category]) {
+        return category;
+    }
+    return null;
 }
+
+interface MainNavigationProps {
+    hashPath: string;
+    navWideMode: boolean;
+}
+
+export const MainNavigation: React.FunctionComponent<MainNavigationProps> = ({
+    hashPath,
+    navWideMode
+}) => {
+    const styles = useStyles();
+
+    const selKey = React.useMemo(() => {
+        return navSelectedKey(hashPath);
+    }, [hashPath]);
+
+    const subNav = React.useMemo(() => {
+        return subNavSelectedKey(hashPath);
+    }, [hashPath]);
+
+    const { setTheme, isDark } = useUserTheme();
+
+    return <div className={styles.root}>
+        <NavDrawer selectedValue={selKey} open={true} type={"inline"} density="medium" className={navWideMode ? styles.nav : styles.navSmall} >
+            <NavDrawerBody>
+                {
+                    navLinkGroups().map((item: NavItemData) => (
+                        <React.Fragment key={item.key}>
+                            <NavItem
+                                href={item.href}
+                                icon={<item.icon href={item.href} />}
+                                value={item.value}
+                                style={{
+                                    paddingLeft: "4px", paddingRight: "4px", color: selKey === item.value ? tokens.colorBrandForeground1 : tokens.colorNeutralForeground1,
+                                }}
+                            >
+                                {navWideMode ? item.name : ""}
+                            </NavItem>
+                            {navWideMode && selKey === item.value && subMenuItems[item.value]?.length > 0 && (
+                                <>
+                                    {subMenuItems[item.value].map((sub) => (
+                                        <NavItem
+                                            key={sub.itemKey}
+                                            href={`#${sub.itemKey}`}
+                                            value={sub.itemKey}
+                                            style={{
+                                                padding: "4px 0 4px 32px",
+                                                color: subNav === sub.itemKey ? tokens.colorBrandForeground2 : tokens.colorNeutralForeground1,
+                                                fontWeight: subNav === sub.itemKey ? tokens.fontWeightSemibold : tokens.fontWeightRegular,
+                                                background: "none",
+                                                textDecoration: "none"
+                                            }}
+                                        >
+                                            {sub.headerText}
+                                        </NavItem>
+                                    ))}
+                                </>
+                            )}
+                        </React.Fragment>
+                    ))
+                }
+            </NavDrawerBody>
+
+            <NavDrawerFooter>
+                <ToggleButton appearance="transparent" icon={isDark ? <WeatherSunnyRegular /> : <WeatherMoonRegular />} style={{ justifyContent: "flex-start", width: "100%" }} onClick={() => {
+                    setTheme(isDark ? "light" : "dark");
+                    const themeChangeEvent = new CustomEvent("eclwatch-theme-toggle", {
+                        detail: { dark: !isDark }
+                    });
+                    document.dispatchEvent(themeChangeEvent);
+                }} >
+                    {navWideMode ? nlsHPCC.Theme : ""}
+                </ToggleButton>
+            </NavDrawerFooter>
+        </NavDrawer>
+    </div >;
+};
+
+//  Second Level Nav  ---
 
 interface SubNavigationProps {
     hashPath: string;
 }
 
 export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
-    hashPath,
+    hashPath
 }) => {
 
-    const { theme } = useUserTheme();
+    const { theme, themeV9 } = useUserTheme();
+    const { isAdmin } = useMyAccount();
+    const envHasAuth = useCheckEnvAuthType();
 
     const [favorites] = useFavorites();
     const [favoriteCount, setFavoriteCount] = React.useState(0);
     const [isFavorite, addFavorite, removeFavorite] = useFavorite(window.location.hash);
     const [history] = useHistory();
+
+    const [nextPrev] = useNextPrev();
 
     React.useEffect(() => {
         setFavoriteCount(Object.keys(favorites).length);
@@ -264,15 +397,13 @@ export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
         }
     }), [theme]);
 
-    const [logsDisabled, setLogsDisabled] = React.useState(true);
-    React.useEffect(() => {
-        hasLogAccess().then(response => {
-            setLogsDisabled(!response);
-        }).catch(() => {
-            setLogsDisabled(true);
-        });
-    }, []);
-    const logsDisabledStyle = usePivotItemDisable(logsDisabled);
+    const { logsEnabled, logsStatusMessage } = useLogAccessInfo();
+    const linkStyle = React.useCallback((disabled) => {
+        return disabled ? {
+            background: themeV9.colorNeutralBackgroundDisabled,
+            color: themeV9.colorNeutralForegroundDisabled
+        } : {};
+    }, [themeV9]);
 
     const favoriteMenu: IContextualMenuItem[] = React.useMemo(() => {
         const retVal: IContextualMenuItem[] = [];
@@ -292,8 +423,14 @@ export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
                 <Stack horizontal>
                     <Stack.Item grow={0} className={navStyles.wrapper}>
                         {subMenuItems[mainNav]?.map((row, idx) => {
+                            const restrictedRoutes = ["security"];
+                            if (envHasAuth) {
+                                restrictedRoutes.push("daliadmin", "sasha");
+                            }
+                            const linkDisabled = (row.itemKey === "/topology/logs" && !logsEnabled) || (restrictedRoutes.some(substring => row.itemKey.indexOf(substring) > -1) && !isAdmin);
                             return <Link
-                                disabled={row.itemKey === "/topology/logs" && logsDisabled}
+                                disabled={linkDisabled}
+                                title={row.itemKey === "/topology/logs" && !logsEnabled ? logsStatusMessage : ""}
                                 key={`MenuLink_${idx}`}
                                 href={`#${row.itemKey}`}
                                 className={[
@@ -301,13 +438,13 @@ export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
                                     row.itemKey === subNav ? navStyles.active : "",
                                     !subNav && row.itemKey === "/topology/configuration" ? navStyles.active : ""
                                 ].join(" ")}
-                                style={row.itemKey === "/topology/logs" && logsDisabled ? logsDisabledStyle?.style : {}}
+                                style={linkStyle(linkDisabled)}
                             >
                                 {row.headerText}
                             </Link>;
                         })}
                     </Stack.Item>
-                    {!subNav &&
+                    {!!subNav &&
                         <Stack.Item grow={1} style={{ lineHeight: "24px" }}>
                             {hashPath.includes("/files/")
                                 ? <Breadcrumbs hashPath={hashPath} ignoreN={2} />
@@ -318,6 +455,8 @@ export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
                 </Stack>
             </Stack.Item>
             <Stack.Item align="center" grow={0}>
+                {nextPrev?.next && <IconButton title={nlsHPCC.NextWorkunit} iconProps={{ iconName: "Movers" }} onClick={() => nextPrev.next()} />}
+                {nextPrev?.previous && <IconButton title={nlsHPCC.PreviousWorkunit} iconProps={{ iconName: "Sell" }} onClick={() => nextPrev.previous()} />}
                 <IconButton title={nlsHPCC.History} iconProps={{ iconName: "History" }} menuProps={{ items: history }} />
                 <IconButton
                     title={isFavorite ? nlsHPCC.RemoveFromFavorites : nlsHPCC.AddToFavorites}

@@ -44,9 +44,12 @@ find_package(yaml CONFIG REQUIRED)
 
 find_package(Protobuf REQUIRED)
 find_package(CURL CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
+if (USE_OPENTEL_GRPC)
+    find_package(gRPC CONFIG REQUIRED)
+endif ()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(opentelemetry-cpp CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STRICT_CXX_FLAGS}")
 
@@ -63,6 +66,7 @@ set (    SRCS
          jcrc.cpp
          jdebug.cpp
          jencrypt.cpp
+         jevent.cpp
          jexcept.cpp
          jfile.cpp
          jflz.cpp
@@ -74,6 +78,7 @@ set (    SRCS
          jlib.cpp
          jlog.cpp
          jlz4.cpp
+         jlzbase.cpp
          jlzma.cpp
          jlzw.cpp
          jmd5.cpp
@@ -104,6 +109,7 @@ set (    SRCS
          junicode.cpp
          jutil.cpp
          jtrace.cpp
+         jzstd.cpp
          ${HPCC_SOURCE_DIR}/system/globalid/lnuid.cpp
          ${HPCC_SOURCE_DIR}/system/codesigner/codesigner.cpp
          ${HPCC_SOURCE_DIR}/system/codesigner/gpgcodesigner.cpp
@@ -127,6 +133,7 @@ set (    INCLUDES
         jelogtype.hpp
         jencrypt.hpp
         jerror.hpp
+        jevent.hpp
         jexcept.hpp
         jfcmp.hpp
         jfile.hpp
@@ -149,6 +156,7 @@ set (    INCLUDES
         jlog.hpp
         jlog.ipp
         jlz4.hpp
+        jlzbase.hpp
         jlzma.hpp
         jlzw.hpp
         jlzw.ipp
@@ -188,6 +196,7 @@ set (    INCLUDES
         junicode.hpp
         jutil.hpp
         jtrace.hpp
+        jzstd.hpp
         ${HPCC_SOURCE_DIR}/system/httplib/httplib.h
         ${HPCC_SOURCE_DIR}/system/security/shared/opensslcommon.hpp
         ${HPCC_SOURCE_DIR}/system/security/cryptohelper/cryptocommon.cpp
@@ -223,6 +232,9 @@ include_directories (
          ${CMAKE_BINARY_DIR}/oss
     )
 
+# ensure httplib uses poll rather than select - otherwise it fail if too many sockets have been opened.
+ADD_DEFINITIONS( -DCPPHTTPLIB_USE_POLL )
+
 ADD_DEFINITIONS( -D_USRDLL -DJLIB_EXPORTS )
 HPCC_ADD_LIBRARY( jlib SHARED ${SRCS} ${INCLUDES} )
 
@@ -249,8 +261,6 @@ target_link_libraries ( jlib
         opentelemetry-cpp::ext #                              - Imported target of opentelemetry-cpp::ext
         opentelemetry-cpp::logs #                             - Imported target of opentelemetry-cpp::logs
         opentelemetry-cpp::in_memory_span_exporter #          - Imported target of opentelemetry-cpp::in_memory_span_exporter
-        opentelemetry-cpp::otlp_grpc_client #                 - Imported target of opentelemetry-cpp::otlp_grpc_client
-        opentelemetry-cpp::otlp_grpc_exporter #               - Imported target of opentelemetry-cpp::otlp_grpc_exporter
         opentelemetry-cpp::ostream_log_record_exporter #      - Imported target of opentelemetry-cpp::ostream_log_record_exporter
         ###These Otel import targets are not trivial to find, developers can save time by uncommenting as needed
         #   opentelemetry-cpp::version                           - Imported target of opentelemetry-cpp::version
@@ -281,12 +291,20 @@ IF (WIN32 AND USE_ZLIB)
 target_link_libraries ( jlib ZLIB::ZLIB )
 endif (WIN32 AND USE_ZLIB)
 
+if (USE_OPENTEL_GRPC)
+    target_link_libraries ( jlib 
+        opentelemetry-cpp::otlp_grpc_client #                 - Imported target of opentelemetry-cpp::otlp_grpc_client
+        opentelemetry-cpp::otlp_grpc_exporter #               - Imported target of opentelemetry-cpp::otlp_grpc_exporter
+    )
+endif ()
 if (WIN32)
  target_link_libraries ( jlib ws2_32 mpr.lib Winmm.lib psapi.lib )
 elseif (("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin" ))
 else ()
  target_link_libraries ( jlib rt )
 endif ()
+
+target_link_libraries(jlib zstd::libzstd)
 
 if (NOT PLUGIN)
     if (WIN32)

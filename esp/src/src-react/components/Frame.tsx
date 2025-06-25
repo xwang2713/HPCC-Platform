@@ -13,23 +13,30 @@ import { CookieConsent } from "./forms/CookieConsent";
 import { userKeyValStore } from "src/KeyValStore";
 import { fireIdle, initSession, lock, unlock } from "src/Session";
 import { useGlobalStore } from "../hooks/store";
-import { useUserTheme } from "../hooks/theme";
+import { useNavWide, useUserTheme } from "../hooks/theme";
 import { useGlobalWorkunitNotes } from "../hooks/workunit";
 import { useUserSession } from "../hooks/user";
 
 const logger = scopedLogger("../components/Frame.tsx");
 const envLogger = scopedLogger("environment");
 
+const USER_COOKIE_CONSENT = "user_cookie_consent";
+
+export function resetCookieConsent() {
+    const store = userKeyValStore();
+    return store.delete(USER_COOKIE_CONSENT);
+}
+
 interface FrameProps {
 }
 
 export const Frame: React.FunctionComponent<FrameProps> = () => {
-
     const [showCookieConsent, setShowCookieConsent] = React.useState(false);
     const { userSession, setUserSession } = useUserSession();
     const [locationPathname, setLocationPathname] = React.useState<string>(window.location.hash.split("#").join(""));
     const [body, setBody] = React.useState(<h1>...loading...</h1>);
     const { theme, themeV9, isDark } = useUserTheme();
+    const { navWide, setNavWide } = useNavWide();
     const [showEnvironmentTitle] = useGlobalStore("HPCCPlatformWidget_Toolbar_Active", false, true);
     const [environmentTitle] = useGlobalStore("HPCCPlatformWidget_Toolbar_Text", "", true);
 
@@ -81,7 +88,7 @@ export const Frame: React.FunctionComponent<FrameProps> = () => {
 
         router.resolve(hashHistory.location).then(setBody);
 
-        userKeyValStore().get("user_cookie_consent")
+        userKeyValStore().get(USER_COOKIE_CONSENT)
             .then((resp) => {
                 setShowCookieConsent(resp === "1");
             })
@@ -103,15 +110,15 @@ export const Frame: React.FunctionComponent<FrameProps> = () => {
     return <FluentProvider theme={themeV9} style={{ height: "100%" }}>
         <ThemeProvider theme={theme} style={{ height: "100%" }}>
             <HolyGrail
-                header={<DevTitle />}
-                left={<MainNavigation hashPath={locationPathname} />}
+                header={<DevTitle setNavWideMode={setNavWide} navWideMode={navWide} />}
+                left={<MainNavigation hashPath={locationPathname} navWideMode={navWide} />}
                 main={<HolyGrail
                     header={<SubNavigation hashPath={locationPathname} />}
                     main={body}
                 />}
             />
             <CookieConsent showCookieConsent={showCookieConsent} onApply={(n: boolean) => {
-                userKeyValStore().set("user_cookie_consent", n ? "1" : "0");
+                userKeyValStore().set(USER_COOKIE_CONSENT, n ? "1" : "0");
             }} />
         </ThemeProvider >
     </FluentProvider >;

@@ -1,12 +1,15 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { Workunit, WUDetails, IScope } from "@hpcc-js/comms";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, IIconProps, SearchBox, Stack } from "@fluentui/react";
+import { ToggleButton } from "@fluentui/react-components";
+import { TextCaseTitleRegular, TextCaseTitleFilled } from "@fluentui/react-icons";
+import { Workunit, WsWorkunits, IScope } from "@hpcc-js/comms";
 import { scopedLogger } from "@hpcc-js/util";
 import nlsHPCC from "src/nlsHPCC";
 import { useWorkunitArchive } from "../hooks/workunit";
 import { useWorkunitMetrics } from "../hooks/metrics";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { DockPanel, DockPanelItem, ResetableDockPanel } from "../layouts/DockPanel";
+import { AutosizeComponent } from "../layouts/HpccJSAdapter";
 import { pushUrl } from "../util/history";
 import { ShortVerticalDivider } from "./Common";
 import { ECLArchiveTree } from "./ECLArchiveTree";
@@ -15,12 +18,14 @@ import { MetricsPropertiesTables } from "./MetricsPropertiesTables";
 
 const logger = scopedLogger("src-react/components/ECLArchive.tsx");
 
-const scopeFilterDefault: WUDetails.RequestNS.ScopeFilter = {
+const filterIcon: IIconProps = { iconName: "Filter" };
+
+const scopeFilterDefault: Partial<WsWorkunits.ScopeFilter> = {
     MaxDepth: 999999,
     ScopeTypes: ["graph"]
 };
 
-const nestedFilterDefault: WUDetails.RequestNS.NestedFilter = {
+const nestedFilterDefault: WsWorkunits.NestedFilter = {
     Depth: 999999,
     ScopeTypes: ["activity"]
 };
@@ -39,10 +44,12 @@ export const ECLArchive: React.FunctionComponent<ECLArchiveProps> = ({
     const [fullscreen, setFullscreen] = React.useState<boolean>(false);
     const [dockpanel, setDockpanel] = React.useState<ResetableDockPanel>();
     const [_archiveXmlStr, _workunit2, _state2, archive, refreshArchive] = useWorkunitArchive(wuid);
-    const [metrics, _columns, _activities, _properties, _measures, _scopeTypes, _fetchStatus, refreshMetrics] = useWorkunitMetrics(wuid, scopeFilterDefault, nestedFilterDefault);
+    const { metrics, refresh: refreshMetrics } = useWorkunitMetrics(wuid, scopeFilterDefault, nestedFilterDefault);
     const [markers, setMarkers] = React.useState<{ lineNum: number, label: string }[]>([]);
     const [selectionText, setSelectionText] = React.useState<string>("");
     const [selectedMetrics, setSelectedMetrics] = React.useState<IScope[]>([]);
+    const [matchCase, setMatchCase] = React.useState(false);
+    const [treeFilter, setTreeFilter] = React.useState("");
 
     selection = selection ?? archive?.queryId();
 
@@ -53,8 +60,9 @@ export const ECLArchive: React.FunctionComponent<ECLArchiveProps> = ({
     }, [archive, metrics]);
 
     React.useEffect(() => {
-        if (metrics.length) {
-            setSelectionText(archive?.content(selection) ?? "");
+        const text = archive?.content(selection) ?? "";
+        if (text) {
+            setSelectionText(text);
             setMarkers(archive?.markers(selection) ?? []);
             setSelectedMetrics(archive?.metrics(selection) ?? []);
         } else {
@@ -70,6 +78,10 @@ export const ECLArchive: React.FunctionComponent<ECLArchiveProps> = ({
     const setSelectedItem = React.useCallback((selId: string) => {
         pushUrl(`${parentUrl}/${selId}`);
     }, [parentUrl]);
+
+    const onChangeTreeFilter = React.useCallback((event: React.FormEvent<HTMLInputElement | HTMLTextAreaElement>, newValue?: string) => {
+        setTreeFilter(newValue ?? "");
+    }, []);
 
     React.useEffect(() => {
         if (dockpanel) {
@@ -110,11 +122,21 @@ export const ECLArchive: React.FunctionComponent<ECLArchiveProps> = ({
     return <HolyGrail fullscreen={fullscreen}
         header={<CommandBar items={buttons} farItems={rightButtons} />}
         main={
-            <DockPanel hideSingleTabs onDockPanelCreate={setDockpanel}>
+            <DockPanel hideSingleTabs onCreate={setDockpanel}>
                 <DockPanelItem key="scopesTable" title="Files" >
                     {   //  Only render after archive is loaded (to ensure it "defaults to open") ---
                         archive?.modAttrs.length &&
-                        <ECLArchiveTree archive={archive} selectedAttrIDs={[selection]} setSelectedItem={setSelectedItem} />
+                        <HolyGrail
+                            header={<Stack horizontal>
+                                <Stack.Item grow>
+                                    <SearchBox value={treeFilter} onChange={onChangeTreeFilter} iconProps={filterIcon} placeholder={nlsHPCC.Filter} />
+                                </Stack.Item>
+                                <ToggleButton appearance="subtle" icon={matchCase ? <TextCaseTitleFilled /> : <TextCaseTitleRegular />} title={nlsHPCC.MatchCase} checked={matchCase} onClick={() => { setMatchCase(!matchCase); }} />
+                            </Stack>}
+                            main={<AutosizeComponent>
+                                <ECLArchiveTree archive={archive} filter={treeFilter} matchCase={matchCase} selectedAttrIDs={[selection]} setSelectedItem={setSelectedItem} />
+                            </AutosizeComponent>}
+                        />
                     }
                 </DockPanelItem>
                 <DockPanelItem key="eclEditor" title="ECL" padding={4} location="split-right" relativeTo="scopesTable">

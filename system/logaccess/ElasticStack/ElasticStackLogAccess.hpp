@@ -62,6 +62,12 @@ private:
     StringBuffer m_instanceSearchColName;
     StringBuffer m_instanceIndexSearchPattern;
 
+    StringBuffer m_traceSearchColName;
+    StringBuffer m_traceIndexSearchPattern;
+
+    StringBuffer m_spanSearchColName;
+    StringBuffer m_spanIndexSearchPattern;
+
     StringBuffer m_hostSearchColName;
     StringBuffer m_hostIndexSearchPattern;
 
@@ -97,4 +103,5 @@ public:
     virtual IRemoteLogAccessStream * getLogReader(const LogAccessConditions & options, LogAccessLogFormat format) override;
     virtual IRemoteLogAccessStream * getLogReader(const LogAccessConditions & options, LogAccessLogFormat format, unsigned int pageSize) override;
     virtual bool supportsResultPaging() const override { return true;}
+    virtual void healthReport(LogAccessHealthReportOptions options, LogAccessHealthReportDetails & report) override;
 };

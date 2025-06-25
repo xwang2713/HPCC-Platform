@@ -119,9 +119,9 @@ class ECLFile:
                 [testSpec,  val] = param.split(':')
 
                 if '*' in testSpec:
-                    testSpec = testSpec.replace('*',  '\w+')
+                    testSpec = testSpec.replace('*',  '\\w+')
 
-                testSpec = testSpec.replace('.',  '\.')
+                testSpec = testSpec.replace('.',  '\\.')
                 match = re.match(testSpec,  self.baseEcl)
                 if match:
                     optXs = ("-X"+val.replace(',',  ',-X')).split(',')
@@ -361,7 +361,7 @@ class ECLFile:
         eclText = open(self.getEcl(), 'rb')
         for line in eclText:
             _line = str(line)
-            if re.search(tag+'[^\w]', _line, re.IGNORECASE):
+            if re.search(tag+'[^\\w]', _line, re.IGNORECASE):
                 retVal = True
                 break
         logger.debug("%3d.__checkTag() returns with %s", self.taskId,  retVal)
@@ -566,7 +566,10 @@ class ECLFile:
         #  'multiPart=false,useSequential=true'
         # to this
         #   'multiPart(false)-useSequential(true)'
-        self.jobnameVersion += '-' +version.replace('=', '(').replace(',', ')-')+')'
+        # need to handle this kind of value as well:
+        #  url='http://.:9876'
+        # where the ':', '.' and '/' can cause problem later in version result check 
+        self.jobnameVersion += '-' +version.replace('=', '(').replace(',', ')-').replace('.','-dot-').replace(':','-colon-').replace('/','-slash-').replace('?','-qmark-').replace('*','-star-')+')'
         pass
         
     def setJobname(self,  timestamp):

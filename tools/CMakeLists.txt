@@ -13,11 +13,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 ################################################################################
+project (tools)
 HPCC_ADD_SUBDIRECTORY (esdlcomp)
 HPCC_ADD_SUBDIRECTORY (hidl)
 HPCC_ADD_SUBDIRECTORY (esdlcmd-xml)
 HPCC_ADD_SUBDIRECTORY (esdlcmd)
+HPCC_ADD_SUBDIRECTORY (esp-api)
+SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STRICT_CXX_FLAGS}")
 HPCC_ADD_SUBDIRECTORY (backupnode "PLATFORM")
+HPCC_ADD_SUBDIRECTORY (swapnode "PLATFORM")
 IF (USE_OPENLDAP)
 HPCC_ADD_SUBDIRECTORY (initldap "PLATFORM")
 ENDIF(USE_OPENLDAP)
@@ -27,12 +31,12 @@ HPCC_ADD_SUBDIRECTORY (keydiff "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (pstart "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (pskill "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (testsocket)
-HPCC_ADD_SUBDIRECTORY (swapnode "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (vkey "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (wuget "CLIENTTOOLS")
 HPCC_ADD_SUBDIRECTORY (wutool "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (copyexp "PLATFORM")
 HPCC_ADD_SUBDIRECTORY (genht "PLATFORM")
+HPCC_ADD_SUBDIRECTORY (evtool "PLATFORM")
 
 # start-stop-daemon is linux and apple only.
 if ( CMAKE_SYSTEM MATCHES Linux OR APPLE)

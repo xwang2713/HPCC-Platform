@@ -1,8 +1,12 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
     "name": "hpcc-platform",
-    "version": "8.12.0",
+    "version": "9.10.0",
     "dependencies": [
+        {
+            "name": "antlr3",
+            "platform": "@VCPKG_ANTLR3@"
+        },
         {
             "name": "apr",
             "platform": "@VCPKG_APR@"
@@ -141,12 +145,12 @@
         },
         {
             "name": "numactl",
-            "platform": "!windows & !osx"
+            "platform": "@VCPKG_NUMA@"
         },
         {
             "name": "openblas",
             "features": [
-                "dynamic-arch",
+                @VCPKG_ECLBLAS_DYNAMIC_ARCH_FEATURE@
                 "threads"
             ],
             "platform": "@VCPKG_ECLBLAS@ & !windows"
@@ -166,15 +170,15 @@
             "name": "openssl",
             "platform": "@VCPKG_OPENSSL@"
         },
-        "pcre2",
         {
             "name": "opentelemetry-cpp",
             "default-features": false,
             "features": [
-                "otlp-http",
-                "otlp-grpc"
+                @VCPKG_OPENTEL_GRPC_FEATURE@
+                "otlp-http"
             ]
         },
+        "pcre2",
         {
             "name": "python3",
             "platform": "@VCPKG_PYTHON3@ & windows"
@@ -199,6 +203,7 @@
         {
             "name": "zlib",
             "platform": "@VCPKG_ZLIB@"
-        }
+        }, 
+        "zstd"
     ]
 }

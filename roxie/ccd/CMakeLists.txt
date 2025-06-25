@@ -25,6 +25,7 @@
 
 
 project( ccd ) 
+SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STRICT_CXX_FLAGS}")
 
 IF (USE_TBBMALLOC AND USE_TBBMALLOC_ROXIE)
   find_package(TBB CONFIG REQUIRED)
@@ -115,6 +116,9 @@ endif()
 
 
 HPCC_ADD_LIBRARY( ccd SHARED ${SRCS} )
+if (EMSCRIPTEN)
+    set_target_properties(ccd PROPERTIES COMPILE_FLAGS "${COMPILE_FLAGS} -Wno-error=nontrivial-memcall")
+endif ()
 install ( TARGETS ccd RUNTIME DESTINATION ${EXEC_DIR} LIBRARY DESTINATION ${LIB_DIR} ARCHIVE DESTINATION componentfiles/cl/lib )
 
 target_link_libraries ( ccd 

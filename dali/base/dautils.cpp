@@ -58,6 +58,21 @@ static IPropertyTree *getPlaneHostGroup(IPropertyTree *plane)
     return nullptr;
 }
 
+unsigned getNumPlaneStripes(const char *clusterName)
+{
+    Owned<IPropertyTree> storagePlane = getStoragePlane(clusterName);
+    if (!storagePlane)
+    {
+        OWARNLOG("lookupNumStripedDevices: Storage plane %s not found", clusterName);
+        return 1;
+    }
+
+    unsigned numDevices = storagePlane->getPropInt("@numDevices");
+    bool isPlaneStriped = !storagePlane->hasProp("@hostGroup") && (numDevices>1);
+
+    return isPlaneStriped ? numDevices : 1;
+}
+
 bool isHostInPlane(IPropertyTree *plane, const char *host, bool ipMatch)
 {
     Owned<IPropertyTree> planeGroup = getPlaneHostGroup(plane);
@@ -88,8 +103,9 @@ bool getPlaneHost(StringBuffer &host, IPropertyTree *plane, unsigned which)
     if (!hostGroup)
         return false;
 
-    if (which >= hostGroup->getCount("hosts"))
-        throw makeStringException(0, "getPlaneHost: index out of range");
+    unsigned maxHosts = hostGroup->getCount("hosts");
+    if (which >= maxHosts)
+        throw makeStringExceptionV(0, "getPlaneHost: index %u out of range 1..%u", which, maxHosts);
     VStringBuffer xpath("hosts[%u]", which+1); // which is 0 based
     host.append(hostGroup->queryProp(xpath));
     return true;
@@ -461,7 +477,8 @@ bool CDfsLogicalFileName::getExternalPlane(StringBuffer & plane) const
 
     const char * start = lfn.str() + strlen(PLANE_SCOPE "::");
     const char * end = strstr(start,"::");
-    assertex(end);
+    if (!end)
+        end = start + strlen(start);
     plane.append(end-start, start);
     return true;
 }
@@ -617,11 +634,8 @@ bool expandExternalPath(StringBuffer &dir, StringBuffer &tail, const char * file
 {
     if (e)
         *e = NULL;
-    if (!s) {
-        if (e)
-            *e = MakeStringException(-1,"Invalid format for external file (%s)",filename);
-        return false;
-    }
+    if (!s)
+        return true; // plane::<planename> without a trailing scope
     if (s[2]=='>') {
         dir.append('/');
         tail.append(s+2);
@@ -854,9 +868,12 @@ bool CDfsLogicalFileName::normalizeExternal(const char * name, StringAttr &res, 
 
     normalizeScope(name, name, s-name, str, strict, false); // "file" or "plane" or "remote"
     const char *s1 = s+2; // this will be the file host/ip, or plane name, or remote service name
+    size32_t nodeLength = 0;
     const char *ns1 = strstr(s1,"::");
-    if (!ns1)
-        return false;
+    if (ns1)
+        nodeLength = ns1 - s1;
+    else
+        nodeLength = strlen(s1);
 
     switch (lfnType)
     {
@@ -865,12 +882,12 @@ bool CDfsLogicalFileName::normalizeExternal(const char * name, StringAttr &res, 
             //syntax file::<ip>::<path>
 
             SocketEndpoint ep;
-            normalizeNodeName(s1, ns1-s1, ep, strict);
+            normalizeNodeName(s1, nodeLength, ep, strict);
             if (ep.isNull())
                 return false;
 
             ep.getEndpointHostText(str.append("::"));
-            if (ns1[2] == '>')
+            if (ns1 && ns1[2] == '>')
             {
                 str.append("::");
                 tailpos = str.length();
@@ -890,7 +907,7 @@ bool CDfsLogicalFileName::normalizeExternal(const char * name, StringAttr &res, 
             //Syntax plane::<plane>::<path>
 
             StringBuffer planeName;
-            normalizeScope(s1, s1, ns1-s1, planeName, strict, false);
+            normalizeScope(s1, s1, nodeLength, planeName, strict, false);
 
             str.append("::").append(planeName);
             //Allow wildcards in plane path
@@ -908,21 +925,22 @@ bool CDfsLogicalFileName::normalizeExternal(const char * name, StringAttr &res, 
             break;
         }
     }
-
     str.toLowerCase();
-    str.append("::");
-    // handle trailing scopes+name
-    StringAttr tail;
-    normalizeName(ns1+2, tail, strict, false); // +2 skipping "::", validated at start
-    // normalizeName sets tailpos relative to ns1+2
-    tailpos += str.length(); // length of <file|plane|remote>::<name>::
-    str.append(tail);
+    if (ns1)
+    {
+        str.append("::");
+        // handle trailing scopes+name
+        StringAttr tail;
+        normalizeName(ns1+2, tail, strict, false); // +2 skipping "::", validated at start
+        // normalizeName sets tailpos relative to ns1+2
+        tailpos += str.length(); // length of <file|plane|remote>::<name>::
+        str.append(tail);
+    }
     res.set(str);
-
     return true;
 }
 
-void CDfsLogicalFileName::set(const char *name, bool removeForeign)
+void CDfsLogicalFileName::set(const char *name, bool removeForeign, bool skipAddRootScopeIfNone)
 {
     clear();
     if (!name)
@@ -968,7 +986,7 @@ void CDfsLogicalFileName::set(const char *name, bool removeForeign)
         external = true;
     else
     {
-        normalizeName(name, lfn, false, true);
+        normalizeName(name, lfn, false, !skipAddRootScopeIfNone);
         if (removeForeign)
         {
             StringAttr _lfn = get(true);
@@ -1438,7 +1456,7 @@ bool CDfsLogicalFileName::getEp(SocketEndpoint &ep) const
         {
             const char * end = strstr(startPlane,"::");
             if (!end)
-                return false;
+                end = startPlane + strlen(startPlane);
 
             //Resolve the plane, and return the ip if it is a bare metal zone (or a legacy drop zone)
             StringBuffer planeName(end - startPlane, startPlane);
@@ -1484,6 +1502,15 @@ StringBuffer &CDfsLogicalFileName::getGroupName(StringBuffer &grp) const
             if (e)
                 grp.append(e-s,s);
         }
+        else
+        {
+            const char *s = skipScope(lfn,PLANE_SCOPE);
+            if (s) {
+                const char *e = strstr(s,"::");
+                if (e)
+                    grp.append(e-s,s);
+            }
+        }
     }
     return grp;
 }
@@ -1512,10 +1539,11 @@ bool CDfsLogicalFileName::getExternalPath(StringBuffer &dir, StringBuffer &tail,
         if (startPlane)
         {
             s = strstr(startPlane,"::");
+            size32_t planeLen = s ? s - startPlane : strlen(startPlane);
 
-            if (s)
+            if (planeLen)
             {
-                StringBuffer planeName(s - startPlane, startPlane);
+                StringBuffer planeName(planeLen, startPlane);
                 Owned<IStoragePlane> plane = getDataStoragePlane(planeName, false);
                 if (!plane)
                 {
@@ -2989,15 +3017,16 @@ public:
         CTimeMon tm(timeout);
         bool first = true;
         bool needstop = false;
+        StringBuffer path;
+        StringBuffer opath;
         while (!stopping) {
             // first lock semaphore to write
-            StringBuffer path;
-            path.appendf("/Locks/Mutex[@name=\"%s\"]",name.get());
+            path.setf("/Locks/Mutex[@name=\"%s\"]",name.get());
             conn.setown(querySDS().connect(path.str(),mysession,RTM_LOCK_WRITE,SDS_CONNECT_TIMEOUT));
             if (conn) {
                 SessionId oid = (SessionId)conn->queryRoot()->getPropInt64("Owner",0);
                 if (!oid||querySessionManager().sessionStopped(oid,0)) {
-                    StringBuffer opath(path);
+                    opath.set(path);
                     opath.append("/Owner");
                     oconn.setown(querySDS().connect(opath.str(),mysession,RTM_CREATE|RTM_LOCK_WRITE|RTM_DELETE_ON_DISCONNECT,SDS_CONNECT_TIMEOUT));
                     if (!oconn)
@@ -3149,7 +3178,7 @@ public:
     public:
         IMPLEMENT_IINTERFACE;
         cDFSredirect(CDFSredirection &_parent,const char *_infn)
-            : parent(_parent), infn(_infn)
+            : infn(_infn), parent(_parent)
         {
             // in crit sect
             idx = 0;
@@ -3665,6 +3694,11 @@ static CConfigUpdateHook directIOUpdateHook;
 static CriticalSection dafileSrvNodeCS;
 static Owned<INode> tlsDirectIONode, nonTlsDirectIONode;
 
+unsigned getPreferredDaFsServerPort()
+{
+    return getPreferredDafsClientPort(true);
+}
+
 void remapGroupsToDafilesrv(IPropertyTree *file, bool foreign, bool secure)
 {
     Owned<IPropertyTreeIterator> iter = file->getElements("Cluster");
@@ -3673,7 +3707,7 @@ void remapGroupsToDafilesrv(IPropertyTree *file, bool foreign, bool secure)
         IPropertyTree &cluster = iter->query();
         const char *planeName = cluster.queryProp("@name");
         Owned<IStoragePlane> plane = getDataStoragePlane(planeName, true);
-        if ((0 == plane->queryHosts().size()) && isAbsolutePath(plane->queryPrefix())) // if hosts group, or url, don't touch
+        if (isAbsolutePath(plane->queryPrefix())) // if url (i.e. not absolute prefix path) don't touch
         {
             if (isContainerized())
             {
@@ -3770,3 +3804,104 @@ void logNullUser(IUserDescriptor * userDesc)
     }
 }
 #endif
+
+// FileReadPropertiesUpdater:
+// - aggregates the readCost and the numDiskReads for each logical file (using addCostAndNumReads method).
+// - upon publishing (calling publish method), it:
+//   - it traverses up the owning superfiles, computing the cumulative readCost and numDiskReads for the subfile owners.
+//   - it subsequently updates file properties for both the files and their owning superfiles with the newly derived statistics.
+// It is designed to optimize the update process for readCost and read count by:
+// * reducing the frequency of getOwningSuperFiles calls, as these operations are resource-intensive.
+// * performing a single-pass update of file properties (e.g. at the end of a graph execution).
+class FileReadPropertiesUpdater : public CSimpleInterfaceOf<IFileReadPropertiesUpdater>
+{
+    struct FileStatItem
+    {
+        Owned<IDistributedFile> file;
+        stat_type numDiskReads = 0;
+        cost_type readCost = 0;
+    };
+    using FileStatMap = std::unordered_map<std::string, FileStatItem>;
+    FileStatMap stats;
+    Linked<IUserDescriptor> udesc;
+
+    // Add the readCost and numDiskReads to owners stats
+    FileStatItem & appendOwnersCostAndNumReads(FileStatMap & ownerStats, IDistributedFile * file, stat_type numDiskReads, cost_type curReadCost)
+    {
+        FileStatItem & curStatItem = ownerStats[file->queryLogicalName()];
+        if (!curStatItem.file)
+            curStatItem.file.set(file);
+        curStatItem.numDiskReads += numDiskReads;
+        curStatItem.readCost += curReadCost;
+        return curStatItem;
+    }
+    // Update the readCost and numDiskReads for owning superfiles
+    // - this will recurse up the superfiles tree updating the owning superfiles
+    // n.b. fileStatItem.file must be set to a valid IDistributedFile
+    void updateOwnersStats(FileStatMap & ownerStats, const FileStatItem & fileStatItem)
+    {
+        // getOwningSuperFiles iterator is slow, so only call it once (say at the end of graph)
+        Owned<IDistributedSuperFileIterator> iter = fileStatItem.file->getOwningSuperFiles();
+        ForEach(*iter)
+        {
+            IDistributedSuperFile & cur = iter->query();
+            const FileStatItem & owningFileStatItem = appendOwnersCostAndNumReads(ownerStats, &cur, fileStatItem.numDiskReads, fileStatItem.readCost);
+            updateOwnersStats(ownerStats, owningFileStatItem);
+        }
+    }
+
+public:
+    FileReadPropertiesUpdater(IUserDescriptor * udesc) : udesc(udesc) {}
+
+    // Track and accumulate the readCost and numDiskReads to stats tracking map (to be written to properties later)
+    // - if curReadCost is 0, it will be calculated using calcFileAccessCost
+    virtual cost_type addCostAndNumReads(IDistributedFile * file, stat_type numDiskReads, cost_type curReadCost) override
+    {
+        if (!numDiskReads)
+            return 0;
+
+        if (!curReadCost)
+            curReadCost = calcFileAccessCost(file, 0, numDiskReads);
+        // Add the readCost and numDiskReads to stats tracking map
+        FileStatItem & curStatItem = stats[file->queryLogicalName()];
+        curStatItem.numDiskReads += numDiskReads;
+        curStatItem.readCost += curReadCost;
+        return curReadCost;
+    }
+
+    // Publish the readCost and numDiskReads to the file properties and for owning superfiles
+    // N.b. It is ok for fileStatItem.file to be null when calling this function
+    virtual void publish() override
+    {
+        FileStatMap ownerStats;
+        // Iterate through files, updating the ownerStats
+        // (Also, set FileStatItem::file to a valid IDistributedFile, if possible)
+        for (auto & [logicalName, curStatItem] : stats)
+        {
+            curStatItem.file.setown(queryDistributedFileDirectory().lookup(logicalName.c_str(), udesc, AccessMode::tbdRead,false,false,nullptr,defaultNonPrivilegedUser));
+            if (!curStatItem.file) // File may have been deleted
+            {
+                OERRLOG("FileReadPropertiesUpdater: File not found: %s", logicalName.c_str());
+                continue;
+            }
+            updateOwnersStats(ownerStats, curStatItem);
+        }
+        // Update the file properties with the new stats
+        for (auto & [logicalName, curStatItem] : stats)
+        {
+            if (curStatItem.file)
+                updateCostAndNumReads(curStatItem.file, curStatItem.numDiskReads, curStatItem.readCost);
+        }
+        // Update the owner file propertiers owners stats
+        for (auto & [logicalName, curStatItem] : ownerStats)
+        {
+            updateCostAndNumReads(curStatItem.file, curStatItem.numDiskReads, curStatItem.readCost);
+        }
+        stats.clear(); // ensure all IDistributedFiles are released
+    }
+};
+
+IFileReadPropertiesUpdater * createFileReadPropertiesUpdater(IUserDescriptor * udesc)
+{
+    return new FileReadPropertiesUpdater(udesc);
+}

@@ -1756,7 +1756,7 @@ private:
     unsigned lastAccess;
 };
 
-class CassMultiIterator : public CInterface, implements IRowProvider, implements ICompare, implements IConstWorkUnitIteratorEx
+class CassMultiIterator : public CInterface, implements IMergeRowProvider, implements ICompare, implements IConstWorkUnitIteratorEx
 {
 public:
     IMPLEMENT_IINTERFACE;
@@ -3873,7 +3873,7 @@ public:
             case WUStateAborting:
                 if (agentSessionStopped)
                 {
-                    reportAbnormalTermination(wuid, state, agent);
+                    reportAbnormalTermination(wuid, state, agent, "Agent");
                     return state;
                 }
                 if (queryDaliServerVersion().compare("2.1")>=0)
@@ -3893,7 +3893,7 @@ public:
             {
                 waiter->wait(20000);  // recheck state every 20 seconds, in case eclagent has crashed.
                 if (waiter->isAborted())
-                    return WUStateUnknown;  // MORE - throw an exception?
+                    return WUStateAborting;
             }
             else if (waited > timeout || !waiter->wait(timeout-waited))
                 return WUStateUnknown;  // MORE - throw an exception?

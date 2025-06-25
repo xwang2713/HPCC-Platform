@@ -62,12 +62,9 @@ constexpr unsigned BUFF_DOUBLE_LIMIT=4096;
 constexpr unsigned BUFF_FIRST_CHUNK_SIZE=8;
 constexpr unsigned BUFF_DETACH_GRANULARITY=16;
 
-
-#ifdef _DEBUG
+//Always check the length before reading - so ensure that serialization problems are caught
+//The overhead is trivial....
 #define     CHECKREADPOS(len)  assertex(readPos+(len)<=length())
-#else
-#define     CHECKREADPOS(len)  
-#endif
 
 //-----------------------------------------------------------------------
 
@@ -326,6 +323,17 @@ void * MemoryBuffer::ensureCapacity(unsigned max)
     return buffer + curLen;
 }
 
+void * MemoryBuffer::ensureCapacity(size_t max, size_t & got)
+{
+    if (maxLen - curLen < max)
+    {
+        unsigned newLen = checkMemoryBufferOverflow(curLen, max);
+        _realloc(newLen);
+    }
+    got = maxLen - curLen;
+    return buffer + curLen;
+}
+
 void MemoryBuffer::kill()
 {
     if (ownBuffer)
@@ -343,6 +351,15 @@ MemoryBuffer & MemoryBuffer::_remove(unsigned start, unsigned len)
     return *this;
 }
 
+void MemoryBuffer::replace(size_t offset, size_t len, const void * value)
+{
+    if ((offset >= curLen) || (len == 0))
+        return;
+    if (offset + len > curLen)
+        len = curLen - offset;
+    memcpy(buffer + offset, value, len);
+}
+
 void * MemoryBuffer::reserve(unsigned size)
 {
     unsigned newLen = checkMemoryBufferOverflow(curLen, size);
@@ -357,8 +374,11 @@ void * MemoryBuffer::reserveTruncate(unsigned size)
     unsigned newLen = checkMemoryBufferOverflow(curLen, size);
     curLen += size;
     _reallocExact(newLen);
-    truncate();
-    return buffer + curLen - size;
+    truncate(); // can set buffer to null.
+    if (buffer)
+        return buffer + curLen - size;
+    else
+        return nullptr;
 }
 
 void MemoryBuffer::truncate()
@@ -687,6 +707,15 @@ MemoryBuffer &MemoryBuffer::appendFile(const char *fileName)
     return *this;
 }
 
+#define DO_READ_ENDIAN(len, value)  \
+    CHECKREADPOS(len); \
+    if (swapEndian) \
+        doCopyRev<len>(value, buffer + readPos); \
+    else \
+        memcpy_iflen(value, buffer + readPos, len); \
+    readPos += len; \
+    return *this;
+
 MemoryBuffer & MemoryBuffer::read(char & value)
 {
     CHECKREADPOS(sizeof(value));
@@ -709,21 +738,41 @@ MemoryBuffer & MemoryBuffer::read(bool & value)
     return *this;
 }
 
+inline size32_t getStringLength(const char * buffer, size32_t readPos, size32_t length)
+{
+    for (size32_t i = readPos; i < length; i++)
+    {
+        if (buffer[i] == 0)
+            return i - readPos;
+    }
+    throwUnexpectedX("Null terminator not found within buffer");
+}
+
 MemoryBuffer & MemoryBuffer::read(StringAttr & value)
 {
-    char * src = buffer + readPos;
-    size32_t len = (size32_t)strlen(src);
-    CHECKREADPOS(len+1);
+    size32_t len = getStringLength(buffer, readPos, length());
+    const char * src = buffer + readPos;
     value.set(src, len);
+    readPos += (len+1);
+    return *this;
+}
+
+MemoryBuffer & MemoryBuffer::readOpt(StringAttr & value)
+{
+    size32_t len = getStringLength(buffer, readPos, length());
+    const char * src = buffer + readPos;
+    if (len)
+        value.set(src, len);
+    else
+        value.clear();
     readPos += (len+1);
     return *this;
 }
 
 MemoryBuffer & MemoryBuffer::read(StringBuffer & value)
 {
-    char * src = buffer + readPos;
-    size32_t len = (size32_t)strlen(src);
-    CHECKREADPOS(len+1);
+    size32_t len = getStringLength(buffer, readPos, length());
+    const char * src = buffer + readPos;
     value.append(len, src);
     readPos += (len+1);
     return *this;
@@ -731,9 +780,9 @@ MemoryBuffer & MemoryBuffer::read(StringBuffer & value)
 
 MemoryBuffer & MemoryBuffer::read(const char * &value)
 {
-    value = buffer+readPos;
-    size32_t len = (size32_t)strlen(value);
-    CHECKREADPOS(len+1);
+    size32_t len = getStringLength(buffer, readPos, length());
+    const char * src = buffer + readPos;
+    value = src;
     readPos += (len+1);
     return *this;
 }
@@ -761,44 +810,32 @@ MemoryBuffer & MemoryBuffer::read(float & value)
 
 MemoryBuffer & MemoryBuffer::read(short & value)
 {
-    return readEndian(sizeof(value), &value);
+    DO_READ_ENDIAN(sizeof(value), &value);
 }
 
 MemoryBuffer & MemoryBuffer::read(unsigned short & value)
 {
-    return readEndian(sizeof(value), &value);
+    DO_READ_ENDIAN(sizeof(value), &value);
 }
 
 MemoryBuffer & MemoryBuffer::read(int & value)
 {
-    return readEndian(sizeof(value), &value);
+    DO_READ_ENDIAN(sizeof(value), &value);
 }
 
 MemoryBuffer & MemoryBuffer::read(unsigned & value)
 {
-    return readEndian(sizeof(value), &value);
+    DO_READ_ENDIAN(sizeof(value), &value);
 }
-
-#if 0
-MemoryBuffer & MemoryBuffer::read(unsigned long & value)
-{
-    return readEndian(sizeof(value), &value);
-}
-
-MemoryBuffer & MemoryBuffer::read(long & value)
-{
-    return readEndian(sizeof(value), &value);
-}
-#endif
 
 MemoryBuffer & MemoryBuffer::read(unsigned __int64 & value)
 {
-    return readEndian(sizeof(value), &value);
+    DO_READ_ENDIAN(sizeof(value), &value);
 }
 
 MemoryBuffer & MemoryBuffer::read(__int64 & value)
 {
-    return readEndian(sizeof(value), &value);
+    DO_READ_ENDIAN(sizeof(value), &value);
 }
 
 const byte * MemoryBuffer::readDirect(size32_t len)
@@ -860,7 +897,6 @@ void MemoryBuffer::writeEndianDirect(size32_t pos,size32_t len,const void *buf)
     else
         memcpy_iflen(buffer+pos,buf,len);
 }
-
 
 MemoryBuffer & MemoryBuffer::readEndian(size32_t len, void * value)
 {

@@ -26,6 +26,7 @@
 #include "jexcept.hpp"
 #include "jiter.hpp"
 #include "jprop.hpp"
+#include "jlzw.hpp"
 
 #include <initializer_list>
 
@@ -81,12 +82,13 @@ interface jlib_decl IPropertyTree : extends serializable
     virtual bool hasProp(const char *xpath) const = 0;
     virtual bool isBinary(const char *xpath=NULL) const = 0;
     virtual bool isCompressed(const char *xpath=NULL) const = 0; // needed for external/internal efficiency e.g. for clone
+    virtual CompressionMethod getCompressionType() const = 0;
     virtual bool renameProp(const char *xpath, const char *newName) = 0;
     virtual bool renameTree(IPropertyTree *tree, const char *newName) = 0;
 
     // string - all types can be converted to string
     virtual bool getProp(const char *xpath, StringBuffer &ret) const = 0;
-    virtual const char *queryProp(const char * xpath) const = 0;
+    virtual const char *queryProp(const char * xpath, const char * dft = nullptr) const = 0;
     virtual void setProp(const char *xpath, const char *val) = 0;
     virtual void addProp(const char *xpath, const char *val) = 0;
     virtual void appendProp(const char *xpath, const char *val) = 0;
@@ -108,7 +110,7 @@ interface jlib_decl IPropertyTree : extends serializable
     virtual double getPropReal(const char *xpath, double dft=0.0) const = 0;
 
     virtual bool getPropBin(const char *xpath, MemoryBuffer &ret) const = 0;
-    virtual void setPropBin(const char *xpath, size32_t size, const void *data) = 0;
+    virtual void setPropBin(const char *xpath, size32_t size, const void *data, CompressionMethod preferredCompression = COMPRESS_METHOD_DEFAULT) = 0;
     virtual void addPropBin(const char *xpath, size32_t size, const void *data) = 0;
     virtual void appendPropBin(const char *xpath, size32_t size, const void *data) = 0;
 
@@ -317,11 +319,10 @@ inline static bool isValidXPathChr(char c)
 jlib_decl void mergeConfiguration(IPropertyTree & target, const IPropertyTree & source, const char *altNameAttribute=nullptr, bool overwriteAttr=true);
 
 jlib_decl IPropertyTree * loadArgsIntoConfiguration(IPropertyTree *config, const char * * argv, std::initializer_list<const std::string> ignoreOptions = {});
-jlib_decl IPropertyTree * loadConfiguration(IPropertyTree * defaultConfig, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr, bool monitor=true);
+jlib_decl IPropertyTree * loadConfiguration(IPropertyTree * defaultConfig, IPropertyTree * globalConfig, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr, bool monitor=true);
 jlib_decl IPropertyTree * loadConfiguration(const char * defaultYaml, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute=nullptr, bool monitor=true);
 jlib_decl void replaceComponentConfig(IPropertyTree *newComponentConfig, IPropertyTree *newGlobalConfig);
 jlib_decl void initNullConfiguration();
-jlib_decl IPropertyTree * getCostsConfiguration();
 
 //The following can only be called after loadConfiguration has been called.  All components must call loadConfiguration().
 jlib_decl IPropertyTree * getGlobalConfig();
@@ -330,11 +331,20 @@ jlib_decl Owned<IPropertyTree> getGlobalConfigSP(); // get smart pointer
 jlib_decl Owned<IPropertyTree> getComponentConfigSP(); // get smart pointer
 jlib_decl const char * queryComponentName();
 
+// utility functions that check component configuration 1st, then global configuration, then default to the provided default value
+jlib_decl bool getConfigBool(const char *xpath, bool defaultValue=false);
+jlib_decl __int64 getConfigInt64(const char *xpath, __int64 defaultValue=0);
+jlib_decl bool getConfigString(const char *xpath, StringBuffer &result);
+jlib_decl double getConfigReal(const char *xpath, double defaultValue=0.0);
+
+
 // ConfigUpdateFunc calls are made in a mutex, but after new confis are swapped in
 typedef std::function<void (const IPropertyTree *oldComponentConfiguration, const IPropertyTree *oldGlobalConfiguration)> ConfigUpdateFunc;
+typedef std::function<void (IPropertyTree * newComponentConfiguration, IPropertyTree * newGlobalConfiguration)> ConfigModifyFunc;
 jlib_decl unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc, bool callWhenInstalled);
+jlib_decl unsigned installConfigUpdateHook(ConfigModifyFunc notifyFunc);  // This function must be called before the configuration is loaded.
 jlib_decl void removeConfigUpdateHook(unsigned notifyFuncId);
-jlib_decl void executeConfigUpdaterCallbacks();
+jlib_decl void refreshConfiguration();  // (Optionally) reload the configuration file, reapply changes, and derive cached information
 
 class jlib_decl CConfigUpdateHook
 {
@@ -344,6 +354,7 @@ public:
     ~CConfigUpdateHook() { clear(); }
     void clear();
     void installOnce(ConfigUpdateFunc callbackFunc, bool callWhenInstalled);
+    void installModifierOnce(ConfigModifyFunc callbackFunc, bool threadSafe);
 };
 
 /*
@@ -401,6 +412,7 @@ jlib_decl void dbglogYAML(const IPropertyTree *tree, unsigned indent = 0, unsign
 jlib_decl void setPTreeMappingThreshold(unsigned threshold);
 
 jlib_decl void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropertyTree & source, const char * sourceName);
+jlib_decl void copyProp(IPropertyTree & target, IPropertyTree & source, const char * name);
 
 jlib_decl StringBuffer &encodePtreeName(StringBuffer &s, unsigned size, const char *value, const char *startEncoding=nullptr);
 jlib_decl StringBuffer &encodePTreeName(StringBuffer &s, const char *value, const char *startEncoding=nullptr);

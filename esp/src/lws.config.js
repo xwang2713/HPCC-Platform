@@ -1,6 +1,6 @@
 const fs = require("fs");
 
-let ip = "192.168.99.103";
+let ip = "https://play.hpccsystems.com:18010";
 if (fs.existsSync("./lws.target.txt")) {
     ip = fs.readFileSync("./lws.target.txt").toString().replace("\r\n", "\n").split("\n")[0];
 }
@@ -29,6 +29,7 @@ let rewrite = [
     { from: "/esp/lock", to: protocol + "://" + ip + ":" + port + "/esp/lock" },
     { from: "/esp/reset_session_timeout", to: protocol + "://" + ip + ":" + port + "/esp/reset_session_timeout" },
     { from: "/esp/getauthtype", to: protocol + "://" + ip + ":" + port + "/esp/getauthtype" },
+    { from: "/esp/getauthtype.json", to: protocol + "://" + ip + ":" + port + "/esp/getauthtype.json" },
     { from: "/esp/files/esp/getauthtype", to: protocol + "://" + ip + ":" + port + "/esp/getauthtype" },
     { from: "/esp/files/esp/lock", to: protocol + "://" + ip + ":" + port + "/esp/lock" },
     { from: "/esp/unlock.json", to: protocol + "://" + ip + ":" + port + "/esp/unlock.json" },
@@ -42,7 +43,8 @@ let rewrite = [
     { from: "/main", to: protocol + "://" + ip + ":" + port + "/main" },
     { from: "/FileSpray/(.*)", to: protocol + "://" + ip + ":" + port + "/FileSpray/$1" },
     { from: "/WsCloud/(.*)", to: protocol + "://" + ip + ":" + port + "/WsCloud/$1" },
-    { from: "/WSDali/(.*)", to: protocol + "://" + ip + ":" + port + "/WSDali/$1" },
+    { from: "/WsDali/(.*)", to: protocol + "://" + ip + ":" + port + "/WsDali/$1" },
+    { from: "/WsSasha/(.*)", to: protocol + "://" + ip + ":" + port + "/WsSasha/$1" },
     { from: "/WsDfu/(.*)", to: protocol + "://" + ip + ":" + port + "/WsDfu/$1" },
     { from: "/WsDfuXRef/(.*)", to: protocol + "://" + ip + ":" + port + "/WsDfuXRef/$1" },
     { from: "/WsECL/(.*)", to: protocol + "://" + ip + ":8002/WsECL/$1" },
@@ -68,5 +70,5 @@ let rewrite = [
 module.exports = {
     port: 8080,
     rewrite: rewrite,
-    stack: ['lws-basic-auth', 'lws-request-monitor', 'lws-log', 'lws-cors', 'lws-json', 'lws-compress', 'lws-rewrite', 'lws-blacklist', 'lws-conditional-get', 'lws-mime', 'lws-range', 'lws-spa', 'lws-static', 'lws-index']
+    stack: ["lws-basic-auth", "lws-request-monitor", "lws-log", "lws-cors", "lws-json", "lws-compress", "lws-rewrite", "lws-blacklist", "lws-conditional-get", "lws-mime", "lws-range", "lws-spa", "lws-static", "lws-index"]
 };

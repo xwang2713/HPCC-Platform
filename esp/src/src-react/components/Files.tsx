@@ -21,7 +21,7 @@ import { Filter } from "./forms/Filter";
 import { RemoteCopy } from "./forms/RemoteCopy";
 import { RenameFile } from "./forms/RenameFile";
 import { ShortVerticalDivider } from "./Common";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 
 const logger = scopedLogger("src-react/components/Files.tsx");
 
@@ -33,7 +33,7 @@ const FilterFields: Fields = {
     "SuperFiles": { type: "checkbox", label: nlsHPCC.SuperFiles },
     "Indexes": { type: "checkbox", label: nlsHPCC.Indexes },
     "NotInSuperfiles": { type: "checkbox", label: nlsHPCC.NotInSuperfiles, disabled: (params: Fields) => !!params?.SuperFiles?.value || !!params?.LogicalFiles?.value },
-    "NodeGroup": { type: "target-group", label: nlsHPCC.Cluster, placeholder: nlsHPCC.Cluster },
+    "NodeGroup": { type: "target-group", label: nlsHPCC.Cluster, placeholder: nlsHPCC.Cluster, multiSelect: true, valueSeparator: "," },
     "FileSizeFrom": { type: "string", label: nlsHPCC.FromSizes, placeholder: "4096" },
     "FileSizeTo": { type: "string", label: nlsHPCC.ToSizes, placeholder: "16777216" },
     "FileType": { type: "file-type", label: nlsHPCC.FileType },
@@ -70,16 +70,21 @@ function formatQuery(_filter): { [id: string]: any } {
     delete filter.NotInSuperFiles;
     delete filter.Indexes;
     if (filter.StartDate) {
+        if (filter.StartDate.indexOf("Z") < 0) { filter.StartDate += ":00.000Z"; }
         filter.StartDate = new Date(filter.StartDate).toISOString();
     }
     if (filter.EndDate) {
-        filter.EndDate = new Date(filter.StartDate).toISOString();
+        if (filter.EndDate.indexOf("Z") < 0) { filter.EndDate += ":00.000Z"; }
+        filter.EndDate = new Date(filter.EndDate).toISOString();
     }
     return filter;
 }
 
+const LOCAL_STORAGE_IS_UTC_KEY = "eclwatch.files.isUTC";
+
 const defaultUIState = {
     hasSelection: false,
+    isUTC: false,
 };
 
 interface FilesProps {
@@ -127,253 +132,294 @@ export const Files: React.FunctionComponent<FilesProps> = ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hasFocus]);
 
-    //  Grid ---
-    const gridStore = React.useMemo(() => {
-        return store ? store : CreateDFUQueryStore();
-    }, [store]);
+    const toggleTimezone = () => {
+        setUIState((prevState) => ({ ...prevState, isUTC: !prevState.isUTC }));
+    };
 
-    const query = React.useMemo(() => {
-        return formatQuery(filter);
-    }, [filter]);
+    React.useEffect(() => {
+        localStorage.setItem(LOCAL_STORAGE_IS_UTC_KEY, uiState.isUTC.toString());
+    }, [uiState.isUTC]);
 
-    const columns = React.useMemo((): FluentColumns => {
-        return {
-            col1: {
-                width: 16,
-                disabled: (item) => {
-                    return item ? item.__hpcc_isDir : true;
-                },
-                selectorType: "checkbox"
-            },
-            IsProtected: {
-                headerIcon: "LockSolid",
-                headerTooltip: nlsHPCC.Protected,
-                width: 16,
-                sortable: false,
-                formatter: (_protected) => {
-                    if (_protected === true) {
-                        return <Icon iconName="LockSolid" />;
-                    }
-                    return "";
-                },
-            },
-            IsCompressed: {
-                headerIcon: "ZipFolder",
-                headerTooltip: nlsHPCC.Compressed,
-                width: 16,
-                sortable: false,
-                formatter: (compressed) => {
-                    if (compressed === true) {
-                        return <Icon iconName="ZipFolder" />;
-                    }
-                    return "";
-                },
-            },
-            Name: {
-                label: nlsHPCC.LogicalName,
-                width: 360,
-                formatter: (name, row) => {
-                    const file = Get(row.NodeGroup, name, row);
-                    if (row.__hpcc_isDir) {
-                        return name;
-                    }
-                    const url = "#/files/" + (row.NodeGroup ? row.NodeGroup + "/" : "") + name;
-                    return <>
-                        <Icon iconName={file.getStateIcon ? file.getStateIcon() : ""} />
-                        &nbsp;
-                        <Link href={url}>{name}</Link>
-                    </>;
-                },
-            },
-            Owner: { label: nlsHPCC.Owner },
-            SuperOwners: { label: nlsHPCC.SuperOwner, sortable: false },
-            Description: { label: nlsHPCC.Description, sortable: false },
-            NodeGroup: { label: nlsHPCC.Cluster },
-            Records: {
-                label: nlsHPCC.Records,
-                formatter: (value, row) => {
-                    return Utility.formatNum(row.IntRecordCount);
-                },
-            },
-            FileSize: {
-                label: nlsHPCC.Size,
-                formatter: (value, row) => {
-                    return Utility.convertedSize(row.IntSize);
-                },
-            },
-            Parts: {
-                label: nlsHPCC.Parts, width: 40,
-            },
-            MinSkew: {
-                label: nlsHPCC.MinSkew, width: 60, formatter: (value, row) => value ? `${Utility.formatDecimal(value / 100)}%` : ""
-            },
-            MaxSkew: {
-                label: nlsHPCC.MaxSkew, width: 60, formatter: (value, row) => value ? `${Utility.formatDecimal(value / 100)}%` : ""
-            },
-            Modified: { label: nlsHPCC.ModifiedUTCGMT },
-            Accessed: { label: nlsHPCC.LastAccessed },
-            AtRestCost: {
-                label: nlsHPCC.FileCostAtRest,
-                formatter: (cost, row) => {
-                    return `${formatCost(cost)}`;
-                },
-            },
-            AccessCost: {
-                label: nlsHPCC.FileAccessCost,
-                formatter: (cost, row) => {
-                    return `${formatCost(cost)}`;
-                },
-            }
-        };
+    React.useEffect(() => {
+        const storedIsUTC = localStorage.getItem(LOCAL_STORAGE_IS_UTC_KEY) ?? false;
+        setUIState((prevState) => ({ ...prevState, isUTC: storedIsUTC === "true" }));
     }, []);
 
-    const copyButtons = useCopyButtons(columns, selection, "files");
+const currentTime = React.useCallback((timestamp: string | number | Date) => {
+    const tsString = typeof timestamp === "string" ? new Date(timestamp) : new Date(timestamp);
+    return uiState.isUTC ? Utility.formatDate(tsString, true) : Utility.formatDate(tsString, false);
+}, [uiState.isUTC]);
+//  Grid ---
+const gridStore = React.useMemo(() => {
+    return store ? store : CreateDFUQueryStore();
+}, [store]);
 
-    const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
-        title: nlsHPCC.Delete,
-        message: nlsHPCC.DeleteSelectedFiles,
-        items: selection.map(s => s.Name),
-        onSubmit: React.useCallback(() => {
-            WsDfu.DFUArrayAction(selection, "Delete")
-                .then(({ DFUArrayActionResponse }) => {
-                    const ActionResults = DFUArrayActionResponse?.ActionResults?.DFUActionInfo ?? [];
-                    ActionResults.filter(action => action?.Failed).forEach(action => logger.error(action?.ActionResult));
-                    refreshTable.call(true);
-                })
-                .catch(err => logger.error(err));
-        }, [refreshTable, selection])
-    });
+const query = React.useMemo(() => {
+    return formatQuery(filter);
+}, [filter]);
 
-    //  Command Bar  ---
-    const buttons = React.useMemo((): ICommandBarItemProps[] => [
-        {
-            key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable.call()
+const columns = React.useMemo((): FluentColumns => {
+    return {
+        col1: {
+            width: 16,
+            disabled: (item) => {
+                return item ? item.__hpcc_isDir : true;
+            },
+            selectorType: "checkbox"
         },
-        { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-        {
-            key: "open", text: nlsHPCC.Open, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
-            onClick: () => {
-                if (selection.length === 1) {
-                    window.location.href = "#/files/" + (selection[0].NodeGroup ? selection[0].NodeGroup + "/" : "") + selection[0].Name;
-                } else {
-                    for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open("#/files/" + (selection[i].NodeGroup ? selection[i].NodeGroup + "/" : "") + selection[i].Name, "_blank");
-                    }
+        IsProtected: {
+            headerIcon: "LockSolid",
+            headerTooltip: nlsHPCC.Protected,
+            width: 16,
+            sortable: false,
+            formatter: (_protected, row) => {
+                if (row.IsProtected === true) {
+                    return <Icon iconName="LockSolid" />;
+                }
+                return "";
+            },
+            field: nlsHPCC.Protected,
+        },
+        IsCompressed: {
+            headerIcon: "ZipFolder",
+            headerTooltip: nlsHPCC.Compressed,
+            width: 16,
+            sortable: false,
+            formatter: (_compressed, row) => {
+                if (row.IsCompressed === true) {
+                    return <Icon iconName="ZipFolder" />;
+                }
+                return "";
+            },
+            field: nlsHPCC.Compressed,
+        },
+        Name: {
+            label: nlsHPCC.LogicalName,
+            width: 180,
+            formatter: (name, row) => {
+                const file = Get(row.NodeGroup, name, row);
+                if (row.__hpcc_isDir) {
+                    return name;
+                }
+                const url = "#/files/" + (row.NodeGroup ? row.NodeGroup + "/" : "") + name;
+                return <>
+                    <Icon iconName={file.getStateIcon ? file.getStateIcon() : ""} />
+                    &nbsp;
+                    <Link href={url}>{name}</Link>
+                </>;
+            },
+        },
+        Owner: { label: nlsHPCC.Owner },
+        SuperOwners: { label: nlsHPCC.SuperOwner, sortable: false },
+        Description: { label: nlsHPCC.Description, sortable: false },
+        NodeGroup: { label: nlsHPCC.Cluster },
+        Records: {
+            label: nlsHPCC.Records,
+            formatter: (value, row) => {
+                return Utility.formatNum(row.IntRecordCount);
+            },
+            csvFormatter: (value, row) => row.IntRecordCount,
+        },
+        FileSize: {
+            label: nlsHPCC.Size,
+            formatter: (value, row) => {
+                return Utility.convertedSize(row.IntSize);
+            },
+            csvFormatter: (value, row) => row.IntSize,
+        },
+        CompressedFileSizeString: {
+            label: nlsHPCC.CompressedSize,
+            formatter: (value, row) => {
+                return Utility.convertedSize(row.CompressedFileSize);
+            },
+            csvFormatter: (value, row) => row.CompressedFileSize,
+        },
+        Parts: {
+            label: nlsHPCC.Parts, width: 40,
+        },
+        MinSkew: {
+            label: nlsHPCC.MinSkew, width: 60, formatter: (value, row) => value ? `${Utility.formatDecimal(value / 100)}%` : ""
+        },
+        MaxSkew: {
+            label: nlsHPCC.MaxSkew, width: 60, formatter: (value, row) => value ? `${Utility.formatDecimal(value / 100)}%` : ""
+        },
+        Accessed: {
+            label: uiState.isUTC ? nlsHPCC.LastAccessed : nlsHPCC.LastAccessedLocalTime,
+            formatter: currentTime
+        },
+        Modified: {
+            label: uiState.isUTC ? nlsHPCC.ModifiedUTCGMT : nlsHPCC.ModifiedLocalTime,
+            formatter: currentTime
+        },
+        AtRestCost: {
+            label: nlsHPCC.FileCostAtRest,
+            formatter: (cost, row) => {
+                return `${formatCost(cost)}`;
+            },
+        },
+        AccessCost: {
+            label: nlsHPCC.FileAccessCost,
+            formatter: (cost, row) => {
+                return `${formatCost(cost)}`;
+            },
+        }
+    };
+}, [uiState.isUTC, currentTime]);
+
+const copyButtons = useCopyButtons(columns, selection, "files");
+
+const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
+    title: nlsHPCC.Delete,
+    message: nlsHPCC.DeleteSelectedFiles,
+    items: selection.map(s => s.Name),
+    onSubmit: React.useCallback(() => {
+        WsDfu.DFUArrayAction(selection, "Delete")
+            .then(({ DFUArrayActionResponse }) => {
+                const ActionResults = DFUArrayActionResponse?.ActionResults?.DFUActionInfo ?? [];
+                ActionResults.filter(action => action?.Failed).forEach(action => logger.error(action?.ActionResult));
+                refreshTable.call(true);
+            })
+            .catch(err => logger.error(err));
+    }, [refreshTable, selection])
+});
+
+//  Command Bar  ---
+const buttons = React.useMemo((): ICommandBarItemProps[] => [
+    {
+        key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
+        onClick: () => refreshTable.call()
+    },
+    { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+    {
+        key: "open", text: nlsHPCC.Open, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
+        onClick: () => {
+            if (selection.length === 1) {
+                window.location.href = "#/files/" + (selection[0].NodeGroup ? selection[0].NodeGroup + "/" : "") + selection[0].Name;
+            } else {
+                for (let i = selection.length - 1; i >= 0; --i) {
+                    window.open("#/files/" + (selection[i].NodeGroup ? selection[i].NodeGroup + "/" : "") + selection[i].Name, "_blank");
                 }
             }
-        },
-        {
-            key: "delete", text: nlsHPCC.Delete, disabled: !uiState.hasSelection, iconProps: { iconName: "Delete" },
-            onClick: () => setShowDeleteConfirm(true)
-        },
-        { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-        {
-            key: "remoteCopy", text: nlsHPCC.RemoteCopy,
-            onClick: () => setShowRemoteCopy(true)
-        },
-        { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-        {
-            key: "copy", text: nlsHPCC.Copy, disabled: !uiState.hasSelection,
-            onClick: () => setShowCopy(true)
-        },
-        {
-            key: "rename", text: nlsHPCC.Rename, disabled: !uiState.hasSelection,
-            onClick: () => setShowRenameFile(true)
-        },
-        {
-            key: "addToSuperfile", text: nlsHPCC.AddToSuperfile, disabled: !uiState.hasSelection,
-            onClick: () => setShowAddToSuperfile(true)
-        },
-        {
-            key: "despray", text: nlsHPCC.Despray, disabled: !uiState.hasSelection,
-            onClick: () => setShowDesprayFile(true)
-        },
-        { key: "divider_4", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-        {
-            key: "filter", text: nlsHPCC.Filter, disabled: !!store, iconProps: { iconName: hasFilter ? "FilterSolid" : "Filter" },
-            onClick: () => {
-                setShowFilter(true);
+        }
+    },
+    {
+        key: "delete", text: nlsHPCC.Delete, disabled: !uiState.hasSelection, iconProps: { iconName: "Delete" },
+        onClick: () => setShowDeleteConfirm(true)
+    },
+    { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+    {
+        key: "remoteCopy", text: nlsHPCC.RemoteCopy,
+        onClick: () => setShowRemoteCopy(true)
+    },
+    { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+    {
+        key: "copy", text: nlsHPCC.Copy, disabled: !uiState.hasSelection,
+        onClick: () => setShowCopy(true)
+    },
+    {
+        key: "rename", text: nlsHPCC.Rename, disabled: !uiState.hasSelection,
+        onClick: () => setShowRenameFile(true)
+    },
+    {
+        key: "addToSuperfile", text: nlsHPCC.AddToSuperfile, disabled: !uiState.hasSelection,
+        onClick: () => setShowAddToSuperfile(true)
+    },
+    {
+        key: "despray", text: nlsHPCC.Despray, disabled: !uiState.hasSelection,
+        onClick: () => setShowDesprayFile(true)
+    },
+    { key: "divider_4", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+    {
+        key: "filter", text: nlsHPCC.Filter, disabled: !!store, iconProps: { iconName: hasFilter ? "FilterSolid" : "Filter" },
+        onClick: () => {
+            setShowFilter(true);
+        }
+    },
+    {
+        key: "viewByScope", text: nlsHPCC.ViewByScope, iconProps: { iconName: "BulletedTreeList" }, iconOnly: true, canCheck: true, checked: viewByScope,
+        onClick: () => {
+            setViewByScope(!viewByScope);
+            window.location.href = "#/scopes";
+        }
+    },
+    { key: "divider_5", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+    {
+        key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username || !total, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter["Owner"] === currentUser.username,
+        onClick: () => {
+            if (filter["Owner"] === currentUser.username) {
+                filter["Owner"] = "";
+            } else {
+                filter["Owner"] = currentUser.username;
             }
-        },
-        {
-            key: "viewByScope", text: nlsHPCC.ViewByScope, iconProps: { iconName: "BulletedTreeList" }, iconOnly: true, canCheck: true, checked: viewByScope,
-            onClick: () => {
-                setViewByScope(!viewByScope);
-                window.location.href = "#/scopes";
-            }
-        },
-        { key: "divider_5", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
-        {
-            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username || !total, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter["Owner"] === currentUser.username,
-            onClick: () => {
-                if (filter["Owner"] === currentUser.username) {
-                    filter["Owner"] = "";
-                } else {
-                    filter["Owner"] = currentUser.username;
-                }
-                pushParams(filter);
-            }
-        },
-    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowDeleteConfirm, store, total, uiState.hasSelection, viewByScope]);
+            pushParams(filter);
+        }
+    },
+    { key: "divider_6", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
+    {
+        key: "toggleTimezone",
+        text: uiState.isUTC ? nlsHPCC.SwitchToLocalTime : nlsHPCC.SwitchToUTCTime,
+        iconProps: { iconName: uiState.isUTC ? "Globe" : "Clock" },
+        onClick: toggleTimezone,
+    },
+], [currentUser, filter, hasFilter, refreshTable, selection, setShowDeleteConfirm, store, total, uiState.hasSelection, viewByScope, uiState.isUTC]);
 
-    //  Filter  ---
-    const filterFields: Fields = {};
-    for (const field in FilterFields) {
-        filterFields[field] = { ...FilterFields[field], value: filter[field] };
+//  Filter  ---
+const filterFields: Fields = {};
+for (const field in FilterFields) {
+    filterFields[field] = { ...FilterFields[field], value: filter[field] };
+}
+
+//  Selection  ---
+React.useEffect(() => {
+    const state = { ...defaultUIState };
+
+    for (let i = 0; i < selection.length; ++i) {
+        state.hasSelection = true;
+        //  TODO:  More State
     }
+    setUIState(state);
+}, [selection]);
 
-    //  Selection  ---
-    React.useEffect(() => {
-        const state = { ...defaultUIState };
-
-        for (let i = 0; i < selection.length; ++i) {
-            state.hasSelection = true;
-            //  TODO:  More State
-        }
-        setUIState(state);
-    }, [selection]);
-
-    return <HolyGrail
-        header={<CommandBar items={buttons} farItems={copyButtons} />}
-        main={
-            <>
-                <SizeMe monitorHeight>{({ size }) =>
-                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                        <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
-                            <FluentPagedGrid
-                                store={gridStore}
-                                query={query}
-                                sort={sort}
-                                pageNum={pageNum}
-                                pageSize={pageSize}
-                                total={total}
-                                columns={columns}
-                                height={`${size.height}px`}
-                                setSelection={setSelection}
-                                setTotal={setTotal}
-                                refresh={refreshTable}
-                            ></FluentPagedGrid>
-                        </div>
+return <HolyGrail
+    header={<CommandBar items={buttons} farItems={copyButtons} />}
+    main={
+        <>
+            <SizeMe>{({ size }) =>
+                <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                    <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
+                        <FluentPagedGrid
+                            store={gridStore}
+                            query={query}
+                            sort={sort}
+                            pageNum={pageNum}
+                            pageSize={pageSize}
+                            total={total}
+                            columns={columns}
+                            height={`${size.height}px`}
+                            setSelection={setSelection}
+                            setTotal={setTotal}
+                            refresh={refreshTable}
+                        ></FluentPagedGrid>
                     </div>
-                }</SizeMe>
-                <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
-                <RemoteCopy showForm={showRemoteCopy} setShowForm={setShowRemoteCopy} refreshGrid={refreshTable.call} />
-                <CopyFile logicalFiles={selection.map(s => s.Name)} showForm={showCopy} setShowForm={setShowCopy} refreshGrid={refreshTable.call} />
-                <RenameFile logicalFiles={selection.map(s => s.Name)} showForm={showRenameFile} setShowForm={setShowRenameFile} refreshGrid={refreshTable.call} />
-                <AddToSuperfile logicalFiles={selection.map(s => s.Name)} showForm={showAddToSuperfile} setShowForm={setShowAddToSuperfile} refreshGrid={refreshTable.call} />
-                <DesprayFile logicalFiles={selection.map(s => s.Name)} showForm={showDesprayFile} setShowForm={setShowDesprayFile} />
-                <DeleteConfirm />
-            </>
-        }
-        footer={<FluentPagedFooter
-            persistID={"files"}
-            pageNum={pageNum}
-            selectionCount={selection.length}
-            setPageNum={setPageNum}
-            setPageSize={setPageSize}
-            total={total}
-        ></FluentPagedFooter>}
-        footerStyles={{}}
-    />;
+                </div>
+            }</SizeMe>
+            <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
+            <RemoteCopy showForm={showRemoteCopy} setShowForm={setShowRemoteCopy} refreshGrid={refreshTable.call} />
+            <CopyFile logicalFiles={selection.map(s => s.Name)} showForm={showCopy} setShowForm={setShowCopy} refreshGrid={refreshTable.call} />
+            <RenameFile logicalFiles={selection.map(s => s.Name)} showForm={showRenameFile} setShowForm={setShowRenameFile} refreshGrid={refreshTable.call} />
+            <AddToSuperfile logicalFiles={selection.map(s => s.Name)} showForm={showAddToSuperfile} setShowForm={setShowAddToSuperfile} refreshGrid={refreshTable.call} />
+            <DesprayFile logicalFiles={selection.map(s => s.Name)} showForm={showDesprayFile} setShowForm={setShowDesprayFile} />
+            <DeleteConfirm />
+        </>
+    }
+    footer={<FluentPagedFooter
+        persistID={"files"}
+        pageNum={pageNum}
+        selectionCount={selection.length}
+        setPageNum={setPageNum}
+        setPageSize={setPageSize}
+        total={total}
+    ></FluentPagedFooter>}
+    footerStyles={{}}
+/>;
 };

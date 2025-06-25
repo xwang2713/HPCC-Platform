@@ -28,6 +28,7 @@ namespace daadmin
 
 extern DALIADMIN_API void setDaliConnectTimeoutMs(unsigned timeoutMs);
 extern DALIADMIN_API void xmlSize(const char *filename, double pc);
+extern DALIADMIN_API void loadXMLTest(const char *filename, bool parseOnly, bool useLowMemPTree, bool saveFormattedXML, bool freePTree);
 extern DALIADMIN_API void translateToXpath(const char *logicalfile, DfsXmlBranchKind tailType = DXB_File);
 
 extern DALIADMIN_API void exportToFile(const char *path, const char *filename, bool safe = false);
@@ -73,6 +74,7 @@ extern DALIADMIN_API void listmatches(const char *path, const char *match, const
 extern DALIADMIN_API void dfsreplication(const char *clusterMask, const char *lfnMask, unsigned redundancy, bool dryRun);
 extern DALIADMIN_API void migrateFiles(const char *srcGroup, const char *tgtGroup, const char *filemask, const char *_options);
 extern DALIADMIN_API void getxref(const char *dst);
+extern DALIADMIN_API void checkFileSize(IUserDescriptor *user, const char *lfnPattern, bool fix);
 
 extern DALIADMIN_API void listworkunits(const char *test, const char *min, const char *max);
 extern DALIADMIN_API void workunittimings(const char *wuid);
@@ -94,5 +96,9 @@ extern DALIADMIN_API void daliping(const char *dalis, unsigned connecttime, unsi
 
 extern DALIADMIN_API void validateStore(bool fix, bool deleteFiles, bool verbose);
 extern DALIADMIN_API void removeOrphanedGlobalVariables(bool dryrun, bool reconstruct);
+extern DALIADMIN_API void cleanJobQueues(bool dryRun);
+extern DALIADMIN_API void cleanGeneratedDlls(bool dryRun, bool backup);
+extern DALIADMIN_API void cleanStaleGroups(const char *groupPattern, bool dryRun);
+
 
 } // namespace daadmin

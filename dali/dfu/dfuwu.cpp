@@ -728,7 +728,7 @@ public:
         bool subtask = isSubTaskWuid(parent->queryId());
         switch (state) {
         case DFUstate_started:
-            dt.setNow();
+            dt.setTimeStamp(getTimeStampNowValue());
             setTimeStarted(dt);
             break;
         case DFUstate_aborting:
@@ -743,7 +743,7 @@ public:
         case DFUstate_finished:
             if (parent->removeQueue()&&(state==DFUstate_aborting))
                 state = DFUstate_aborted;
-            dt.setNow();
+            dt.setTimeStamp(getTimeStampNowValue());
             setTimeStopped(dt);
             if (subtask && !noted)
                 queryRoot()->setPropBool("@noted", true);
@@ -819,6 +819,12 @@ public:
         queryRoot()->setPropInt("@taskcount", ++count);
         return count;
     }
+    virtual void setTransferOptions(const IPropertyTree * options) override
+    {
+        CriticalBlock block(parent->crit);
+        queryRoot()->setPropTree("TransferOptions", createPTreeFromIPT(options));
+    }
+
 };
 
 class CDFUmonitor: public CLinkedDFUWUchild, implements IDFUmonitor
@@ -2068,6 +2074,10 @@ public:
         return queryRoot()->queryProp("@splitPrefix");
     }
 
+    const char * queryKeyCompression() const override
+    {
+        return queryRoot()->queryProp("@keyCompression");
+    }
 
     void setNoDelete(bool val)
     {
@@ -2330,6 +2340,10 @@ public:
     void setNoCommon(bool val)
     {
         queryRoot()->setPropBool("@noCommon",val);
+    }
+    virtual void setKeyCompression(const char * value) override
+    {
+        queryRoot()->setProp("@keyCompression", value);
     }
 };
 
@@ -3057,7 +3071,7 @@ class CConstDFUWorkUnitIterator: implements IConstDFUWorkUnitIterator, public CI
 public:
     IMPLEMENT_IINTERFACE;
     CConstDFUWorkUnitIterator(IDFUWorkUnitFactory *_parent,IRemoteConnection *_conn,IPropertyTreeIterator *_iter)   // takes ownership of conn and iter
-        : parent(_parent), conn(_conn),iter(_iter)
+        : conn(_conn), iter(_iter), parent(_parent)
     {
     }
     ~CConstDFUWorkUnitIterator()

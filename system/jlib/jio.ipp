@@ -24,56 +24,12 @@
 
 #include "jio.hpp"
 
+#ifdef __64BIT__
+#define DEFAULT_BUFFER_SIZE     0x100000  // Always buffer 1MB on 64bit systems
+#else
+// Restrict buffer sizes on 32-bit systems
 #define DEFAULT_BUFFER_SIZE     0x10000
-
-
-
-
-class CUnbufferedReadWriteSeq : public IWriteSeq, public IReadSeq, public CInterface
-{
-private:
-    offset_t offset;
-    offset_t fpos;
-    size32_t size;
-    int fh;
-
-public:
-    IMPLEMENT_IINTERFACE;
-
-    CUnbufferedReadWriteSeq(int _fh, offset_t offset, size32_t _size);
-
-    virtual void put(const void *src);
-    virtual void putn(const void *src, unsigned n);
-    virtual void flush();
-    virtual size32_t getRecordSize() { return size; }
-    virtual offset_t getPosition();
-
-    virtual bool get(void *dst);
-    virtual unsigned getn(void *dst, unsigned n);
-    virtual void reset();
-    virtual void stop() {} // no action required
-};
-
-class CTeeWriteSeq : public IWriteSeq, public CInterface
-{
-protected:
-    IWriteSeq *w1;
-    IWriteSeq *w2;
-
-public:
-    IMPLEMENT_IINTERFACE;
-
-    CTeeWriteSeq(IWriteSeq *f1, IWriteSeq *f2);
-    ~CTeeWriteSeq();
-
-    virtual void put(const void *src);
-    virtual void putn(const void *src, unsigned n);
-    virtual void flush();
-    virtual size32_t getRecordSize();
-    virtual offset_t getPosition();
-};
-
-
+#endif
 
 class CBufferedIOStreamBase: public CInterface
 {

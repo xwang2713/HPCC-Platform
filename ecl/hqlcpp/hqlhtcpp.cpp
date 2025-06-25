@@ -1480,7 +1480,7 @@ void HqlCppTranslator::associateRemoteResult(ActivityInstance & instance, IHqlEx
     if (name && targetRoxie())
     {
         OwnedHqlExpr attr = createResultAttribute(seq, name);
-        globalFiles.append(* new GlobalFileTracker(attr, instance.graphNode));
+        globalFiles.append(* new GlobalFileTracker(attr, instance.graphNode, 0));
     }
 }
 
@@ -1679,6 +1679,20 @@ bool GlobalFileTracker::checkMatch(IHqlExpression * searchFilename)
         return true;
     }
     return false;
+}
+
+bool GlobalFileTracker::checkRequiredGraph(unsigned graphSeqNumber) const
+{
+    if (!requiredGraph)
+        return false;
+
+    if (requiredGraph != graphSeqNumber)
+    {
+        StringBuffer name;
+        filename->toString(name);
+        throwError1(HQLERR_UseOfSpillOutsideGraph, name.str());
+    }
+    return true;
 }
 
 void GlobalFileTracker::writeToGraph()
@@ -2103,6 +2117,26 @@ static void getRecordSizeText(StringBuffer & out, IHqlExpression * record)
         out.append(minSize);
 }
 
+static void getFieldListText(StringBuffer & out, IHqlExpression * record)
+{
+    ForEachChild(idx, record)
+    {
+        IHqlExpression * cur = record->queryChild(idx);
+        switch (cur->getOperator())
+        {
+        case no_record:
+            getFieldListText(out, cur);
+            break;
+        case no_ifblock:
+            getFieldListText(out, cur->queryChild(1));
+            break;
+        case no_field:
+            out.append(",").append(str(cur->queryId()));
+            break;
+        }
+    }
+}
+
 void ActivityInstance::createGraphNode(IPropertyTree * defaultSubGraph, bool alwaysExecuted)
 {
     IPropertyTree * parentGraphNode = subgraph ? subgraph->tree.get() : defaultSubGraph;
@@ -2240,6 +2274,14 @@ void ActivityInstance::createGraphNode(IPropertyTree * defaultSubGraph, bool alw
                     StringBuffer temp;
                     getRecordSizeText(temp, record);
                     addAttribute(WaRecordSize, temp.str());
+                }
+
+                if (options.noteFieldsInGraph)
+                {
+                    StringBuffer temp;
+                    getFieldListText(temp, record);
+                    if (temp.length())
+                        addAttribute(WaFields, temp.str()+1);
                 }
                 if (options.generateActivityFormats)
                     translator.addFormatAttribute(*this, WaRecordFormat, record);
@@ -3382,21 +3424,21 @@ void HqlCppTranslator::doBuildFunction(BuildCtx & ctx, ITypeInfo * type, const c
     }
 }
 
-void HqlCppTranslator::addFilenameConstructorParameter(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr)
+void HqlCppTranslator::addFilenameConstructorParameter(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr, SummaryType summaryType)
 {
     OwnedHqlExpr folded = foldHqlExpression(expr);
     instance.addConstructorParameter(folded);
-    noteFilename(instance, attr, folded, false);
+    noteFilename(instance, attr, folded, false, summaryType, false, false);
 }
 
-void HqlCppTranslator::buildFilenameFunction(ActivityInstance & instance, BuildCtx & classctx, WuAttr attr, const char * name, IHqlExpression * expr, bool isDynamic)
+void HqlCppTranslator::buildFilenameFunction(ActivityInstance & instance, BuildCtx & classctx, WuAttr attr, const char * name, IHqlExpression * expr, bool isDynamic, SummaryType summaryType, bool isOpt, bool isSigned)
 {
     OwnedHqlExpr folded = foldHqlExpression(expr);
     doBuildVarStringFunction(classctx, name, folded);
-    noteFilename(instance, attr, folded, isDynamic);
+    noteFilename(instance, attr, folded, isDynamic, summaryType, isOpt, isSigned);
 }
 
-void HqlCppTranslator::noteFilename(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr, bool isDynamic)
+void HqlCppTranslator::noteFilename(ActivityInstance & instance, WuAttr attr, IHqlExpression * expr, bool isDynamic, SummaryType summaryType, bool isOpt, bool isSigned)
 {
     if (options.addFilesnamesToGraph)
     {
@@ -3417,6 +3459,7 @@ void HqlCppTranslator::noteFilename(ActivityInstance & instance, WuAttr attr, IH
                 StringBuffer propValue;
                 folded->queryValue()->getStringValue(propValue);
                 instance.addAttribute(attr, propValue);
+                noteSummaryInfo(propValue, summaryType, isOpt, isSigned);
             }
         }
         if (isDynamic)
@@ -3459,20 +3502,24 @@ void HqlCppTranslator::buildRefFilenameFunction(ActivityInstance & instance, Bui
     assertex(table);
 
     IHqlExpression * filename = NULL;
+    SummaryType summaryType = SummaryType::ReadFile;
     switch (table->getOperator())
     {
     case no_keyindex:
         filename = table->queryChild(2);
+        summaryType = SummaryType::ReadIndex;
         break;
     case no_newkeyindex:
         filename = table->queryChild(3);
+        summaryType = SummaryType::ReadIndex;
         break;
     case no_table:
         filename = table->queryChild(0);
+        summaryType = SummaryType::ReadFile;
         break;
     }
 
-    buildFilenameFunction(instance, classctx, attr, name, filename, hasDynamicFilename(table));
+    buildFilenameFunction(instance, classctx, attr, name, filename, hasDynamicFilename(table), summaryType, table->hasAttribute(optAtom), table->hasAttribute(_signed_Atom));
 }
 
 void HqlCppTranslator::buildConnectInputOutput(BuildCtx & ctx, ActivityInstance * instance, ABoundActivity * table, unsigned outputIndex, unsigned inputIndex, const char * label, bool nWay)
@@ -4875,11 +4922,24 @@ IHqlExpression * HqlCppTranslator::createResultName(IHqlExpression * name, bool 
 
 bool HqlCppTranslator::registerGlobalUsage(IHqlExpression * filename)
 {
+    //On rare occasions an identical THOR graph may be generated twice in the same query.
+    //Walk in reverse to ensure this matches the most recent output.
+    //
+    //For non spills this loop cannot terminate early because the same file may be generated in multiple graphs
+    //and each of them has to have the correct usage count
     bool matched = false;
-    ForEachItemIn(i, globalFiles)
+    ForEachItemInRev(i, globalFiles)
     {
-        if (globalFiles.item(i).checkMatch(filename))
+        GlobalFileTracker & cur = globalFiles.item(i);
+        if (cur.checkMatch(filename))
+        {
+            //If it is a spill that should only be in one graph, then finish so it does not fail the same
+            //test on a duplicate spill in a previous graph
+            if (cur.checkRequiredGraph(graphSeqNumber))
+                return true;
+
             matched = true;
+        }
     }
     return matched;
 }
@@ -5008,6 +5068,65 @@ void HqlCppTranslator::noteResultAccessed(BuildCtx & ctx, IHqlExpression * seq, 
             }
         }
     }
+}
+
+//---------------------------------------------------------------------------
+
+void HqlCppTranslator::buildFormatOption(BuildCtx & ctx, IHqlExpression * name, IHqlExpression * value)
+{
+    if (value->isAttribute())
+    {
+    }
+    else if (value->isList())
+    {
+        node_operator op = value->getOperator();
+        if ((op == no_list) && value->numChildren())
+        {
+            ForEachChild(i, value)
+                buildFormatOption(ctx, name, value->queryChild(i));
+        }
+        else if ((op == no_list) || (op == no_null))
+        {
+            //MORE: There should be a better way of doing this!
+            buildXmlSerializeBeginNested(ctx, name, false);
+            buildXmlSerializeEndNested(ctx, name);
+        }
+    }
+    else
+    {
+        buildXmlSerializeScalar(ctx, value, name);
+    }
+}
+
+void HqlCppTranslator::buildFormatOptions(BuildCtx & ctx, IHqlExpression * expr)
+{
+    IHqlExpression * pluggableFileTypeAtom = expr->queryAttribute(fileTypeAtom); // null if pluggable file type not used
+    
+    ForEachChild(i, expr)
+    {
+        IHqlExpression * cur = expr->queryChild(i);
+
+        // Skip if expression is a pluggable file type (we don't want it appearing as an option)
+        // or if it is not an attribute
+        if (cur != pluggableFileTypeAtom && cur->isAttribute())
+        {
+            OwnedHqlExpr name = createConstant(str(cur->queryName()));
+            if (cur->numChildren())
+            {
+                ForEachChild(c, cur)
+                    buildFormatOption(ctx, name, cur->queryChild(c));
+            }
+            else
+                buildXmlSerializeScalar(ctx, queryBoolExpr(true), name);
+        }
+    }
+}
+
+void HqlCppTranslator::buildFormatOptionsFunction(BuildCtx & ctx, IHqlExpression * expr)
+{
+    MemberFunction formatFunc(*this, ctx, "virtual void getFormatOptions(IXmlWriter & out) override", MFopt);
+
+    buildFormatOptions(formatFunc.ctx, expr);
 }
 
 void HqlCppTranslator::buildGetResultInfo(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr * boundTarget, const CHqlBoundTarget * targetAssign)
@@ -6236,10 +6355,15 @@ bool HqlCppTranslator::buildCpp(IHqlCppInstance & _code, HqlQueryContext & query
         ensureWorkUnitUpdated();
         throw;
     }
+    addWorkunitSummaries();
     ensureWorkUnitUpdated();
-
-
     return true;
+}
+
+void HqlCppTranslator::addWorkunitSummaries()
+{
+    for (int i = (int) SummaryType::First; i < (int) SummaryType::NumItems; i++)
+        addWorkunitSummary(wu(), (SummaryType) i, summaries[i]);
 }
 
 void HqlCppTranslator::ensureWorkUnitUpdated()
@@ -6365,12 +6489,15 @@ static int compareTrackedSourceByName(CInterface * const * _left, CInterface * c
 
 IPropertyTree * HqlCppTranslator::gatherFieldUsage(const char * variant, const IPropertyTree * exclude)
 {
+    if (trackedSources.empty())
+        return nullptr;
+
     Owned<IPropertyTree> sources = createPTree("usedsources");
     sources->setProp("@varient", variant);
     trackedSources.sort(compareTrackedSourceByName);
     ForEachItemIn(i, trackedSources)
     {
-        IPropertyTree * next = trackedSources.item(i).createReport(options.reportFieldUsage || options.recordFieldUsage, exclude);
+        IPropertyTree * next = trackedSources.item(i).createReport(exclude);
         if (next)
             sources->addPropTree(next->queryName(), next);
     }
@@ -6382,6 +6509,15 @@ SourceFieldUsage * HqlCppTranslator::querySourceFieldUsage(IHqlExpression * expr
 {
     if (!(options.reportFieldUsage || options.recordFieldUsage || options.reportFileUsage) || !expr)
         return NULL;
+
+    switch (expr->getOperator())
+    {
+    case no_newkeyindex:
+    case no_table:
+        break;
+    default:
+        return nullptr;
+    }
 
     if (expr->hasAttribute(_spill_Atom) || expr->hasAttribute(jobTempAtom))
         return NULL;
@@ -6401,7 +6537,7 @@ SourceFieldUsage * HqlCppTranslator::querySourceFieldUsage(IHqlExpression * expr
         if (cur.matches(normalized))
             return &cur;
     }
-    SourceFieldUsage * next = new SourceFieldUsage(normalized);
+    SourceFieldUsage * next = new SourceFieldUsage(normalized, options.reportFieldUsage || options.recordFieldUsage, options.recordUnusedFields);
     trackedSources.append(*next);
     return next;
 }
@@ -8730,6 +8866,8 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySplit(BuildCtx & ctx, IHqlExpr
         instance->addConstructorParameter(numWays);
         instance->addConstructorParameter(queryBoolExpr(balanced));
     }
+    if (balanced)
+        instance->addAttributeBool(WaIsBalanced, true);
 
     buildInstanceSuffix(instance);
     buildConnectInputOutput(ctx, instance, boundDataset, 0, 0);
@@ -10642,6 +10780,31 @@ void HqlCppTranslator::buildSerializedLayoutMember(BuildCtx & ctx, IHqlExpressio
 }
 
 
+unsigned getDefaultBloomFieldMask(IHqlExpression * record)
+{
+    unsigned mask = 0;
+    unsigned fieldCount = 0;
+    unsigned totalSize = 0;
+    ForEachChild(i, record)
+    {
+        IHqlExpression * cur = record->queryChild(i);
+        if (cur->isAttribute())
+            continue;
+
+        if (cur->getOperator() != no_field)
+            return mask;
+
+        if (cur->hasAttribute(_payload_Atom))
+            return mask;
+
+        mask |= (1 << fieldCount);
+        fieldCount++;
+        totalSize += cur->queryType()->getSize();
+        if (totalSize >= 3)
+            return mask;
+    }
+    return mask;
+}
 
 ABoundActivity * HqlCppTranslator::doBuildActivityOutputIndex(BuildCtx & ctx, IHqlExpression * expr, bool isRoot)
 {
@@ -10659,7 +10822,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutputIndex(BuildCtx & ctx, IH
     buildInstancePrefix(instance);
 
     //virtual const char * getFileName() { return "x.d00"; }
-    buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", filename, hasDynamicFilename(expr));
+    buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", filename, hasDynamicFilename(expr), SummaryType::WriteIndex, false, expr->hasAttribute(_signed_Atom));
 
     //virtual unsigned getFlags() = 0;
     IHqlExpression * updateAttr = expr->queryAttribute(updateAtom);
@@ -10673,6 +10836,12 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutputIndex(BuildCtx & ctx, IH
         singlePart = true;
         widthExpr = NULL;
     }
+
+    LinkedHqlExpr serializedRecord = record;
+    unsigned numPayload = numPayloadFields(expr);
+    if (numPayload)
+        serializedRecord.setown(notePayloadFields(serializedRecord, numPayload));
+    serializedRecord.setown(getSerializedForm(serializedRecord, diskAtom));
 
     StringBuffer s;
     StringBuffer flags;
@@ -10710,7 +10879,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutputIndex(BuildCtx & ctx, IH
 
     IHqlExpression * indexNameAttr = expr->queryAttribute(indexAtom);
     if (indexNameAttr)
-        buildFilenameFunction(*instance, instance->startctx, WaDistributeIndexname, "getDistributeIndexName", indexNameAttr->queryChild(0), hasDynamicFilename(expr));
+        buildFilenameFunction(*instance, instance->startctx, WaDistributeIndexname, "getDistributeIndexName", indexNameAttr->queryChild(0), hasDynamicFilename(expr), SummaryType::ReadIndex, false, expr->hasAttribute(_signed_Atom));
 
     buildExpiryHelper(instance->createctx, expr->queryAttribute(expireAtom));
     buildUpdateHelper(instance->createctx, *instance, dataset, updateAttr);
@@ -10754,10 +10923,11 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutputIndex(BuildCtx & ctx, IH
     }
     if (!blooms && options.addDefaultBloom)
     {
+        __uint64 bloomFieldMask = getDefaultBloomFieldMask(serializedRecord);
         bloomNames.append(", &bloomDefault");
         BuildCtx classctx(instance->startctx);
         IHqlStmt * classStmt = beginNestedClass(classctx, "bloomDefault", "CBloomBuilderInfo");
-        classctx.addQuoted("virtual __uint64 getBloomFields() const override { return 1; }");
+        classctx.addQuotedF("virtual __uint64 getBloomFields() const override { return %llu; }", bloomFieldMask);
         endNestedClass(classStmt);
         blooms++;
     }
@@ -10783,11 +10953,6 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutputIndex(BuildCtx & ctx, IH
         instance->classctx.addQuoted(s.clear().append("virtual unsigned getKeyedSize() override { return (unsigned) -1; }"));
 
     //virtual const char * queryRecordECL() = 0;
-    LinkedHqlExpr serializedRecord = record;
-    unsigned numPayload = numPayloadFields(expr);
-    if (numPayload)
-        serializedRecord.setown(notePayloadFields(serializedRecord, numPayload));
-    serializedRecord.setown(getSerializedForm(serializedRecord, diskAtom));
     buildRecordEcl(instance->createctx, serializedRecord, "queryRecordECL");
 
     bool hasFilePosition = getBoolAttribute(expr, filepositionAtom, true);
@@ -10904,6 +11069,8 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
     IHqlExpression * dataset  = expr->queryChild(0);
     IHqlExpression * rawFilename = queryRealChild(expr, 1);
 
+    bool useGenericReadWrites = options.genericDiskReadWrites;
+
     if (dataset->isDictionary())
     {
         //OUTPUT(dictionary,,'filename') should never be generated - it should go via a dataset
@@ -10914,43 +11081,66 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
         return doBuildActivityOutputWorkunit(ctx, expr, isRoot);
 
     OwnedHqlExpr filename = foldHqlExpression(rawFilename);
-    IHqlExpression * program  = queryRealChild(expr, 2);
-    IHqlExpression * csvAttr = expr->queryAttribute(csvAtom);
-    bool isJson = false;
-    IHqlExpression * xmlAttr = expr->queryAttribute(xmlAtom);
-    if (!xmlAttr)
+
+    IHqlExpression * fileTypeOptionsExpr  = queryRealChild(expr, 2); // PIPE() or TYPE() on output
+    StringBuffer genericFileTypeFormat;
+    IHqlExpression * pipe = NULL;
+    if (fileTypeOptionsExpr)
     {
-        xmlAttr = expr->queryAttribute(jsonAtom);
-        if (xmlAttr)
-            isJson=true;
+        if (fileTypeOptionsExpr->getOperator() == no_filetype)
+        {
+            // Force use of generic I/O if we're using file type plugins;
+            // assign the format based on the file type.
+            useGenericReadWrites = true;
+            IHqlExpression * fileType = queryAttributeChild(fileTypeOptionsExpr, fileTypeAtom, 0);
+            getStringValue(genericFileTypeFormat, fileType);
+            genericFileTypeFormat.toLowerCase();
+        }
+        else if (fileTypeOptionsExpr->getOperator() == no_pipe)
+        {
+            pipe = fileTypeOptionsExpr->queryChild(0);
+            useGenericReadWrites = false;
+        }
     }
+    else if (filename->getOperator() == no_pipe)
+    {
+        pipe = filename->queryChild(0);
+        useGenericReadWrites = false;
+    }
+
     LinkedHqlExpr expireAttr = expr->queryAttribute(expireAtom);
     IHqlExpression * seq = querySequence(expr);
-
-    IHqlExpression *pipe = NULL;
-    if (program)
-    {
-        if (program->getOperator()==no_pipe)
-            pipe = program->queryChild(0);
-    }
-    else if (filename->getOperator()==no_pipe)
-        pipe = filename->queryChild(0);
-
-    if (pipe && expr->hasAttribute(_disallowed_Atom))
-        throwError(HQLERR_PipeNotAllowed);
 
     Owned<ABoundActivity> boundDataset = buildCachedActivity(ctx, dataset);
     ThorActivityKind kind = TAKdiskwrite;
     const char * activityArgName = "DiskWrite";
+    SummaryType summaryType = SummaryType::WriteFile;
+
+    IHqlExpression * csvAttr = expr->queryAttribute(csvAtom);
+    bool isJson = false;
+    IHqlExpression * xmlAttr = expr->queryAttribute(xmlAtom);
+
+    if (!xmlAttr)
+    {
+        xmlAttr = expr->queryAttribute(jsonAtom);
+        if (xmlAttr)
+            isJson = true;
+    }
+
+    if (pipe && expr->hasAttribute(_disallowed_Atom))
+        throwError(HQLERR_PipeNotAllowed);
+
     if (expr->getOperator() == no_spill)
     {
         kind = TAKspill;
         activityArgName = "Spill";
+        summaryType = SummaryType::SpillFile;
     }
     else if (pipe)
     {
         kind = TAKpipewrite;
         activityArgName = "PipeWrite";
+        summaryType = SummaryType::None;
     }
     else if (csvAttr)
     {
@@ -10959,11 +11149,22 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
     }
     else if (xmlAttr)
     {
-        kind = (isJson) ? TAKjsonwrite : TAKxmlwrite;
         activityArgName = "XmlWrite";
+        if (isJson)
+            kind = TAKjsonwrite;
+        else
+            kind = TAKxmlwrite;
     }
     else if (expr->hasAttribute(_spill_Atom))
+    {
         kind = TAKspillwrite;
+        summaryType = SummaryType::SpillFile;
+    }
+
+    if (expr->hasAttribute(jobTempAtom))
+        summaryType = SummaryType::JobTemp;
+    else if (expr->hasAttribute(_workflowPersist_Atom))
+        summaryType = SummaryType::PersistFile;
 
     bool useImplementationClass = options.minimizeActivityClasses && targetRoxie() && expr->hasAttribute(_spill_Atom);
     Owned<ActivityInstance> instance = new ActivityInstance(*this, ctx, kind, expr, activityArgName);
@@ -10997,6 +11198,9 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
 
     buildInstancePrefix(instance);
 
+    if (!genericFileTypeFormat.isEmpty())
+        instance->startctx.addQuotedF("virtual const char * queryFormat() { return \"%s\"; }", genericFileTypeFormat.str());
+
     noteResultDefined(ctx, instance, seq, filename, isRoot);
 
     //virtual const char * getFileName() { return "x.d00"; }
@@ -11008,7 +11212,9 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
         if (targetRoxie() && expr->hasAttribute(jobTempAtom))
             graphNode = instance->graphNode;
 
-        GlobalFileTracker * tracker = new GlobalFileTracker(filename, graphNode);
+        //Spills must be read from the graph they are written in - save the current graph to check consistency
+        unsigned requiredGraph = expr->hasAttribute(_spill_Atom) ? graphSeqNumber : 0;
+        GlobalFileTracker * tracker = new GlobalFileTracker(filename, graphNode, requiredGraph);
         globalFiles.append(*tracker);
         OwnedHqlExpr callback = createUnknown(no_callback, LINK(unsignedType), globalAtom, LINK(tracker));
         tempCount.setown(createTranslated(callback));
@@ -11061,7 +11267,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
             if (filename && filename->getOperator() != no_pipe)
             {
                 bool isDynamic = expr->hasAttribute(resultAtom) || hasDynamicFilename(expr);
-                buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", filename, isDynamic);
+                buildFilenameFunction(*instance, instance->startctx, WaFilename, "getFileName", filename, isDynamic, summaryType, false, expr->hasAttribute(_signed_Atom));
                 if (!filename->isConstant())
                     constFilename = false;
             }
@@ -11097,12 +11303,16 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
             if (hasDynamicFilename(expr)) flags.append("|TDXdynamicfilename");
             if (expr->hasAttribute(jobTempAtom)) flags.append("|TDXjobtemp");
             if (updateAttr) flags.append("|TDWupdatecrc");
+            if (useGenericReadWrites) flags.append("|TDXgeneric");
             if (updateAttr && !updateAttr->queryAttribute(alwaysAtom)) flags.append("|TDWupdate");
             if (expires) flags.append("|TDWexpires");
             if (expr->hasAttribute(restrictedAtom)) flags.append("|TDWrestricted");
 
             if (flags.length())
                 doBuildUnsignedFunction(instance->classctx, "getFlags", flags.str()+1);
+
+            if (fileTypeOptionsExpr)
+                buildFormatOptionsFunction(instance->createctx, fileTypeOptionsExpr);
 
             //virtual const char * queryRecordECL() = 0;
             //Ensure the ECL for the record reflects its serialized form, not the internal form
@@ -11151,11 +11361,14 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
         }
         buildClusterHelper(instance->startctx, expr);
 
-        //Both csv write and pipe with csv/xml format
-        if (csvAttr)
-            buildCsvWriteMembers(instance, outputDs, csvAttr);
-        if (xmlAttr)
-            buildXmlWriteMembers(instance, outputDs, xmlAttr);
+        if (!useGenericReadWrites)
+        {
+            //Both csv write and pipe with csv/xml format
+            if (csvAttr)
+                buildCsvWriteMembers(instance, outputDs, csvAttr);
+            if (xmlAttr)
+                buildXmlWriteMembers(instance, outputDs, xmlAttr);
+        }
 
         buildEncryptHelper(instance->startctx, expr->queryAttribute(encryptAtom));
     }
@@ -11163,7 +11376,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivityOutput(BuildCtx & ctx, IHqlExp
     {
         assertex(tempCount.get() && !hasDynamic(expr));
         instance->addConstructorParameter(tempCount);
-        addFilenameConstructorParameter(*instance, WaFilename, filename);
+        addFilenameConstructorParameter(*instance, WaFilename, filename, summaryType);
     }
 
     instance->addSignedAttribute(expr->queryAttribute(_signed_Atom));
@@ -18050,6 +18263,7 @@ ABoundActivity * HqlCppTranslator::doBuildActivitySOAP(BuildCtx & ctx, IHqlExpre
         StringBuffer serviceName;
         getUTF8Value(serviceName, service);
         instance->addAttribute(WaServiceName, serviceName);
+        noteSummaryInfo(serviceName, SummaryType::Service, false, false);
     }
 
     enum class ReqFormat { NONE, XML, JSON, FORM_ENCODED };
@@ -18470,9 +18684,9 @@ ABoundActivity * HqlCppTranslator::doBuildActivityHTTP(BuildCtx & ctx, IHqlExpre
 
 //---------------------------------------------------------------------------
 
-IHqlExpression * HqlCppTranslator::doBuildRegexCompileInstance(BuildCtx & ctx, IHqlExpression * pattern, bool isUnicode, bool isCaseSensitive)
+IHqlExpression * HqlCppTranslator::doBuildRegexCompileInstance(BuildCtx & ctx, IHqlExpression * pattern, ITypeInfo * stringType, bool isCaseSensitive)
 {
-    OwnedHqlExpr searchKey = createAttribute(_regexInstance_Atom, LINK(pattern), createConstant(isUnicode), createConstant(isCaseSensitive));
+    OwnedHqlExpr searchKey = createAttribute(_regexInstance_Atom, LINK(pattern), createConstant(stringType->queryTypeName()), createConstant(isCaseSensitive));
     HqlExprAssociation * match = ctx.queryMatchExpr(searchKey);
     if (match)
         return match->queryExpr();
@@ -18518,12 +18732,20 @@ IHqlExpression * HqlCppTranslator::doBuildRegexCompileInstance(BuildCtx & ctx, I
 
     StringBuffer tempName;
     getUniqueId(tempName.append("regex"));
-    ITypeInfo * type = makeClassType(isUnicode ? "rtlCompiledUStrRegex" : "rtlCompiledStrRegex");
+    ITypeInfo * type = nullptr;
+    if (isUTF8Type(stringType))
+        type = makeClassType("rtlCompiledU8StrRegex");
+    else if (isUnicodeType(stringType))
+        type = makeClassType("rtlCompiledUStrRegex");
+    else 
+        type = makeClassType("rtlCompiledStrRegex");
     OwnedHqlExpr regexInstance = createVariable(tempName.str(), type);
     if (!initCtx)
     {
         OwnedITypeInfo patternType;
-        if (isUnicode)
+        if (isUTF8Type(stringType))
+            patternType.setown(makeUtf8Type(UNKNOWN_LENGTH, nullptr));
+        else if (isUnicodeType(stringType))
             patternType.setown(makeVarUnicodeType(UNKNOWN_LENGTH, nullptr));
         else
             patternType.set(unknownVarStringType);
@@ -18551,7 +18773,13 @@ IHqlExpression * HqlCppTranslator::doBuildRegexCompileInstance(BuildCtx & ctx, I
         args.append(*LINK(regexInstance));
         args.append(*LINK(pattern));
         args.append(*createConstant(isCaseSensitive));
-        IIdAtom * func = isUnicode ? regexNewSetUStrPatternId : regexNewSetStrPatternId;
+        IIdAtom * func = nullptr;
+        if (isUTF8Type(stringType))
+            func = regexNewSetU8StrPatternId;
+        else if (isUnicodeType(stringType))
+            func = regexNewSetUStrPatternId;
+        else
+            func = regexNewSetStrPatternId;
         buildFunctionCall(*initCtx, func, args);
     }
     declareCtx->associateExpr(searchKey, regexInstance);
@@ -18566,10 +18794,16 @@ IHqlExpression * HqlCppTranslator::doBuildRegexFindInstance(BuildCtx & ctx, IHql
     if (match)
         return match->queryExpr();
 
-    bool isUnicode = isUnicodeType(search->queryType());
+    ITypeInfo * searchStringType = search->queryType();
     StringBuffer tempName;
     getUniqueId(tempName.append("fi"));
-    ITypeInfo * type = makeClassType(isUnicode ? "rtlUStrRegexFindInstance" : "rtlStrRegexFindInstance");
+    ITypeInfo * type = nullptr;
+    if (isUTF8Type(searchStringType))
+        type = makeClassType("rtlU8StrRegexFindInstance");
+    else if (isUnicodeType(searchStringType))
+        type = makeClassType("rtlUStrRegexFindInstance");
+    else 
+        type = makeClassType("rtlStrRegexFindInstance");
     OwnedHqlExpr regexInstance = createVariable(tempName.str(), type);
     ctx.addDeclare(regexInstance);
 
@@ -18580,9 +18814,15 @@ IHqlExpression * HqlCppTranslator::doBuildRegexFindInstance(BuildCtx & ctx, IHql
     args.append(*LINK(regexInstance));
     args.append(*createTranslated(castCompiled));
     args.append(*LINK(search));
-    if (!isUnicode)
+    if (!isUnicodeType(searchStringType))
         args.append(*createConstant(cloneSearch));
-    IIdAtom * func = isUnicode ? regexNewUStrFindId : regexNewStrFindId;
+    IIdAtom * func = nullptr;
+    if (isUTF8Type(searchStringType))
+        func = regexNewU8StrFindId;
+    else if (isUnicodeType(searchStringType))
+        func = regexNewUStrFindId;
+    else
+        func = regexNewStrFindId;
     buildFunctionCall(ctx, func, args);
     ctx.associateExpr(searchKey, regexInstance);
 
@@ -18603,21 +18843,61 @@ void HqlCppTranslator::doBuildNewRegexFindReplace(BuildCtx & ctx, const CHqlBoun
 
     IHqlExpression * pattern = expr->queryChild(0);
     IHqlExpression * search = expr->queryChild(1);
-    bool isUnicode = isUnicodeType(search->queryType());
-    IHqlExpression * compiled = doBuildRegexCompileInstance(ctx, pattern, isUnicode, !expr->hasAttribute(noCaseAtom));
+    ITypeInfo * searchStringType = search->queryType();
+    IHqlExpression * compiled = doBuildRegexCompileInstance(ctx, pattern, searchStringType, !expr->hasAttribute(noCaseAtom));
 
     // Because the search instance is created locally, the search parameter is always going to be valid
     // as long as the find instance.  Only exception could be if call created a temporary class instance.
     if (expr->getOperator() == no_regex_replace)
     {
-        HqlExprArray args;
-        args.append(*LINK(compiled));
-        args.append(*LINK(search));
-        args.append(*LINK(expr->queryChild(2)));
-        IIdAtom * func = isUnicode ? regexNewUStrReplaceXId : regexNewStrReplaceXId;
-        OwnedHqlExpr call = bindFunctionCall(func, args);
-        //Need to associate???
-        buildExprOrAssign(ctx, target, call, bound);
+        // If the target is a preallocated fixed-length buffer and the
+        // datatype matches the result expression datatype, we can call an optimized replace function
+        if (target && target->isFixedSize() && target->queryType()->getTypeCode() == expr->queryType()->getTypeCode())
+        {
+            // We need to build our arguments manually because we need to
+            // pass the size of the output buffer (the target) as an argument
+            IHqlExpression * targetVar = target->expr;
+            unsigned targetSize = target->queryType()->getStringLen();
+
+            CHqlBoundExpr searchExpr, replaceExpr;
+            buildCachedExpr(ctx, search, searchExpr);
+            buildCachedExpr(ctx, expr->queryChild(2), replaceExpr);
+
+            HqlExprArray args;
+            args.append(*LINK(compiled)); // instance on which method is called
+            args.append(*getSizetConstant(targetSize)); // size of the output buffer in code units
+            args.append(*getElementPointer(targetVar)); // pointer to the output buffer
+            args.append(*getBoundLength(searchExpr)); // length of regex expression, in characters
+            args.append(*LINK(searchExpr.expr)); // pointer to regex expression
+            args.append(*getBoundLength(replaceExpr)); // length of replacement expression, in characters
+            args.append(*LINK(replaceExpr.expr)); // pointer to replacement expression
+
+            IIdAtom * func = nullptr;
+            if (isUTF8Type(searchStringType))
+                func = regexNewU8StrReplaceFixedId;
+            else if (isUnicodeType(searchStringType))
+                func = regexNewUStrReplaceFixedId;
+            else
+                func = regexNewStrReplaceFixedId;
+            callProcedure(ctx, func, args);
+        }
+        else
+        {
+            HqlExprArray args;
+            args.append(*LINK(compiled));
+            args.append(*LINK(search));
+            args.append(*LINK(expr->queryChild(2)));
+            IIdAtom * func = nullptr;
+            if (isUTF8Type(searchStringType))
+                func = regexNewU8StrReplaceXId;
+            else if (isUnicodeType(searchStringType))
+                func = regexNewUStrReplaceXId;
+            else
+                func = regexNewStrReplaceXId;
+            OwnedHqlExpr call = bindFunctionCall(func, args);
+            //Need to associate???
+            buildExprOrAssign(ctx, target, call, bound);
+        }
     }
     else
     {
@@ -18627,18 +18907,55 @@ void HqlCppTranslator::doBuildNewRegexFindReplace(BuildCtx & ctx, const CHqlBoun
         {
             HqlExprArray args;
             args.append(*LINK(findInstance));
-            IIdAtom * func= isUnicode ? regexNewUStrFoundId : regexNewStrFoundId;
+            IIdAtom * func = nullptr;
+            if (isUTF8Type(searchStringType))
+                func = regexNewU8StrFoundId;
+            else if (isUnicodeType(searchStringType))
+                func = regexNewUStrFoundId;
+            else
+                func = regexNewStrFoundId;
             OwnedHqlExpr call = bindFunctionCall(func, args);
             buildExprOrAssign(ctx, target, call, bound);
         }
         else
         {
-            HqlExprArray args;
-            args.append(*LINK(findInstance));
-            args.append(*LINK(expr->queryChild(2)));
-            IIdAtom * func= isUnicode ? regexNewUStrFoundXId : regexNewStrFoundXId;
-            OwnedHqlExpr call = bindFunctionCall(func, args);
-            buildExprOrAssign(ctx, target, call, bound);
+            if (target && target->isFixedSize() && target->queryType()->getTypeCode() == expr->queryType()->getTypeCode())
+            {
+                // We need to build our arguments manually because we need to
+                // pass the size of the output buffer (the target) as an argument
+                IHqlExpression * targetVar = target->expr;
+                unsigned targetSize = target->queryType()->getStringLen();
+
+                HqlExprArray args;
+                args.append(*LINK(findInstance)); // instance on which method is called
+                args.append(*getSizetConstant(targetSize)); // size of the output buffer in code units
+                args.append(*getElementPointer(targetVar)); // pointer to the output buffer
+                args.append(*LINK(expr->queryChild(2))); // capture group to find and return
+
+                IIdAtom * func = nullptr;
+                if (isUTF8Type(searchStringType))
+                    func = regexNewU8StrFoundXFixedId;
+                else if (isUnicodeType(searchStringType))
+                    func = regexNewUStrFoundXFixedId;
+                else
+                    func = regexNewStrFoundXFixedId;
+                callProcedure(ctx, func, args);
+            }
+            else
+            {
+                HqlExprArray args;
+                args.append(*LINK(findInstance));
+                args.append(*LINK(expr->queryChild(2)));
+                IIdAtom * func = nullptr;
+                if (isUTF8Type(searchStringType))
+                    func = regexNewU8StrFoundXId;
+                else if (isUnicodeType(searchStringType))
+                    func = regexNewUStrFoundXId;
+                else
+                    func = regexNewStrFoundXId;
+                OwnedHqlExpr call = bindFunctionCall(func, args);
+                buildExprOrAssign(ctx, target, call, bound);
+            }
         }
     }
 }
@@ -18665,13 +18982,20 @@ void HqlCppTranslator::doBuildExprRegexFindSet(BuildCtx & ctx, IHqlExpression * 
 
     IHqlExpression * pattern = expr->queryChild(0);
     IHqlExpression * search = expr->queryChild(1);
-    bool isUnicode = isUnicodeType(search->queryType());
-    IHqlExpression * compiled = doBuildRegexCompileInstance(ctx, pattern, isUnicode, !expr->hasAttribute(noCaseAtom));
+    ITypeInfo * searchStringType = search->queryType();
+    IHqlExpression * compiled = doBuildRegexCompileInstance(ctx, pattern, searchStringType, !expr->hasAttribute(noCaseAtom));
 
     HqlExprArray args;
     args.append(*LINK(compiled));
     args.append(*LINK(search));
-    IIdAtom * func = isUnicode ? regexUStrMatchSetId : regexMatchSetId;
+    IIdAtom * func = nullptr;
+    if (isUTF8Type(searchStringType))
+        func = regexU8StrMatchSetId;
+    else if (isUnicodeType(searchStringType))
+        func = regexUStrMatchSetId;
+    else
+        func = regexMatchSetId;
+
     OwnedHqlExpr call = bindFunctionCall(func, args);
     buildExprOrAssign(ctx, NULL, call, &bound);
     //REGEXFINDSET() can never return ALL - so explicitly clear it in the result.
@@ -18681,7 +19005,7 @@ void HqlCppTranslator::doBuildExprRegexFindSet(BuildCtx & ctx, IHqlExpression * 
 
 //---------------------------------------------------------------------------
 
-void HqlCppTranslator::buildStartTimer(BuildCtx & ctx, CHqlBoundExpr & boundTimer, CHqlBoundExpr & boundStart, const char * name)
+void HqlCppTranslator::buildTimerBase(BuildCtx & ctx, CHqlBoundExpr & boundTimer, const char * name, int statsOption)
 {
     BuildCtx * initCtx = &ctx;
     BuildCtx * declareCtx = &ctx;
@@ -18695,7 +19019,16 @@ void HqlCppTranslator::buildStartTimer(BuildCtx & ctx, CHqlBoundExpr & boundTime
     HqlExprArray registerArgs;
     registerArgs.append(*getSizetConstant(activityId));
     registerArgs.append(*createConstant(name));
-    OwnedHqlExpr call = bindFunctionCall(registerTimerId, registerArgs);
+    OwnedHqlExpr call;
+    if (statsOption == 0) // enum ThorStatOption.ThorStatDefault
+    {
+        call.setown(bindFunctionCall(registerTimerId, registerArgs));
+    }
+    else
+    {
+        registerArgs.append(*createConstant(statsOption));
+        call.setown(bindFunctionCall(registerStatsTimerId, registerArgs));
+    }
 
     if (!declareCtx->getMatchExpr(call, boundTimer))
     {
@@ -18705,6 +19038,16 @@ void HqlCppTranslator::buildStartTimer(BuildCtx & ctx, CHqlBoundExpr & boundTime
         declareCtx->associateExpr(call, boundTimer);
         initCtx->addAssign(boundTimer.expr, call);
     }
+}
+
+void HqlCppTranslator::buildHelperTimer(BuildCtx & ctx, CHqlBoundExpr & boundTimer, const char * name, int statsOption)
+{
+    buildTimerBase(ctx, boundTimer, name, statsOption);
+}
+
+void HqlCppTranslator::buildStartTimer(BuildCtx & ctx, CHqlBoundExpr & boundTimer, CHqlBoundExpr & boundStart, const char * name)
+{
+    buildTimerBase(ctx, boundTimer, name, 0);
 
     HqlExprArray nowArgs;
     nowArgs.append(*boundTimer.getTranslatedExpr());

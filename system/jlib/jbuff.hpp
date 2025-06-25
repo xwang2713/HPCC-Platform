@@ -41,6 +41,7 @@ public:
     void *              ensure(size_t _len);
     void *              reallocate(size_t _len);
     inline const void * get() const         { return ptr; }
+    inline byte         getByte(size_t offset) const { return ((const byte *)ptr)[offset]; }
     inline size_t       length() const      { return len; }
     inline void *       mem() const         { return ptr; }
     void                set(size_t _len, const void * _ptr);
@@ -177,6 +178,7 @@ public:
     const byte *    readDirect(size32_t len);                                       // for efficiency
     MemoryBuffer &  readPacked(unsigned & value);
     MemoryBuffer &  readPacked(unsigned __int64 & value);
+    MemoryBuffer &  readOpt(StringAttr & value);                // read but set to null if blank
 
     inline MemoryBuffer &  readMemSize(memsize_t & value) { __int64 val; read(val); value = (memsize_t)val; assertex(val == (__int64) value); return *this; }
     MemoryBuffer &  skip(unsigned len);
@@ -194,6 +196,7 @@ public:
 
     inline size32_t capacity() { return (maxLen - curLen); }
     void *          ensureCapacity (unsigned max);
+    void *          ensureCapacity(size_t max, size_t & got);
     inline size32_t length() const { return curLen; }
     inline size32_t remaining() const { return curLen - readPos; }
 
@@ -214,6 +217,7 @@ public:
     inline const char * toByteArray() const { return curLen ? buffer : nullptr; }
     inline const byte * bytes() const { return curLen ? (const byte *)buffer : nullptr; }
 
+    void            replace(size_t offset, size_t len, const void * value);
 
 private:
     MemoryBuffer &  read(unsigned long & value);    // unimplemented

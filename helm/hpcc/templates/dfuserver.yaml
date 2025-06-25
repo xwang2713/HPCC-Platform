@@ -41,13 +41,14 @@ data:
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
 {{- $secretsCategories := list "system" "storage" -}}
 {{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories "includeCategories" (list "lz" "remote" "data" "debug") "env" $env }}
+{{- $_ := set $commonCtx "lifeCycleCtx" (dict "containers" list) -}}
 {{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.dfuServerConfigMap" "component" "dfuserver" "excludeKeys" "global")) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .name | quote }}
 spec:
-  replicas: 1
+  replicas: {{ .replicas | default 1 }}
   selector:
     matchLabels:
       run: {{ .name | quote }}
@@ -57,7 +58,7 @@ spec:
         {{- include "hpcc.addStandardLabels" (dict "root" $ "component" "dfuserver" "name" "dfuserver" "instance" .name) | indent 8 }}
         run: {{ .name | quote }}
         accessDali: "yes"
-        helmVersion: 9.7.0-trunk0
+        {{- include "hpcc.generateHelmVersion" . | nindent 8 }}
 {{- if hasKey . "labels" }}
 {{ toYaml .labels | indent 8 }}
 {{- end }}
@@ -67,36 +68,31 @@ spec:
     spec:
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" .name "target" .name "type" "dfuserver") | indent 6 }}
       serviceAccountName: "hpcc-default"
+      terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds | default 600 }}
       initContainers:
       {{- include "hpcc.createConfigInitContainers" $commonCtx | indent 6 }}
       {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ .name | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ {{ include "hpcc.componentCommand" (dict "me" . "root" $ "process" "dfuserver") }} ] 
-        args: [ {{- include "hpcc.componentStartArgs" (dict "me" . "root" $ "process" "dfuserver") | nindent 16 }}
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" (dict "root" $ "component" "DFU Server" "optional" false) }}
-          ]
+{{- include "hpcc.addCommandAndLifecycle" ($commonCtx | merge (dict "process" "dfuserver" "component" "DFU Server" "optional" false)) | nindent 8 }}
         env:
-{{ include "hpcc.mergeEnvironments" $env | indent 8 -}}
+{{ include "hpcc.mergeEnvironments" (dict "env" $env "defaultArenas" 1) | indent 8 -}}
         - name: "SENTINEL"
           value: "/tmp/{{ .name }}.sentinel"
 {{ include "hpcc.addSentinelProbes" . | indent 8 }}
 {{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
-{{- $omitResources := hasKey $.Values.global "omitResources" | ternary $.Values.global.omitResources $.Values.global.privileged }}
-{{- if not $omitResources }}
-{{- include "hpcc.addResources" (dict "me" .resources) | indent 8 }}
-{{- end }}
+{{- include "hpcc.addResources" (dict "me" .resources "root" $) | indent 8 }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
 {{- include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
-{{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
+{{ include "hpcc.addEphemeralVolumeMounts" . | indent 8 }}
 {{ include "hpcc.addCertificateVolumeMount" (dict "root" $ "name" .name "component" "dfuserver" "external" false) | indent 8 }}
 {{- include "hpcc.addSecretVolumeMounts" $commonCtx | nindent 8 }}
 {{ include "hpcc.addVaultClientCertificateVolumeMounts" $commonCtx | indent 8 }}
+{{- include "hpcc.addPostRunContainer" $commonCtx | nindent 6 }}
       volumes:
-{{ include "hpcc.addConfigMapVolume" . | indent 6 }}
+{{ include "hpcc.addEphemeralVolumes" . | indent 6 }}
 {{- include "hpcc.addVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addCertificateVolume" (dict "root" $ "name" .name "component" "dfuserver" "external" false) | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}

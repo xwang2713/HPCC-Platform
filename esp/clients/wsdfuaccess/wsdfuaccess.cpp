@@ -464,6 +464,11 @@ IPropertyTree *createDFUFileMetaInfo(const char *fileName, IFileDescriptor *file
     Owned<IPropertyTree> metaInfo = createPTree();
 
     metaInfo->setProp("logicalFilename", fileName);
+
+    // "group" is for info. only. dafilesrv's may use it to show context in error messages.
+    const char *fileGroup = fileDesc->queryProperties().queryProp("@group");
+    metaInfo->setProp("group", nullText(fileGroup)); // NB: should never be missing
+
     if (!isEmptyString(requestId))
         metaInfo->setProp("requestId", requestId);
     metaInfo->setProp("accessType", accessType);
@@ -608,6 +613,9 @@ class DFUAccessTests : public CppUnit::TestFixture
 protected:
     void testStartServer()
     {
+        StringBuffer sysTmpDir;
+        setBaseDirectory(getSystemTempDir(sysTmpDir).str(), 0, DFD_OSdefault);
+
         Owned<ISocket> socket;
 
         unsigned endPort = MP_END_PORT;
@@ -653,7 +661,7 @@ protected:
             Owned<IRemoteFileServer> server;
             Linked<ISocket> socket;
         public:
-            CServerThread(IRemoteFileServer *_server, ISocket *_socket) : server(_server), socket(_socket), threaded("CServerThread")
+            CServerThread(IRemoteFileServer *_server, ISocket *_socket) : threaded("CServerThread"), server(_server), socket(_socket)
             {
                 threaded.init(this, false);
             }

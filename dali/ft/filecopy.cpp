@@ -39,8 +39,12 @@
 #include "daftmc.hpp"
 #include "dasds.hpp"
 #include "jlog.hpp"
-#include "dalienv.hpp"
 #include "ftbase.ipp"
+#include "dautils.hpp"
+
+#ifndef _CONTAINERIZED
+#include "dalienv.hpp"
+#endif
 
 #ifdef _CONTAINERIZED
 //Temporary see HPCC-25822
@@ -99,6 +103,7 @@ inline void setCanAccessDirectly(RemoteFilename & file)
 #define ANumask             "@umask"
 #define ANuseFtSlave        "@useFtSlave"
 #define ANsprayServiceName  "@sprayServiceName"
+#define ANkeyCompression    "@keyCompression"
 
 #define PNpartition         "partition"
 #define PNprogress          "progress"
@@ -119,7 +124,11 @@ const unsigned sdsUpdateFrequency = 20000;          // time between updates in m
 
 bool TargetLocation::canPull()
 {
+#ifdef _CONTAINERIZED
+    return true;
+#else
     return queryOS(filename.queryIP()) != MachineOsSolaris;
+#endif
 }
 
 //----------------------------------------------------------------------------
@@ -137,7 +146,11 @@ FilePartInfo::FilePartInfo(unsigned _partNum) : partNum(_partNum)
 
 bool FilePartInfo::canPush()
 {
+#ifdef _CONTAINERIZED
+    return true;
+#else
     return queryOS(filename.queryIP()) != MachineOsSolaris;
+#endif
 }
 
 
@@ -334,12 +347,14 @@ void FileTransferThread::prepareCmd(MemoryBuffer &msg, unsigned version)
     ForEachItemIn(i2, progress)
         progress.item(i2).serializeExtra(msg, 1);
 
-    //NB: Any extra data must be appended at the end...
-
     msg.append(sprayer.fileUmask);
 
     ForEachItemIn(i3, progress)
         progress.item(i3).serializeExtra(msg, 2);
+
+    msg.append(sprayer.keyCompression);
+
+    //****** Any extra data must be appended at the end above this line ********
 }
 
 bool FileTransferThread::launchFtSlaveCmd()
@@ -423,7 +438,6 @@ bool FileTransferThread::launchFtSlaveCmd()
             newProgress.deserializeExtra(msg, 2);
             sprayer.updateProgress(newProgress);
 
-            LOG(MCdebugProgress(10000), "Update %s: %d %" I64F "d->%" I64F "d", url.str(), newProgress.whichPartition, newProgress.inputLength, newProgress.outputLength);
             if (isAborting())
             {
                 if (!sendRemoteAbort(socket))
@@ -433,7 +447,8 @@ bool FileTransferThread::launchFtSlaveCmd()
         msg.read(ok);
         setErrorOwn(deserializeException(msg));
 
-        LOG(MCdebugProgressDetail, "Finished generating part %s [%p] ok(%d) error(%d)", url.str(), this, (int)ok, (int)(error!=NULL));
+        if (doTrace(traceSprayDetails, traceDetailed))
+            LOG(MCdebugProgressDetail, "Finished generating part %s [%p] ok(%d) error(%d)", url.str(), this, (int)ok, (int)(error!=NULL));
 
         // if communicating with ftslave, the process has a final ack wait
         if (sprayer.useFtSlave)
@@ -462,7 +477,9 @@ bool FileTransferThread::launchFtSlaveCmd()
 
 bool FileTransferThread::performTransfer()
 {
-    LOG(MCdebugProgress, "Transferring part %s [%p]", url.str(), this);
+    if (doTrace(traceSprayDetails))
+        LOG(MCdebugProgress, "Transferring part %s [%p]", url.str(), this);
+
     started = true;
     allDone = true;
     if (sprayer.isSafeMode || action == FTactionpush)
@@ -492,19 +509,25 @@ bool FileTransferThread::performTransfer()
 
     if (allDone)
     {
-        LOG(MCdebugInfo, "Creation of part %s already completed", url.str());
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Creation of part %s already completed", url.str());
         return true;
     }
 
     if (partition.empty())
     {
-        LOG(MCdebugInfo, "No elements to transfer for this slave");
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "No elements to transfer for this slave");
         return true;
     }
 
-    LOG(MCdebugProgressDetail, "Start generate part %s [%p]", url.str(), this);
+    if (doTrace(traceSprayDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Start generate part %s [%p]", url.str(), this);
+
     bool ok = launchFtSlaveCmd();
-    LOG(MCdebugProgressDetail, "Stopped generate part %s [%p]", url.str(), this);
+
+    if (doTrace(traceSprayDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Stopped generate part %s [%p]", url.str(), this);
 
     allDone = true;
     return ok;
@@ -689,13 +712,12 @@ FileSprayer::FileSprayer(IPropertyTree * _options, IPropertyTree * _progress, IR
     compressOutput = options->getPropBool(ANcompress);
     copyCompressed = false;
     transferBufferSize = options->getPropInt(ANtransferBufferSize);
-    if (transferBufferSize)
-        LOG(MCdebugProgressDetail, "Using transfer buffer size %d", transferBufferSize);
-    else // zero is default
+    if (transferBufferSize == 0)
         transferBufferSize = DEFAULT_STD_BUFFER_SIZE;
     progressDone = false;
     encryptKey.set(options->queryProp(ANencryptKey));
     decryptKey.set(options->queryProp(ANdecryptKey));
+    keyCompression.set(options->queryProp(ANkeyCompression));
     useFtSlave = options->getPropBool(ANuseFtSlave);
     sprayServiceName.set(options->queryProp(ANsprayServiceName));
 
@@ -708,7 +730,7 @@ FileSprayer::FileSprayer(IPropertyTree * _options, IPropertyTree * _progress, IR
         fileUmask = (int)strtol(umaskStr, &eptr, 8);
         if (errno || *eptr != '\0')
         {
-            LOG(MCdebugInfo, "Invalid umask value <%s> ignored", umaskStr);
+            LOG(MCuserWarning, "Invalid umask value <%s> ignored", umaskStr);
             fileUmask = -1;
         }
         else
@@ -761,7 +783,6 @@ void FileSprayer::addEmptyFilesToPartition(unsigned from, unsigned to)
 {
     for (unsigned i = from; i < to ; i++)
     {
-        LOG(MCdebugProgressDetail, "Insert a dummy entry for target %d", i);
         PartitionPoint & next = createLiteral(0, NULL, 0);
         next.whichOutput = i;
         partition.append(next);
@@ -789,7 +810,8 @@ void FileSprayer::afterTransfer()
 {
     if (calcInputCRC())
     {
-        LOG(MCdebugProgressDetail, "Checking input CRCs");
+        if (doTrace(traceSprayDetails, traceDetailed))
+            LOG(MCdebugProgressDetail, "Checking input CRCs");
         CRC32Merger partCRC;
 
         unsigned startCurSource = 0;
@@ -800,7 +822,8 @@ void FileSprayer::afterTransfer()
 
             if (!curProgress.hasInputCRC)
             {
-                LOG(MCdebugProgressDetail, "Could not calculate input CRCs - cannot check");
+                if (doTrace(traceSprayDetails, traceDetailed))
+                    LOG(MCdebugProgressDetail, "Could not calculate input CRCs - cannot check");
                 break;
             }
             partCRC.addChildCRC(curProgress.inputLength, curProgress.inputCRC, false);
@@ -886,7 +909,7 @@ void FileSprayer::afterTransfer()
     }
 }
 
-bool FileSprayer::allowSplit()
+bool FileSprayer::allowSplit() const
 {
     return !(options->getPropBool(ANnosplit) || options->getPropBool(ANnosplit2) || options->queryProp(ANprefix));
 }
@@ -1015,11 +1038,15 @@ void FileSprayer::beforeTransfer()
                 if (headerSize)
                     io->write(0, headerSize, getHeaderText(tgtFormat.type));
 
-                if ((lastOutputOffset != 0)&&!compressOutput)
+                if (remote.queryFileSystemProperties().preExtendOutput)
                 {
-                    char null = 0;
-                    io->write(lastOutputOffset-sizeof(null), sizeof(null), &null);
+                    if ((lastOutputOffset != 0)&&!compressOutput)
+                    {
+                        char null = 0;
+                        io->write(lastOutputOffset-sizeof(null), sizeof(null), &null);
+                    }
                 }
+                io->close();
             }
         }
     }
@@ -1039,13 +1066,49 @@ void FileSprayer::beforeTransfer()
             if (machine->getOS() == MachineOsW2K)
             {
                 throttleNicSpeed = machine->getNicSpeedMbitSec();
-                LOG(MCdebugInfo, "Throttle target speed to %dMbit/sec", throttleNicSpeed);
+                if (doTrace(traceSprayDetails))
+                    LOG(MCdebugInfo, "Throttle target speed to %dMbit/sec", throttleNicSpeed);
             }
         }
     }
 #endif
 }
 
+void FileSprayer::saveTransferOptions()
+{
+    //Update that workunit with any options that might be interesting in a postmortem
+    if (progressReport)
+    {
+        OwnedPTree derivedOptions = createPTree("Options");
+        if (usePushWholeOperation())
+            derivedOptions->setProp("@mode", "pushWhole");
+        else if (usePullOperation())
+            derivedOptions->setProp("@mode", "pull");
+        else
+            derivedOptions->setProp("@mode", "push");
+
+        derivedOptions->setPropBool("@calcInputCRC", calcInputCRC());
+        derivedOptions->setPropBool("@calcCRC", calcCRC());
+        derivedOptions->setPropInt64("@numConcurrentTransfers", numConcurrentTransfers);
+        derivedOptions->setPropInt64("@slaveUpdateFrequency", slaveUpdateFrequency);
+        derivedOptions->setPropBool("@replicate", replicate);
+        derivedOptions->setPropBool("@mirroring", mirroring);
+        derivedOptions->setPropBool("@isSafeMode", isSafeMode);
+        derivedOptions->setPropInt64("@throttleNicSpeed", throttleNicSpeed);
+        derivedOptions->setPropBool("@compressedInput", compressedInput);
+        derivedOptions->setPropBool("@compressOutput", compressOutput);
+        derivedOptions->setPropBool("@copyCompressed", copyCompressed);
+        derivedOptions->setPropInt64("@transferBufferSize", transferBufferSize);
+        derivedOptions->setPropInt64("@fileUmask", fileUmask);
+
+        if (!encryptKey.isEmpty())
+            derivedOptions->setPropBool("@encrypt", true);
+        if (!decryptKey.isEmpty())
+            derivedOptions->setPropBool("@decrypt", true);
+
+        progressReport->setTransferOptions(derivedOptions);
+    }
+}
 
 bool FileSprayer::calcCRC()
 {
@@ -1058,7 +1121,7 @@ bool FileSprayer::calcInputCRC()
     {
         calcedInputCRC = true;
         cachedInputCRC = false;
-        if (options->getPropBool(ANcrcCheck, true) && !compressedInput)
+        if (options->getPropBool(ANcrcCheck, true) && !compressedInput && keyCompression.isEmpty())
         {
             ForEachItemIn(idx, sources)
             {
@@ -1080,7 +1143,8 @@ bool FileSprayer::calcInputCRC()
 
 void FileSprayer::calculateOne2OnePartition()
 {
-    LOG(MCdebugProgressDetail, "Setting up one2One partition");
+    if (doTrace(tracePartitionDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Setting up one2One partition");
     if (sources.ordinality() != targets.ordinality())
         throwError(DFTERR_ReplicateNumPartsDiffer);
     if (!srcFormat.equals(tgtFormat))
@@ -1095,7 +1159,8 @@ void FileSprayer::calculateOne2OnePartition()
         RemoteFilename curFilename;
         curFilename.set(cur.filename);
         setCanAccessDirectly(curFilename);
-        partition.append(*new PartitionPoint(idx, idx, cur.headerSize, copyCompressed?cur.psize:cur.size, copyCompressed?cur.psize:cur.size));  // outputoffset == 0
+        offset_t outputSize = keyCompression.isEmpty() ? (copyCompressed ? cur.psize : cur.size) : 0;
+        partition.append(*new PartitionPoint(idx, idx, cur.headerSize, copyCompressed?cur.psize:cur.size, outputSize));  // outputoffset == 0
         targets.item(idx).modifiedTime.set(cur.modifiedTime);
     }
 
@@ -1151,7 +1216,8 @@ void FileSprayer::calculateSplitPrefixPartition(const char * splitPrefix)
     if (!srcFormat.equals(tgtFormat))
        throwError(DFTERR_SplitPrefixSameFormat);
 
-    LOG(MCdebugProgressDetail, "Setting up split prefix partition");
+    if (doTrace(tracePartitionDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Setting up split prefix partition");
 
     Owned<TargetLocation> target = &targets.popGet();       // remove target, add lots of new ones
     RemoteFilename blobTarget;
@@ -1188,7 +1254,9 @@ void FileSprayer::calculateSplitPrefixPartition(const char * splitPrefix)
 
 void FileSprayer::calculateMany2OnePartition()
 {
-    LOG(MCdebugProgressDetail, "Setting up many2one partition");
+    if (doTrace(tracePartitionDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Setting up many2one partition");
+
     const char *partSeparator = srcFormat.getPartSeparatorString();
     offset_t partSeparatorLength = ( partSeparator == nullptr ? 0 : strlen(partSeparator));
     offset_t lastContentLength = 0;
@@ -1220,7 +1288,9 @@ void FileSprayer::calculateMany2OnePartition()
 
 void FileSprayer::calculateNoSplitPartition()
 {
-    LOG(MCdebugProgressDetail, "Setting up no split partition");
+    if (doTrace(tracePartitionDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Setting up no split partition");
+
     if (!usePullOperation() && !srcFormat.equals(tgtFormat))
         throwError(DFTERR_NoSplitPushChangeFormat);
 
@@ -1283,7 +1353,8 @@ void FileSprayer::calculateNoSplitPartition()
 
 void FileSprayer::calculateSprayPartition()
 {
-    LOG(MCdebugProgressDetail, "Calculating N:M partition");
+    if (doTrace(tracePartitionDetails, traceDetailed))
+        LOG(MCdebugProgressDetail, "Calculating N:M partition");
 
     bool calcOutput = needToCalcOutput();
     FormatPartitionerArray partitioners;
@@ -1345,7 +1416,8 @@ IFormatPartitioner * FileSprayer::createPartitioner(aindex_t index, bool calcOut
     StringBuffer remoteFilename;
     FilePartInfo & cur = sources.item(index);
     cur.filename.getRemotePath(remoteFilename.clear());
-    LOG(MCdebugInfoDetail, "Partition %d(%s)", index, remoteFilename.str());
+    if (doTrace(tracePartitionDetails, traceDetailed))
+        LOG(MCdebugInfoDetail, "Partition %d(%s)", index, remoteFilename.str());
 
     srcFormat.quotedTerminator = options->getPropBool("@quotedTerminator", true);
     const SocketEndpoint & ep = cur.filename.queryEndpoint();
@@ -1376,7 +1448,7 @@ void FileSprayer::examineCsvStructure()
         Owned<IFormatPartitioner> partitioner = createPartitioner(0, calcOutput, targets.ordinality());
         storeCsvRecordStructure(*partitioner);
     }
-    else
+    else if (doTrace(tracePartitionDetails, traceDetailed))
         LOG(MCdebugInfoDetail, "No source CSV file to examine.");
 }
 
@@ -1459,6 +1531,8 @@ void FileSprayer::checkFormats()
                 break;
             }
             break;
+        case FFTkey:
+            throwError(DFTERR_CannotConvertKeyFile);
         }
     }
     switch (srcType)
@@ -1469,10 +1543,16 @@ void FileSprayer::checkFormats()
                 srcFormat.maxRecordSize = srcFormat.maxRecordSize > DEFAULT_MAX_XML_RECORD_SIZE ? srcFormat.maxRecordSize : DEFAULT_MAX_XML_RECORD_SIZE;
             }
             break;
+        case FFTkey:
+            compressOutput = false; // compressOutput implies that the output is a compressed file
+            break;
 
         default:
             break;
     }
+
+    if (!keyCompression.isEmpty())
+        compressOutput = false; // compressOutput implies that the output is a compressed file
 }
 
 void FileSprayer::calibrateProgress()
@@ -1588,12 +1668,31 @@ void FileSprayer::commonUpSlaves()
             cur.whichSlave = 0;
     }
 
-    if (options->getPropBool(ANnocommon, true) || pushWhole)
+    if (pushWhole)
         return;
+
+    // noCommon is defaulted to on for non-containerized (revisit!)
+    bool noCommon = options->getPropBool(ANnocommon, !isContainerized());
+    if (noCommon)
+    {
+        if (!isContainerized())
+            return;
+        IWARNLOG("Ignoring noCommon option in containerized mode");
+    }
 
     //First work out which are the same slaves, and then map the partition.
     //Previously it was n^2 in partition, which is fine until you spray 100K files.
     unsigned numSlaves = pull ? targets.ordinality() : sources.ordinality();
+    bool commonByIp = !isContainerized();
+
+    offset_t totalSourceFileSize = 0;
+    offset_t threshold = (offset_t)0x8000 * numSlaves;
+    ForEachItemIn(i, sources)
+    {
+        const FilePartInfo & cur = sources.item(i);
+        totalSourceFileSize += copyCompressed ? cur.psize : cur.size;
+    }
+
     unsigned * slaveMapping = new unsigned [numSlaves];
     for (unsigned i = 0; i < numSlaves; i++)
         slaveMapping[i] = i;
@@ -1605,7 +1704,12 @@ void FileSprayer::commonUpSlaves()
             TargetLocation & cur = targets.item(i1);
             for (unsigned i2 = 0; i2 < i1; i2++)
             {
-                if (targets.item(i2).filename.queryIP().ipequals(cur.filename.queryIP()))
+                bool match = false;
+                if (commonByIp)
+                    match = targets.item(i2).filename.queryIP().ipequals(cur.filename.queryIP());
+                else if (!targetSupportsConcurrentWrite || totalSourceFileSize < threshold)
+                    match = targets.item(i2).filename.equals(cur.filename);
+                if (match)
                 {
                     slaveMapping[i1] = i2;
                     break;
@@ -1613,14 +1717,19 @@ void FileSprayer::commonUpSlaves()
             }
         }
     }
-    else
+    else // push
     {
         for (unsigned i1 = 1; i1 < numSlaves; i1++)
         {
             FilePartInfo & cur = sources.item(i1);
             for (unsigned i2 = 0; i2 < i1; i2++)
             {
-                if (sources.item(i2).filename.queryIP().ipequals(cur.filename.queryIP()))
+                bool match = false;
+                if (commonByIp) // match by IP
+                    match = sources.item(i2).filename.queryIP().ipequals(cur.filename.queryIP());
+                else if (totalSourceFileSize < threshold)
+                    match = sources.item(i2).filename.equals(cur.filename);
+                if (match)
                 {
                     slaveMapping[i1] = i2;
                     break;
@@ -1628,7 +1737,6 @@ void FileSprayer::commonUpSlaves()
             }
         }
     }
-
 
     for (unsigned i3 = 0; i3 < max; i3++)
     {
@@ -1665,10 +1773,15 @@ void FileSprayer::analyseFileHeaders(bool setcurheadersize)
     unsigned numEmptyXml = 0;
     ForEachItemIn(idx, sources)
     {
+        if (isAborting())
+            throwError(DFTERR_CopyAborted);
+
         FilePartInfo & cur = sources.item(idx);
         StringBuffer s;
         cur.filename.getPath(s);
-        LOG(MCdebugInfo, "Examine header of file %s", s.str());
+
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugInfo, "Examine header of file %s", s.str());
 
         Owned<IFile> file = createIFile(cur.filename);
         Owned<IFileIO> io = file->open(IFOread);
@@ -1745,8 +1858,7 @@ void FileSprayer::analyseFileHeaders(bool setcurheadersize)
                     // Despray from distributed file
 
                     // Check XMLheader/footer in file level
-                    DistributedFilePropertyLock lock(distributedSource);
-                    IPropertyTree &curProps = lock.queryAttributes();
+                    IPropertyTree &curProps = distributedSource->queryAttributes();
                     if (curProps.hasProp(FPheaderLength) && curProps.hasProp(FPfooterLength))
                     {
                         cur.xmlHeaderLength = curProps.getPropInt(FPheaderLength, 0);
@@ -1925,15 +2037,20 @@ void FileSprayer::displayPartition()
         partition.item(idx).display();
 
 #ifdef _DEBUG
-        if ((partition.item(idx).whichInput >= 0) && (partition.item(idx).whichInput < sources.ordinality()) )
-            LOG(MCdebugInfoDetail,
-                     "   Header size: %" I64F "u, XML header size: %" I64F "u, XML footer size: %" I64F "u",
-                     sources.item(partition.item(idx).whichInput).headerSize,
-                     sources.item(partition.item(idx).whichInput).xmlHeaderLength,
-                     sources.item(partition.item(idx).whichInput).xmlFooterLength
-            );
-        else
-            LOG(MCdebugInfoDetail, "   No source file for this partition");
+        if (doTrace(tracePartitionDetails, traceDetailed))
+        {
+            if ((partition.item(idx).whichInput >= 0) && (partition.item(idx).whichInput < sources.ordinality()) )
+            {
+                LOG(MCdebugInfoDetail,
+                        "   Header size: %" I64F "u, XML header size: %" I64F "u, XML footer size: %" I64F "u",
+                        sources.item(partition.item(idx).whichInput).headerSize,
+                        sources.item(partition.item(idx).whichInput).xmlHeaderLength,
+                        sources.item(partition.item(idx).whichInput).xmlFooterLength
+                );
+            }
+            else
+                LOG(MCdebugInfoDetail, "   No source file for this partition");
+        }
 #endif
     }
 }
@@ -1961,7 +2078,8 @@ void FileSprayer::gatherFileSizes(bool errorIfMissing)
 {
     FilePartInfoArray fileSizeQueue;
 
-    LOG(MCdebugProgress, "Start gathering file sizes...");
+    if (doTrace(traceSprayDetails))
+        LOG(MCdebugProgress, "Start gathering file sizes...");
 
     ForEachItemIn(idx, sources)
     {
@@ -1971,7 +2089,8 @@ void FileSprayer::gatherFileSizes(bool errorIfMissing)
     }
 
     gatherFileSizes(fileSizeQueue, errorIfMissing);
-    LOG(MCdebugProgress, "Finished gathering file sizes...");
+    if (doTrace(traceSprayDetails))
+        LOG(MCdebugProgress, "Finished gathering file sizes...");
 }
 
 void FileSprayer::afterGatherFileSizes()
@@ -1983,9 +2102,9 @@ void FileSprayer::afterGatherFileSizes()
         {
             FilePartInfo & cur = sources.item(idx2);
 
-            LOG(MCdebugProgress, "%9u:%s (size: %llu bytes)",
-                                       idx2, cur.filename.getTail(tailStr.clear()).str(), cur.size
-                                       );
+            if (doTrace(tracePartitionDetails))
+                LOG(MCdebugProgress, "%9u:%s (size: %llu bytes)",
+                                       idx2, cur.filename.getTail(tailStr.clear()).str(), cur.size);
             cur.offset = totalSize;
             totalSize += cur.size;
             if (cur.size % srcFormat.getUnitSize())
@@ -1997,8 +2116,8 @@ void FileSprayer::afterGatherFileSizes()
                     throwError2(DFTERR_InputIsInvalidMultiple, cur.filename.getRemotePath(s).str(), srcFormat.getUnitSize());
             }
         }
-        LOG(MCdebugProgress, "----------------------------------------------");
-        LOG(MCdebugProgress, "All together: %llu bytes in %u file(s)", totalSize, sources.ordinality());
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugProgress, "All together: %llu bytes in %u file(s)", totalSize, sources.ordinality());
     }
 }
 
@@ -2014,7 +2133,9 @@ void FileSprayer::gatherFileSizes(FilePartInfoArray & fileSizeQueue, bool errorI
         unsigned numThreads = (unsigned)sqrt((float)fileSizeQueue.ordinality());
         if (numThreads>20)
             numThreads = 20;
-        LOG(MCdebugProgress, "Gathering %d file sizes on %d threads", fileSizeQueue.ordinality(), numThreads);
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugProgress, "Gathering %d file sizes on %d threads", fileSizeQueue.ordinality(), numThreads);
+
         unsigned idx;
         for (idx = 0; idx < numThreads; idx++)
             threads.append(*new FileSizeThread(fileSizeQueue, fileSizeCS, compressedInput&&!copyCompressed, errorIfMissing));
@@ -2362,7 +2483,7 @@ void FileSprayer::insertHeaders()
                 idx++;
             }
         }
-        if (footer)
+        if (footer && (idx != 0))
         {
             addHeaderFooter(footer, idx-1, false);
             idx++;
@@ -2482,11 +2603,11 @@ void FileSprayer::insertHeaders()
             }
             addPrefix(filePrefix.length(), filePrefix.toByteArray(), idx, partitionWork);
         }
-        LOG(MCdebugProgress, "Publish headers");
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugProgress, "Publish headers");
         partition.swapWith(partitionWork);
     }
 }
-
 
 bool FileSprayer::needToCalcOutput()
 {
@@ -2519,7 +2640,6 @@ void FileSprayer::calcNumConcurrentTransfers()
         numConcurrentTransfers = numTransferParts/3;
     if (numConcurrentTransfers > numTransferParts)
         numConcurrentTransfers = numTransferParts;
-    LOG(MCdebugInfo, "numTransferParts: %u, numConcurrentTransfers: %u", numTransferParts, numConcurrentTransfers);
 }
 
 void FileSprayer::performTransfer()
@@ -2537,11 +2657,9 @@ void FileSprayer::performTransfer()
     if (numConcurrentTransfers > 1)
         shuffle(transferSlaves);
 
+    saveTransferOptions();
     if (progressReport)
         progressReport->setRange(getSizeReadAlready(), sizeToBeRead, transferSlaves.ordinality());
-
-
-    LOG(MCdebugInfo, "Begin to transfer parts (%d threads)\n", numConcurrentTransfers);
 
     //Throttle maximum number of concurrent transfers by starting n threads, and
     //then waiting for one to complete before going on to the next
@@ -2594,13 +2712,15 @@ void FileSprayer::performTransfer()
 void FileSprayer::pullParts()
 {
     bool needCalcCRC = calcCRC();
-    LOG(MCdebugInfoDetail, "Calculate CRC = %d", needCalcCRC);
+    if (doTrace(traceSprayDetails, traceDetailed))
+        LOG(MCdebugInfoDetail, "Calculate CRC = %d", needCalcCRC);
     ForEachItemIn(idx, targets)
     {
         FileTransferThread & next = * new FileTransferThread(*this, FTactionpull, targets.item(idx).filename.queryEndpoint(), needCalcCRC, wuid);
         transferSlaves.append(next);
     }
 
+    // NB: not all transferServers will be used, depending on mapping of whichSlave
     ForEachItemIn(idx3, partition)
     {
         PartitionPoint & cur = partition.item(idx3);
@@ -2616,7 +2736,9 @@ void FileSprayer::pullParts()
 void FileSprayer::pushWholeParts()
 {
     bool needCalcCRC = calcCRC();
-    LOG(MCdebugInfoDetail, "Calculate CRC = %d", needCalcCRC);
+    if (doTrace(traceSprayDetails, traceDetailed))
+        LOG(MCdebugInfoDetail, "Calculate CRC = %d", needCalcCRC);
+
     //Create a slave for each of the target files, but execute it on the node corresponding to the first source file
     //For container mode this will need to execute on this node, or on a load balanced service
     ForEachItemIn(idx, targets)
@@ -2656,6 +2778,7 @@ void FileSprayer::pushParts()
         transferSlaves.append(next);
     }
 
+    // NB: not all transferServers will be used, depending on mapping of whichSlave
     ForEachItemIn(idx3, partition)
     {
         PartitionPoint & cur = partition.item(idx3);
@@ -2668,6 +2791,7 @@ void FileSprayer::pushParts()
 
 void FileSprayer::transferUsingAPI(IAPICopyClient * copyClient)
 {
+    //MORE: It would be useful to have this information in the transferOptions
     LOG(MCdebugInfo, "Transfer files using api: %s", copyClient->name());
 
     OwnedPointerArrayOf<IAPICopyClientOp> apiClients;
@@ -2786,14 +2910,13 @@ bool FileSprayer::restorePartition()
 {
     if (allowRecovery && progressTree->getPropBool(ANhasPartition))
     {
-        IPropertyTreeIterator * iter = progressTree->getElements(PNpartition);
+        Owned<IPropertyTreeIterator> iter = progressTree->getElements(PNpartition);
         ForEach(*iter)
         {
             PartitionPoint & next = * new PartitionPoint;
             next.restore(&iter->query());
             partition.append(next);
         }
-        iter->Release();
         return (partition.ordinality() != 0);
     }
     return false;
@@ -3011,10 +3134,6 @@ void FileSprayer::setTarget(IDistributedFile * target)
 
     compressOutput = target->isCompressed();
 
-    LOG(MCdebugInfo, "FileSprayer::setTarget: compressedInput:%s, compressOutput:%s",
-                                boolToStr(compressedInput),
-                                boolToStr(compressOutput));
-
     if (tgtFormat.restore(&target->queryAttributes()))
         unknownTargetFormat = false;
     else
@@ -3043,6 +3162,7 @@ void FileSprayer::setTarget(IDistributedFile * target)
         TargetLocation & next = * new TargetLocation(curPart->getFilename(rfn,copy), idx);
         targets.append(next);
     }
+    target->getClusterGroupName(0, targetPlane.clear());
 
     checkSprayOptions();
 }
@@ -3064,6 +3184,7 @@ void FileSprayer::setTarget(IFileDescriptor * target, unsigned copy)
         target->getFilename(idx, copy, filename);
         targets.append(*new TargetLocation(filename, idx));
     }
+    target->getClusterGroupName(0, targetPlane.clear());
 
     checkSprayOptions();
 }
@@ -3264,17 +3385,16 @@ void FileSprayer::spray()
            progressTree->setPropBool("@noFileMatch", true);
     }
 
-    LOG(MCdebugInfo, "compressedInput:%d, compressOutput:%d", compressedInput, compressOutput);
-    LOG(MCdebugInfo, "noCommon:%s", boolToStr(options->getPropBool(ANnocommon)));
-    LOG(MCdebugInfo, "maxConnections option:%d", options->getPropInt(ANmaxConnections));
-
     LocalAbortHandler localHandler(daftAbortHandler);
 
     if (allowRecovery && progressTree->getPropBool(ANcomplete))
     {
-        LOG(MCdebugInfo, "Command completed successfully in previous invocation");
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Command completed successfully in previous invocation");
         return;
     }
+
+    targetSupportsConcurrentWrite = getConcurrentWriteSupported(targetPlane);
 
     checkFormats();
     checkForOverlap();
@@ -3321,11 +3441,13 @@ void FileSprayer::spray()
 
     if (restorePartition())
     {
-        LOG(MCdebugProgress, "Partition restored from recovery information");
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugProgress, "Partition restored from recovery information");
     }
     else
     {
-        LOG(MCdebugProgress, "Calculate partition information");
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugProgress, "Calculate partition information");
         if (replicate || copySource)
             calculateOne2OnePartition();
         else if (!allowSplit())
@@ -3343,7 +3465,8 @@ void FileSprayer::spray()
     assignPartitionFilenames();     // assign source filenames - used in insertHeaders..
     if (!replicate && !copySource)
     {
-        LOG(MCdebugProgress, "Insert headers");
+        if (doTrace(tracePartitionDetails))
+            LOG(MCdebugProgress, "Insert headers");
         insertHeaders();
     }
     addEmptyFilesToPartition();
@@ -3357,6 +3480,7 @@ void FileSprayer::spray()
     throwExceptionIfAborting();
 
     beforeTransfer();
+
     bool copiedAlready = false;
     if ((replicate || copySource))
     {
@@ -3391,7 +3515,9 @@ void FileSprayer::spray()
 
     //If got here then we have succeeded
     //Note: On failure, costs will not be updated.  Future: would be useful to have a way to update costs on failure.
-    updateTargetProperties();
+    cost_type totalWriteCost = updateTargetProperties();
+    cost_type totalReadCost = updateSourceProperties();
+    progressReport->setFileAccessCost(totalReadCost+totalWriteCost);
 
     StringBuffer copyEventText;     // [logical-source] > [logical-target]
     if (distributedSource)
@@ -3441,13 +3567,13 @@ bool FileSprayer::isSameSizeHeaderFooter()
     return retVal;
 }
 
-void FileSprayer::updateTargetProperties()
+cost_type FileSprayer::updateTargetProperties()
 {
     TimeSection timer("FileSprayer::updateTargetProperties() time");
     Owned<IException> error;
-    cost_type totalWriteCost = 0;
     if (distributedTarget)
     {
+        cost_type totalWriteCost = 0;
         StringBuffer failedParts;
         CRC32Merger partCRC;
         offset_t partLength = 0;
@@ -3660,7 +3786,8 @@ void FileSprayer::updateTargetProperties()
                      ((stricmp(aname,"@blockCompressed")==0)&&copyCompressed) ||
                      ((stricmp(aname,"@rowCompressed")==0)&&copyCompressed)||
                      (stricmp(aname,"@local")==0)||
-                     (stricmp(aname,"@recordCount")==0)
+                     (stricmp(aname,"@recordCount")==0) ||
+                     (stricmp(aname,"@lfnHash")==0)
                      )
                     )
                     curProps.setProp(aname,aiter->queryValue());
@@ -3798,13 +3925,22 @@ void FileSprayer::updateTargetProperties()
         int expireDays = options->getPropInt("@expireDays", -1);
         if (expireDays != -1)
             curProps.setPropInt("@expireDays", expireDays);
+        return totalWriteCost;
     }
-    // Update file readCost and numReads in file properties and do the same for subfiles
-    // Update totalReadCost
-    cost_type totalReadCost = 0;
+    if (error)
+        throw error.getClear();
+    return 0;
+}
+
+cost_type FileSprayer::updateSourceProperties()
+{
+    TimeSection timer("FileSprayer::updateSourceProperties() time");
+    // Update file readCost and numReads in file properties and do the same for owning super files
     if (distributedSource)
     {
+        Owned<IFileReadPropertiesUpdater> fileReadPropertiesUpdater = createFileReadPropertiesUpdater(nullptr);
         IDistributedSuperFile * superSrc = distributedSource->querySuperFile();
+        cost_type totalCost = 0;
         if (superSrc && superSrc->numSubFiles() > 0)
         {
             Owned<IFileDescriptor> fDesc = superSrc->getFileDescriptor();
@@ -3828,40 +3964,19 @@ void FileSprayer::updateTargetProperties()
                         // so query the first (and only) subfile
                         subfile = &superSrc->querySubFile(0);
                     }
-                    DistributedFilePropertyLock lock(subfile);
-                    IPropertyTree &subFileProps = lock.queryAttributes();
-                    stat_type prevNumReads = subFileProps.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
-                    cost_type legacyReadCost = getLegacyReadCost(subfile->queryAttributes(), subfile);
-                    cost_type prevReadCost = subFileProps.getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), 0);
-                    cost_type curReadCost = calcFileAccessCost(subfile, 0, curProgress.numReads);
-                    subFileProps.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), prevNumReads + curProgress.numReads);
-                    subFileProps.setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + prevReadCost + curReadCost);
-                    totalReadCost += curReadCost;
-                }
-                else
-                {
-                    // not sure if src superfile can have whichInput==-1 (but if so, this is best effort to calc cost)
-                    totalReadCost += calcFileAccessCost(distributedSource, 0, curProgress.numReads);
+                    totalCost += fileReadPropertiesUpdater->addCostAndNumReads(subfile, curProgress.numReads, 0);
                 }
             }
         }
         else
         {
-            totalReadCost = calcFileAccessCost(distributedSource, 0, totalNumReads);
+            totalCost += fileReadPropertiesUpdater->addCostAndNumReads(distributedSource, totalNumReads, 0);
         }
-        DistributedFilePropertyLock lock(distributedSource);
-        IPropertyTree &curProps = lock.queryAttributes();
-        stat_type prevNumReads = curProps.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
-        cost_type legacyReadCost = getLegacyReadCost(curProps, distributedSource);
-        cost_type prevReadCost = curProps.getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), 0);
-        curProps.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), prevNumReads + totalNumReads);
-        curProps.setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + prevReadCost + totalReadCost);
+        fileReadPropertiesUpdater->publish();
+        return totalCost;
     }
-    progressReport->setFileAccessCost(totalReadCost+totalWriteCost);
-    if (error)
-        throw error.getClear();
+    return 0;
 }
-
 
 void FileSprayer::splitAndCollectFileInfo(IPropertyTree * newRecord, RemoteFilename &remoteFileName,
                                           bool isDistributedSource)
@@ -3967,7 +4082,8 @@ bool FileSprayer::calcUsePull() const
     if (allowRecovery && progressTree->hasProp(ANpull))
     {
         bool usePull = progressTree->getPropBool(ANpull);
-        LOG(MCdebugInfo, "Pull = %d from recovery", (int)usePull);
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Pull = %d from recovery", (int)usePull);
         return usePull;
     }
 
@@ -3976,14 +4092,59 @@ bool FileSprayer::calcUsePull() const
 
     if (options->getPropBool(ANpull, false))
     {
-        LOG(MCdebugInfo, "Use pull since explicitly specified");
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Use pull since explicitly specified");
         return true;
     }
-    if (options->getPropBool(ANpush, false))
+
+    bool pushRequested = options->getPropBool(ANpush);
+    if (!targetSupportsConcurrentWrite) // NB: default for containerized is false
     {
-        LOG(MCdebugInfo, "Use push since explicitly specified");
+        if (!pushRequested)
+            return true;
+        if (!usePushWholeOperation())
+        {
+            if (targets.ordinality() <= sources.ordinality())
+            {
+                // NB: this is being calculated before partitioning has occurred
+                // It can be refactored so that it decides after partitioning, and only has to force pull
+                // if multiple partitions write to same target file.
+                if (doTrace(traceSprayDetails))
+                    LOG(MCdebugInfo, "Use pull operation because target doesn't support concurrent write");
+                return true;
+            }
+            // else targets > sources
+
+            // if push requested and N:M and no split, then throw an error unless expert option allows
+            if (!copySource) // 1:1 partitioning if copySource==true
+            {
+                if ((sources.ordinality() > 1) && (targets.ordinality() > 1) && !allowSplit())
+                {
+                    if (!getComponentConfigSP()->getPropBool("expert/@allowPushNoSplit"))
+                        throw makeStringExceptionV(0, "Pushing to multiple targets with no split is not supported to this target plane (%s)", targetPlane.str());
+                }
+            }
+        }
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Use push since explicitly specified");
         return false;
     }
+    else // ! targetSupportsConcurrentWrite 
+    {
+        if (pushRequested)
+        {
+            if (doTrace(traceSprayDetails))
+                LOG(MCdebugInfo, "Use push since explicitly specified");
+            return false;
+        }
+    }
+
+    //Have to use pull operation if compressing the target and source is not compressed.
+    if (!keyCompression.isEmpty())
+        return true;
+
+    if (compressOutput && !replicate && !copySource)
+        return true;
 
     ForEachItemIn(idx2, sources)
     {
@@ -3991,7 +4152,8 @@ bool FileSprayer::calcUsePull() const
         {
             StringBuffer s;
             sources.item(idx2).filename.queryIP().getHostText(s);
-            LOG(MCdebugInfo, "Use pull operation because %s cannot push", s.str());
+            if (doTrace(traceSprayDetails))
+                LOG(MCdebugInfo, "Use pull operation because %s cannot push", s.str());
             return true;
         }
     }
@@ -3999,7 +4161,8 @@ bool FileSprayer::calcUsePull() const
     {
         StringBuffer s;
         sources.item(0).filename.queryIP().getHostText(s);
-        LOG(MCdebugInfo, "Use pull operation because %s doesn't appear to have an ftslave", s.str());
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Use pull operation because %s doesn't appear to have an ftslave", s.str());
         return true;
     }
 
@@ -4009,7 +4172,8 @@ bool FileSprayer::calcUsePull() const
         {
             StringBuffer s;
             targets.item(idx).queryIP().getHostText(s);
-            LOG(MCdebugInfo, "Use push operation because %s cannot pull", s.str());
+            if (doTrace(traceSprayDetails))
+                LOG(MCdebugInfo, "Use push operation because %s cannot pull", s.str());
             return false;
         }
     }
@@ -4018,18 +4182,19 @@ bool FileSprayer::calcUsePull() const
     {
         StringBuffer s;
         targets.item(0).queryIP().getHostText(s);
-        LOG(MCdebugInfo, "Use push operation because %s doesn't appear to have an ftslave", s.str());
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Use push operation because %s doesn't appear to have an ftslave", s.str());
         return false;
     }
 
     //Use push if going to a single node.
     if ((targets.ordinality() == 1) && (sources.ordinality() > 1))
     {
-        LOG(MCdebugInfo, "Use push operation because going to a single node from many");
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugInfo, "Use push operation because going to a single node from many");
         return false;
     }
 
-    LOG(MCdebugInfo, "Use pull operation as default");
     return true;
 }
 

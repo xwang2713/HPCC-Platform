@@ -24,9 +24,12 @@
 
 #define MATCH_ENTRY [&](const EntryValue& e) {return strieq(e.get()->name, pathPart);}
 
-#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
-static auto pRequestCount = hpccMetrics::registerCounterMetric("esp.requests.received", "Number of requests received", SMeasureCount);
-#endif
+static std::shared_ptr<hpccMetrics::CounterMetric> pRequestCount;
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    pRequestCount = hpccMetrics::registerCounterMetric("esp.requests.received", "Number of requests received", SMeasureCount);
+    return true;
+}
 
 inline bool validate(const char* k)
 {
@@ -47,7 +50,7 @@ inline bool validate(const char* k)
 }
 
 CTxSummary::TxEntryBase::TxEntryBase(const char* _key, const LogLevel _logLevel, const unsigned int _group, const char* _suffix, bool _jsonQuoted)
-    : logLevel(_logLevel), group(_group), suffix(_suffix), shouldJsonQuote(_jsonQuoted)
+    : suffix(_suffix), shouldJsonQuote(_jsonQuoted), logLevel(_logLevel), group(_group)
 {
     // parse dot-delimited key
     // 'name' is set to the rightmost element of _key
@@ -333,9 +336,7 @@ StringBuffer& CTxSummary::TxEntryObject::serialize(StringBuffer& buf, const LogL
 CTxSummary::CTxSummary(unsigned creationTime)
 : m_creationTime(creationTime ? creationTime : msTick())
 {
-#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
     pRequestCount->inc(1);
-#endif
 }
 
 CTxSummary::~CTxSummary()

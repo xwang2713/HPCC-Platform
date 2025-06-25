@@ -760,7 +760,8 @@ public:
     virtual void start() override
     {
         // Note we allow a few additional threads than requested - these are the threads that return "Too many active queries" responses
-        pool.setown(createThreadPool("RoxieSocketWorkerPool", this, false, nullptr, poolSize+5, INFINITE));
+        // and reduce start delay
+        pool.setown(createThreadPool("RoxieSocketWorkerPool", this, false, nullptr, poolSize+5, 1));
         assertex(!running);
         Thread::start(false);
         started.wait();
@@ -945,6 +946,64 @@ extern void updateAffinity(unsigned __int64 affinity)
 
 //--------------------------------------------------------------------------------------------------------------------
 
+StringBuffer & ContextLogger::getStats(StringBuffer &s) const
+{
+    CriticalBlock block(statsCrit);
+    stats.toStr(s);
+
+    if (slowestActivityIds[0])
+    {
+        StringBuffer ids;
+        StringBuffer times;
+        for (unsigned i=0; i < MaxSlowActivities; i++)
+        {
+            if (!slowestActivityIds[i])
+                break;
+
+            if (i)
+            {
+                ids.append(",");
+                times.append(",");
+            }
+            ids.append(slowestActivityIds[i]);
+            formatStatistic(times, cycle_to_nanosec(slowestActivityTimes[i]), SMeasureTimeNs);
+        }
+        s.appendf(" slowestActivities={ ids=[%s] times=[%s] }", ids.str(), times.str());
+    }
+    return s;
+}
+
+
+void ContextLogger::mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const
+{
+    CLeavableCriticalBlock block(statsCrit, !from.isThreadSafeMergeSource());
+
+    stats.merge(from);
+
+    //Record the times of the slowest N activities
+    if (activityId)
+    {
+        stat_type localTime = from.getStatisticValue(StCycleLocalExecuteCycles);
+        if (localTime >= minimumInterestingActivityCycles)
+        {
+            if (localTime > slowestActivityTimes[MaxSlowActivities-1])
+            {
+                unsigned pos = MaxSlowActivities-1;
+                while (pos > 0)
+                {
+                    if (localTime <= slowestActivityTimes[pos-1])
+                        break;
+                    slowestActivityIds[pos] = slowestActivityIds[pos-1];
+                    slowestActivityTimes[pos] = slowestActivityTimes[pos-1];
+                    pos--;
+                }
+                slowestActivityIds[pos] = activityId;
+                slowestActivityTimes[pos] = localTime;
+            }
+        }
+    }
+}
+
 void ContextLogger::exportStatsToSpan(bool failed, stat_type elapsedNs, unsigned memused, unsigned agentsDuplicates, unsigned agentsResends)
 {
     if (activeSpan->isRecording())
@@ -957,6 +1016,29 @@ void ContextLogger::exportStatsToSpan(bool failed, stat_type elapsedNs, unsigned
 
         StringBuffer prefix("");
         stats.exportToSpan(activeSpan, prefix);
+
+        if (slowestActivityIds[0])
+        {
+            //Even better if these were exported as arrays - needs extensions to our api
+            //Not commoned up with the code above because it is likely to change to arrays in the future.
+            StringBuffer ids;
+            StringBuffer times;
+            for (unsigned i=0; i < MaxSlowActivities; i++)
+            {
+                if (!slowestActivityIds[i])
+                    break;
+
+                if (i)
+                {
+                    ids.append(",");
+                    times.append(",");
+                }
+                ids.append(slowestActivityIds[i]);
+                times.append(cycle_to_nanosec(slowestActivityTimes[i]));
+            }
+            setSpanAttribute("slowest_activities.ids", ids);
+            setSpanAttribute("slowest_activities.times", times);
+        }
     }
 }
 
@@ -1158,11 +1240,12 @@ class RoxieWorkUnitWorker : public RoxieQueryWorker
 {
     void noteQuery(bool failed, unsigned elapsedTime, unsigned priority)
     {
-        switch(priority)
+        switch((int)priority)
         {
-        case 0: loQueryStats.noteQuery(failed, elapsedTime); break;
-        case 1: hiQueryStats.noteQuery(failed, elapsedTime); break;
-        case 2: slaQueryStats.noteQuery(failed, elapsedTime); break;
+        case QUERY_LOW_PRIORITY_VALUE: loQueryStats.noteQuery(failed, elapsedTime); break;
+        case QUERY_HIGH_PRIORITY_VALUE: hiQueryStats.noteQuery(failed, elapsedTime); break;
+        case QUERY_SLA_PRIORITY_VALUE: slaQueryStats.noteQuery(failed, elapsedTime); break;
+        case QUERY_BG_PRIORITY_VALUE: bgQueryStats.noteQuery(failed, elapsedTime); break;
         }
         combinedQueryStats.noteQuery(failed, elapsedTime);
     }
@@ -1202,7 +1285,7 @@ public:
         Owned<StringContextLogger> logctx = new StringContextLogger(wuid.get());
 
         Owned<IProperties> traceHeaders = extractTraceDebugOptions(wu);
-        OwnedSpanScope requestSpan = queryTraceManager().createServerSpan("run_workunit", traceHeaders);
+        OwnedActiveSpanScope requestSpan = queryTraceManager().createServerSpan("run_workunit", traceHeaders);
         requestSpan->setSpanAttribute("hpcc.wuid", wuid);
         ContextSpanScope spanScope(*logctx, requestSpan);
 
@@ -1252,7 +1335,7 @@ public:
         unsigned agentsReplyLen = 0;
         unsigned agentsDuplicates = 0;
         unsigned agentsResends = 0;
-        unsigned priority = (unsigned) -2;
+        unsigned priority = (unsigned) -2; // NB -2 is outside of priority range
         try
         {
             bool isBlind = wu->getDebugValueBool("blindLogging", false);
@@ -1274,11 +1357,12 @@ public:
             isBlind = isBlind || blindLogging;
             logctx.setBlind(isBlind);
             priority = queryFactory->queryOptions().priority;
-            switch (priority)
+            switch ((int)priority)
             {
-            case 0: loQueryStats.noteActive(); break;
-            case 1: hiQueryStats.noteActive(); break;
-            case 2: slaQueryStats.noteActive(); break;
+            case QUERY_LOW_PRIORITY_VALUE: loQueryStats.noteActive(); break;
+            case QUERY_HIGH_PRIORITY_VALUE: hiQueryStats.noteActive(); break;
+            case QUERY_SLA_PRIORITY_VALUE: slaQueryStats.noteActive(); break;
+            case QUERY_BG_PRIORITY_VALUE: bgQueryStats.noteActive(); break;
             }
             combinedQueryStats.noteActive();
             Owned<IRoxieServerContext> ctx = queryFactory->createContext(wu, logctx);
@@ -1383,7 +1467,7 @@ public:
     Owned<CDebugCommandHandler> debugCmdHandler;
     Owned<StringContextLogger> logctx;
     Owned<IQueryFactory> queryFactory;
-    OwnedSpanScope requestSpan;
+    OwnedActiveSpanScope requestSpan;
 
     SocketEndpoint ep;
     time_t startTime;
@@ -1443,11 +1527,12 @@ public:
     virtual void noteQueryActive()
     {
         unsigned priority = getQueryPriority();
-        switch (priority)
+        switch ((int)priority)
         {
-        case 0: loQueryStats.noteActive(); break;
-        case 1: hiQueryStats.noteActive(); break;
-        case 2: slaQueryStats.noteActive(); break;
+        case QUERY_LOW_PRIORITY_VALUE: loQueryStats.noteActive(); break;
+        case QUERY_HIGH_PRIORITY_VALUE: hiQueryStats.noteActive(); break;
+        case QUERY_SLA_PRIORITY_VALUE: slaQueryStats.noteActive(); break;
+        case QUERY_BG_PRIORITY_VALUE: bgQueryStats.noteActive(); break;
         }
         unknownQueryStats.noteComplete();
         combinedQueryStats.noteActive();
@@ -1465,7 +1550,7 @@ public:
         return *cascade;
     }
 
-    virtual void startSpan(const char * id, const char * querySetName, const char * queryName, const IProperties * headers) override
+    virtual void startSpan(const char * id, const char * querySetName, const char * queryName, const IProperties * headers, const SpanTimeStamp * spanStartTimeStamp) override
     {
         Linked<const IProperties> allHeaders = headers;
         SpanFlags flags = (ensureGlobalIdExists) ? SpanFlags::EnsureGlobalId : SpanFlags::None;
@@ -1482,12 +1567,8 @@ public:
 
         ensureContextLogger();
 
-        const char * spanQueryName = !isEmptyString(queryName) ? queryName : "run_query";
-        StringBuffer spanName(querySetName);
-        if (spanName.length())
-            spanName.append('/');
-        spanName.append(spanQueryName);
-        requestSpan.setown(queryTraceManager().createServerSpan(spanName, allHeaders, flags));
+        requestSpan.setown(queryTraceManager().createServerSpan(!isEmptyString(queryName) ? queryName : "run_query", allHeaders, spanStartTimeStamp, flags));
+        requestSpan->setSpanAttribute("queryset.name", querySetName);
         logctx->setActiveSpan(requestSpan);
 
         const char * globalId = requestSpan->queryGlobalId();
@@ -1596,11 +1677,12 @@ public:
         }
         else
         {
-            switch(getQueryPriority())
+            switch((int)getQueryPriority())
             {
             case 0: loQueryStats.noteQuery(failed, elapsedTime); break;
             case 1: hiQueryStats.noteQuery(failed, elapsedTime); break;
             case 2: slaQueryStats.noteQuery(failed, elapsedTime); break;
+            case -1: bgQueryStats.noteQuery(failed, elapsedTime); break;
             default: unknownQueryStats.noteQuery(failed, elapsedTime); return; // Don't include unknown in the combined stats
             }
             combinedQueryStats.noteQuery(failed, elapsedTime);

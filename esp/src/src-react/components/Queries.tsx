@@ -13,7 +13,7 @@ import { FluentPagedGrid, FluentPagedFooter, useCopyButtons, useFluentStoreState
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
 import { ShortVerticalDivider } from "./Common";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 
 const FilterFields: Fields = {
     "QueryID": { type: "string", label: nlsHPCC.ID, placeholder: nlsHPCC.QueryIDPlaceholder },
@@ -89,7 +89,7 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
 
     //  Grid ---
     const gridStore = React.useMemo(() => {
-        return store || ESPQuery.CreateQueryStore({});
+        return store || ESPQuery.CreateQueryStore();
     }, [store]);
 
     const query = React.useMemo(() => {
@@ -112,42 +112,46 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
                         return <Icon iconName="Pause" />;
                     }
                     return "";
-                }
+                },
+                field: nlsHPCC.Suspended,
             },
             ErrorCount: {
                 headerIcon: "Warning",
                 headerTooltip: nlsHPCC.ErrorWarnings,
                 width: 16,
                 sortable: false,
-                formatter: (error) => {
-                    if (error > 0) {
+                formatter: (error, row) => {
+                    if (row.ErrorCount > 0) {
                         return <Icon iconName="Warning" />;
                     }
                     return "";
-                }
+                },
+                field: nlsHPCC.ErrorWarnings,
             },
             MixedNodeStates: {
                 headerIcon: "Error",
                 headerTooltip: nlsHPCC.MixedNodeStates,
                 width: 16,
                 sortable: false,
-                formatter: (mixed) => {
-                    if (mixed === true) {
+                formatter: (mixed, row) => {
+                    const mixedStates = row?.Clusters?.ClusterQueryState[0]?.MixedNodeStates ?? false;
+                    if (mixedStates === true) {
                         return <Icon iconName="Error" />;
                     }
                     return "";
-                }
+                },
             },
             Activated: {
                 headerIcon: "SkypeCircleCheck",
                 headerTooltip: nlsHPCC.Active,
                 width: 16,
-                formatter: (activated) => {
-                    if (activated === true) {
+                formatter: (activated, row) => {
+                    if (row.Activated === true) {
                         return <Icon iconName="SkypeCircleCheck" />;
                     }
                     return "";
-                }
+                },
+                field: nlsHPCC.Active,
             },
             Id: {
                 label: nlsHPCC.ID,
@@ -180,7 +184,7 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
 
     const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
         title: nlsHPCC.Delete,
-        message: nlsHPCC.DeleteSelectedWorkunits,
+        message: nlsHPCC.DeleteSelectedQueries,
         items: selection.map(s => s.Id),
         onSubmit: React.useCallback(() => {
             WsWorkunits.WUQuerysetQueryAction(selection, "Delete").then(() => refreshTable.call(true));
@@ -286,7 +290,7 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
         header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
             <>
-                <SizeMe monitorHeight>{({ size }) =>
+                <SizeMe>{({ size }) =>
                     <div style={{ position: "relative", width: "100%", height: "100%" }}>
                         <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
                             <FluentPagedGrid

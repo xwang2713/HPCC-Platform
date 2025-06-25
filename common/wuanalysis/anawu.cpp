@@ -24,6 +24,7 @@
 #include "thorcommon.hpp"
 #include "commonext.hpp"
 
+#define ERROR_ANALYSER_TIME_EXCEEDED 99999
 
 struct RoxieOptions
 {
@@ -58,6 +59,7 @@ enum  WutOptValueType
     wutOptValueTypePercent,
     wutOptValueTypeCount,
     wutOptValueTypeBool,
+    wutOptValueTypeCost,
     wutOptValueTypeMax,
 };
 
@@ -70,11 +72,15 @@ struct WuOption
 };
 
 constexpr struct WuOption wuOptionsDefaults[watOptMax]
-= { {watOptMinInterestingTime, "minInterestingTime", 1000, wutOptValueTypeMSec},
-    {watOptMinInterestingCost, "minInterestingCost", 30000, wutOptValueTypeMSec},
-    {watOptSkewThreshold, "skewThreshold", 20, wutOptValueTypePercent},
+= { {watOptMinInterestingTime, "minInterestingTime", msecs2StatUnits(1000), wutOptValueTypeMSec},
+    {watOptMinInterestingCost, "minInterestingCost", money2cost_type(1.00) /* $1.00 */, wutOptValueTypeCost},
+    {watOptMinInterestingWaste, "minInterestingTimeWaste", msecs2StatUnits(30000), wutOptValueTypeMSec},
+    {watOptSkewThreshold, "skewThreshold", statPercent(20), wutOptValueTypePercent},
     {watOptMinRowsPerNode, "minRowsPerNode", 1000, wutOptValueTypeCount},
-    {watPreFilteredKJThreshold, "preFilteredKJThreshold", 50, wutOptValueTypePercent},
+    {watPreFilteredKJThreshold, "preFilteredKJThreshold", statPercent(50), wutOptValueTypePercent},
+    /* Note watClusterCostPerHour cannot be used as debug option or config option (this is calculated) */
+    {watClusterCostPerHour, "costRatePerHour", 0, wutOptValueTypeCost},
+    {watOptMaxExecuteTime, "maxExecuteTime", msecs2StatUnits(5000), wutOptValueTypeMSec},
 };
 
 constexpr bool checkWuOptionsDefaults(int i = watOptMax)
@@ -90,7 +96,7 @@ public:
    WuAnalyserOptions()
     {
         for (int opt = watOptFirst; opt < watOptMax; opt++)
-            setOptionValue(static_cast<WutOptionType>(opt), wuOptionsDefaults[opt].defaultValue);
+            wuOptions[opt] = wuOptionsDefaults[opt].defaultValue;
     }
 
     void setOptionValue(WutOptionType opt, __int64 val)
@@ -107,9 +113,8 @@ public:
             case wutOptValueTypePercent:
                 wuOptions[opt] = statPercent((stat_type)val);
                 break;
+            case wutOptValueTypeCost:
             case wutOptValueTypeCount:
-                wuOptions[opt] = (stat_type) val;
-                break;
             case wutOptValueTypeBool:
                 wuOptions[opt] = (stat_type) val;
                 break;
@@ -125,9 +130,15 @@ public:
         {
             StringBuffer wuOptionName("@");
             wuOptionName.append(wuOptionsDefaults[opt].name);
-            __int64 val =  options->getPropInt64(wuOptionName, -1);
-            if (val!=-1)
+            if (options->hasProp(wuOptionName))
+            {
+                stat_type val = 0;
+                if (opt==watOptMinInterestingCost)
+                    val = money2cost_type(options->getPropReal(wuOptionName));
+                else
+                    val = options->getPropInt64(wuOptionName);
                 setOptionValue(static_cast<WutOptionType>(opt), val);
+            }
         }
     }
 
@@ -137,9 +148,15 @@ public:
         {
             StringBuffer wuOptionName("analyzer_");
             wuOptionName.append(wuOptionsDefaults[opt].name);
-            __int64 val = wu->getDebugValueInt64(wuOptionName, -1);
-            if (val!=-1)
+            if (wu->hasDebugValue(wuOptionName))
+            {
+                stat_type val = 0;
+                if (opt==watOptMinInterestingCost)
+                    val = money2cost_type(wu->getDebugValueReal(wuOptionName, 0.0));
+                else
+                    val = wu->getDebugValueInt64(wuOptionName, 0);
                 setOptionValue(static_cast<WutOptionType>(opt), val);
+            }
         }
     }
     stat_type queryOption(WutOptionType opt) const override { return wuOptions[opt]; }
@@ -155,15 +172,14 @@ class WorkunitAnalyserBase
 public:
     WorkunitAnalyserBase();
 
-    void analyse(IConstWorkUnit * wu);
+    void analyse(IConstWorkUnit * wu, const char * optGraph);
     WuScope * getRootScope() { return LINK(root); }
 
 protected:
     void collateWorkunitStats(IConstWorkUnit * workunit, const WuScopeFilter & filter);
     WuScope * selectFullScope(const char * scope);
     WuScope * resolveActivity(const char * name);
-
-protected:
+    virtual void checkMaxExecuteTime() {};
     Owned<WuScope> root;
     stat_type minTimestamp = 0;
 };
@@ -175,17 +191,33 @@ class WorkunitRuleAnalyser : public WorkunitAnalyserBase
 public:
     WorkunitRuleAnalyser();
 
-    void applyConfig(IPropertyTree *cfg, IConstWorkUnit * wu);
+    void applyConfig(IPropertyTree *cfg, IConstWorkUnit * wu, double _costRate);
 
     void applyRules();
-    void check(const char * scope, IWuActivity & activity);
+    void check(IWuActivity & activity);
+    void check(IWuSubGraph & subgraph);
     void print();
-    void update(IWorkUnit *wu, double costRate);
-
+    void update(IWorkUnit *wu);
+    bool hasIssues() const { return !issues.empty(); }
+    stat_type queryOption(WutOptionType opt) const { return options.queryOption(opt); }
 protected:
-    CIArrayOf<AActivityRule> rules;
+    CIArrayOf<CActivityRule> activityRules;
+    CIArrayOf<CSubgraphRule> subgraphRules;
     CIArrayOf<PerformanceIssue> issues;
     WuAnalyserOptions options;
+    CCycleTimer timer;
+    cycle_t maxExecuteCycles = 0;
+
+    virtual void checkMaxExecuteTime() override
+    {
+        if (maxExecuteCycles)
+        {
+            if (timer.elapsedCycles() > maxExecuteCycles)
+            {
+                throw makeStringExceptionV(ERROR_ANALYSER_TIME_EXCEEDED, "Cost optimizer exceeded max execute time (%llums) - analysis incomplete",  cycle_to_millisec(maxExecuteCycles));
+            }
+        }
+    }
 };
 
 
@@ -292,7 +324,8 @@ unsigned WaThread::queryDepth() const
 //-----------------------------------------------------------------------------------------------------------
 
 WuHotspotResult::WuHotspotResult(WuScope * _activity, const char * _sink, bool _isRoot, double _totalPercent, double _startPercent, double _myStartPercent, double _runPercent, bool _startSignificant, bool _runSignificant)
-: activity(_activity), sink(_sink), isRoot(_isRoot), totalPercent(_totalPercent), startPercent(_startPercent), myStartPercent(_myStartPercent), runPercent(_runPercent), startSignificant(_startSignificant), runSignificant(_runSignificant)
+: activity(_activity), sink(_sink), isRoot(_isRoot), 
+  startSignificant(_startSignificant), runSignificant(_runSignificant), totalPercent(_totalPercent), startPercent(_startPercent), myStartPercent(_myStartPercent), runPercent(_runPercent)
 {
 }
 
@@ -352,13 +385,19 @@ void WuHotspotResult::reportTime()
 }
 
 //-----------------------------------------------------------------------------------------------------------
-
 void WuScope::applyRules(WorkunitRuleAnalyser & analyser)
 {
     for (auto & cur : scopes)
     {
-        if (cur.queryScopeType() == SSTactivity)
-            analyser.check(cur.queryName(), cur);
+        switch(cur.queryScopeType())
+        {
+        case SSTactivity:
+            analyser.check(static_cast<IWuActivity &>(cur));
+            break;
+        case SSTsubgraph:
+            analyser.check(static_cast<IWuSubGraph &>(cur)) ;
+            break;
+        }
         cur.applyRules(analyser);
     }
 }
@@ -1282,10 +1321,17 @@ WorkunitAnalyserBase::WorkunitAnalyserBase() : root(new WuScope("", nullptr))
 {
 }
 
-void WorkunitAnalyserBase::analyse(IConstWorkUnit * wu)
+void WorkunitAnalyserBase::analyse(IConstWorkUnit * wu, const char * optGraph)
 {
     WuScopeFilter filter;
     filter.addOutputProperties(PTstatistics).addOutputProperties(PTattributes);
+    if (optGraph)
+    {
+        //Only include the specified graph, and include everything that matches below that graph
+        filter.addScopeType(SSTgraph);
+        filter.addId(optGraph);
+        filter.setIncludeNesting((unsigned)-1);
+    }
     filter.finishedFilter();
     collateWorkunitStats(wu, filter);
     root->connectActivities();
@@ -1303,9 +1349,12 @@ void WorkunitAnalyserBase::collateWorkunitStats(IConstWorkUnit * workunit, const
             StatsGatherer callback(scope->queryAttrs(), minTimestamp);
             scope->queryAttrs()->setPropInt("@stype", iter->getScopeType());
             iter->playProperties(callback);
+            checkMaxExecuteTime();
         }
         catch (IException * e)
         {
+            if (e->errorCode() == ERROR_ANALYSER_TIME_EXCEEDED)
+                throw;
             e->Release();
         }
     }
@@ -1339,45 +1388,103 @@ WuScope * WorkunitAnalyserBase::resolveActivity(const char * name)
 
 
 //-----------------------------------------------------------------------------------------------------------
+/**
+ * Helper class that tracks and records the highest cost performance issue for a specific workunit scope.
+ * 
+ * This class:
+ * - During its lifetime, it collects multiple performance issues via noteIssue()
+ * - Only keeps track of the issue with the highest time penalty (cost)
+ * - Upon destruction, automatically adds the highest cost issue to the global issues collection
+ * 
+ * This ensures that only the most significant performance issue per scope is reported,
+ * avoiding noise from multiple minor issues in the same scope.
+ */
+class HighestCostIssueRecorder
+{
+private:
+    CIArrayOf<PerformanceIssue> & issues;      // Reference to the global collection of performance issues
+    IWuScope & scope;                          // The workunit scope this recorder is tracking
+    Linked<PerformanceIssue> highestCostIssue; // The highest cost issue found so far (may be null)
+    
+public:
+    /**
+     * Constructor - Initialize the recorder for a specific scope
+     * @param _issues Reference to the global performance issues collection
+     * @param _scope The workunit scope to track issues for
+     */
+    HighestCostIssueRecorder(CIArrayOf<PerformanceIssue> & _issues, IWuScope & _scope) : issues(_issues), scope(_scope){}
+
+    /**
+     * Destructor - Automatically commits the highest cost issue (if any) to the global collection
+     * This is called when the recorder goes out of scope, ensuring the issue is properly recorded
+     * with the full scope name for identification.
+     */
+    ~HighestCostIssueRecorder()
+    {
+        if (highestCostIssue)
+        {
+            StringBuffer fullScopeName;
+            scope.getFullScopeName(fullScopeName);
+            highestCostIssue->setScope(fullScopeName);
+            issues.append(*highestCostIssue.getClear());
+        }
+    }
+
+    /**
+     * Record a new performance issue, keeping only the one with the highest time penalty
+     * @param issue Pointer to the performance issue to consider
+     * 
+     * This method compares the time penalty of the new issue against the current highest cost issue.
+     * If the new issue has a higher cost, it replaces the current one.
+     */
+    void noteIssue(PerformanceIssue * issue)
+    {
+        if (!highestCostIssue || highestCostIssue->getTimePenalty() < issue->getTimePenalty())
+            highestCostIssue.set(issue);
+    }
+};
+
 
 WorkunitRuleAnalyser::WorkunitRuleAnalyser()
 {
-    gatherRules(rules);
+    gatherRules(activityRules);
+    gatherRules(subgraphRules);
 }
 
-void WorkunitRuleAnalyser::applyConfig(IPropertyTree *cfg, IConstWorkUnit * wu)
+void WorkunitRuleAnalyser::applyConfig(IPropertyTree *cfg, IConstWorkUnit * wu, double costRate)
 {
     options.applyConfig(cfg);
     options.applyConfig(wu);
+    /* watClusterCostPerHour is calculated by caller and its value is set in options*/
+    /* (So, watClusterCostPerHour cannot be used as debug option or config option)*/
+    options.setOptionValue(watClusterCostPerHour, money2cost_type(costRate));
+    maxExecuteCycles = millisec_to_cycle(statUnits2msecs(options.queryOption(watOptMaxExecuteTime)));
 }
 
-
-void WorkunitRuleAnalyser::check(const char * scope, IWuActivity & activity)
+void WorkunitRuleAnalyser::check(IWuActivity & wuScope)
 {
-    if (activity.getStatRaw(StTimeLocalExecute, StMaxX) < options.queryOption(watOptMinInterestingTime))
-        return;
-    Owned<PerformanceIssue> highestCostIssue;
-    ForEachItemIn(i, rules)
+    checkMaxExecuteTime();
+    HighestCostIssueRecorder issueRecorder(issues, wuScope);
+    ForEachItemIn(i, activityRules)
     {
-        if (rules.item(i).isCandidate(activity))
+        if (activityRules.item(i).isCandidate(wuScope))
         {
             Owned<PerformanceIssue> issue (new PerformanceIssue);
-            if (rules.item(i).check(*issue, activity, options))
-            {
-                if (issue->getTimePenalityCost() >= options.queryOption(watOptMinInterestingCost))
-                {
-                    if (!highestCostIssue || highestCostIssue->getTimePenalityCost() < issue->getTimePenalityCost())
-                        highestCostIssue.setown(issue.getClear());
-                }
-            }
+            if (activityRules.item(i).check(*issue, wuScope, options))
+                issueRecorder.noteIssue(issue);
         }
     }
-    if (highestCostIssue)
+}
+
+void WorkunitRuleAnalyser::check(IWuSubGraph & wuScope)
+{
+    checkMaxExecuteTime();
+    HighestCostIssueRecorder issueRecorder(issues, wuScope);
+    ForEachItemIn(i, subgraphRules)
     {
-        StringBuffer fullScopeName;
-        activity.getFullScopeName(fullScopeName);
-        highestCostIssue->setScope(fullScopeName);
-        issues.append(*highestCostIssue.getClear());
+        Owned<PerformanceIssue> issue (new PerformanceIssue);
+        if (subgraphRules.item(i).check(*issue, wuScope, options))
+            issueRecorder.noteIssue(issue);
     }
 }
 
@@ -1393,10 +1500,10 @@ void WorkunitRuleAnalyser::print()
         issues.item(i).print();
 }
 
-void WorkunitRuleAnalyser::update(IWorkUnit *wu, double costRate)
+void WorkunitRuleAnalyser::update(IWorkUnit *wu)
 {
     ForEachItemIn(i, issues)
-        issues.item(i).createException(wu, costRate);
+        issues.item(i).createException(wu);
 }
 
 
@@ -2079,29 +2186,124 @@ void WorkunitStatsAnalyser::traceDependencies()
 
 //---------------------------------------------------------------------------------------------------------------------
 
-void WUANALYSIS_API analyseWorkunit(IWorkUnit * wu, IPropertyTree *options, double costPerMs)
+void WUANALYSIS_API analyseWorkunit(IConstWorkUnit &workunit, const char *optGraph, IPropertyTree *options, double costPerHour)
 {
+    if (!workunit.getDebugValueBool("analyzeWorkunit", true))
+        return;
+    if (options && options->getPropBool("disabled", false))
+        return;
+
     WorkunitRuleAnalyser analyser;
-    analyser.applyConfig(options, wu);
-    analyser.analyse(wu);
-    analyser.applyRules();
-    analyser.update(wu, costPerMs);
+    Owned<IException> error;
+
+    analyser.applyConfig(options, &workunit, costPerHour);
+
+    // Examine workunit's cost or execute time to determine if it is worth analyzing
+    // (If the workunit's statistic below the 'interesting' thresholds, then it is not worth analyzing
+    // because none of the individual activities can exceed the thresholds.)
+    if (isEmptyString(optGraph))
+    {
+        // don't bother analyzing if job cost is below threshold
+        cost_type minInterestingCost = analyser.queryOption(watOptMinInterestingCost);
+        cost_type wuCost;
+        if (minInterestingCost && workunit.getStatistic(wuCost, "", StCostExecute) && wuCost < minInterestingCost)
+            return;
+        // don't bother analyzing if job time is below threshold
+        stat_type minInterestingTime = analyser.queryOption(watOptMinInterestingTime);
+        stat_type wuTime;
+        if (minInterestingTime && workunit.getStatistic(wuTime, "", StTimeElapsed) && wuTime < minInterestingTime)
+            return;
+    }
+
+    try
+    {
+        analyser.analyse(&workunit, optGraph);
+        analyser.applyRules();
+    }
+    catch (IException *e)
+    {
+        error.setown(e);
+    }
+    if (analyser.hasIssues() || error)
+    {
+        Owned<IWorkUnit> wu = &workunit.lock();
+        if (error)
+        {
+            StringBuffer msg;
+            error->errorMessage(msg);
+            msg.appendf(" (wuid=%s graph=%s)", workunit.queryWuid(), optGraph ? optGraph : "*");
+            addExceptionToWorkunit(wu, SeverityWarning, CostOptimizerName, error->errorCode(), msg.str(), nullptr, 0, 0, 0);
+        }
+        if (analyser.hasIssues())
+            analyser.update(wu);
+    }
 }
 
-void WUANALYSIS_API analyseAndPrintIssues(IConstWorkUnit * wu, double costRate, bool updatewu)
+void WUANALYSIS_API analyseAndPrintIssues(IConstWorkUnit * wu, const char *optGraph, double costPerHour, bool updatewu)
 {
+    printf("Analyze %s", wu->queryWuid());
+    if (optGraph)
+        printf(" (graph %s)\n", optGraph);
+    else
+        printf("\n");
     WorkunitRuleAnalyser analyser;
-    analyser.applyConfig(nullptr, wu);
-    analyser.analyse(wu);
-    analyser.applyRules();
+    StringBuffer timingInfo;
+    CCycleTimer totalTimer;
+    {
+        CCycleTimer collateTimer;
+        analyser.applyConfig(nullptr, wu, costPerHour);
+        analyser.analyse(wu, optGraph);
+        timingInfo.append(" collate ");
+        formatStatistic(timingInfo, cycle_to_nanosec(collateTimer.elapsedCycles()), SMeasureTimeNs);
+    }
+    {
+        CCycleTimer analyzeTimer;
+        analyser.applyRules();
+        timingInfo.append(" analyze ");
+        formatStatistic(timingInfo, cycle_to_nanosec(analyzeTimer.elapsedCycles()), SMeasureTimeNs);
+    }
+
     analyser.print();
     if (updatewu)
     {
+        CCycleTimer updateTimer;
         Owned<IWorkUnit> lockedwu = &(wu->lock());
         lockedwu->clearExceptions(CostOptimizerName);
-        analyser.update(lockedwu, costRate);
+        analyser.update(lockedwu);
+        timingInfo.append(" update ");
+        formatStatistic(timingInfo, cycle_to_nanosec(updateTimer.elapsedCycles()), SMeasureTimeNs);
+    }
+    timingInfo.append(" total ");
+    formatStatistic(timingInfo, cycle_to_nanosec(totalTimer.elapsedCycles()), SMeasureTimeNs);
+    printf("Timings:%s\n", timingInfo.str());
+}
+
+static bool getBoolWUOption(const IConstWorkUnit * workunit, IPropertyTree *cfg, const char * wuOption, const char * cfgOption, bool defaultValue)
+{
+    if (workunit && workunit->hasDebugValue(wuOption))
+        return workunit->getDebugValueBool(wuOption, defaultValue);
+    return cfg ? cfg->getPropBool(cfgOption, defaultValue) : defaultValue;
+}
+
+void WUANALYSIS_API runWorkunitAnalyser(IConstWorkUnit &workunit, IPropertyTree *cfg, const char * optGraph, bool inEclAgent, double costPerHour)
+{
+    Owned<IPropertyTree> analyzerCfg = cfg->getPropTree("analyzerOptions");
+    bool optAnalyzeInEclAgent = getBoolWUOption(&workunit, analyzerCfg, "analyzeInEclAgent", "@analyzeInEclAgent", defaultAnalyzeInEclAgent);
+    // Analyze when
+    // - analyzeInEclAgent is true and inEclAgent is true OR
+    // - analyzeInEclAgent is false and inEclAgent is false
+    if (optAnalyzeInEclAgent == inEclAgent)
+    {
+        bool optAnalyzeWhenComplete = getBoolWUOption(&workunit, analyzerCfg, "analyzeWhenComplete", "@analyzeWhenComplete", defaultAnalyzeWhenComplete);
+        bool graphSpecified = !isEmptyString(optGraph);
+        // Analyze when
+        // - analyzeWhenComplete is true and graph is not specified OR
+        // - analyzeWhenComplete is false and graph is specified
+        if (optAnalyzeWhenComplete != graphSpecified)
+            analyseWorkunit(workunit, optGraph, analyzerCfg, costPerHour);
     }
 }
+
 
 /*
 Syntax:
@@ -2114,7 +2316,7 @@ void analyseActivity(IConstWorkUnit * wu, IPropertyTree * cfg, const StringArray
 {
     WorkunitStatsAnalyser analyser;
     analyser.applyOptions(cfg);
-    analyser.analyse(wu);
+    analyser.analyse(wu, nullptr);
     analyser.adjustTimestamps();
     analyser.reportActivity(args);
 }
@@ -2123,7 +2325,7 @@ void analyseDependencies(IConstWorkUnit * wu, IPropertyTree * cfg, const StringA
 {
     WorkunitStatsAnalyser analyser;
     analyser.applyOptions(cfg);
-    analyser.analyse(wu);
+    analyser.analyse(wu, nullptr);
     analyser.adjustTimestamps();
     analyser.calcDependencies();
     analyser.spotCommonPath(args);
@@ -2137,7 +2339,7 @@ void analyseOutputDependencyGraph(IConstWorkUnit * wu, IPropertyTree * cfg)
 {
     WorkunitStatsAnalyser analyser;
     analyser.applyOptions(cfg);
-    analyser.analyse(wu);
+    analyser.analyse(wu, nullptr);
     analyser.adjustTimestamps();
     analyser.calcDependencies();
     analyser.traceDependencies();
@@ -2147,7 +2349,7 @@ void analyseCriticalPath(IConstWorkUnit * wu, IPropertyTree * cfg, const StringA
 {
     WorkunitStatsAnalyser analyser;
     analyser.applyOptions(cfg);
-    analyser.analyse(wu);
+    analyser.analyse(wu, nullptr);
     analyser.adjustTimestamps();
     analyser.calcDependencies();
     analyser.traceCriticalPaths(args);
@@ -2157,7 +2359,7 @@ void analyseHotspots(IConstWorkUnit * wu, IPropertyTree * cfg, const StringArray
 {
     WorkunitStatsAnalyser analyser;
     analyser.applyOptions(cfg);
-    analyser.analyse(wu);
+    analyser.analyse(wu, nullptr);
 
     const char * rootScope = nullptr;
     if (args.ordinality())
@@ -2177,7 +2379,7 @@ void analyseHotspots(WuHotspotResults & results, IConstWorkUnit * wu, IPropertyT
 {
     WorkunitStatsAnalyser analyser;
     analyser.applyOptions(cfg);
-    analyser.analyse(wu);
+    analyser.analyse(wu, nullptr);
 
     analyser.findHotspots(cfg->queryProp("@rootScope"), results.totalTime, results.hotspots);
     results.root.setown(analyser.getRootScope());

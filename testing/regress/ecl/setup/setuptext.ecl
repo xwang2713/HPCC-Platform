@@ -444,7 +444,7 @@ doCreateSimpleIndex(boolean useLocal, boolean useTranslation) := FUNCTION
                 BUILD(distributedWords, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameWordIndex(),
                         OVERWRITE, NOROOT, COMPRESSED(row)),
                 BUILD(normalizedInversion, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameWordIndex(),
-                        OVERWRITE, COMPRESSED(row))
+                        OVERWRITE, COMPRESSED(row),BLOOM(kind, word))
             )
         );
         //Add a column mapping, testing done L->R, multiple transforms, and that parameters work
@@ -524,7 +524,8 @@ shakespeareStream := normalizeWordFormat(convertTextFileToInversion(4, Directory
                     BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace', compressed('inplace'), OVERWRITE),
                     BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_row', compressed('inplace:randrow'), OVERWRITE),
                     BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_lzw', compressed('inplace:lzw'), OVERWRITE),
-                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_lz4hc', compressed('inplace:lz4hc'), OVERWRITE)
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_lz4hc', compressed('inplace:lz4hc'), OVERWRITE),
+                    BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex+'_inplace_zstd', compressed('inplace:zstds'), OVERWRITE)
                 )
             ),
             BUILD(inputStream, { kind, word, doc, segment, wpos, wip }, { flags, original, dpos }, Files.NameSearchIndex, OVERWRITE,
@@ -539,7 +540,7 @@ shakespeareStream := normalizeWordFormat(convertTextFileToInversion(4, Directory
     doCreateSearchDocument() := FUNCTION
         projected := TABLE(inputStream, { kind, word, doc, segment, wpos });
         resorted := SORT(projected, kind, word, doc, segment, wpos, LOCAL); // Ensure the ordering is consistent
-        RETURN OUTPUT(projected,, Files.NameSearchSource, THOR, OVERWRITE, COMPRESSED);
+        RETURN OUTPUT(projected,, Files.NameSearchSource, THOR, OVERWRITE, UNCOMPRESSED); // Do not compress the output, otherwise it skews the timings for stresstext.ecl
     END;
 
     exports := MODULE

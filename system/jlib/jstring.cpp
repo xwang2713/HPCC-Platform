@@ -517,6 +517,14 @@ void StringBuffer::setLength(size_t len)
     curLen = len;
 }
 
+char * StringBuffer::ensureCapacity(size_t max, size_t & got)
+{
+    if (maxLen <= curLen + max)
+        _realloc(curLen + max);
+    got = maxLen - curLen - 1;
+    return buffer + curLen;
+}
+
 size32_t StringBuffer::lengthUtf8() const
 {
     size_t chars = 0;
@@ -894,6 +902,15 @@ void StringBuffer::setCharAt(size_t offset, char value)
         buffer[offset] = value;
 }
 
+void StringBuffer::replace(size_t offset, size_t len, const void * value)
+{
+    if ((offset >= curLen) || (len == 0))
+        return;
+    if (offset + len > curLen)
+        len = curLen - offset;
+    memcpy(buffer + offset, value, len);
+}
+
 StringBuffer & StringBuffer::toLowerCase()
 {
     size_t l = curLen;
@@ -935,31 +952,42 @@ StringBuffer & StringBuffer::replace(char oldChar, char newChar)
 }
 
 // Copy source to result, replacing all occurrences of "oldStr" with "newStr"
-StringBuffer &replaceString(StringBuffer & result, size_t lenSource, const char *source, size_t lenOldStr, const char* oldStr, size_t lenNewStr, const char* newStr)
+bool replaceString(StringBuffer & result, size_t lenSource, const char *source, size_t lenOldStr, const char* oldStr, size_t lenNewStr, const char* newStr, bool avoidCopyIfUnmatched)
 {
-    if (lenSource)
+    if (lenOldStr && lenSource >= lenOldStr)
     {
-        size_t left = lenSource;
-        while (left >= lenOldStr)
+        size_t offset = 0;
+        size_t lastCopied = 0;
+        size_t maxOffset = lenSource - lenOldStr + 1;
+        char firstChar = oldStr[0];
+        while (offset < maxOffset)
         {
-            if (memcmp(source, oldStr, lenOldStr)==0)
+            if (unlikely(source[offset] == firstChar)
+                && unlikely((lenOldStr == 1) || memcmp(source + offset, oldStr, lenOldStr)==0))
             {
+                // Wait to allocate memory until a match is found
+                if (!lastCopied)
+                    result.ensureCapacity(lenSource); // Avoid allocating an unnecessarly large buffer and match the source string
+
+                // If lastCopied matches the offset nothing is appended, but we can avoid a test for offset == lastCopied
+                result.append(offset - lastCopied, source + lastCopied);
                 result.append(lenNewStr, newStr);
-                source += lenOldStr;
-                left -= lenOldStr;
+                offset += lenOldStr;
+                lastCopied = offset;
             }
             else
-            {
-                result.append(*source);
-                source++;
-                left--;
-            }
+                offset++;
         }
 
-        // there are no more possible replacements, make sure we keep the end of the original buffer
-        result.append(left, source);
+        if (lastCopied || !avoidCopyIfUnmatched)
+            result.append(lenSource - lastCopied, source + lastCopied); // Append the remaining characters
+
+        return lastCopied != 0;
     }
-    return result;
+    else if (!avoidCopyIfUnmatched)
+        result.append(lenSource, source); // Search string does not fit in source or is empty
+
+    return false;
 }
 
 StringBuffer &replaceVariables(StringBuffer & result, const char *source, bool exceptions, IVariableSubstitutionHelper *helper, const char* delim, const char* term)
@@ -1049,13 +1077,51 @@ StringBuffer &replaceStringNoCase(StringBuffer & result, size_t lenSource, const
 // this method will replace all occurrences of "oldStr" with "newStr"
 StringBuffer & StringBuffer::replaceString(const char* oldStr, const char* newStr)
 {
-    if (curLen)
+    if (curLen && oldStr)
     {
-        StringBuffer temp;
-        size_t oldlen = oldStr ? strlen(oldStr) : 0;
+        size_t oldlen = strlen(oldStr);
+        if (oldlen > curLen)
+            return *this;
+
         size_t newlen = newStr ? strlen(newStr) : 0;
-        ::replaceString(temp, curLen, buffer, oldlen, oldStr, newlen, newStr);
-        swapWith(temp);
+        // If target string (newStr) is shorter than or equal to search string, do an in-place replacement to avoid allocation
+        if (oldlen >= newlen)
+        {
+            size_t maxOffset = curLen - oldlen;
+            size_t offset = 0;
+            size_t targetOffset = 0;
+            size_t lastCopied = 0;
+            char firstChar = oldStr[0];
+            while (offset <= maxOffset)
+            {
+                if (unlikely(buffer[offset] == firstChar)
+                    && unlikely((oldlen == 1) || memcmp(buffer + offset, oldStr, oldlen)==0))
+                {
+                    if (lastCopied != targetOffset && likely(lastCopied != offset))
+                        memcpy(buffer + targetOffset, buffer + lastCopied, offset - lastCopied);
+                    targetOffset += offset - lastCopied;
+                    memcpy_iflen(buffer + targetOffset, newStr, newlen);
+                    offset += oldlen;
+                    targetOffset += newlen;
+                    lastCopied = offset;
+                }
+                else
+                    offset++;
+            }
+            // Copy remaining characters if in-place replacements were made
+            if (lastCopied)
+            {
+                if (lastCopied != targetOffset && lastCopied != curLen)
+                    memcpy(buffer + targetOffset, buffer + lastCopied, curLen - lastCopied);
+                setLength(targetOffset + (curLen - lastCopied));
+            }
+        }
+        else
+        {
+            StringBuffer temp;
+            if (::replaceString(temp, curLen, buffer, oldlen, oldStr, newlen, newStr, true))
+                swapWith(temp);
+        }
     }
     return *this;
 }
@@ -1521,7 +1587,7 @@ StringAttrItem::StringAttrItem(const char *_text, unsigned _len)
 }
 
 
-inline char hex(char c, char lower)
+inline char hex(char c, bool lower)
 {
   if (c < 10)
     return '0' + c;
@@ -1531,7 +1597,7 @@ inline char hex(char c, char lower)
     return 'A' + c - 10;
 }
 
-StringBuffer &  StringBuffer::appendhex(unsigned char c, char lower)
+StringBuffer &  StringBuffer::appendhex(unsigned char c, bool lower)
 {
     append(hex(c>>4, lower));
     append(hex(c&0xF, lower));
@@ -2367,6 +2433,42 @@ StringBuffer &encodeJSON(StringBuffer &s, const char *value)
     return encodeJSON(s, strlen(value), value);
 }
 
+inline StringBuffer & encodeCSVChar(StringBuffer & encodedCSV, char ch)
+{
+    byte next = ch;
+    switch (next)
+    {
+        case '\"':
+            encodedCSV.append("\"");
+            encodedCSV.append(next);
+            break;
+        //Any other character that needs to be escaped?
+        default:
+            encodedCSV.append(next);
+            break;
+    }
+    return encodedCSV;
+}
+
+StringBuffer & encodeCSVColumn(StringBuffer & encodedCSV, unsigned size, const char *rawCSVCol)
+{
+    if (!rawCSVCol)
+        return encodedCSV;
+    encodedCSV.ensureCapacity(size+2); // Minimum size that will be written
+    encodedCSV.append("\"");
+    for (size32_t i = 0; i < size; i++)
+        encodeCSVChar(encodedCSV, rawCSVCol[i]);
+    encodedCSV.append("\"");
+    return encodedCSV;
+}
+
+StringBuffer & encodeCSVColumn(StringBuffer & encodedCSV, const char *rawCSVCol)
+{
+    if (!rawCSVCol)
+        return encodedCSV;
+    return encodeCSVColumn(encodedCSV, strlen(rawCSVCol), rawCSVCol);
+}
+
 bool checkUnicodeLiteral(char const * str, unsigned length, unsigned & ep, StringBuffer & msg)
 {
     unsigned i;
@@ -2793,6 +2895,12 @@ bool loadBinaryFile(StringBuffer & contents, const char *filename, bool throwOnE
     return ok;
 }
 
+
+//Support option1=value1,option2(value2),option3,option4(nested=value,nested(value))
+// option1: value1
+// option2: value2
+// option3: 1
+// option4: nested=value,nested(value)
 void processOptionString(const char * options, optionCallback callback)
 {
     if (!options || !callback)
@@ -2802,35 +2910,63 @@ void processOptionString(const char * options, optionCallback callback)
     StringBuffer value;
     while (true)
     {
-        const char * comma = strchr(options, ',');
-        const char * eq = strchr(options, '=');
-        if (comma && eq)
+        const char * start = options;
+        const char * endname = nullptr;
+        const char * end = nullptr;
+        const char * comma = nullptr;
+        unsigned nesting = 0;
+        for (;;)
         {
-            if (comma < eq)
-                eq = nullptr;
-            else
+            byte next = *options;
+            if (next == '\0')
+                break;
+            else if (next == '(')
             {
-                //Could optionally see if the value is quoted, and if so scan for the terminator to allow quoted commas
-                //but then you may have problems with quoted quotes... so leave as-is for the moment
+                if ((nesting++ == 0) && !endname)
+                    endname = options;
             }
+            else if (next == ')')
+            {
+                if (nesting && --nesting==0 && !end)
+                {
+                    end = options;
+                    //All text after the closing ) until a comma is ignored.
+                }
+            }
+            else if (next == '=')
+            {
+                if (!nesting && !endname)
+                {
+                    endname = options;
+                }
+            }
+            else if (next == ',' && nesting == 0)
+            {
+                if (!end)
+                    end = options;
+                comma = options;
+                break;
+            }
+            options++;
         }
+
         option.clear();
         value.clear();
-        if (eq)
+        if (endname)
         {
-            option.append(eq-options, options);
-            if (comma)
-                value.append(comma-(eq+1), eq+1);
+            option.append(endname-start, start);
+            if (end)
+                value.append(end-(endname+1), endname+1);
             else
-                value.append(eq+1);
+                value.append(endname+1);
         }
         else
         {
             value.append("1");
-            if (comma)
-                option.append(comma-options, options);
+            if (end)
+                option.append(end-start, start);
             else
-                option.append(options);
+                option.append(start);
         }
 
         if (option.length())
@@ -2864,6 +3000,12 @@ void getSnakeCase(StringBuffer & out, const char * camelValue)
         else
             out.append((char)next);
     }
+}
+
+void ensureSeparator(StringBuffer & out, char separator)
+{
+    if (out.length() && (out.charAt(out.length()-1) != separator))
+        out.append(separator);
 }
 
 /**
@@ -2912,4 +3054,61 @@ const char * stristr (const char *haystack, const char *needle)
         }
     }
     return nullptr;
+}
+
+
+const void * jmemmem(size_t lenHaystack, const void * haystack, size_t lenNeedle, const void *needle)
+{
+    if (lenNeedle == 0)
+        return haystack;
+
+    if (lenHaystack < lenNeedle)
+        return nullptr;
+
+    const char * search = (const char *)needle;
+    char first = *search;
+    if (lenNeedle == 1)
+        return memchr(haystack, first, lenHaystack);
+
+    const char * buffer = (const char *)haystack;
+    for (size_t i = 0; i <= lenHaystack - lenNeedle; i++)
+    {
+        //Special case the first character to avoid a function call each iteration.
+        if (buffer[i] == first)
+        {
+            if (memcmp(buffer + i + 1, search + 1, lenNeedle-1) == 0)
+                return buffer + i;
+        }
+    }
+
+    return nullptr;
+}
+
+/**
+ * For preventing command injection, sanitize the argument to be passed to the system command.
+ * - Quote the entire argument with single quotes to prevent interpretation of shell metacharacters.
+ * - Since a single-quoted string can't contain single quotes, even escaped, replace each single
+ *   quote in the argument with the sequence '"'"' . That closes the single quoted string, appends
+ *   a literal single quote, and reopens the single quoted string
+ */
+StringBuffer& sanitizeCommandArg(const char* arg, StringBuffer& sanitized)
+{
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
+    if (!isEmptyString(arg))
+    {
+        size_t len = strlen(arg);
+        sanitized.append('\'');
+        for (size_t i = 0; i < len; i++)
+        {
+            if (arg[i] == '\'')
+                sanitized.append(R"('"'"')");
+            else
+                sanitized.append(arg[i]);
+        }
+        sanitized.append('\'');
+    }
+#else
+    sanitized.append(arg);
+#endif
+    return sanitized;
 }

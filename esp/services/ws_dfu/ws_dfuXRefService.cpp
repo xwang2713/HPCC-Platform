@@ -117,6 +117,10 @@ void CWsDfuXRefEx::init(IPropertyTree *cfg, const char *process, const char *ser
         throw MakeStringException(-1, "No Dali Connection Active. Please Specify a Dali to connect to in you configuration file");
     }
 
+#ifndef _CONTAINERIZED
+    initBareMetalRoxieTargets(roxieConnMap);
+#endif
+
     XRefNodeManager.setown(CreateXRefNodeFactory());
 
     //Start out builder thread......
@@ -583,55 +587,29 @@ void CWsDfuXRefEx::addXRefNode(const char* name, IPropertyTree* pXRefNodeTree)
     }
 }
 
-bool CWsDfuXRefEx::addUniqueXRefNode(const char *processName, BoolHash &uniqueProcesses, IPropertyTree *xrefNodeTree)
-{
-    if (isEmptyString(processName))
-        return false;
-    bool *found = uniqueProcesses.getValue(processName);
-    if (found && *found)
-        return false;
-    uniqueProcesses.setValue(processName, true);
-    addXRefNode(processName, xrefNodeTree);
-    return true;
-}
-
 bool CWsDfuXRefEx::onDFUXRefList(IEspContext &context, IEspDFUXRefListRequest &req, IEspDFUXRefListResponse &resp)
 {
     try
     {
-#ifdef _CONTAINERIZED
-        IERRLOG("CONTAINERIZED(CWsDfuXRefEx::onDFUXRefList)");
-#else
         context.ensureFeatureAccess(XREF_FEATURE_URL, SecAccess_Read, ECLWATCH_DFU_XREF_ACCESS_DENIED, "WsDfuXRef::DFUXRefList: Permission denied.");
 
-        CConstWUClusterInfoArray clusters;
-        getEnvironmentClusterInfo(clusters);
-
-        BoolHash uniqueProcesses;
+        Owned<IPropertyTreeIterator> planesIter = getPlanesIterator("data", nullptr);
         Owned<IPropertyTree> xrefNodeTree = createPTree("XRefNodes");
-        ForEachItemIn(c, clusters)
+
+        ForEach(*planesIter)
         {
-            IConstWUClusterInfo &cluster = clusters.item(c);
-            switch (cluster.getPlatform())
-            {
-            case ThorLCRCluster:
-                {
-                    const StringArray &primaryThorProcesses = cluster.getPrimaryThorProcesses();
-                    ForEachItemIn(i, primaryThorProcesses)
-                        addUniqueXRefNode(primaryThorProcesses.item(i), uniqueProcesses, xrefNodeTree);
-                }
-                break;
-            case RoxieCluster:
-                SCMStringBuffer roxieProcess;
-                addUniqueXRefNode(cluster.getRoxieProcess(roxieProcess).str(), uniqueProcesses, xrefNodeTree);
-                break;
-            }
+            IPropertyTree &item = planesIter->query();
+            bool isNotCopy = !item.getPropBool("@copy", false);
+            bool isNotHthorPlane = !item.getPropBool("@hthorplane", false);
+            if (isNotCopy && isNotHthorPlane)
+                addXRefNode(item.queryProp("@name"), xrefNodeTree);
         }
-        addXRefNode("SuperFiles", xrefNodeTree);
+
+        if (!isContainerized())
+            addXRefNode("SuperFiles", xrefNodeTree);
 
         StringBuffer buf;
         resp.setDFUXRefListResult(formatResult(context, xrefNodeTree, buf));
-#endif
     }
     catch(IException *e)
     {   
@@ -750,19 +728,24 @@ void CWsDfuXRefEx::findUnusedFilesWithDetailsInDFS(IEspContext &context, const c
 void CWsDfuXRefEx::getRoxieFiles(const char *process, bool checkPackageMaps, MapStringTo<bool> &usedFileMap)
 {
     SocketEndpointArray servers;
+    Owned<IPropertyTree> controlXrefInfo;
 #ifdef _CONTAINERIZED
     StringBuffer epStr;
     getService(epStr, process, true);
     SocketEndpoint ep(epStr);
     servers.append(ep);
-#else
-    getRoxieProcessServers(process, servers);
     if (!servers.length())
         throw MakeStringExceptionDirect(ECLWATCH_INVALID_CLUSTER_INFO, "process cluster, not found.");
+    Owned<ISocket> sock = ISocket::connect_timeout(servers.item(0), ROXIECONNECTIONTIMEOUT);
+    controlXrefInfo.setown(sendRoxieControlQuery(sock, "<control:getQueryXrefInfo/>", ROXIECONTROLXREFTIMEOUT));
+#else
+    ISmartSocketFactory *conn = roxieConnMap.getValue(process);
+    if (!conn)
+        throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "Connection info for '%s' process cluster not found.", process ? process : "(null)");
+
+    controlXrefInfo.setown(sendRoxieControlQuery(conn, "<control:getQueryXrefInfo/>", ROXIECONTROLXREFTIMEOUT, ROXIECONNECTIONTIMEOUT));
 #endif
 
-    Owned<ISocket> sock = ISocket::connect_timeout(servers.item(0), ROXIECONNECTIONTIMEOUT);
-    Owned<IPropertyTree> controlXrefInfo = sendRoxieControlQuery(sock, "<control:getQueryXrefInfo/>", ROXIECONTROLXREFTIMEOUT);
     if (!controlXrefInfo)
         throw MakeStringExceptionDirect(ECLWATCH_INTERNAL_ERROR, "roxie cluster, not responding.");
     Owned<IPropertyTreeIterator> roxieFiles = controlXrefInfo->getElements("//File");

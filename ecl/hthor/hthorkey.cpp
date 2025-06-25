@@ -700,6 +700,8 @@ const IDynamicTransform * CHThorIndexReadActivityBase::getLayoutTranslator(IDist
     Owned<const IDynamicTransform> payloadTranslator =  createRecordTranslator(projectedFormat->queryRecordAccessor(true), actualFormat->queryRecordAccessor(true));
     if (!payloadTranslator->canTranslate())
         throw MakeStringException(0, "Untranslatable key layout mismatch reading index %s", f->queryLogicalName());
+    if (getLayoutTranslationMode() == RecordTranslationMode::PayloadRemoveOnly && payloadTranslator->hasNewFields())
+        throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", f->queryLogicalName());
     if (payloadTranslator->needsTranslate())
         return payloadTranslator.getClear();
     return nullptr;
@@ -715,6 +717,8 @@ void CHThorIndexReadActivityBase::verifyIndex(IKeyIndex * idx)
         {
             if (!layoutTrans->canTranslate())
                 throw MakeStringException(0, "Untranslatable key layout mismatch reading index %s", df->queryLogicalName());
+            if (getLayoutTranslationMode() == RecordTranslationMode::PayloadRemoveOnly && layoutTrans->hasNewFields())
+                throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", df->queryLogicalName());
         }
         else
         {
@@ -1736,7 +1740,7 @@ public:
 class IFlatFetchHandlerCallback
 {
 public:
-    virtual void processFetch(FetchRequest const * fetch, offset_t pos, ISerialStream *rawStream) = 0;
+    virtual void processFetch(FetchRequest const * fetch, offset_t pos, IBufferedSerialInputStream *rawStream) = 0;
 };
 
 class IXmlFetchHandlerCallback
@@ -1751,7 +1755,7 @@ class FetchPartHandlerBase
 {
 protected:
     Owned<IFileIO> rawFile;
-    Owned<ISerialStream> rawStream;
+    Owned<IBufferedSerialInputStream> rawStream;
     offset_t base;
     offset_t top;
     bool blockcompressed;
@@ -2391,7 +2395,7 @@ public:
 
     virtual bool needsAllocator() const { return true; }
 
-    virtual void processFetch(FetchRequest const * fetch, offset_t pos, ISerialStream *rawStream)
+    virtual void processFetch(FetchRequest const * fetch, offset_t pos, IBufferedSerialInputStream *rawStream)
     {
         CThorContiguousRowBuffer prefetchSource;
         prefetchSource.setStream(rawStream);
@@ -2462,6 +2466,8 @@ protected:
                     translator->describe();
                     if (translator->canTranslate())
                     {
+                        if (getLayoutTranslationMode()==RecordTranslationMode::PayloadRemoveOnly && translator->hasNewFields())
+                            throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", f->queryLogicalName());
                         if (getLayoutTranslationMode()==RecordTranslationMode::None)
                             throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled", f->queryLogicalName());
                         VStringBuffer msg("Record layout translation required for %s", f->queryLogicalName());
@@ -2536,9 +2542,9 @@ public:
 
     virtual bool needsAllocator() const { return true; }
 
-    virtual void processFetch(FetchRequest const * fetch, offset_t pos, ISerialStream *rawStream)
+    virtual void processFetch(FetchRequest const * fetch, offset_t pos, IBufferedSerialInputStream *rawStream)
     {
-        rawStream->reset(pos);
+        rawStream->reset(pos, UnknownOffset);
         CriticalBlock procedure(transformCrit);
         size32_t maxRowSize = 10*1024*1024; // MORE - make configurable
         unsigned thisLineLength = csvSplitter.splitLine(rawStream, maxRowSize);
@@ -3324,7 +3330,7 @@ public:
 class IKeyedJoinFetchHandlerCallback
 {
 public:
-    virtual void processFetch(KeyedJoinFetchRequest const * fetch, offset_t pos, ISerialStream *rawStream) = 0;
+    virtual void processFetch(KeyedJoinFetchRequest const * fetch, offset_t pos, IBufferedSerialInputStream *rawStream) = 0;
 };
 
 class KeyedJoinFetchPartHandler : public FetchPartHandlerBase, public ThreadedPartHandler<KeyedJoinFetchRequest>
@@ -3582,7 +3588,7 @@ public:
         return new KeyedJoinFetchPartHandler(*this, part, base, size, handler, threadPool, blockcompressed, encryptionkey, activityId, outputMeta, prefetcher, rowAllocator);
     }
 
-    virtual void processFetch(KeyedJoinFetchRequest const * fetch, offset_t pos, ISerialStream *rawStream)
+    virtual void processFetch(KeyedJoinFetchRequest const * fetch, offset_t pos, IBufferedSerialInputStream *rawStream)
     {
         CThorContiguousRowBuffer prefetchSource;
         prefetchSource.setStream(rawStream);
@@ -4102,6 +4108,8 @@ protected:
                 throw MakeStringException(0, "Untranslatable key layout mismatch reading index %s", f->queryLogicalName());
             if (payloadTranslator->keyedTranslated())
                 throw MakeStringException(0, "Untranslatable key layout mismatch reading index %s - keyed fields do not match", f->queryLogicalName());
+            if (getLayoutTranslationMode()==RecordTranslationMode::PayloadRemoveOnly && payloadTranslator->hasNewFields())
+                throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", f->queryLogicalName());
             if (getLayoutTranslationMode()==RecordTranslationMode::None)
                 throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled", f->queryLogicalName());
             VStringBuffer msg("Record layout translation required for %s", f->queryLogicalName());
@@ -4119,6 +4127,8 @@ protected:
             {
                 if (!trans->canTranslate())
                     throw MakeStringException(0, "Untranslatable key layout mismatch reading index %s", f->queryLogicalName());
+                if (getLayoutTranslationMode() == RecordTranslationMode::PayloadRemoveOnly && trans->hasNewFields())
+                    throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", f->queryLogicalName());
             }
             else
             {
@@ -4149,6 +4159,8 @@ protected:
                     translator.setown(createRecordTranslator(helper.queryProjectedDiskRecordSize()->queryRecordAccessor(true), actualDiskMeta->queryRecordAccessor(true)));
                     if (translator->canTranslate())
                     {
+                        if (getLayoutTranslationMode()==RecordTranslationMode::PayloadRemoveOnly && translator->hasNewFields())
+                            throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled when expected fields are missing from source.", f->queryLogicalName());
                         if (getLayoutTranslationMode()==RecordTranslationMode::None)
                             throw MakeStringException(0, "Translatable file layout mismatch reading file %s but translation disabled", f->queryLogicalName());
                         VStringBuffer msg("Record layout translation required for %s", f->queryLogicalName());

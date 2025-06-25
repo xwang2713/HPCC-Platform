@@ -442,7 +442,6 @@ public:
             CJoinGroup *finger = head.next;
             if (preserveGroups)
             {
-                unsigned cnt=0;
                 while (finger != &head)
                 {
                     if (finger->complete())
@@ -450,7 +449,6 @@ public:
                         CJoinGroup *next = processRemoveGroup(finger);
                         notify.addJoinGroup(finger); // means doneQueue owns linked list
                         finger = next;
-                        ++cnt;
                     }
                     else
                         break;
@@ -844,7 +842,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                                 fetchOutPtr += FETCHKEY_HEADER_SIZE;
 
                                 Owned<IFileIO> iFileIO = owner.getFilePartIO(filePartIndex);
-                                Owned<ISerialStream> stream = createFileSerialStream(iFileIO, localFpos);
+                                Owned<IBufferedSerialInputStream> stream = createFileSerialStream(iFileIO, localFpos);
                                 const ITranslator *translator = translators.item(filePartIndex);
 
                                 RtlDynamicRowBuilder fetchedRowBuilder(fetchDiskRowIf->queryRowAllocator());
@@ -1641,7 +1639,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
 
             Owned<IFileIO> lazyFileIO = queryThor().queryFileCache().lookupIFileIO(*this, indexName, filePart);
             Owned<IDelayedFile> delayedFile = createDelayedFile(lazyFileIO);
-            Owned<IKeyIndex> keyIndex = createKeyIndex(filename, crc, *delayedFile, (unsigned) -1, false);
+            Owned<IKeyIndex> keyIndex = createKeyIndex(filename, crc, *delayedFile, (unsigned) -1, false, 0);
             keyIndexes.append(*keyIndex.getClear());
         }
     }
@@ -1964,7 +1962,7 @@ public:
                     Owned<IFileIO> iFileIO = createIFileI(lenArray.item(p), tlkMb.toByteArray()+posArray.item(p));
                     StringBuffer name("TLK");
                     name.append('_').append(container.queryId()).append('_');
-                    tlkKeySet->addIndex(createKeyIndex(name.append(p).str(), 0, *iFileIO, (unsigned) -1, true)); // MORE - not the right crc
+                    tlkKeySet->addIndex(createKeyIndex(name.append(p).str(), 0, *iFileIO, (unsigned) -1, true, 0)); // MORE - not the right crc
                 }
             }
             if (needsDiskRead)

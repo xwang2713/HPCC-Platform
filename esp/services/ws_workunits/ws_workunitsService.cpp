@@ -1708,17 +1708,29 @@ bool CWsWorkunitsEx::onWUResultView(IEspContext &context, IEspWUResultViewReques
 }
 
 
-void doWUQueryBySingleWuid(IEspContext &context, const char *wuid, IEspWUQueryResponse &resp)
+void doWUQueryBySingleWU(IEspContext &context, IConstWorkUnit *cw, IEspWUQueryResponse &resp)
 {
     Owned<IEspECLWorkunit> info= createECLWorkunit("","");
-    WsWuInfo winfo(context, wuid);
+    WsWuInfo winfo(context, cw);
     winfo.getCommon(*info, 0);
     IArrayOf<IEspECLWorkunit> results;
     results.append(*info.getClear());
     resp.setWorkunits(results);
+    resp.setNumWUs(1);
     resp.setPageSize(1);
     resp.setCount(1);
-    PROGLOG("getWUInfo: %s", wuid);
+    resp.setNumWUs(1);
+    PROGLOG("getWUInfo: %s", cw->queryWuid());
+}
+
+void doWUQueryBySingleWuid(IEspContext &context, const char *wuid, IEspWUQueryResponse &resp)
+{
+    Owned<IWorkUnitFactory> wf = getWorkUnitFactory(context.querySecManager(), context.queryUser());
+    Owned<IConstWorkUnit> cw = wf->openWorkUnit(wuid, nullptr, nullptr, false);
+    if (!cw)
+        return;
+    ensureWsWorkunitAccess(context, *cw, SecAccess_Read);
+    doWUQueryBySingleWU(context, cw, resp);
 }
 
 void doWUQueryByFile(IEspContext &context, const char *logicalFile, IEspWUQueryResponse &resp)
@@ -1739,11 +1751,12 @@ void doWUQueryByFile(IEspContext &context, const char *logicalFile, IEspWUQueryR
             "Cannot access the workunit for file %s. Resource %s : Permission denied. Read Access Required.",
             logicalFile, secAccessFeature.str());
 
-    doWUQueryBySingleWuid(context, wuid.str(), resp);
+    doWUQueryBySingleWU(context, cw, resp);
 
     resp.setFirst(false);
     resp.setPageSize(1);
     resp.setCount(1);
+    resp.setNumWUs(1);
 }
 
 bool addWUQueryFilter(WUSortField *filters, unsigned short &count, MemoryBuffer &buff, const char *name, WUSortField value)
@@ -1758,6 +1771,16 @@ bool addWUQueryFilter(WUSortField *filters, unsigned short &count, MemoryBuffer 
     }
     else
         buff.append(name);
+    return true;
+}
+
+bool addWUQueryFilterDouble(WUSortField *filters, unsigned short &count, MemoryBuffer &buff, double double_num, WUSortField value)
+{
+    if (double_num == 0)
+        return false;
+    VStringBuffer vBuf("%f", double_num);
+    filters[count++] = value;
+    buff.append(vBuf);
     return true;
 }
 
@@ -1883,6 +1906,8 @@ void doWUQueryWithSort(IEspContext &context, IEspWUQueryRequest & req, IEspWUQue
     unsigned short filterCount = 0;
     MemoryBuffer filterbuf;
 
+    WuidPattern wuidPattern(req.getWuid());
+
     // Query filters should be added in order of expected power - add the most restrictive filters first
 
     bool bDoubleCheckState = false;
@@ -1897,12 +1922,15 @@ void doWUQueryWithSort(IEspContext &context, IEspWUQueryRequest & req, IEspWUQue
             bDoubleCheckState = true;
     }
 
-    addWUQueryFilter(filters, filterCount, filterbuf, req.getWuid(), WUSFwildwuid);
+    addWUQueryFilter(filters, filterCount, filterbuf, wuidPattern.str(), WUSFwildwuid);
     addWUQueryFilter(filters, filterCount, filterbuf, req.getCluster(), WUSFcluster);
     addWUQueryFilter(filters, filterCount, filterbuf, req.getLogicalFile(), (WUSortField) (WUSFfileread | WUSFnocase));
     addWUQueryFilter(filters, filterCount, filterbuf, req.getOwner(), (WUSortField) (WUSFuser | WUSFnocase));
     addWUQueryFilter(filters, filterCount, filterbuf, req.getJobname(), (WUSortField) (WUSFjob | WUSFnocase));
     addWUQueryFilter(filters, filterCount, filterbuf, req.getECL(), (WUSortField) (WUSFecl | WUSFwild));
+    addWUQueryFilterDouble(filters, filterCount, filterbuf, req.getMinimumCompileCost(), WUSFcostcompile);
+    addWUQueryFilterDouble(filters, filterCount, filterbuf, req.getMinimumExecuteCost(), WUSFcostexecute);
+    addWUQueryFilterDouble(filters, filterCount, filterbuf, req.getMinimumFileAccessCost(), WUSFcostfileaccess);
     CWUProtectFilter protectedFilter = req.getProtected();
     if (protectedFilter != CWUProtectFilter_All)
         addWUQueryFilter(filters, filterCount, filterbuf, (protectedFilter == CWUProtectFilter_Protected) ? "1" : "0", WUSFprotected);
@@ -2098,6 +2126,8 @@ void doWULightWeightQueryWithSort(IEspContext &context, IEspWULightWeightQueryRe
     unsigned short filterCount = 0;
     MemoryBuffer filterbuf;
 
+    WuidPattern wuidPattern(req.getWuid());
+
     // Query filters should be added in order of expected power - add the most restrictive filters first
 
     bool bDoubleCheckState = false;
@@ -2112,7 +2142,7 @@ void doWULightWeightQueryWithSort(IEspContext &context, IEspWULightWeightQueryRe
             bDoubleCheckState = true;
     }
 
-    addWUQueryFilter(filters, filterCount, filterbuf, req.getWuid(), WUSFwildwuid);
+    addWUQueryFilter(filters, filterCount, filterbuf, wuidPattern.str(), WUSFwildwuid);
     addWUQueryFilter(filters, filterCount, filterbuf, req.getCluster(), WUSFcluster);
     addWUQueryFilter(filters, filterCount, filterbuf, req.getOwner(), (WUSortField) (WUSFuser | WUSFnocase));
     addWUQueryFilter(filters, filterCount, filterbuf, req.getJobName(), (WUSortField) (WUSFjob | WUSFnocase));
@@ -2439,8 +2469,7 @@ public:
 
     CArchivedWUsReader(IEspContext& _context, const char* _sashaServerIP, unsigned _sashaServerPort, ArchivedWuCache& _archivedWuCache,
         unsigned _cacheMinutes, unsigned _pageSize)
-        : context(_context), sashaServerIP(_sashaServerIP), sashaServerPort(_sashaServerPort),
-        archivedWuCache(_archivedWuCache), cacheMinutes(_cacheMinutes), pageSize(_pageSize)
+        : context(_context), pageSize(_pageSize), sashaServerIP(_sashaServerIP), sashaServerPort(_sashaServerPort), cacheMinutes(_cacheMinutes), archivedWuCache(_archivedWuCache)
     {
         hasMoreWU = false;
         numberOfWUsReturned = 0;
@@ -2587,16 +2616,17 @@ bool CWsWorkunitsEx::onWUQuery(IEspContext &context, IEspWUQueryRequest & req, I
 {
     try
     {
-        StringBuffer wuidStr(req.getWuid());
-        const char* wuid = wuidStr.trim().str();
+        WuidPattern pattern(req.getWuid());
+
+        resp.setNumWUs(0);
+
+        // assume an empty list until told otherwise
+        resp.setNumWUs(0);
 
         if (req.getType() && strieq(req.getType(), "archived workunits"))
             doWUQueryFromArchive(context, sashaServerIp.get(), sashaServerPort, *archivedWuCache, awusCacheMinutes, req, resp);
-        else if(notEmpty(wuid) && looksLikeAWuid(wuid, 'W'))
-        {
-            ensureWsWorkunitAccess(context, wuid, SecAccess_Read);
-            doWUQueryBySingleWuid(context, wuid, resp);
-        }
+        else if(notEmpty(pattern) && looksLikeAWuid(pattern, 'W'))
+            doWUQueryBySingleWuid(context, pattern, resp);
         else if (notEmpty(req.getLogicalFile()) && req.getLogicalFileSearchType() && strieq(req.getLogicalFileSearchType(), "Created"))
             doWUQueryByFile(context, req.getLogicalFile(), resp);
         else
@@ -2624,6 +2654,12 @@ bool CWsWorkunitsEx::onWUQuery(IEspContext &context, IEspWUQueryRequest & req, I
         addToQueryString(basicQuery, "Type", req.getType());
         if (addToQueryString(basicQuery, "LogicalFile", req.getLogicalFile()))
             addToQueryString(basicQuery, "LogicalFileSearchType", req.getLogicalFileSearchType());
+        if (version >= 2.02)
+        {
+            addDoubleToQueryString(basicQuery, "MinimumCompileCost", req.getMinimumCompileCost());
+            addDoubleToQueryString(basicQuery, "MinimumExecuteCost", req.getMinimumExecuteCost());
+            addDoubleToQueryString(basicQuery, "MinimumFileAccessCost", req.getMinimumFileAccessCost());
+        }
         resp.setFilters(basicQuery.str());
 
         if (notEmpty(req.getSortby()) && !strstr(basicQuery.str(), StringBuffer(req.getSortby()).append('=').str()))
@@ -5180,16 +5216,16 @@ bool CWsWorkunitsEx::onWUGetStats(IEspContext &context, IEspWUGetStatsRequest &r
         if (!req.getCreateDescriptions_isNull())
             createDescriptions = req.getCreateDescriptions();
 
-        StringBuffer wuid(req.getWUID());
-        PROGLOG("WUGetStats: %s", wuid.str());
+        WuidPattern wuidPattern(req.getWUID());
+        PROGLOG("WUGetStats: %s", wuidPattern.str());
 
         IArrayOf<IEspWUStatisticItem> statistics;
-        if (strchr(wuid, '*'))
+        if (strchr(wuidPattern, '*'))
         {
             WUSortField filters[2];
             MemoryBuffer filterbuf;
             filters[0] = WUSFwildwuid;
-            filterbuf.append(wuid.str());
+            filterbuf.append(wuidPattern.str());
             filters[1] = WUSFterm;
             Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
             Owned<IConstWorkUnitIterator> iter = factory->getWorkUnitsSorted((WUSortField) (WUSFwuid), filters, filterbuf.bufferBase(), 0, INT_MAX, NULL, NULL);
@@ -5206,14 +5242,14 @@ bool CWsWorkunitsEx::onWUGetStats(IEspContext &context, IEspWUGetStatsRequest &r
         }
         else
         {
-            WsWuHelpers::checkAndTrimWorkunit("WUInfo", wuid);
-            ensureWsWorkunitAccess(context, wuid, SecAccess_Read);
+            WsWuHelpers::checkAndTrimWorkunit("WUInfo", wuidPattern);
+            ensureWsWorkunitAccess(context, wuidPattern, SecAccess_Read);
 
-            WsWuInfo winfo(context, wuid);
+            WsWuInfo winfo(context, wuidPattern);
             winfo.getStats(filter, statsFilter, createDescriptions, statistics);
         }
         resp.setStatistics(statistics);
-        resp.setWUID(wuid.str());
+        resp.setWUID(wuidPattern.str());
     }
     catch(IException* e)
     {

@@ -231,7 +231,6 @@ extern DEFTYPE_API ITypeInfo * getPromotedAddSubType(ITypeInfo * l_type, ITypeIn
 extern DEFTYPE_API ITypeInfo * getPromotedMulDivType(ITypeInfo * l_type, ITypeInfo * r_type);
 extern DEFTYPE_API ITypeInfo * getPromotedDivType(ITypeInfo * l_type, ITypeInfo * r_type);
 extern DEFTYPE_API ITypeInfo * getPromotedNumericType(ITypeInfo * l_type, ITypeInfo * r_type);
-extern DEFTYPE_API unsigned getClarionResultType(ITypeInfo *type);
 extern DEFTYPE_API ITypeInfo * getAsciiType(ITypeInfo * type);
 extern DEFTYPE_API ITypeInfo * getBandType(ITypeInfo * type1, ITypeInfo * type2);
 extern DEFTYPE_API ITypeInfo * getBorType(ITypeInfo * type1, ITypeInfo * type2);
@@ -245,6 +244,7 @@ extern DEFTYPE_API bool isSimpleStringType(ITypeInfo * type);
 extern DEFTYPE_API bool isSimpleIntegralType(ITypeInfo * type);
 extern DEFTYPE_API bool isIntegralType(ITypeInfo * type);
 extern DEFTYPE_API bool isPatternType(ITypeInfo * type);
+extern DEFTYPE_API bool isUTF8Type(ITypeInfo * type);
 extern DEFTYPE_API bool isUnicodeType(ITypeInfo * type);
 extern DEFTYPE_API bool isLittleEndian(ITypeInfo * type);
 extern DEFTYPE_API bool isDatasetType(ITypeInfo * type);

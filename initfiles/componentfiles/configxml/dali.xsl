@@ -120,6 +120,10 @@
           <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
         </expert>
         <xsl:copy-of select="/Environment/Hardware/cost"/>
+        <storage>
+          <xsl:copy-of select="/Environment/Software/Globals/storage/*"/>
+          <xsl:copy-of select="/Environment/Software/Storage/*"/>
+        </storage>
       </global>
       <xsl:if test="@authMethod='secmgrPlugin'">
       <SecurityManagers>
@@ -148,7 +152,7 @@
       <xsl:element name="SDS">
         <xsl:attribute name="store">dalisds.xml</xsl:attribute>
         <xsl:attribute name="caseInsensitive">0</xsl:attribute>
-        <xsl:copy-of select="@nobackup | @recoverFromIncErrors | @snmpSendWarnings | @enableSNMP | @enableSysLog | @snmpErrorMsgLevel | @msgLevel | @lightweightCoalesce | @keepStores | @deltaSaveThresholdSecs | @deltaTransactionQueueLimit | @deltaTransactionMaxMemMB"/>
+        <xsl:copy-of select="@nobackup | @recoverFromIncErrors | @snmpSendWarnings | @enableSNMP | @enableSysLog | @snmpErrorMsgLevel | @msgLevel | @lightweightCoalesce | @keepStores | @deltaSaveThresholdSecs | @deltaTransactionQueueLimit | @deltaTransactionMaxMemMB | @leakStore"/>
         <xsl:if test="string(@IdlePeriod) != ''">
             <xsl:attribute name="lCIdlePeriod">
                 <xsl:value-of select="@IdlePeriod"/>
@@ -308,6 +312,15 @@
             <xsl:attribute name="adminGroupName">
                 <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@adminGroupName"/>
             </xsl:attribute>
+            <xsl:attribute name="useLegacyDefaultFileScopePermissionCache">
+                <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@useLegacyDefaultFileScopePermissionCache"/>
+            </xsl:attribute>
+            <xsl:attribute name="useLegacySuperUserStatusCheck">
+              <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@useLegacySuperUserStatusCheck"/>
+            </xsl:attribute>
+            <xsl:attribute name="disableDefaultUser">
+              <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@disableDefaultUser"/>
+            </xsl:attribute>
             <xsl:variable name="ldapServerNode" select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]"/>
             <xsl:if test="not($ldapServerNode)">
               <xsl:message terminate="yes">
@@ -340,11 +353,14 @@
             <xsl:for-each select="$ldapServerNode">
               <xsl:copy-of select="@ldapPort | @ldapSecurePort | @ldapTimeoutSecs | @ldapCipherSuite | @cacheTimeout | @workunitsBasedn | @modulesBasedn | @systemBasedn | @systemCommonName | @systemUser | @systemPassword | @usersBasedn | @groupsBasedn| @viewsBasedn | @serverType"/>
             </xsl:for-each>
+            <xsl:attribute name="ldapAdminSecretKey">
+              <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServerName]/@ldapAdminSecretKey"/>
+            </xsl:attribute>
           </xsl:element>
         </xsl:if>
       </xsl:element>
+      <xsl:call-template name="addMetricsConfig"/>
     </DALI>
-    <xsl:call-template name="addMetricsConfig"/>
   </xsl:template>
 
   <xsl:template name="makeAbsolutePath">

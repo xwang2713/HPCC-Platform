@@ -38,6 +38,8 @@ static constexpr const char * defaultHPCCLogJobIDCol       = "hpcc_log_jobid";
 static constexpr const char * defaultHPCCLogComponentCol   = "hpcc_log_component";
 static constexpr const char * defaultHPCCLogTypeCol        = "hpcc_log_class";
 static constexpr const char * defaultHPCCLogAudCol         = "hpcc_log_audience";
+static constexpr const char * defaultHPCCLogTraceIDCol     = "hpcc_log_traceid";
+static constexpr const char * defaultHPCCLogSpanIDCol      = "hpcc_log_spanid";
 static constexpr const char * defaultHPCCLogComponentTSCol = "TimeGenerated";
 static constexpr const char * defaultPodHPCCLogCol         = "PodName";
 
@@ -170,7 +172,7 @@ size_t stringCallback(char *contents, size_t size, size_t nmemb, void *userp)
     return size * nmemb;
 }
 
-static void submitKQLQuery(std::string & readBuffer, const char * token, const char * kql, const char * workspaceID)
+static void submitKQLQuery(std::string & readBuffer, const char * token, const char * kql, const char * workspaceID, const char * timeSpan)
 {
     if (isEmptyString(token))
         throw makeStringExceptionV(-1, "%s KQL request: Empty LogAnalytics Workspace Token detected!", COMPONENT_NAME);
@@ -181,6 +183,9 @@ static void submitKQLQuery(std::string & readBuffer, const char * token, const c
     if (isEmptyString(workspaceID))
         throw makeStringExceptionV(-1, "%s KQL request: Empty WorkspaceID detected!", COMPONENT_NAME);
 
+    if (isEmptyString(timeSpan))
+        throw makeStringExceptionV(-1, "%s KQL request: Empty timeSpan detected!", COMPONENT_NAME);
+
     OwnedPtrCustomFree<CURL, curl_easy_cleanup> curlHandle = curl_easy_init();
     if (curlHandle)
     {
@@ -190,14 +195,18 @@ static void submitKQLQuery(std::string & readBuffer, const char * token, const c
         curlErrBuffer[0] = '\0';
 
         char * encodedKQL = curl_easy_escape(curlHandle, kql, strlen(kql));
-        VStringBuffer tokenRequestURL("https://api.loganalytics.io/v1/workspaces/%s/query?query=%s", workspaceID, encodedKQL);
+        char * encodedTimeSpan = curl_easy_escape(curlHandle, timeSpan, strlen(timeSpan));
+        VStringBuffer kqlQueryString("https://api.loganalytics.azure.com/v1/workspaces/%s/query?query=%s&timespan=%s", workspaceID, encodedKQL, encodedTimeSpan);
+        curl_free(encodedTimeSpan);
         curl_free(encodedKQL);
+
+        DBGLOG("%s: Full ALA API query request: '%s'", COMPONENT_NAME, kqlQueryString.str());
 
         VStringBuffer bearerHeader("Authorization: Bearer %s", token);
 
         /*curl -X GET 
         -H "Authorization: Bearer <TOKEN>"
-            "https://api.loganalytics.io/v1/workspaces/<workspaceID>/query?query=ContainerLog20%7C%20limit%20100"
+            "https://api.loganalytics.azure.com/v1/workspaces/<workspaceID>/query?query=ContainerLog20%7C%20limit%20100&timespan=2022-05-11T06:45:00.000Z%2F2022-05-11T13:00:00.000Z"
         */
 
         headers = curl_slist_append(headers, bearerHeader.str());
@@ -205,8 +214,8 @@ static void submitKQLQuery(std::string & readBuffer, const char * token, const c
         if (curl_easy_setopt(curlHandle, CURLOPT_HTTPHEADER, headers.getClear()) != CURLE_OK)
             throw makeStringExceptionV(-1, "%s: Log query request: Could not set 'CURLOPT_HTTPHEADER'", COMPONENT_NAME);
 
-        if (curl_easy_setopt(curlHandle, CURLOPT_URL, tokenRequestURL.str()) != CURLE_OK)
-            throw makeStringExceptionV(-1, "%s: Log query request: Could not set 'CURLOPT_URL' (%s)!", COMPONENT_NAME, tokenRequestURL.str());
+        if (curl_easy_setopt(curlHandle, CURLOPT_URL, kqlQueryString.str()) != CURLE_OK)
+            throw makeStringExceptionV(-1, "%s: Log query request: Could not set 'CURLOPT_URL' (%s)!", COMPONENT_NAME, kqlQueryString.str());
 
         if (curl_easy_setopt(curlHandle, CURLOPT_POST, 0) != CURLE_OK)
             throw makeStringExceptionV(-1, "%s: Log query request: Could not disable 'CURLOPT_POST' option!", COMPONENT_NAME);
@@ -327,6 +336,10 @@ AzureLogAnalyticsCurlClient::AzureLogAnalyticsCurlClient(IPropertyTree & logAcce
 
     m_pluginCfg.set(&logAccessPluginConfig);
 
+    //blobMode is a flag to determine if the log entry is to be parsed or not
+    m_blobMode = logAccessPluginConfig.getPropBool("@blobMode", false);
+    DBGLOG("%s: Blob Mode: %s", COMPONENT_NAME, m_blobMode ? "Enabled" : "Disabled");
+
     m_globalIndexTimestampField.set(defaultHPCCLogTimeStampCol);
     m_globalIndexSearchPattern.set(defaultIndexPattern);
     m_globalSearchColName.set(defaultHPCCLogMessageCol);
@@ -335,6 +348,8 @@ AzureLogAnalyticsCurlClient::AzureLogAnalyticsCurlClient(IPropertyTree & logAcce
     m_workunitSearchColName.set(defaultHPCCLogJobIDCol);
     m_componentsSearchColName.set(defaultHPCCLogComponentCol);
     m_audienceSearchColName.set(defaultHPCCLogAudCol);
+    m_traceSearchColName.set(defaultHPCCLogTraceIDCol);
+    m_spanSearchColName.set(defaultHPCCLogSpanIDCol);
 
     Owned<IPropertyTreeIterator> logMapIter = m_pluginCfg->getElements("logMaps");
     ForEach(*logMapIter)
@@ -434,6 +449,22 @@ AzureLogAnalyticsCurlClient::AzureLogAnalyticsCurlClient(IPropertyTree & logAcce
             if (logMap.hasProp(logMapSearchColAtt))
                 m_podSearchColName = logMap.queryProp(logMapSearchColAtt);
         }
+        else if (streq(logMapType, "traceid"))
+        {
+            if (logMap.hasProp(logMapIndexPatternAtt))
+                m_traceIndexSearchPattern = logMap.queryProp(logMapIndexPatternAtt);
+
+            if (logMap.hasProp(logMapSearchColAtt))
+                m_traceSearchColName.set(logMap.queryProp(logMapSearchColAtt));
+        }
+        else if (streq(logMapType, "spanid"))
+        {
+            if (logMap.hasProp(logMapIndexPatternAtt))
+                m_spanIndexSearchPattern = logMap.queryProp(logMapIndexPatternAtt);
+
+            if (logMap.hasProp(logMapSearchColAtt))
+                m_spanSearchColName.set(logMap.queryProp(logMapSearchColAtt));
+        }
         else
         {
             ERRLOG("Encountered invalid LogAccess field map type: '%s'", logMapType);
@@ -456,7 +487,11 @@ void AzureLogAnalyticsCurlClient::getMinReturnColumns(StringBuffer & columns, co
             columns.append(defaultHPCCLogComponentCol);
         columns.append(", ");
     }
-    columns.appendf("%s, %s", m_globalIndexTimestampField.str(), defaultHPCCLogMessageCol);
+
+    if (m_blobMode)
+        columns.appendf("%s, %s", m_globalIndexTimestampField.str(), m_globalSearchColName.str());
+    else
+        columns.appendf("%s, %s", m_globalIndexTimestampField.str(), defaultHPCCLogMessageCol);
 }
 
 void AzureLogAnalyticsCurlClient::getDefaultReturnColumns(StringBuffer & columns, const bool includeComponentName)
@@ -490,12 +525,15 @@ void AzureLogAnalyticsCurlClient::getDefaultReturnColumns(StringBuffer & columns
     if (!isEmptyString(m_podSearchColName))
         columns.appendf("%s, ", m_podSearchColName.str());
 
-    columns.appendf("%s, %s, %s, %s, %s, %s, %s, %s",
-    m_globalIndexTimestampField.str(), defaultHPCCLogMessageCol, m_classSearchColName.str(),
-    m_audienceSearchColName.str(), m_workunitSearchColName.str(), defaultHPCCLogSeqCol, defaultHPCCLogThreadIDCol, defaultHPCCLogProcIDCol);
+    if (m_blobMode)
+        columns.appendf("%s, %s", m_globalIndexTimestampField.str(), m_globalSearchColName.str());
+    else
+        columns.appendf("%s, %s, %s, %s, %s, %s, %s, %s, %s, %s",
+            m_globalIndexTimestampField.str(), defaultHPCCLogMessageCol, m_classSearchColName.str(),
+            m_audienceSearchColName.str(), m_workunitSearchColName.str(), m_traceSearchColName.str(), m_spanSearchColName.str(), defaultHPCCLogSeqCol, defaultHPCCLogThreadIDCol, defaultHPCCLogProcIDCol);
 }
 
-bool generateHPCCLogColumnstAllColumns(StringBuffer & kql, const char * colName, bool targetsV2)
+bool generateHPCCLogColumnstAllColumns(StringBuffer & kql, const char * colName, bool targetsV2, bool blobMode)
 {
     if (isEmptyString(colName))
     {
@@ -511,22 +549,31 @@ bool generateHPCCLogColumnstAllColumns(StringBuffer & kql, const char * colName,
     else
         throw makeStringExceptionV(-1, "%s: Invalid Azure Log Analytics log message column name detected: '%s'. Review logAccess configuration.", COMPONENT_NAME, colName);
 
-    kql.appendf("\n| extend hpcclogfields = extract_all(@\'^([0-9A-Fa-f]+)\\s+(OPR|USR|PRG|AUD|UNK)\\s+(DIS|ERR|WRN|INF|PRO|MET|UNK)\\s+(\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}\\.\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(UNK|[A-Z]\\d{8}-\\d{6}(?:-\\d+)?)\\s+\\\"(.*)\\\"$', %s)[0]", sourceCol.str());
-    kql.appendf("\n| extend %s = tostring(hpcclogfields.[0])", defaultHPCCLogSeqCol);
-    kql.appendf("\n| extend %s = tostring(hpcclogfields.[1])", defaultHPCCLogAudCol);
-    kql.appendf("\n| extend %s = tostring(hpcclogfields.[2])", defaultHPCCLogTypeCol);
-    kql.appendf("\n| extend %s = todatetime(hpcclogfields.[3])", defaultHPCCLogTimeStampCol);
-    kql.appendf("\n| extend %s = toint(hpcclogfields.[4])", defaultHPCCLogProcIDCol);
-    kql.appendf("\n| extend %s = toint(hpcclogfields.[5])",  defaultHPCCLogThreadIDCol);
-    kql.appendf("\n| extend %s = tostring(hpcclogfields.[6])", defaultHPCCLogJobIDCol);
-    kql.appendf("\n| extend %s = tostring(hpcclogfields.[7])", defaultHPCCLogMessageCol);
-    kql.appendf("\n| project-away hpcclogfields, Type, TenantId, _ResourceId, %s, ", colName);
+    if (!blobMode)
+    {
+        kql.appendf("\n| extend hpcclogfields = extract_all(@\'^([0-9A-Fa-f]+)\\s+(OPR|USR|PRG|AUD|UNK)\\s+(DIS|ERR|WRN|INF|PRO|MET|UNK)\\s+(\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}\\.\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(UNK|[A-Z]\\d{8}-\\d{6}(?:-\\d+)?)\\s*([0-9a-fA-F]{32}|UNK)?\\s*([0-9a-fA-F]{16}|UNK)?\\s+)?\\\"(.*)\\\"$', %s)[0]", sourceCol.str());
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[0])", defaultHPCCLogSeqCol);
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[1])", defaultHPCCLogAudCol);
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[2])", defaultHPCCLogTypeCol);
+        kql.appendf("\n| extend %s = todatetime(hpcclogfields.[3])", defaultHPCCLogTimeStampCol);
+        kql.appendf("\n| extend %s = toint(hpcclogfields.[4])", defaultHPCCLogProcIDCol);
+        kql.appendf("\n| extend %s = toint(hpcclogfields.[5])",  defaultHPCCLogThreadIDCol);
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[6])", defaultHPCCLogJobIDCol);
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[7])", defaultHPCCLogTraceIDCol);
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[8])", defaultHPCCLogSpanIDCol);
+        kql.appendf("\n| extend %s = tostring(hpcclogfields.[9])", defaultHPCCLogMessageCol);
+
+        kql.appendf("\n| project-away hpcclogfields, Type, TenantId, _ResourceId, %s, ", colName);
+    }
+    else
+    {
+        kql.appendf("\n| project-away Type, TenantId, _ResourceId, ");
+    }
 
     if (targetsV2)
         kql.append("LogSource, SourceSystem");
     else
         kql.append("LogEntrySource, TimeOfCommand, SourceSystem");
-
 
     return true;
 }
@@ -583,6 +630,23 @@ void AzureLogAnalyticsCurlClient::searchMetaData(StringBuffer & search, const Lo
     search.appendf("\n| limit %s", std::to_string(size).c_str());
 }
 
+void AzureLogAnalyticsCurlClient::azureLogAnalyticsQueryTimeSpanString(StringBuffer & queryTimeSpan, std::time_t from, std::time_t to)
+{
+    if (from == -1)
+        throw makeStringExceptionV(-1, "%s: Invalid 'from' timestamp detected", COMPONENT_NAME);
+
+    char fromTimeStr[40];
+    std::strftime(fromTimeStr, sizeof(fromTimeStr), "%Y-%m-%dT%H:%M:%S", std::gmtime(&from));
+    queryTimeSpan.set(fromTimeStr);
+
+    if (to != -1)
+    {
+        char toTimeStr[40];
+        std::strftime(toTimeStr, sizeof(toTimeStr), "%Y-%m-%dT%H:%M:%S", std::gmtime(&to));
+        queryTimeSpan.appendf("/%s", toTimeStr);
+    }
+}
+
 void AzureLogAnalyticsCurlClient::azureLogAnalyticsTimestampQueryRangeString(StringBuffer & range, const char * timeStampField, std::time_t from, std::time_t to)
 {
     if (isEmptyString(timeStampField))
@@ -612,6 +676,11 @@ void AzureLogAnalyticsCurlClient::populateKQLQueryString(StringBuffer & queryStr
     StringBuffer queryValue;
     std::string queryField = m_globalSearchColName.str();
     std::string queryOperator = " =~ ";
+
+    if (m_blobMode)
+    {
+        queryOperator = " has ";
+    }
 
     filter->toString(queryValue);
     switch (filter->filterType())
@@ -646,6 +715,38 @@ void AzureLogAnalyticsCurlClient::populateKQLQueryString(StringBuffer & queryStr
         }
 
         DBGLOG("%s: Searching log entries by class: '%s'...", COMPONENT_NAME, queryValue.str());
+        break;
+    }
+    case LOGACCESS_FILTER_trace:
+    {
+        if (m_traceSearchColName.isEmpty())
+            throw makeStringExceptionV(-1, "%s: 'Trace' log entry field not configured", COMPONENT_NAME);
+
+        queryField = m_traceSearchColName.str();
+
+        if (!m_traceIndexSearchPattern.isEmpty())
+        {
+            throwIfMultiIndexDetected(queryIndex.str(), m_traceIndexSearchPattern.str());
+            queryIndex = m_traceIndexSearchPattern.str();
+        }
+
+        DBGLOG("%s: Searching log entries by traceid: '%s'...", COMPONENT_NAME, queryValue.str());
+        break;
+    }
+    case LOGACCESS_FILTER_span:
+    {
+        if (m_spanSearchColName.isEmpty())
+            throw makeStringExceptionV(-1, "%s: 'Span' log entry field not configured", COMPONENT_NAME);
+
+        queryField = m_spanSearchColName.str();
+
+        if (!m_spanIndexSearchPattern.isEmpty())
+        {
+            throwIfMultiIndexDetected(queryIndex.str(), m_spanIndexSearchPattern.str());
+            queryIndex = m_spanIndexSearchPattern.str();
+        }
+
+        DBGLOG("%s: Searching log entries by spanid: '%s'...", COMPONENT_NAME, queryValue.str());
         break;
     }
     case LOGACCESS_FILTER_audience:
@@ -801,7 +902,8 @@ void AzureLogAnalyticsCurlClient::populateKQLQueryString(StringBuffer & queryStr
             declareContainerIndexJoinTable(queryString, options);
 
         queryString.append(queryIndex);
-        generateHPCCLogColumnstAllColumns(queryString, m_globalSearchColName.str(), targetIsContainerLogV2);
+        //this used to parse m_globalSearchColName into hpcc.log.* fields, now just does a project-away
+        generateHPCCLogColumnstAllColumns(queryString, m_globalSearchColName.str(), targetIsContainerLogV2, m_blobMode);
 
         if (options.queryFilter() == nullptr || options.queryFilter()->filterType() == LOGACCESS_FILTER_wildcard) // No filter
         {
@@ -817,7 +919,6 @@ void AzureLogAnalyticsCurlClient::populateKQLQueryString(StringBuffer & queryStr
         StringBuffer range;
         azureLogAnalyticsTimestampQueryRangeString(range, m_globalIndexTimestampField.str(), trange.getStartt().getSimple(),trange.getEndt().isNull() ? -1 : trange.getEndt().getSimple());
         queryString.append("\n| where ").append(range.str());
-        //if (includeComponentName)
         if (!m_disableComponentNameJoins && !targetIsContainerLogV2)
             queryString.append("\n) on ").append(m_componentsLookupKeyColumn);
 
@@ -869,7 +970,18 @@ unsigned AzureLogAnalyticsCurlClient::processHitsJsonResp(IPropertyTreeIterator 
                 ForEach(*fields)
                 {
                     const char * fieldName = header.item(idx++);
-                    returnbuf.appendf("<%s>%s</%s>", fieldName, fields->query().queryProp("."), fieldName);
+                    const char * rawValue = fields->query().queryProp(".");
+
+                    if (isEmptyString(rawValue))
+                    {
+                        returnbuf.appendf("<%s/>", fieldName);
+                    }
+                    else
+                    {
+                        StringBuffer encodedValue;
+                        encodeXML(rawValue, encodedValue);
+                        returnbuf.appendf("<%s>%s</%s>", fieldName, encodedValue.str(), fieldName);
+                    }
                 }
                 returnbuf.append("</line>");
                 recsProcessed++;
@@ -898,7 +1010,10 @@ unsigned AzureLogAnalyticsCurlClient::processHitsJsonResp(IPropertyTreeIterator 
                     if (!firstField)
                         hitchildjson.append(", ");
 
-                    hitchildjson.appendf("\"%s\":\"%s\"", header.item(idx++), fields->query().queryProp("."));
+                    StringBuffer encodedValue;
+                    encodeJSON(encodedValue, fields->query().queryProp("."));
+
+                    hitchildjson.appendf("\"%s\":\"%s\"", header.item(idx++), encodedValue.str());
 
                     firstField = false;
                 }
@@ -942,7 +1057,7 @@ unsigned AzureLogAnalyticsCurlClient::processHitsJsonResp(IPropertyTreeIterator 
                     else
                         first = false;
 
-                    fieldElementsItr->query().getProp(nullptr, returnbuf); // commas in data should be escaped
+                    encodeCSVColumn(returnbuf, fieldElementsItr->query().queryProp("."));
                 }
                 returnbuf.newline();
                 recsProcessed++;
@@ -966,6 +1081,247 @@ bool AzureLogAnalyticsCurlClient::processSearchJsonResp(LogQueryResultDetails & 
     return true;
 }
 
+void AzureLogAnalyticsCurlClient::healthReport(LogAccessHealthReportOptions options, LogAccessHealthReportDetails & report)
+{
+    LogAccessHealthStatus status = LOGACCESS_STATUS_success;
+    try
+    {
+        StringBuffer configuration;
+
+        if (m_pluginCfg)
+        {
+            if (options.IncludeConfiguration)
+            {
+                if (options.IncludeConfiguration)
+                    toJSON(m_pluginCfg, configuration, 0, JSON_Format);
+            }
+        }
+        else
+        {
+            status.escalateStatusCode(LOGACCESS_STATUS_fail);
+            status.appendMessage("ALA Plug-in Configuration tree is empty!!!");
+        }
+
+        report.Configuration.set(configuration.str()); //empty if !(options.IncludeConfiguration)
+
+        if (m_logAnalyticsWorkspaceID.length() == 0)
+        {
+            status.appendMessage("Target Azure Log Analytics workspace ID is empty!");
+            status.escalateStatusCode(LOGACCESS_STATUS_fail);
+        }
+
+        if (m_aadTenantID.length() == 0)
+        {
+            status.appendMessage("Target Azure Tenant ID is empty!");
+            status.escalateStatusCode(LOGACCESS_STATUS_fail);
+        }
+
+        if (m_aadClientID.length() == 0)
+        {
+            status.appendMessage("Target Azure Log Analytics Client Application ID is empty!");
+            status.escalateStatusCode(LOGACCESS_STATUS_fail);
+        }
+
+        if (m_aadClientSecret.length()==0)
+        {
+            status.appendMessage("Target Azure Log Analytics Client Secret is empty!");
+            status.escalateStatusCode(LOGACCESS_STATUS_fail);
+        }
+
+        if (!m_disableComponentNameJoins)
+        {
+            status.appendMessage("Costly query joins used to fetch component names are enabled!");
+            status.escalateStatusCode(LOGACCESS_STATUS_warning);
+        }
+
+        if (!m_blobMode)
+        {
+            status.appendMessage("Blob mode not enabled, slow server response is likely");
+            status.escalateStatusCode(LOGACCESS_STATUS_warning);
+        }
+
+        if (!targetIsContainerLogV2)
+        {
+            status.appendMessage("Azure Log Analytics container schema V1 enabled, V2 is recommended");
+            status.escalateStatusCode(LOGACCESS_STATUS_warning);
+        }
+
+        {
+            StringBuffer debugReport;
+            debugReport.set("{");
+            debugReport.append("\"ConnectionInfo\": {");
+            appendJSONStringValue(debugReport, "TargetALAWorkspaceID", m_logAnalyticsWorkspaceID.str(), true);
+            appendJSONStringValue(debugReport, "TargetALATenantID", m_aadTenantID.str(), true);
+            appendJSONStringValue(debugReport, "TargetALAClientID", m_aadClientID.str(), true);
+            debugReport.appendf(", \"TargetALASecret\": \"%sempty\"", m_aadClientSecret.length()==0 ? "" : "not ");
+            appendJSONValue(debugReport, "TargetsContainerLogV2", targetIsContainerLogV2 ? true : false);
+            appendJSONValue(debugReport, "ComponentsJoinedQueryEnabled", m_disableComponentNameJoins ? false : true);
+            appendJSONValue(debugReport, "BlobModeEnabled", m_blobMode ? true : false);
+            debugReport.append( "}"); //close conninfo
+
+            debugReport.appendf(", \"LogMaps\": {");
+            debugReport.appendf("\"Global\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_globalSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_globalIndexSearchPattern.str(), true);
+            appendJSONStringValue(debugReport, "TimeStampCol", m_globalIndexTimestampField.str(), true);
+            debugReport.append(" }"); // end Global
+            debugReport.appendf(", \"Components\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_componentsSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_componentsIndexSearchPattern.str(), true);
+            appendJSONStringValue(debugReport, "LookupKey", m_componentsLookupKeyColumn.str(), true);
+            appendJSONStringValue(debugReport, "TimeStampCol", m_globalIndexTimestampField.str(), true);
+            debugReport.appendf(" }"); // end Components
+            debugReport.appendf(", \"Workunits\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_workunitSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_workunitIndexSearchPattern.str(), true);
+            appendJSONStringValue(debugReport, "TimeStampCol", m_globalIndexTimestampField.str(), true);
+            debugReport.append(" }"); // end Workunits
+            debugReport.appendf(", \"Audience\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_audienceSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_audienceIndexSearchPattern.str(), true);
+            debugReport.appendf(" }"); // end Audience
+            debugReport.appendf(", \"Class\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_classSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_classIndexSearchPattern.str(), true);
+            debugReport.appendf(" }"); // end Class
+            debugReport.appendf(", \"Instance\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_instanceSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_instanceIndexSearchPattern.str(), true);
+            appendJSONStringValue(debugReport, "LookupKey", m_instanceLookupKeyColumn.str(), true);
+            debugReport.appendf(" }"); // end Instance
+            debugReport.appendf(", \"Pod\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_podSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_podIndexSearchPattern.str(), true);
+            debugReport.appendf(" }"); // end Pod
+            debugReport.appendf(", \"TraceID\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_traceSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_traceIndexSearchPattern.str(), true);
+            debugReport.appendf(" }"); // end TraceID
+            debugReport.appendf(", \"SpanID\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_spanSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_spanIndexSearchPattern.str(), true);
+            debugReport.appendf(" }"); // end SpanID
+            debugReport.appendf(", \"Host\": { ");
+            appendJSONStringValue(debugReport, "ColName", m_hostSearchColName.str(), true);
+            appendJSONStringValue(debugReport, "Source", m_hostIndexSearchPattern.str(), true);
+            debugReport.appendf(" }"); // end Host
+            debugReport.append(" }"); //close logmaps
+
+            debugReport.append(" }"); //close debugreport
+
+            if (options.IncludeDebugReport)
+            {
+                report.DebugReport.PluginDebugReport.set(debugReport);
+                report.DebugReport.ServerDebugReport.set("{}");
+            }
+        }
+
+        {
+            StringBuffer sampleQueryReport;
+            sampleQueryReport.append("{ \"TokenRequest\": { ");
+            try
+            {
+                StringBuffer token;
+                requestLogAnalyticsAccessToken(token, m_aadClientID, m_aadClientSecret, m_aadTenantID); //throws if issues encountered
+
+                appendJSONStringValue(sampleQueryReport, "Result", token.isEmpty() ? "Error - Empty token received" : "Success", true);
+            }
+            catch(IException * e)
+            {
+                VStringBuffer description("Exception while requesting sample token (%d) - ", e->errorCode());
+                e->errorMessage(description);
+                status.escalateStatusCode(LOGACCESS_STATUS_fail);
+                status.appendMessage(description.str());
+                e->Release();
+            }
+            catch(...)
+            {
+                status.appendMessage("Unknown exception while requesting sample token");
+                status.escalateStatusCode(LOGACCESS_STATUS_fail);
+            }
+            sampleQueryReport.append(" }"); //close sample token request
+
+            sampleQueryReport.append(", \"Query\": { ");
+            try
+            {
+                appendJSONStringValue(sampleQueryReport, "LogFormat", "JSON", false);
+                LogAccessLogFormat outputFormat = LOGACCESS_LOGFORMAT_json;
+                LogAccessConditions queryOptions;
+
+                sampleQueryReport.appendf(", \"Filter\": { ");
+                appendJSONStringValue(sampleQueryReport, "type", "byWildcard", false);
+                appendJSONStringValue(sampleQueryReport, "value", "*", true);
+
+                struct LogAccessTimeRange range;
+                CDateTime endtt;
+                endtt.setNow();
+                range.setEnd(endtt);
+                StringBuffer endstr;
+                endtt.getString(endstr);
+
+                CDateTime startt;
+                startt.setNow();
+                startt.adjustTimeSecs(-60); //an hour ago
+                range.setStart(startt);
+
+                StringBuffer startstr;
+                startt.getString(startstr);
+                sampleQueryReport.append(", \"TimeRange\": { ");
+                appendJSONStringValue(sampleQueryReport, "Start", startstr.str(), false);
+                appendJSONStringValue(sampleQueryReport, "End", endstr.str(), false);
+                sampleQueryReport.append(" }, "); //end TimeRange
+
+                queryOptions.setTimeRange(range);
+                queryOptions.setLimit(5);
+                appendJSONStringValue(sampleQueryReport, "Limit", "5", false);
+                sampleQueryReport.append(" },"); //close filter
+                StringBuffer queryString, queryIndex;
+                populateKQLQueryString(queryString, queryIndex, queryOptions);
+
+                appendJSONStringValue(sampleQueryReport, "KQLQuery", queryString.str(), true);
+                appendJSONStringValue(sampleQueryReport, "QueryIndex", queryIndex.str(), true);
+
+                StringBuffer logs;
+                LogQueryResultDetails  resultDetails;
+                fetchLog(resultDetails, queryOptions, logs, outputFormat);
+                appendJSONValue(sampleQueryReport, "ResultCount", resultDetails.totalReceived);
+                if (resultDetails.totalReceived==0)
+                {
+                    status.escalateStatusCode(LOGACCESS_STATUS_warning);
+                    status.appendMessage("Query succeeded but returned 0 log entries");
+                }
+                sampleQueryReport.appendf(", \"Results\": %s", resultDetails.totalReceived==0 ? "\"Sample query returned zero log records!\"" : logs.str());
+            }
+            catch(IException * e)
+            {
+                VStringBuffer description("Exception while executing sample ALA query (%d) - ", e->errorCode());
+                e->errorMessage(description);
+                appendJSONStringValue(sampleQueryReport, "Results", description.str(), true);
+                status.escalateStatusCode(LOGACCESS_STATUS_fail);
+                status.appendMessage(description.str());
+                e->Release();
+            }
+            catch(...)
+            {
+                appendJSONStringValue(sampleQueryReport, "Results", "Unknown exception while executing sample ALA query", false);
+                status.appendMessage("Unknown exception while executing sample ALA query");
+                status.escalateStatusCode(LOGACCESS_STATUS_fail);
+            }
+            sampleQueryReport.append(" }}"); //close sample query object and top level json container
+
+            if (options.IncludeSampleQuery)
+                report.DebugReport.SampleQueryReport.set(sampleQueryReport);
+        }
+    }
+    catch(...)
+    {
+        status.escalateStatusCode(LOGACCESS_STATUS_fail);
+        status.appendMessage("Encountered unexpected exception during health report");
+    }
+
+    report.status = std::move(status);
+}
+
 bool AzureLogAnalyticsCurlClient::fetchLog(LogQueryResultDetails & resultDetails, const LogAccessConditions & options, StringBuffer & returnbuf, LogAccessLogFormat format)
 {
     StringBuffer token;
@@ -978,7 +1334,10 @@ bool AzureLogAnalyticsCurlClient::fetchLog(LogQueryResultDetails & resultDetails
     populateKQLQueryString(queryString, queryIndex, options);
 
     std::string readBuffer;
-    submitKQLQuery(readBuffer, token.str(), queryString.str(), m_logAnalyticsWorkspaceID.str());
+    StringBuffer queryTimeSpan;
+    const LogAccessTimeRange & trange = options.getTimeRange();
+    azureLogAnalyticsQueryTimeSpanString(queryTimeSpan, trange.getStartt().getSimple(), trange.getEndt().isNull() ? -1 : trange.getEndt().getSimple());
+    submitKQLQuery(readBuffer, token.str(), queryString.str(), m_logAnalyticsWorkspaceID.str(), queryTimeSpan.str());
 
     return processSearchJsonResp(resultDetails, readBuffer, returnbuf, format, true);
 }

@@ -3,14 +3,19 @@ import { Checkbox, CommandBar, ICommandBarItemProps } from "@fluentui/react";
 import { Level } from "@hpcc-js/util";
 import { logColor } from "src/Utility";
 import nlsHPCC from "src/nlsHPCC";
+import { QuerySortItem } from "src/store/Store";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { useECLWatchLogger } from "../hooks/logging";
 import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 
 interface LogViewerProps {
+    sort?: QuerySortItem;
 }
 
+export const defaultSort = { attribute: "dateTime", descending: true };
+
 export const LogViewer: React.FunctionComponent<LogViewerProps> = ({
+    sort = defaultSort
 }) => {
 
     const [errorChecked, setErrorChecked] = React.useState(true);
@@ -18,7 +23,7 @@ export const LogViewer: React.FunctionComponent<LogViewerProps> = ({
     const [infoChecked, setInfoChecked] = React.useState(true);
     const [otherChecked, setOtherChecked] = React.useState(true);
     const [filterCounts, setFilterCounts] = React.useState<any>({});
-    const [log, lastUpdate] = useECLWatchLogger();
+    const { log, lastUpdate } = useECLWatchLogger();
     const [data, setData] = React.useState<any[]>([]);
     const {
         selection, setSelection,
@@ -36,19 +41,19 @@ export const LogViewer: React.FunctionComponent<LogViewerProps> = ({
     //  Grid ---
     const columns = React.useMemo((): FluentColumns => {
         return {
-            dateTime: { label: nlsHPCC.Time, width: 160, sortable: false },
+            dateTime: { label: nlsHPCC.Time, width: 160, },
             level: {
                 label: nlsHPCC.Severity,
                 width: 112,
-                sortable: false,
                 formatter: level => {
                     const colors = logColor(level);
                     const styles = { backgroundColor: colors.background, padding: "2px 6px", color: colors.foreground };
                     return <span style={styles}>{Level[level].toUpperCase()}</span>;
-                }
+                },
+                csvFormatter: level => Level[level].toUpperCase()
             },
-            id: { label: nlsHPCC.Source, width: 212, sortable: false },
-            message: { label: nlsHPCC.Message, sortable: false }
+            id: { label: nlsHPCC.Source, width: 212 },
+            message: { label: nlsHPCC.Message, width: 720, sortable: false }
         };
     }, []);
 
@@ -91,8 +96,6 @@ export const LogViewer: React.FunctionComponent<LogViewerProps> = ({
                 return false;
             }
             return true;
-        }).sort((l, r) => {
-            return l.level - r.level;
         });
         setData(filteredExceptions);
         setFilterCounts(filterCounts);
@@ -104,10 +107,12 @@ export const LogViewer: React.FunctionComponent<LogViewerProps> = ({
             <FluentGrid
                 data={data}
                 primaryID={"dateTime"}
+                sort={sort}
                 columns={columns}
                 setSelection={setSelection}
                 setTotal={setTotal}
                 refresh={refreshTable}
-            ></FluentGrid>}
+            ></FluentGrid>
+        }
     />;
 };

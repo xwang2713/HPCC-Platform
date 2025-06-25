@@ -436,7 +436,7 @@ void IEngineRowStream::readAll(RtlLinkedDatasetBuilder &builder)
 
 using roxiemem::OwnedConstRoxieRow;
 
-class InputReaderBase  : public CInterfaceOf<IGroupedInput>
+class InputReaderBase  : public CInterfaceOf<IEngineRowStream>
 {
 protected:
     IEngineRowStream *input;
@@ -551,7 +551,7 @@ protected:
     const ICompare *compare;
 public:
     SortedGroupedInputReader(IEngineRowStream *_input, const ICompare *_compare, ISortAlgorithm *_sorter)
-      : SortedInputReader(_input, _sorter), compare(_compare), eof(false), endGroupPending(false)
+      : SortedInputReader(_input, _sorter), eof(false), endGroupPending(false), compare(_compare)
     {
     }
 
@@ -585,25 +585,25 @@ public:
     }
 };
 
-extern IGroupedInput *createGroupedInputReader(IEngineRowStream *_input, const ICompare *_groupCompare)
+extern IEngineRowStream *createGroupedInputReader(IEngineRowStream *_input, const ICompare *_groupCompare)
 {
     dbgassertex(_input && _groupCompare);
     return new GroupedInputReader(_input, _groupCompare);
 }
 
-extern IGroupedInput *createDegroupedInputReader(IEngineRowStream *_input)
+extern IEngineRowStream *createDegroupedInputReader(IEngineRowStream *_input)
 {
     dbgassertex(_input);
     return new DegroupedInputReader(_input);
 }
 
-extern IGroupedInput *createSortedInputReader(IEngineRowStream *_input, ISortAlgorithm *_sorter)
+extern IEngineRowStream *createSortedInputReader(IEngineRowStream *_input, ISortAlgorithm *_sorter)
 {
     dbgassertex(_input && _sorter);
     return new SortedInputReader(_input, _sorter);
 }
 
-extern IGroupedInput *createSortedGroupedInputReader(IEngineRowStream *_input, const ICompare *_groupCompare, ISortAlgorithm *_sorter)
+extern IEngineRowStream *createSortedGroupedInputReader(IEngineRowStream *_input, const ICompare *_groupCompare, ISortAlgorithm *_sorter)
 {
     dbgassertex(_input && _groupCompare && _sorter);
     return new SortedGroupedInputReader(_input, _groupCompare, _sorter);
@@ -1057,7 +1057,7 @@ class CSpillingSortAlgorithm : public CSortAlgorithm, implements roxiemem::IBuff
 public:
     CSpillingSortAlgorithm(ICompare *_compare, roxiemem::IRowManager &_rowManager, IOutputMetaData * _rowMeta, ICodeContext *_ctx, const char *_tempDirectory, unsigned _activityId, bool _stable)
         : rowsToSort(&_rowManager, InitialSortElements, CommitStep, _activityId),
-          rowManager(_rowManager), compare(_compare), rowMeta(_rowMeta), ctx(_ctx), tempDirectory(_tempDirectory), activityId(_activityId), stable(_stable)
+          compare(_compare), rowManager(_rowManager), rowMeta(_rowMeta), tempDirectory(_tempDirectory), ctx(_ctx), activityId(_activityId), stable(_stable)
     {
         rowManager.addRowBuffer(this);
     }
@@ -1523,7 +1523,7 @@ bool CSafeSocket::readBlocktms(StringBuffer &ret, unsigned timeoutms, HttpHelper
         }
         assertex(bytesRead == sizeof(len));
         unsigned left = 0;
-        char *buf;
+        char *buf = nullptr;
 
         if (pHttpHelper)
         {
@@ -1533,53 +1533,64 @@ bool CSafeSocket::readBlocktms(StringBuffer &ret, unsigned timeoutms, HttpHelper
                 pHttpHelper->setHttpMethod(HttpMethod::GET);
         }
 
+        unsigned remaining = timeoutms;
+        bool sockClosed = false;
         if (pHttpHelper && pHttpHelper->isHttp())
         {
-#define MAX_HTTP_HEADERSIZE 16000 //arbitrary per line limit, most web servers are lower, but REST queries can be complex..
             char header[MAX_HTTP_HEADERSIZE + 1]; // allow room for \0
-            sock->readtms(header, 1, MAX_HTTP_HEADERSIZE, bytesRead, timeoutms);
-            header[bytesRead] = 0;
-            char *payload = strstr(header, "\r\n\r\n");
-            if (payload)
+            CTimeMon tm(timeoutms);
+            unsigned totalRead = 0;
+            len = 0;
+            const char *contentLenStr = nullptr;
+            while (!sockClosed && !tm.timedout(&remaining))
             {
-                *payload = 0;
-                payload += 4;
-
-                pHttpHelper->parseHTTPRequestLine(header);
-                const char *headers = strstr(header, "\r\n");
-                if (headers)
-                    pHttpHelper->parseRequestHeaders(headers+2);
-
-                if (pHttpHelper->isHttpGet())
+                unsigned maxPoss = MAX_HTTP_HEADERSIZE - totalRead;
+                sockClosed = readtmsAllowClose(sock, &header[totalRead], 1, maxPoss, bytesRead, remaining);
+                totalRead += bytesRead;
+                header[totalRead] = 0;
+                char *payload = strstr(header, "\r\n\r\n");
+                if (payload)
                 {
-                    pHttpHelper->checkHttpGetTarget();
-                    return true;
-                }
+                    *payload = 0;
+                    payload += 4;
 
-                const char *val = pHttpHelper->queryRequestHeader("Expect");
-                if (val && streq(val, "100-continue"))
-                {
-                    StringBuffer cont("HTTP/1.1 100 Continue\r\n\r\n"); //tell client to go ahead and send body
-                    sock->write(cont, cont.length());
-                }
+                    pHttpHelper->parseHTTPRequestLine(header);
+                    const char *headers = strstr(header, "\r\n");
+                    if (headers)
+                        pHttpHelper->parseRequestHeaders(headers+2);
 
-                // determine payload length
-                val = pHttpHelper->queryRequestHeader("Content-Length");
-                if (val)
-                {
-                    len = atoi(val);
-                    buf = ret.reserveTruncate(len);
-                    left = len - (bytesRead - (payload - header));
-                    if (len > left)
-                        memcpy(buf, payload, len - left);
+                    if (pHttpHelper->isHttpGet())
+                    {
+                        pHttpHelper->checkHttpGetTarget();
+                        return true;
+                    }
+
+                    const char *val = pHttpHelper->queryRequestHeader("Expect");
+                    if (val && streq(val, "100-continue"))
+                    {
+                        StringBuffer cont("HTTP/1.1 100 Continue\r\n\r\n"); //tell client to go ahead and send body
+                        sock->write(cont, cont.length());
+                    }
+
+                    // determine payload length
+                    contentLenStr = pHttpHelper->queryRequestHeader("Content-Length");
+                    if (contentLenStr)
+                    {
+                        len = atoi(contentLenStr);
+                        buf = ret.reserveTruncate(len);
+                        left = len - (totalRead - (payload - header));
+                        if (len > left)
+                            memcpy(buf, payload, len - left);
+                    }
+                    break;
                 }
-                else
-                    left = len = 0;
+                if (totalRead >= MAX_HTTP_HEADERSIZE)
+                    throw makeStringException(THORHELPER_DATA_ERROR, "Badly formed HTTP header");
             }
-            else
-                left = len = 0;
 
-            if (!len)
+            if (tm.timedout(&remaining))
+                throw MakeStringException(THORHELPER_DATA_ERROR, "Timed out reading http headers");
+            else if (contentLenStr && !len)
                 throw MakeStringException(THORHELPER_DATA_ERROR, "Badly formed HTTP header");
         }
         else if (strnicmp((char *)&len, "STAT", 4) == 0)
@@ -1601,7 +1612,7 @@ bool CSafeSocket::readBlocktms(StringBuffer &ret, unsigned timeoutms, HttpHelper
         }
 
         if (left)
-            sock->readtms(buf + (len - left), left, left, bytesRead, timeoutms);
+            sock->readtms(buf + (len - left), left, left, bytesRead, remaining);
 
         if (len && pHttpHelper)
         {
@@ -1804,7 +1815,7 @@ private:
     unsigned int sent = 0;
 public:
 
-    HttpResponseHandler(ISocket *s, CriticalSection &crit, bool keepAlive) : sock(s), c(crit), httpKeepAlive(keepAlive)
+    HttpResponseHandler(ISocket *s, CriticalSection &crit, bool keepAlive) : c(crit), sock(s), httpKeepAlive(keepAlive)
     {
     }
     inline bool compressing()
@@ -2000,7 +2011,7 @@ void FlushingStringBuffer::startBlock()
 }
 
 FlushingStringBuffer::FlushingStringBuffer(SafeSocket *_sock, bool _isBlocked, TextMarkupFormat _mlFmt, bool _isRaw, bool _isHttp, const IContextLogger &_logctx)
-  : sock(_sock), isBlocked(_isBlocked), mlFmt(_mlFmt), isRaw(_isRaw), isHttp(_isHttp), logctx(_logctx)
+  : sock(_sock), logctx(_logctx), mlFmt(_mlFmt), isRaw(_isRaw), isBlocked(_isBlocked), isHttp(_isHttp)
 {
     sequenceNumber = 0;
     rowCount = 0;
@@ -2767,7 +2778,7 @@ StringBuffer & expandLogicalFilename(StringBuffer & logicalName, const char * fn
         CDfsLogicalFileName dlfn;
         dlfn.setAllowWild(true);
         dlfn.setAllowTrailingEmptyScope(true);
-        dlfn.set(fname+1);
+        dlfn.set(fname+1, false, true);
         logicalName.append(dlfn.get(ignoreForeignPrefix));
     }
     else if (resolveLocally)
@@ -2793,7 +2804,7 @@ StringBuffer & expandLogicalFilename(StringBuffer & logicalName, const char * fn
         CDfsLogicalFileName dlfn;
         dlfn.setAllowWild(true);
         dlfn.setAllowTrailingEmptyScope(true);
-        dlfn.set(lfn.str());
+        dlfn.set(lfn.str(), false, true);
         logicalName.append(dlfn.get());
     }
     return logicalName;
@@ -2875,6 +2886,9 @@ class NullSectionTimer : public CSimpleInterfaceOf<ISectionTimer>
 {
     virtual unsigned __int64 getStartCycles() { return 0; }
     virtual void noteSectionTime(unsigned __int64 startCycles) {}
+    virtual void addStatistic(__int64 kind, unsigned __int64 value) {}
+    virtual void setStatistic(__int64 kind, unsigned __int64 value) {}
+    virtual void mergeStatistic(__int64 kind, unsigned __int64 value) {}
 };
 
 static NullSectionTimer nullSectionTimer;

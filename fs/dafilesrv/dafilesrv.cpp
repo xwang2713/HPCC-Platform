@@ -366,7 +366,6 @@ dafilesrv:
     detail: 100
 )!!";
 
-
 int main(int argc, const char* argv[])
 {
     InitModuleObjects();
@@ -385,7 +384,24 @@ int main(int argc, const char* argv[])
     bool locallisten = false;
     StringBuffer componentName;
 
-    Owned<IPropertyTree> config = loadConfiguration(defaultYaml, argv, "dafilesrv", "DAFILESRV", nullptr, nullptr);
+    // NB: bare-metal dafilesrv does not have a component specific xml
+    Owned<IPropertyTree> extractedGlobalConfig = createPTree("dafilesrv");
+
+#ifndef _CONTAINERIZED
+    Owned<IPropertyTree> env = getHPCCEnvironment();
+    IPropertyTree* globalTracing = env->getPropTree("Software/tracing");
+    if (globalTracing != nullptr)
+        extractedGlobalConfig->addPropTree("tracing", globalTracing);
+#endif
+
+    const char* componentTag = "dafilesrv";
+    Owned<IPropertyTree> defaultConfig = createPTreeFromYAMLString(defaultYaml, 0, ptr_ignoreWhiteSpace, nullptr);
+    Owned<IPropertyTree> componentDefault(defaultConfig->getPropTree(componentTag));
+
+    // NB: bare-metal dafilesrv does not have a component specific xml, extracting relevant global configuration instead
+    Owned<IPropertyTree> config = loadConfiguration(componentDefault, extractedGlobalConfig, argv, componentTag, "DAFILESRV", nullptr, nullptr);
+
+    updateTraceFlags(loadTraceFlags(config, dafilesrvServerTraceOptions, queryTraceFlags()), true);
 
     Owned<IPropertyTree> keyPairInfo; // NB: not used in containerized mode
     // Get SSL Settings
@@ -512,10 +528,12 @@ int main(int argc, const char* argv[])
 
     IPropertyTree *dafileSrvInstance = nullptr;
 #ifndef _CONTAINERIZED
-    Owned<IPropertyTree> env = getHPCCEnvironment();
     Owned<IPropertyTree> _dafileSrvInstance;
     if (env)
     {
+        Owned<IPropertyTree> newConfig = createPTreeFromIPT(config); // clone
+        IPropertyTree *expert = ensurePTree(newConfig, "expert");
+
         StringBuffer dafilesrvPath("Software/DafilesrvProcess");
         if (componentName.length())
             dafilesrvPath.appendf("[@name=\"%s\"]", componentName.str());
@@ -523,6 +541,12 @@ int main(int argc, const char* argv[])
             dafilesrvPath.append("[1]"); // in absence of name, use 1st
         IPropertyTree *daFileSrv = env->queryPropTree(dafilesrvPath);
         Owned<IPropertyTree> _dafileSrv;
+
+        // merge in bare-metal global expert settings
+        IPropertyTree *globalExpert = nullptr;
+        globalExpert = env->queryPropTree("Software/Globals");
+        if (globalExpert)
+            synchronizePTree(expert, globalExpert, false, false);
 
         if (daFileSrv)
         {
@@ -562,6 +586,19 @@ int main(int argc, const char* argv[])
             if (daFileSrv->queryProp("@rowServiceConfiguration"))
                 rowServiceConfiguration = daFileSrv->queryProp("@rowServiceConfiguration");
 
+            // merge in bare-metal dafilesrv component expert settings
+            IPropertyTree *componentExpert = daFileSrv->queryPropTree("expert");
+            if (componentExpert)
+                synchronizePTree(expert, componentExpert, false, true);
+
+            // merge in bare-metal dafilesrv component cert settings into newConfig
+            IPropertyTree *componentCert = daFileSrv->queryPropTree("cert");
+            if (componentCert)
+            {
+                IPropertyTree *cert = ensurePTree(newConfig, "cert");
+                synchronizePTree(cert, componentCert, false, true);
+            }
+
             // any overrides by Instance definitions?
             Owned<IPropertyTreeIterator> iter = daFileSrv->getElements("Instance");
             ForEach(*iter)
@@ -587,7 +624,16 @@ int main(int argc, const char* argv[])
                     }
                 }
             }
+
+            // merge in bare-metal dafilesrv instance expert settings
+            IPropertyTree *instanceExpert = nullptr;
+            instanceExpert = dafileSrvInstance->queryPropTree("expert");
+            if (instanceExpert)
+                synchronizePTree(expert, instanceExpert, false, true);
         }
+
+        // update config and hook callback with dafilesrv expert PTree
+        replaceComponentConfig(newConfig, getGlobalConfigSP());
 
         // bare-metal gets it's certificate info. from environment at the moment, 'keyPairInfo' not used in containerized mode
         keyPairInfo.set(env->queryPropTree("EnvSettings/Keys"));
@@ -682,6 +728,10 @@ int main(int argc, const char* argv[])
     dedicatedRowServiceSSL = dafileSrvInstance->getPropBool("@rowServiceSSL", dedicatedRowServiceSSL);
     rowServiceOnStdPort = dafileSrvInstance->getPropBool("@rowServiceOnStdPort", rowServiceOnStdPort);
 
+    unsigned listenQueueLimit = dafileSrvInstance->getPropInt("@maxBacklogQueueSize", DEFAULT_LISTEN_QUEUE_SIZE);
+    // NB: could check getComponentConfig()->getPropInt("expert/@maxBacklogQueueSize", DEFAULT_LISTEN_QUEUE_SIZE);
+    // but many other components have their own explcit setting for this ...
+
     installDefaultFileHooks(dafileSrvInstance);
 
 #ifndef _CONTAINERIZED
@@ -705,6 +755,7 @@ int main(int argc, const char* argv[])
             unsigned throttleSlowDelayMs;
             unsigned throttleSlowCPULimit;
             unsigned sslport;
+            unsigned listenQueueLimit;
             Linked<IPropertyTree> keyPairInfo;
             StringAttr rowServiceConfiguration;
             unsigned dedicatedRowServicePort;
@@ -734,7 +785,7 @@ int main(int argc, const char* argv[])
                         unsigned _maxThreads, unsigned _maxThreadsDelayMs, unsigned _maxAsyncCopy,
                         unsigned _parallelRequestLimit, unsigned _throttleDelayMs, unsigned _throttleCPULimit,
                         unsigned _parallelSlowRequestLimit, unsigned _throttleSlowDelayMs, unsigned _throttleSlowCPULimit,
-                        unsigned _sslport,
+                        unsigned _sslport, unsigned _listenQueueLimit,
                         IPropertyTree *_keyPairInfo,
                         const char *_rowServiceConfiguration,
                         unsigned _dedicatedRowServicePort, bool _dedicatedRowServiceSSL, bool _rowServiceOnStdPort)
@@ -742,7 +793,7 @@ int main(int argc, const char* argv[])
                   maxThreads(_maxThreads), maxThreadsDelayMs(_maxThreadsDelayMs), maxAsyncCopy(_maxAsyncCopy),
                   parallelRequestLimit(_parallelRequestLimit), throttleDelayMs(_throttleDelayMs), throttleCPULimit(_throttleCPULimit),
                   parallelSlowRequestLimit(_parallelSlowRequestLimit), throttleSlowDelayMs(_throttleSlowDelayMs), throttleSlowCPULimit(_throttleSlowCPULimit),
-                  sslport(_sslport),
+                  sslport(_sslport), listenQueueLimit(_listenQueueLimit),
                   keyPairInfo(_keyPairInfo),
                   rowServiceConfiguration(_rowServiceConfiguration), dedicatedRowServicePort(_dedicatedRowServicePort), dedicatedRowServiceSSL(_dedicatedRowServiceSSL), rowServiceOnStdPort(_rowServiceOnStdPort)
             {
@@ -818,7 +869,7 @@ int main(int argc, const char* argv[])
                     {
                         SocketEndpoint rowServiceEp(listenep); // copy listenep, incase bound by -addr
                         rowServiceEp.port = dedicatedRowServicePort;
-                        server->run(config, connectMethod, listenep, sslport, &rowServiceEp, dedicatedRowServiceSSL, rowServiceOnStdPort);
+                        server->run(config, connectMethod, listenep, sslport, listenQueueLimit, &rowServiceEp, dedicatedRowServiceSSL, rowServiceOnStdPort);
                     }
                     else
                         server->run(config, connectMethod, listenep, sslport);
@@ -834,7 +885,7 @@ int main(int argc, const char* argv[])
         } service(config, connectMethod, listenep,
                 maxThreads, maxThreadsDelayMs, maxAsyncCopy,
                 parallelRequestLimit, throttleDelayMs, throttleCPULimit,
-                parallelSlowRequestLimit, throttleSlowDelayMs, throttleSlowCPULimit, sslport,
+                parallelSlowRequestLimit, throttleSlowDelayMs, throttleSlowCPULimit, sslport, listenQueueLimit,
                 keyPairInfo, rowServiceConfiguration, dedicatedRowServicePort, dedicatedRowServiceSSL, rowServiceOnStdPort);
         service.start();
         return 0;
@@ -906,7 +957,7 @@ int main(int argc, const char* argv[])
         {
             SocketEndpoint rowServiceEp(listenep); // copy listenep, incase bound by -addr
             rowServiceEp.port = dedicatedRowServicePort;
-            server->run(config, connectMethod, listenep, sslport, &rowServiceEp, dedicatedRowServiceSSL, rowServiceOnStdPort);
+            server->run(config, connectMethod, listenep, sslport, listenQueueLimit, &rowServiceEp, dedicatedRowServiceSSL, rowServiceOnStdPort);
         }
         else
             server->run(config, connectMethod, listenep, sslport);
@@ -930,4 +981,8 @@ int main(int argc, const char* argv[])
 
     return 0;
 }
+
+#if defined(EMSCRIPTEN)
+int daemon(int, int) { return -1; }
+#endif
 

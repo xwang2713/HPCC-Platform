@@ -37,9 +37,9 @@
 #include "eclrtl.hpp"
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+static unsigned testSize = 1000;
 #endif
 
-static unsigned testSize = 1000;
 
 void usage(const char * action = nullptr)
 {
@@ -88,7 +88,8 @@ void usage(const char * action = nullptr)
                "   results <workunits> - Dump results from specified workunits\n"
                "   info <workunits> <filter>\n"
                "                       - Display information from a workunit\n"
-               "   analyze <workunit>  - Analyse the workunit to highlight potential cost savings\n"
+               "   analyse <workunit> [UPDATEWU=1] [GRAPH=graph_name]\n"
+               "                       - Analyse workunit to highlight potential cost savings\n"
                "\n"
                "   archive <workunits> - Archive to xml files [TO=<directory>] [DEL=1] [DELETERESULTS=1] [INCLUDEFILES=1]\n"
                "   restore <filenames> - Restore from xml files [INCLUDEFILES=1]\n"
@@ -140,12 +141,10 @@ public:
         SCMStringBuffer curFormattedValue;
 
         StatisticCreatorType curCreatorType = cur.getCreatorType();
-        StatisticScopeType curScopeType = cur.getScopeType();
         StatisticMeasure curMeasure = cur.getMeasure();
         unsigned __int64 count = cur.getCount();
         unsigned __int64 max = cur.getMax();
         unsigned __int64 ts = cur.getTimestamp();
-        const char * curScope = cur.queryScope();
         cur.getCreator(curCreator);
         cur.getDescription(curDescription, false);
         cur.getFormattedValue(curFormattedValue);
@@ -241,7 +240,7 @@ static void process(IConstWorkUnit &w, IProperties *globals, const StringArray &
     else if (stricmp(action, "analyze")==0 || stricmp(action, "analyse")==0)
     {
         // can't calculate cost in terms of money (pricing table not available and size of cluster not known here)
-        analyseAndPrintIssues(&w, 0, globals->getPropBool("UPDATEWU"));
+        analyseAndPrintIssues(&w, globals->queryProp("graph"), 0, globals->getPropBool("UPDATEWU"));
     }
     else if (stricmp(action, "critical")==0)
     {
@@ -311,7 +310,8 @@ static void process(IConstWorkUnit &w, IProperties *globals, const StringArray &
     {
         ScopeDumper dumper;
         WuScopeFilter filter;
-        filter.addFilter(args.item(0));
+        ForEachItemIn(i, args)
+            filter.addFilter(args.item(i));
         if (!filter.outputDefined())
             filter.addOutputProperties(PTall);
         filter.finishedFilter();
@@ -371,7 +371,6 @@ int main(int argc, const char *argv[])
     int ret = 0;
     InitModuleObjects();
     Owned<IPropertyTree> dummyconfig = loadConfiguration(defaultYaml, argv, "wutool", "WUTOOL", "wutool.xml", nullptr, nullptr, false);
-    unsigned count=0;
     globals.setown(createProperties("wutool.ini", true));
     const char *action = NULL;
     StringArray wuids;
@@ -842,11 +841,11 @@ protected:
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         unsigned before = factory->numWorkUnits();
         unsigned start = msTick();
-        for (int i = 0; i < testSize; i++)
+        for (unsigned i = 0; i < testSize; i++)
         {
-            VStringBuffer userId("WuTestUser%02d", i % 50);
-            VStringBuffer clusterName("WuTestCluster%d", i % 5);
-            VStringBuffer jobName("WuTest job %d", i % 3);
+            VStringBuffer userId("WuTestUser%02u", i % 50);
+            VStringBuffer clusterName("WuTestCluster%u", i % 5);
+            VStringBuffer jobName("WuTest job %u", i % 3);
             Owned<IWorkUnit>wu = factory->createWorkUnit("WuTest", NULL, NULL, NULL);
             if (i % 6)
                 wu->setState(WUStateCompleted);
@@ -864,15 +863,15 @@ protected:
             // We should really be doing a noteFileRead here but the API is such a pain that we'll do it this way
             IPropertyTree *p = queryExtendedWU(wu)->queryPTree();
             VStringBuffer fileinfo(" <FilesRead>"
-                "  <File name='myfile%02d' useCount='2' cluster = 'mycluster'/>"
+                "  <File name='myfile%02u' useCount='2' cluster = 'mycluster'/>"
                 "  <File name='mysuperfile' useCount='2' cluster = 'mycluster'>"
-                "   <Subfile name='myfile%02d'/>"
+                "   <Subfile name='myfile%02u'/>"
                 "  </File>"
                 " </FilesRead>", i % 10, i % 10);
             p->setPropTree("FilesRead", createPTreeFromXMLString(fileinfo));
             wu->noteFileRead(NULL); // Make sure we notice that it was modified
 
-            VStringBuffer myFileW("myfilewritten%02d", i % 10);
+            VStringBuffer myFileW("myfilewritten%02u", i % 10);
             wu->addFile(myFileW, NULL, i % 3, WUFileStandard, NULL);
         }
         unsigned after = factory->numWorkUnits();
@@ -1424,7 +1423,7 @@ protected:
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         unsigned before = factory->numWorkUnits();
         unsigned start = msTick();
-        for (int i = 0; i < testSize; i++)
+        for (unsigned i = 0; i < testSize; i++)
         {
             factory->deleteWorkUnit(wuids.item(i));
         }
@@ -1438,7 +1437,7 @@ protected:
     {
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         unsigned start = msTick();
-        int i;
+        unsigned i;
         for (i = 0; i < testSize; i++)
         {
             Owned<IWorkUnit> wu = factory->updateWorkUnit(wuids.item(i));
@@ -1494,7 +1493,7 @@ protected:
             }
             ASSERT(wu->getExceptionCount() == 10);
             Owned<IConstWUExceptionIterator> exceptions = &wu->getExceptions();
-            int exNo = 0;
+            unsigned exNo = 0;
             ForEach(*exceptions)
             {
                 IConstWUException &ex = exceptions->query();
@@ -1588,7 +1587,7 @@ protected:
     {
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         unsigned start = msTick();
-        int i;
+        unsigned i;
         for (i = 0; i < testSize; i++)
         {
             Owned<IWorkUnit> wu = factory->updateWorkUnit(wuids.item(i));
@@ -1755,7 +1754,7 @@ protected:
             start = msTick();
             StringArray users;
             factory->getUniqueValues(WUSFuser, "WUTest", users);
-            int expected = testSize < 50 ? testSize : 50;
+            unsigned expected = testSize < 50 ? testSize : 50;
             ASSERT(users.length() == expected);
             ForEachItemIn(idx, users)
             {
@@ -1935,7 +1934,6 @@ protected:
     void testList2()
     {
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
-        bool isDali = streq(factory->queryStoreType(), "Dali");
         unsigned before = factory->numWorkUnits();
         unsigned start = msTick();
         unsigned numIterated = 0;
@@ -1968,7 +1966,6 @@ protected:
     void testListByAppValue()
     {
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
-        bool isDali = streq(factory->queryStoreType(), "Dali");
         unsigned start = msTick();
         unsigned numIterated = 0;
         // Test filter by appValue
@@ -2095,6 +2092,8 @@ protected:
     }
     void testWorkUnitServices()
     {
+ #if 0
+        // These tests are not valid at present, since the C++ structure does not accurately describe the variable layout fields
         class DummyContext: implements ICodeContext
         {
             virtual const char *loadResource(unsigned id) { throwUnexpected(); }
@@ -2209,11 +2208,10 @@ protected:
             virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) { throwUnexpected(); }
             virtual void addWuExceptionEx(const char*, unsigned int, unsigned int, unsigned int, const char*) override { throwUnexpected(); }
             virtual unsigned getElapsedMs() const override { throwUnexpected(); }
+            virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption) { throwUnexpected(); }
 
         } ctx;
 
- #if 0
-        // These tests are not valid at present, since the C++ structure does not accurately describe the variable layout fields
         size32_t lenResult;
         void * result;
         wsWorkunitList(&ctx, lenResult, result, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, true, false, NULL);
@@ -2304,7 +2302,8 @@ protected:
         }
         virtual void noteException(IConstWUException & exception) override
         {
-            noteException(exception);
+            SCMStringBuffer s;
+            DBGLOG("  Exception: %s", exception.getExceptionMessage(s).str());
         }
     };
 

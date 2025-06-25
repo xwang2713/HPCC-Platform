@@ -118,6 +118,7 @@ interface ISDSManager
     virtual void setConfigOpt(const char *opt, const char *value) = 0;
     virtual unsigned queryCount(const char *xpath) = 0;
     virtual bool updateEnvironment(IPropertyTree *newEnv, bool forceGroupUpdate, StringBuffer &response) = 0;
+    virtual void closedown() = 0;
 };
 
 extern da_decl const char *queryNotifyHandlerName(IPropertyTree *tree);
@@ -253,7 +254,7 @@ interface IStoreHelper : extends IInterface
     virtual bool loadDelta(const char *filename, IFile *iFile, IPropertyTree *root) = 0;
     virtual bool loadDeltas(IPropertyTree *root, bool *errors=NULL) = 0;
     virtual bool detachCurrentDelta() = 0;
-    virtual void saveStore(IPropertyTree *root, unsigned *newEdition=NULL, bool currentEdition=false) = 0;
+    virtual void saveStore(IPropertyTree *root, unsigned *newEdition=NULL) = 0;
     virtual unsigned queryCurrentEdition() = 0;
     virtual StringBuffer &getCurrentStoreFilename(StringBuffer &res, unsigned *crc=NULL) = 0;
     virtual StringBuffer &getCurrentDeltaFilename(StringBuffer &res, unsigned *crc=NULL) = 0;

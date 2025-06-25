@@ -38,7 +38,7 @@ extern void closedownDFS();
 // base is saved in store whenever block exhausted, so replacement coven servers can restart 
 
 // server side versioning.
-#define ServerVersion    "3.17"
+#define ServerVersion    "3.18"
 #define MinClientVersion "1.5"
 
 
@@ -164,6 +164,8 @@ static void checkDaliVersionInfo(ICommunicator *comm, CDaliVersion &serverVersio
     mb.append(MinServerVersion);
     StringBuffer daliEpStr;
     comm->queryGroup().queryNode(0).endpoint().getEndpointHostText(daliEpStr); // NB: there's always exactly 1 node
+    if (!comm->verifyConnection(0, VERSION_REQUEST_TIMEOUT))
+        throw makeStringExceptionV(-1, "Failed to connect to server [%s]", daliEpStr.str());
     if (!comm->sendRecv(mb, RANK_RANDOM, MPTAG_DALI_COVEN_REQUEST, VERSION_REQUEST_TIMEOUT))
         throw makeStringExceptionV(-1, "Failed retrieving version information from server [%s], legacy server?", daliEpStr.str());
     if (!mb.length())
@@ -563,12 +565,14 @@ public:
         Owned<IFile> f = createIFile(storename.get());
         Owned<IFileIO> io = f->open(IFOcreate);
         io->write(0, xml.length(), xml.str());
+        io->close();
         io.clear();
         if (!backupname.isEmpty()) {
             try {
                 f.setown(createIFile(backupname.get()));
                 io.setown(f->open(IFOcreate));
                 io->write(0, xml.length(), xml.str());
+                io->close();
                 io.clear();
             }
             catch (IException *e) {
@@ -1065,33 +1069,40 @@ DALI_UID getGlobalUniqueIds(unsigned num,SocketEndpoint *_foreignnode)
 {
     if (num==0)
         return 0;
-    if (coven)
-        return coven->getUniqueIds(num,_foreignnode);
-    if (!_foreignnode||_foreignnode->isNull())
-        throw MakeStringException(99,"getUniqueIds: Not connected to dali");
-    SocketEndpoint foreignnode;
-    foreignnode.set(*_foreignnode);
-    if (foreignnode.port==0)
-        foreignnode.port=DALI_SERVER_PORT;
-    CDaliUidAllocator &uidAllocator = CDaliUidAllocator::find(CCovenBase::foreginUidallocators,foreignnode);
-    DALI_UID uid;
-    CriticalBlock block(uidAllocator.crit);
-    while (!uidAllocator.allocUIDs(uid,num)) {
-        unsigned n = uidAllocator.getBankSize();
-        if (n<num) 
-            n = num*2;
-        DALI_UID next;
-        CMessageBuffer mb;
-        mb.append((int)MCR_ALLOC_UNIQUE_IDS);
-        mb.append(n);
-        Owned<ICommunicator> foreign;
-        Owned<IGroup> group = createIGroup(1,&foreignnode); 
-        foreign.setown(createCommunicator(group));
-        foreign->sendRecv(mb,RANK_RANDOM,MPTAG_DALI_COVEN_REQUEST);
-        mb.read(next);
-        if ((next==0)&&mb.remaining())  // server exception
-            throw deserializeException(mb);
-        uidAllocator.addUIDs((__uint64)next,n);
+    try
+    {
+        if (coven)
+            return coven->getUniqueIds(num,_foreignnode);
+        if (!_foreignnode||_foreignnode->isNull())
+            throw MakeStringException(99,"getUniqueIds: Not connected to dali");
+        SocketEndpoint foreignnode;
+        foreignnode.set(*_foreignnode);
+        if (foreignnode.port==0)
+            foreignnode.port=DALI_SERVER_PORT;
+        CDaliUidAllocator &uidAllocator = CDaliUidAllocator::find(CCovenBase::foreginUidallocators,foreignnode);
+        DALI_UID uid;
+        CriticalBlock block(uidAllocator.crit);
+        while (!uidAllocator.allocUIDs(uid,num)) {
+            unsigned n = uidAllocator.getBankSize();
+            if (n<num) 
+                n = num*2;
+            DALI_UID next;
+            CMessageBuffer mb;
+            mb.append((int)MCR_ALLOC_UNIQUE_IDS);
+            mb.append(n);
+            Owned<ICommunicator> foreign;
+            Owned<IGroup> group = createIGroup(1,&foreignnode); 
+            foreign.setown(createCommunicator(group));
+            foreign->sendRecv(mb,RANK_RANDOM,MPTAG_DALI_COVEN_REQUEST);
+            mb.read(next);
+            if ((next==0)&&mb.remaining())  // server exception
+                throw deserializeException(mb);
+            uidAllocator.addUIDs((__uint64)next,n);
+        }
+        return uid;
     }
-    return uid;
+    catch (IException *e)
+    {
+        throw makeWrappedException(e, e->errorCode(), "getGlobalUniqueIds");
+    }
 }

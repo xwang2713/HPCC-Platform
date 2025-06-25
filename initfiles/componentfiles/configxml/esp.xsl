@@ -76,6 +76,8 @@
                 </expert>
                 <storage>
                     <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>
+                    <xsl:copy-of select="/Environment/Software/Globals/storage/*"/>
+                    <xsl:copy-of select="/Environment/Software/Storage/*"/>
                 </storage>
                 <xsl:copy-of select="/Environment/Hardware/cost"/>
                 <xsl:copy-of select="/Environment/Software/tracing"/>
@@ -466,6 +468,15 @@
                         <xsl:otherwise/>
                     </xsl:choose>
                 </xsl:for-each>
+                <xsl:attribute name="useLegacyDefaultFileScopePermissionCache">
+                    <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServer]/@useLegacyDefaultFileScopePermissionCache"/>
+                </xsl:attribute>
+                <xsl:attribute name="useLegacySuperUserStatusCheck">
+                    <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServer]/@useLegacySuperUserStatusCheck"/>
+                </xsl:attribute>
+                <xsl:attribute name="ldapAdminSecretKey">
+                    <xsl:value-of select="/Environment/Software/LDAPServerProcess[@name=$ldapServer]/@ldapAdminSecretKey"/>
+                </xsl:attribute>
             </xsl:element>
         </xsl:for-each>
     </xsl:template>

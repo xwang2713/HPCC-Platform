@@ -177,3 +177,166 @@ HPCC metrics can be easily routed to Azure Insights for application level monito
       11/5/2021, 9:02:00.000 PM	prometheus	esp_requests_active	0	{"app":"eclservices","namespace":"default","pod_name":"eclservices-778477d679-vgpj2"}
       11/5/2021, 9:02:00.000 PM	prometheus	esp_requests_active	3	{"app":"eclservices","namespace":"default","pod_name":"eclservices-778477d679-vgpj2"}
       ```
+###  ElasticSearch Support
+HPCC metrics can be routed to ElasticSearch for advanced metrics processing and 
+alerting. This process involves two requirements: enabling the ElasticSearch metric 
+sink, and configuring the index in ElasticSearch to receive the metrics.
+
+Since the metrics configuration is common across all HPCC components, the ElasticSearch
+sink will report metrics from all components to the same index. Therefore, the
+index must be configured to receive metrics from all components. 
+
+#### Index Configuration
+The sink requires the index to be created and configured fully in ElasticSearch in order for the sink to report
+metrics. The sink reads configuration data from the index in order to properly report metrics. Future versions
+of the sink may include the capability to create the index if it does not exist. The name of the index is passed 
+to the sink as a configuration setting.
+ 
+The following must be configured in the index in order for the sink to properly report metrics:
+
+##### Dynamic Mapping
+The index must be configured with dynamic mapping enabled. Dynamic mapping allows storing of framework metric 
+values using native types. Without dynamic mapping, the ElasticSearch default mapping does not properly map 
+values to unsigned 64-bit integers. 
+
+To create an index with dynamic mapping, use the following object, or other means, when creating the index:
+```code json
+{
+  "mappings": {
+    "dynamic_templates": [
+      {
+        "hpcc_metrics_count_suffix": {
+          "match": "*_count",
+          "mapping": {
+            "type": "unsigned_long"
+          }
+        }
+      },
+      {
+        "hpcc_metrics_gauge_suffix": {
+          "match": "*_gauge",
+          "mapping": {
+            "type": "unsigned_long"
+          }
+        }
+      },
+      {
+        "hpcc_metrics_histogram_suffix": {
+          "match": "*_histogram",
+          "mapping": {
+            "type": "histogram"
+          }
+        }
+      }
+    ]
+  }
+}  
+```
+
+The object names beginning with "hpcc_metric_" represent the mappings for the three affected hpcc metrics types.
+The _match_ value for each defines the expected suffix for each HPCC metric value, based on type, when metrics
+are reported and indexed. The object names above are the default values used by the sink. The index can be
+configured with different object names (for environment flexibility), but the object names must be provided to the
+sink as additional configuration settings (defined below).
+
+#### Enabling ElasticSearch Metrics Sink for Kubernetes
+To enable reporting of metrics to ElasticSearch, add the metric configuration settings to 
+the helm chart. 
+
+The provided HPCC helm chart provides all global settings from its values.yml file to all components. 
+To enable metrics reporting, either include the metrics configuration as a permanent part of 
+your HPCC helm chart values.yml file, or add it as command line settings at chart installation. 
+To enable the ElasticSearch sink on the command line, use the following to add the ElasticSearch 
+settings:
+
+```code
+helm install mycluster ./hpcc -f <path>/elasticsearch_metrics.yml
+```
+An example _yml_ file can be found in the repository at helm/examples/metrics/elasticsearch_metrics.yml.
+Make a copy and modify as needed for your installation.
+
+##### Configuration Settings
+The ElasticSearch sink defines the following settings
+
+**Host**
+The host settings define the server hosting ElasticSearch to which metrics are reported. The settings are:
+
+* domain - The domain or IP address of the ElasticSearch server. (required)
+* protocol - The protocol used to connect to the ElasticSearch server. (default: https)
+* port - The port number of the ElasticSearch server. (default: 9200)
+* certificateFilePath - Path to the file containing the certificate used to connect to the ElasticSearch server. 
+(optional)
+* connectTimeout - The time in seconds to wait for a connection to be established to the (default: 5)
+* readTimeout - The time in seconds to wait for a response from the server for a read operation. (default: 5)
+* writeTimeout - The time in seconds to wait for a response from the server for a write operation. (default: 5)
+
+**Authentication**
+
+Optional child of the host configuration where authentication settings are defined. If missing, 
+no authentication is used. If defined, the settings are:
+
+* type - Required Authentication type used to connect to the ElasticSearch server. Value defines the 
+remaining settings. The allowed values are:
+  * basic - Basic authentication is used.
+* credentialsSecret - The name of the secret containing the credentials used to authenticate to 
+the ElasticSearch server. (optional, valid for Kubernetes only)
+* credentialsVaultId - The vault ID containing the credentials used to authenticate to the 
+ElasticSearch server. (optional, valid for Vault only)
+
+For **basic** authentication, the following settings are required. If a secret or vault is defined, these
+values are store there and are not required in the configuration file. Otherwise, they are required in the
+configuration file (environment.xml).
+* username - The username used to authenticate to the ElasticSearch server. 
+* password - The password used to authenticate to the ElasticSearch server. When stored in the 
+environment.xml file, it shall be encrypted using standard environment.xml encryption.
+
+**Index**
+
+The index must be created and configred in ElasticSearch before the sink will load and report
+metrics. The following settings describe what must be configured in ElasticSearch.
+
+* name - The name of the index to which metrics are reported. (required)
+* countSuffixMappingName - See below. (default: hpcc_metrics_count_suffix)
+* gaugeSuffixMappingName - See below. (default: hpcc_metrics_gauge_suffix)
+* histogramSuffixMappingName - See below. (default: hpcc_metrics_histogram_suffix)
+
+The _*SuffixMappingName_ values are object names in the index _dynamic_templates_ object of the
+index's _mappings_ object. These MUST be configured in the index. The mapping name objects contain
+a _match_ member whose value is used as the suffix for the related HPCC metric type. The format
+is expected to be "*<string>" where "*" is part of the defined match pattern syntax defined by
+ElasticSearch and "<string>" is the suffix appended to each HPCC metric based on type. For example,
+If a _match_ value is defined as "*_count", then the sink would add "_count" to the end of each
+metric when indexing measurements during a report. This ensures that each HPCC metric is stored in 
+the index with the correct type. Please refer to the ElasticSearch documentation for more information 
+on dynamically mapping types when indexing documents.
+
+For convenience, if the index dynamic templates configuration settings do not include a gauge 
+suffix setting, the value for the count suffix setting is used. 
+
+Standard periodic metric sink settings are also available.
+
+#### Enabling ElasticSearch Metrics Sink for Bare Metal
+To enable reporting of metrics to ElasticSearch, add the metric configuration settings to
+the environment configuration file (enviroment.xml). These settings must be added manually
+since there is no support in the config manager.
+
+Add the following to the environment.xml configuration file (note that some values may not be required): 
+
+```code xml
+<Environment>
+    <Software>
+        <metrics name="mymetricsconfig">
+            <sinks name="myelasticsink" type="elastic">
+                <settings period="30" ignoreZeroMetrics="1">
+                    <host domain="<domainname>" port="<port>" protocol="http|https" 
+                            certificateFilePath="<path to cert file>">
+                        <authentication type="basic" username="<username>" password="<password>"/>
+                    </host>
+                    <index name="<index>" countSuffixMappingName="<name>" histogramSuffixMappingName="<name>" gaugeSuffixMappingName="<name>/> 
+                <settings/>
+            </sinks>
+        </metrics>
+    </Software>
+</Environment>
+```
+See section above for additional settings that can be added to the ElasticSearch sink.

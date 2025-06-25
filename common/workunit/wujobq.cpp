@@ -18,6 +18,7 @@
 
 #include "platform.h"
 #include <algorithm>
+#include <cstdlib>
 #include "limits.h"
 #include "jlib.hpp"
 #include "jbuff.hpp"
@@ -51,11 +52,10 @@
 JobQueues
   JobQueue @name= @count= @state=active|paused|stopped
     Edition <num>
-    Client @session= @connected= @waiting=      -- connections and waiting can be > 1 (multiple threads)
+    Client @session= @connected= [@priority=n] @waiting=      -- connections and waiting can no longer be > 1
     Item*  @wuid @owner @node @port @priority @session
 
 #endif
-
 
 
 class CJobQueueItem: implements IJobQueueItem, public CInterface
@@ -177,18 +177,6 @@ public:
         StringBuffer dts;
         src.read(owner).read(dts);
         enqueuedt.setString(dts.str());
-    }
-
-
-
-    IJobQueueItem* clone()
-    {
-        IJobQueueItem* ret = new CJobQueueItem(wu);
-        ret->setPriority(priority);
-        ret->setPriority(port);
-        ret->setEndpoint(ep);
-        ret->setSessionId(sessid);
-        return ret;
     }
 
     void setPriority(int _priority)
@@ -407,7 +395,6 @@ protected:
     }
 public:
     sQueueData *qdata;
-    Semaphore notifysem;
     CriticalSection crit;
 
     IMPLEMENT_IINTERFACE;
@@ -801,37 +788,43 @@ public:
 class CJobQueue: public CJobQueueBase, implements IJobQueue
 {
 public:
-    sQueueData *activeq;
+    sQueueData *activeq = nullptr;
     SessionId sessionid;
-    unsigned locknest;
-    bool writemode;
-    bool connected;
+    unsigned locknest = 0;
+    bool writemode = false;
+    bool connected = false;
     Owned<IConversation> initiateconv;
     StringAttr initiatewu;
-    bool dequeuestop;
-    bool cancelwaiting;
-    bool validateitemsessions;
+    std::atomic<bool> isProcessingDequeue{false}; // Used to detect more than one thread waiting on the same queue
+    bool dequeuestop = false;
+    bool cancelwaiting = false;
+    bool validateitemsessions = false;
 
-    class csubs: implements ISDSSubscription, public CInterface
+    class QueueChangeSubscription : implements ISDSSubscription, public CInterface
     {
-        CJobQueue *parent;
+    public:
+        //If this semaphone is in the CJobQueue class then there is a race condition
+        //A callback may be at this point while the CJobQueue is deleted - causing it to signal
+        //a deleted semaphore
+        Semaphore notifysem;
     public:
         IMPLEMENT_IINTERFACE;
-        csubs(CJobQueue *_parent)
-        {
-            parent = _parent;
-        }
+
         void notify(SubscriptionId id, const char *xpath, SDSNotifyFlags flags, unsigned valueLen, const void *valueData)
         {
-            CriticalBlock block(parent->crit);
-            parent->notifysem.signal();
+            notifysem.signal();
         }
-    } subs;
+    };
 
-    IMPLEMENT_IINTERFACE;
+    //This must be an owned pointer, rather than a member, to avoid it being deleted while the notify()
+    //callback is being called.
+    Owned<QueueChangeSubscription> notifySubscription;
 
-    CJobQueue(const char *_qname) : CJobQueueBase(_qname), subs(this)
+    IMPLEMENT_IINTERFACE_USING(CJobQueueBase);
+
+    CJobQueue(const char *_qname) : CJobQueueBase(_qname)
     {
+        notifySubscription.setown(new QueueChangeSubscription);
         activeq = qdata;
         sessionid = myProcessSession();
         validateitemsessions = false;
@@ -1049,7 +1042,7 @@ public:
             }
             StringBuffer path;
             path.appendf("/JobQueues/Queue[@name=\"%s\"]/Edition",qd->qname.get());
-            qd->subscriberid = querySDS().subscribe(path.str(), subs, false);
+            qd->subscriberid = querySDS().subscribe(path.str(), *notifySubscription, false);
         }
     }
 
@@ -1060,7 +1053,7 @@ public:
             if (!qd->subscriberid) {
                 StringBuffer path;
                 path.appendf("/JobQueues/Queue[@name=\"%s\"]/Edition",qd->qname.get());
-                qd->subscriberid = querySDS().subscribe(path.str(), subs, false);
+                qd->subscriberid = querySDS().subscribe(path.str(), *notifySubscription, false);
             }
             unsigned e = (unsigned)qd->root->getPropInt("Edition", 1);
             if (e!=qd->lastWaitEdition) {
@@ -1122,17 +1115,42 @@ public:
     void disconnect()   // signal no longer wil be dequeing (optional - done automatically on release)
     {
         Cconnlockblock block(this,true);
-        if (connected) {
+        if (connected)
+        {
             dounsubscribe();
-            ForEachQueue(qd) {
+            ForEachQueue(qd)
+            {
                 IPropertyTree *croot = queryClientRootSession(*qd);
-                croot->setPropInt64("@connected",croot->getPropInt64("@connected",0)-1);
+                unsigned connectedCount = croot->getPropInt64("@connected");
+                if (connectedCount) // should never be 0, but guard JIC
+                    connectedCount--;
+                if (connectedCount)
+                    croot->setPropInt64("@connected", connectedCount);
+                else
+                    qd->root->removeTree(croot);
             }
             connected = false;
         }
     }
 
-    sQueueData *findbestqueue(bool useprev,int minprio,unsigned numqueues,sQueueData **queues)
+    bool hasHigherPriorityClients(IPropertyTree * queueTree, __uint64 clientPrio, unsigned threshold)
+    {
+        unsigned higher = 0;
+        Owned<IPropertyTreeIterator> iter = queueTree->getElements("Client");
+        ForEach(*iter)
+        {
+            unsigned __int64 priority = iter->query().getPropInt64("@priority", 0);
+            if (priority > clientPrio)
+            {
+                higher++;
+                if (higher >= threshold)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    sQueueData *findbestqueue(bool useprev,int minprio,__uint64 clientPrio,unsigned numqueues,sQueueData **queues)
     {
         if (numqueues==0)
             return NULL;
@@ -1143,7 +1161,11 @@ public:
         for (unsigned i=0;i<numqueues;i++) {
             sQueueData *qd = queues[i];
             unsigned count = qd->root->getPropInt("@count");
-            if (count) {
+            if (count)
+            {
+                if (hasHigherPriorityClients(qd->root, clientPrio, count))
+                    continue;
+
                 int mpr = useprev?std::max(qd->root->getPropInt("@prevpriority"),minprio):minprio;
                 if (count&&((minprio==INT_MIN)||checkprio(*qd,mpr))) {
                     StringBuffer path;
@@ -1164,17 +1186,33 @@ public:
         return best;
     }
 
-    void setWaiting(unsigned numqueues,sQueueData **queues, bool set)
+    void setWaiting(unsigned numqueues,sQueueData **queues, unsigned __int64 clientPrio, bool set)
     {
         for (unsigned i=0; i<numqueues; i++) {
             IPropertyTree *croot = queryClientRootSession(*queues[i]);
             croot->setPropInt64("@waiting",croot->getPropInt64("@waiting",0)+(set?1:-1));
+            //If a non-zero client priority has been specified, add (or remove) it from the list of priorities
+            if (clientPrio)
+            {
+                if (set)
+                    croot->setPropInt64("@priority", clientPrio);
+                else
+                    croot->removeProp("@priority");
+            }
         }
     }
 
 // 'simple' queuing
-    IJobQueueItem *dodequeue(int minprio,unsigned timeout=INFINITE, bool useprev=false, bool *timedout=NULL)
+    IJobQueueItem *dodequeue(int minprio, __uint64 clientPrio, unsigned timeout, bool useprev, bool * timedout)
     {
+        //If more than one thread is waiting on the queue, then the queue code does not work correctly
+        //It is undefined which thread the semaphore signal will wake up.
+        //E.g. there is one thread with a minimum priority of 0, and another with a minimum of 100, and an item of
+        //priority 50 is queued.  If the minimum priority of 100 is woken twice nothing will be dequeued.
+        //Similar problems occur when the clientPriority is mixed.
+        if (isProcessingDequeue.exchange(true))
+            throw MakeStringException(0, "Multiple concurrent dequeue not supported");
+
         bool hasminprio=(minprio!=INT_MIN);
         if (timedout)
             *timedout = false;
@@ -1204,23 +1242,30 @@ public:
                         active.append(qd);
                 }
                 if (stopped==total)
+                {
+                    isProcessingDequeue.store(false);
                     return NULL; // all stopped
+                }
                 sQueueData **activeqds = (sQueueData **)active.getArray();
                 unsigned activenum = active.ordinality();
                 if (activenum) {
-                    sQueueData *bestqd = findbestqueue(useprev,minprio,activenum,activeqds);
+                    sQueueData *bestqd = findbestqueue(useprev,minprio,clientPrio,activenum,activeqds);
                     unsigned count = bestqd?bestqd->root->getPropInt("@count"):0;
                     // load minp from cache
-                    if (count) {
-                        int mpr = useprev?std::max(bestqd->root->getPropInt("@prevpriority"),minprio):minprio;
-                        if (!hasminprio||checkprio(*bestqd,mpr)) {
-                            block.setRollback(false);
-                            ret = dotake(*bestqd,NULL,true,hasminprio,mpr);
-                            if (ret)            // think it must be!
-                                timeout = 0;    // so mark that done
-                            else if (!hasminprio) {
-                                WARNLOG("Resetting queue %s",bestqd->qname.get());
-                                clear(*bestqd); // reset queue as seems to have become out of sync
+                    if (count)
+                    {
+                        if (!hasHigherPriorityClients(bestqd->root, clientPrio, count))
+                        {
+                            int mpr = useprev?std::max(bestqd->root->getPropInt("@prevpriority"),minprio):minprio;
+                            if (!hasminprio||checkprio(*bestqd,mpr)) {
+                                block.setRollback(false);
+                                ret = dotake(*bestqd,NULL,true,hasminprio,mpr);
+                                if (ret)            // think it must be!
+                                    timeout = 0;    // so mark that done
+                                else if (!hasminprio) {
+                                    WARNLOG("Resetting queue %s",bestqd->qname.get());
+                                    clear(*bestqd); // reset queue as seems to have become out of sync
+                                }
                             }
                         }
                     }
@@ -1230,7 +1275,7 @@ public:
                             block.setRollback(false);
                         }
                         if (!waitingset) {
-                            setWaiting(activenum,activeqds,true);
+                            setWaiting(activenum, activeqds, clientPrio, true);
                             block.commit();
                             waitingset = true;
                         }
@@ -1238,7 +1283,7 @@ public:
                 }
                 if (timeout==0) {
                     if (waitingset) {
-                        setWaiting(activenum,activeqds,false);
+                        setWaiting(activenum, activeqds, clientPrio, false);
                         block.commit();
                     }
                     if (timedout)
@@ -1250,7 +1295,7 @@ public:
             // check every 5 mins independant of notify (in case subscription lost for some reason)
             if (to>timeout)
                 to = timeout;
-            notifysem.wait(to);
+            notifySubscription->notifysem.wait(to);
             if (timeout!=(unsigned)INFINITE) {
                 t = msTick()-t;
                 if (t<timeout)
@@ -1259,21 +1304,34 @@ public:
                     timeout = 0;
             }
         }
+
+        isProcessingDequeue.store(false);
         return ret;
     }
 
     IJobQueueItem *dequeue(unsigned timeout=INFINITE)
     {
-        return dodequeue(INT_MIN,timeout);
+        return dodequeue(INT_MIN, 0, timeout, false, nullptr);
     }
 
 
-    IJobQueueItem *prioDequeue(int minprio,unsigned timeout=INFINITE) // minprio == MAX_INT - used cache priority
+    IJobQueueItem *dequeue(int minPrio, unsigned timeout, unsigned prioritytransitiondelay) override
     {
-        return dodequeue(minprio,timeout);
+        Owned<IJobQueueItem> item;
+        if (prioritytransitiondelay)
+        {
+            bool usePrevPrio = true;
+            item.setown(dodequeue(minPrio, 0, prioritytransitiondelay, usePrevPrio, nullptr));
+        }
+        if (!item)
+            item.setown(dodequeue(minPrio, 0, timeout-prioritytransitiondelay, false, nullptr));
+        return item.getClear();
     }
 
-
+    IJobQueueItem *dequeuePriority(unsigned __int64 priority, unsigned timeout=INFINITE)
+    {
+        return dodequeue(INT_MIN, priority, timeout, false, nullptr);
+    }
 
     void placeonqueue(sQueueData &qd, IJobQueueItem *qitem,unsigned idx) // takes ownership of qitem
     {
@@ -1437,31 +1495,12 @@ public:
         return dotake(qd,wuid,false);
     }
 
-    unsigned takeItems(sQueueData &qd,CJobQueueContents &dest)
-    {
-        Cconnlockblock block(this,true);
-        unsigned ret = copyItemsImpl(qd,dest);
-        clear(qd);
-        return ret;
-    }
-
-    void enqueueItems(sQueueData &qd,CJobQueueContents &items)
-    {
-        unsigned n=items.ordinality();
-        if (n) {
-            Cconnlockblock block(this,true);
-            for (unsigned i=0;i<n;i++)
-                enqueue(qd,items.item(i).clone());
-        }
-    }
-
     void enqueueBefore(IJobQueueItem *qitem,const char *wuid)
     {
         Cconnlockblock block(this,true);
         sQueueData *qd = qdata->next?findQD(wuid):qdata;
         enqueueBefore(*qd,qitem,wuid);
     }
-
 
     void enqueueAfter(IJobQueueItem *qitem,const char *wuid)
     {
@@ -1644,6 +1683,11 @@ public:
         return (state&&(strcmp(state,"stopped")==0));
     }
 
+    void removeClient(sQueueData & qd, IPropertyTree * croot)
+    {
+        qd.root->removeTree(croot);
+    }
+
     void doGetStats(sQueueData &qd,unsigned &connected,unsigned &waiting,unsigned &enqueued)
     {
         Cconnlockblock block(this,false);
@@ -1656,7 +1700,7 @@ public:
                 break;
             if (validateitemsessions && !validSession(croot)) {
                 Cconnlockblock block(this,true);
-                qd.root->removeTree(croot);
+                removeClient(qd, croot);
             }
             else {
                 waiting += croot->getPropInt("@waiting");
@@ -1731,24 +1775,6 @@ public:
         }
         return NULL;
     }
-    unsigned takeItems(CJobQueueContents &dest)
-    {
-        assertex(qdata);
-        if (!qdata->next)
-            return takeItems(*qdata,dest);
-        Cconnlockblock block(this,true);
-        unsigned ret = 0;
-        ForEachQueue(qd) {
-            ret += copyItemsImpl(*qd,dest);
-            clear(*qd);
-        }
-        return ret;
-    }
-    void enqueueItems(CJobQueueContents &items)
-    {  // enqueues to firs sub-queue (not sure that useful)
-        assertex(qdata);
-        return enqueueItems(*qdata,items);
-    }
 
     void clear()
     {
@@ -1790,27 +1816,23 @@ public:
         return initiateconv.getClear();
     }
 
-    IConversation *acceptConversation(IJobQueueItem *&retitem, unsigned prioritytransitiondelay,IDynamicPriority *maxp)
+    IConversation *acceptConversation(IJobQueueItem *&retitem, unsigned prioritytransitiondelay)
     {
         CriticalBlock block(crit);
         retitem = NULL;
         assertex(connected); // must be connected
-        int curmp = maxp?maxp->get():0;
-        int nextmp = curmp;
         for (;;) {
             bool timedout = false;
             Owned<IJobQueueItem> item;
             {
                 CriticalUnblock unblock(crit);
                 // this is a bit complicated with multi-thor
-                if (prioritytransitiondelay||maxp) {
-                    item.setown(dodequeue((std::max(curmp,nextmp)/10)*10, // round down to multiple of 10
-                        prioritytransitiondelay?prioritytransitiondelay:60000,prioritytransitiondelay>0,&timedout));
-                                                            // if dynamic priority check every minute
-                    if (!prioritytransitiondelay) {
-                        curmp = nextmp; // using max above is a bit devious to allow transition
-                        nextmp = maxp->get();
-                    }
+                if (prioritytransitiondelay)
+                {
+                    int minprio = 0;
+                    unsigned timeout = prioritytransitiondelay;
+                    bool usePrevPrio = true;
+                    item.setown(dodequeue(minprio, 0, timeout, usePrevPrio, &timedout));
                 }
                 else
                     item.setown(dequeue(INFINITE));
@@ -1853,7 +1875,7 @@ public:
     {
         CriticalBlock block(crit);
         dequeuestop = true;
-        notifysem.signal();
+        notifySubscription->notifysem.signal();
     }
 
     bool cancelInitiateConversation(sQueueData &qd,const char *wuid)
@@ -1890,7 +1912,7 @@ public:
                 if (haschanged())
                     return true;
             }
-            if (!notifysem.wait(timeout))
+            if (!notifySubscription->notifysem.wait(timeout))
                 break;
         }
         return false;
@@ -1899,7 +1921,7 @@ public:
     {
         CriticalBlock block(crit);
         cancelwaiting = true;
-        notifysem.signal();
+        notifySubscription->notifysem.signal();
     }
 
     virtual void enqueue(IJobQueueItem *qitem)
@@ -2163,6 +2185,7 @@ extern bool WORKUNIT_API runWorkUnit(const char *wuid, const char *queueName)
     return true;
 }
 
+// NB: deprecated. Only currently used if expert/@disableQueuePriority = true
 extern bool WORKUNIT_API queueJobIfQueueWaiting(IJobQueue *queue, IJobQueueItem *item, unsigned maxTimeMs, unsigned intervalMs)
 {
     bool consumed = false;

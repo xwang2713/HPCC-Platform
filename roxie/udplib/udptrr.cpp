@@ -22,6 +22,7 @@
 
 #include "jthread.hpp"
 #include "jlog.hpp"
+#include "jmisc.hpp"
 #include "jisem.hpp"
 #include "jsocket.hpp"
 #include "udplib.hpp"
@@ -391,7 +392,7 @@ enum class ReceiveState {
     granted,        // at least one permit granted and NO pending request, waiting for data to be sent
     max
 };
-constexpr const char * receiveStateNameText[(unsigned)ReceiveState::max] = { "idle", "requested", "granted" };
+constexpr const char * receiveStateNameText[(unsigned)ReceiveState::max+1] = { "idle", "requested", "granted", "unknown" };
 const char * receiveStateName(ReceiveState idx) { return receiveStateNameText[(unsigned)idx]; }
 
 
@@ -853,6 +854,31 @@ class CReceiveManager : implements IReceiveManager, public CInterface
 
     IpMapOf<UdpSenderEntry> sendersTable;
 
+    class UdpRdTracker : public TimeDivisionTracker<6, false>
+    {
+    public:
+        enum
+        {
+            other,
+            waiting,
+            allocating,
+            processing,
+            pushing,
+            checkingPending
+        };
+
+        UdpRdTracker(const char *name, unsigned reportIntervalSeconds) : TimeDivisionTracker<6, false>(name, reportIntervalSeconds)
+        {
+            stateNames[other] = "other";
+            stateNames[waiting] = "waiting";
+            stateNames[allocating] = "allocating";
+            stateNames[processing] = "processing";
+            stateNames[pushing] = "pushing";
+            stateNames[checkingPending] = "checking pending";
+        }
+
+    };
+
     class receive_receive_flow : public Thread 
     {
         CReceiveManager &parent;
@@ -863,7 +889,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
         std::atomic<bool> running = { false };
         SenderList pendingRequests;     // List of senders requesting permission to send
         PermitList pendingPermits;      // List of active permits
-
+        UdpRdTracker timeTracker;
     private:
         void noteRequest(UdpSenderEntry *requester, sequence_t flowSeq, sequence_t sendSeq)
         {
@@ -927,8 +953,6 @@ class CReceiveManager : implements IReceiveManager, public CInterface
         void noteDone(UdpSenderEntry *requester, const UdpRequestToSendMsg &msg)
         {
             const unsigned flowSeq = msg.flowSeq;
-            SendPermit * permit = requester->queryPermit(flowSeq);
-
             //A completed message, on the data flow, may often be received after the next request to send.
             //If so it should not update the state, but it should clear all grants with a flowid <= the new flowid
             //since all the data will have been sent. (If it has not been received it is either lost or OOO (unlikely).)
@@ -966,7 +990,8 @@ class CReceiveManager : implements IReceiveManager, public CInterface
 
     public:
         receive_receive_flow(CReceiveManager &_parent, unsigned flow_p, unsigned _maxSlotsPerSender)
-        : Thread("UdpLib::receive_receive_flow"), parent(_parent), flow_port(flow_p), maxSlotsPerSender(_maxSlotsPerSender), maxPermits(_parent.input_queue_size)
+        : Thread("UdpLib::receive_receive_flow"), parent(_parent), flow_port(flow_p), maxSlotsPerSender(_maxSlotsPerSender), maxPermits(_parent.input_queue_size),
+          timeTracker("receive_receive_flow", 60)
         {
         }
         
@@ -1210,6 +1235,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                     {
                         DBGLOG("UdpReceiver: wait_read(%u)", timeout);
                     }
+                    UdpRdTracker::TimeDivision d(timeTracker, UdpRdTracker::waiting);
                     bool dataAvail = flow_socket->wait_read(timeout);
                     if (dataAvail)
                     {
@@ -1217,8 +1243,10 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                         unsigned int res ;
                         flow_socket->readtms(&msg, l, l, res, 0);
                         assert(res==l);
+                        d.switchState(UdpRdTracker::processing);
                         doFlowRequest(msg);
                     }
+                    d.switchState(UdpRdTracker::checkingPending);
                     timeout = checkPendingRequests();
                 }
                 catch (IException *e)
@@ -1263,9 +1291,10 @@ class CReceiveManager : implements IReceiveManager, public CInterface
         ISocket *selfFlowSocket = nullptr;
         std::atomic<bool> running = { false };
         Semaphore started;
+        UdpRdTracker timeTracker;
         
     public:
-        receive_data(CReceiveManager &_parent) : Thread("UdpLib::receive_data"), parent(_parent)
+        receive_data(CReceiveManager &_parent) : Thread("UdpLib::receive_data"), parent(_parent), timeTracker("receive_data", 60)
         {
             unsigned ip_buffer = parent.input_queue_size*DATA_PAYLOAD*2;
             if (ip_buffer < udpFlowSocketsSize) ip_buffer = udpFlowSocketsSize;
@@ -1325,7 +1354,7 @@ class CReceiveManager : implements IReceiveManager, public CInterface
             adjustPriority(2);
         #endif
             started.signal();
-            unsigned lastOOOReport = 0;
+            unsigned lastOOOReport = msTick();
             unsigned lastPacketsOOO = 0;
             unsigned lastUnwantedDiscarded = 0;
             unsigned timeout = 5000;
@@ -1342,8 +1371,10 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                         //Read at least the size of the smallest packet we can receive
                         //static assert to check we are reading the smaller of the two possible packet types
                         static_assert(sizeof(UdpRequestToSendMsg) <= sizeof(UdpPacketHeader));
-                        receive_socket->readtms(b->data, sizeof(UdpRequestToSendMsg), DATA_PAYLOAD, res, timeout);
-
+                        {
+                            UdpRdTracker::TimeDivision d(timeTracker, UdpRdTracker::waiting);
+                            receive_socket->readtms(b->data, sizeof(UdpRequestToSendMsg), DATA_PAYLOAD, res, timeout);
+                        }
                         //Even if a UDP packet is not split, very occasionally only some of the data may be present for the read.
                         //Slightly horribly this packet could be one of two different formats(!)
                         //  a UdpRequestToSendMsg, which has a 2 byte command at the start of the header, with a maximum value of max_flow_cmd
@@ -1372,27 +1403,30 @@ class CReceiveManager : implements IReceiveManager, public CInterface
                         //Redirect them to the flow thread to process them.
                         selfFlowSocket->write(b->data, res);
                     }
-
-                    dataPacketsReceived++;
-                    UdpSenderEntry *sender = &parent.sendersTable[hdr.node];
-                    if (sender->noteSeen(hdr))
                     {
-                        // We should perhaps track how often this happens, but it's not the same as unwantedDiscarded
-                        hdr.node.clear();  // Used to indicate a duplicate that collate thread should discard. We don't discard on this thread as don't want to do anything that requires locks...
-                    }
-                    else
-                    {
-                        //Decrease the number of active reservations to balance having received a new data packet (otherwise they will be double counted)
-                        sender->decPermit(hdr.msgSeq);
-                        if (udpTraceLevel > 5) // don't want to interrupt this thread if we can help it
+                        UdpRdTracker::TimeDivision d(timeTracker, UdpRdTracker::processing);
+                        dataPacketsReceived++;
+                        UdpSenderEntry *sender = &parent.sendersTable[hdr.node];
+                        if (sender->noteSeen(hdr))
                         {
-                            StringBuffer s;
-                            DBGLOG("UdpReceiver: %u bytes received packet %" SEQF "u %x from %s", res, hdr.sendSeq, hdr.pktSeq, hdr.node.getTraceText(s).str());
+                            // We should perhaps track how often this happens, but it's not the same as unwantedDiscarded
+                            hdr.node.clear();  // Used to indicate a duplicate that collate thread should discard. We don't discard on this thread as don't want to do anything that requires locks...
                         }
+                        else
+                        {
+                            //Decrease the number of active reservations to balance having received a new data packet (otherwise they will be double counted)
+                            sender->decPermit(hdr.msgSeq);
+                            if (udpTraceLevel > 5) // don't want to interrupt this thread if we can help it
+                            {
+                                StringBuffer s;
+                                DBGLOG("UdpReceiver: %u bytes received packet %" SEQF "u %x from %s", res, hdr.sendSeq, hdr.pktSeq, hdr.node.getTraceText(s).str());
+                            }
+                        }
+                        d.switchState(UdpRdTracker::pushing);
+                        parent.input_queue->pushOwn(b);
+                        d.switchState(UdpRdTracker::allocating);
+                        b = udpBufferManager->allocate();
                     }
-                    parent.input_queue->pushOwn(b);
-                    b = udpBufferManager->allocate();
-
                     if (udpStatsReportInterval)
                     {
                         unsigned now = msTick();
@@ -1486,9 +1520,9 @@ class CReceiveManager : implements IReceiveManager, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
     CReceiveManager(int server_flow_port, int d_port, int client_flow_port, int queue_size, bool _encrypted)
-        : collatorThread(*this), encrypted(_encrypted),
-        sendersTable([client_flow_port](const ServerIdentifier ip) { return new UdpSenderEntry(ip.getIpAddress(), client_flow_port);}),
-        input_queue_size(queue_size), receive_flow_port(server_flow_port), data_port(d_port)
+        : sendersTable([client_flow_port](const ServerIdentifier ip) { return new UdpSenderEntry(ip.getIpAddress(), client_flow_port);}),
+          collatorThread(*this),
+          input_queue_size(queue_size), receive_flow_port(server_flow_port), data_port(d_port), encrypted(_encrypted)
     {
 #ifndef _WIN32
         if (udpAdjustThreadPriorities)
@@ -1502,7 +1536,7 @@ public:
         //any other sender for the udpPermitTimeout period
         unsigned maxSlotsPerClient = (udpMaxPendingPermits == 1) ? queue_size : (udpMaxClientPercent * queue_size) / (udpMaxPendingPermits * 100);
         assertex(maxSlotsPerClient != 0);
-        if (maxSlotsPerClient > queue_size)
+        if ((int) maxSlotsPerClient > queue_size)
             maxSlotsPerClient = queue_size;
         if (udpResendLostPackets && maxSlotsPerClient > TRACKER_BITS)
             maxSlotsPerClient = TRACKER_BITS;
@@ -1537,11 +1571,14 @@ public:
 
     void collatePackets()
     {
+        UdpRdTracker timeTracker("collatePackets", 60);
         while(running) 
         {
             try
             {
+                UdpRdTracker::TimeDivision d(timeTracker, UdpRdTracker::waiting);
                 DataBuffer *dataBuff = input_queue->pop(true);
+                d.switchState(UdpRdTracker::processing);    
                 dataBuff->changeState(roxiemem::DBState::queued, roxiemem::DBState::unowned, __func__);
                 collatePacket(dataBuff);
             }

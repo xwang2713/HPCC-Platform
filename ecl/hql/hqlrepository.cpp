@@ -26,6 +26,36 @@
 #include "hqlutil.hpp"
 #include "jsecrets.hpp"
 
+static std::atomic<unsigned> fetchNesting{0};
+static std::atomic<bool> abortPending{false};
+
+extern HQL_API bool checkAbortGitFetch()
+{
+    abortPending = true;
+    return fetchNesting == 0;
+}
+
+class GitFetchTracker
+{
+public:
+    GitFetchTracker()
+    {
+        fetchNesting++;
+    }
+    ~GitFetchTracker()
+    {
+        if (--fetchNesting == 0)
+        {
+            //Check if an abort was requested while the git action was in progress.  If so terminate when it completes.
+            if (abortPending)
+            {
+                UERRLOG("Process terminated after git operation.");
+                _exit(2);
+            }
+        }
+    }
+};
+
 static const char * queryExtractFilename(const char * urn)
 {
     if (hasPrefix(urn, "file:", true))
@@ -646,6 +676,8 @@ unsigned __int64 EclRepositoryManager::getStatistic(StatisticKind kind) const
     {
     case StTimeElapsed:
         return cycle_to_nanosec(gitDownloadCycles);
+    case StTimeBlocked:
+        return cycle_to_nanosec(gitDownloadBlockedCycles);
     }
     return 0;
 }
@@ -793,6 +825,12 @@ IEclSourceCollection * EclRepositoryManager::resolveGitCollection(const char * r
         throw makeStringExceptionV(99, "Unsupported repository link format '%s'", defaultUrl);
 
     bool alreadyExists = false;
+
+    CCycleTimer gitDownloadTimer;
+    Owned<IInterface> gitUpdateLock(getGitUpdateLock(repoPath));
+    cycle_t blockedCycles = gitDownloadTimer.elapsedCycles();
+    gitDownloadBlockedCycles += blockedCycles;
+
     if (checkDirExists(repoPath))
     {
         if (options.cleanRepos)
@@ -822,7 +860,6 @@ IEclSourceCollection * EclRepositoryManager::resolveGitCollection(const char * r
 
     bool ok = false;
     Owned<IError> error;
-    CCycleTimer gitDownloadTimer;
     if (alreadyExists)
     {
         if (options.updateRepos)
@@ -855,7 +892,12 @@ IEclSourceCollection * EclRepositoryManager::resolveGitCollection(const char * r
             ok = true;
         }
     }
-    gitDownloadCycles += gitDownloadTimer.elapsedCycles();
+    //All following operations are read-only and should not be affected if the git repo is updated behind the scenes
+    //this could become a read/write lock if that proved to be an issue.
+    gitUpdateLock.clear();
+
+    gitDownloadCycles += (gitDownloadTimer.elapsedCycles() - blockedCycles);
+
     if (error)
     {
         if (errorReceiver)
@@ -1005,6 +1047,7 @@ unsigned EclRepositoryManager::runGitCommand(StringBuffer * output, const char *
         }
     }
 
+    GitFetchTracker gitFetchBlock;
     const char * cmd = "git";
     VStringBuffer runcmd("%s %s", cmd, args);
     StringBuffer error;
@@ -1014,9 +1057,12 @@ unsigned EclRepositoryManager::runGitCommand(StringBuffer * output, const char *
 
     if (ret > 0)
     {
+        const char * extra = "";
         if (options.gitUser.isEmpty())
-            DBGLOG("HPCC_GIT_USERNAME was not set");
-        DBGLOG("%s return code was %d\nError: %s\n", runcmd.str(), ret, error.str());
+            extra = " HPCC_GIT_USERNAME was not set";
+        //Ensure there are no newlines in the error message so it is reported as a single line
+        error.replace('\n', '/');
+        DBGLOG("%s return code was %d.%s Error: %s", runcmd.str(), ret, extra, error.str());
     }
     else if (options.optVerbose)
         printf("%s\n", output->str());

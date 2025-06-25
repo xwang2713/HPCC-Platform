@@ -359,6 +359,8 @@ eclCmdOptionMatchIndicator EclCmdCommon::matchCommandLineOption(ArgvIterator &it
         sslOptProvided = true;
         return EclCmdOptionMatch;
     }
+    if (iter.matchFlag(optNoKeepAlive, ECLOPT_NO_KEEP_ALIVE))
+        return EclCmdOptionMatch;
 
     if (iter.matchOption(optClientCert, ECLOPT_CLIENT_CERT))
         return EclCmdOptionMatch;
@@ -425,6 +427,8 @@ bool EclCmdCommon::finalizeOptions(IProperties *globals)
         Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_user, MSGCLS_error);
         queryLogMsgManager()->changeMonitorFilter(queryStderrLogMsgHandler(), filter);
     }
+    if (!optNoKeepAlive)
+        setKeepAlive(true);
 
     return true;
 }

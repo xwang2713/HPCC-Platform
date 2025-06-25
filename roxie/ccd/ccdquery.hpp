@@ -79,11 +79,13 @@ public:
     void setFromWorkUnit(IConstWorkUnit &wu, const IPropertyTree *stateInfo);
     void setFromContext(const IPropertyTree *ctx);
     void setFromAgentLoggingFlags(unsigned loggingFlags);
-
+    void updateDynPriority(int _priority);
 
     unsigned priority;
+    mutable std::atomic<int> dynPriority;
     unsigned timeLimit;
     unsigned warnTimeLimit;
+    unsigned minTimeLimit;
     unsigned traceLimit;
 
     memsize_t memoryLimit;

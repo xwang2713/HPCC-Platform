@@ -1,7 +1,7 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Link, mergeStyleSets } from "@fluentui/react";
 import { DFUService } from "@hpcc-js/comms";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import * as WsDfu from "src/WsDfu";
 import { formatCost } from "src/Session";
 import * as Utility from "src/Utility";
@@ -161,7 +161,7 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
                 }
             },
             Name: {
-                label: nlsHPCC.LogicalName, width: 600,
+                label: nlsHPCC.LogicalName, width: 180,
                 formatter: (_, row) => {
                     let name = row.Name?.split("::").pop();
                     let url = `#/files/${row.NodeGroup ? row.NodeGroup + "/" : ""}${[].concat(".", scopePath, name).join("::")}`;
@@ -223,7 +223,7 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
         const keys = Object.keys(query);
         const qs = keys.map(key => {
             const val = query[key];
-            if (!!val) {
+            if (val) {
                 return `${key}=${val}`;
             }
             return "";
@@ -337,7 +337,7 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
         }
         main={
             <>
-                <SizeMe monitorHeight>{({ size }) =>
+                <SizeMe>{({ size }) =>
                     <div style={{ position: "relative", width: "100%", height: "100%" }}>
                         <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
                             <FluentGrid

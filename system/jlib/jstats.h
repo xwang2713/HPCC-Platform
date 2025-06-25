@@ -20,9 +20,11 @@
 #define JSTATS_H
 
 #include "jlib.hpp"
+#include "jexcept.hpp"
 #include "jmutex.hpp"
 #include <vector>
 #include <initializer_list>
+#include <map>
 
 #include "jstatcodes.h"
 
@@ -31,10 +33,10 @@ typedef unsigned __int64 cost_type; // Decimal currency amount multiplied by 10^
 const unsigned __int64 MaxStatisticValue = (unsigned __int64)0-1U;
 const unsigned __int64 AnyStatisticValue = MaxStatisticValue; // Use the maximum value to also represent unknown, since it is unlikely to ever occur.
 
-inline constexpr stat_type seconds2StatUnits(stat_type secs) { return secs * 1000000000; }
-inline constexpr stat_type msecs2StatUnits(stat_type ms) { return ms * 1000000; }
-inline constexpr stat_type statUnits2seconds(stat_type stat) {return stat / 1000000000; }
-inline constexpr stat_type statUnits2msecs(stat_type stat) {return stat / 1000000; }
+inline constexpr stat_type seconds2StatUnits(__uint64 secs) { return secs * 1000000000; }
+inline constexpr stat_type msecs2StatUnits(__uint64 ms) { return ms * 1000000; }
+inline constexpr double statUnits2seconds(stat_type stat) {return ((double)stat) / 1000000000; }
+inline constexpr double statUnits2msecs(stat_type stat) {return ((double)stat) / 1000000; }
 
 inline constexpr stat_type statPercent(int value) { return (stat_type)value * 100; }            // Since 1 = 0.01% skew
 inline constexpr stat_type statPercent(double value) { return (stat_type)(value * 100); }
@@ -42,8 +44,10 @@ inline constexpr stat_type statPercent(stat_type  value) { return (stat_type)(va
 inline constexpr stat_type statPercentageOf(stat_type value, stat_type per) { return value * per / 10000; }
 
 inline StatisticKind queryStatsVariant(StatisticKind kind) { return (StatisticKind)(kind & ~StKindMask); }
-inline cost_type money2cost_type(double money) { return money * 1E6; }
-inline double cost_type2money(cost_type cost) { return ((double) cost) / 1E6; }
+constexpr cost_type money2cost_type(const double money) { return money * 1E6; }
+constexpr double cost_type2money(cost_type cost) { return ((double) cost) / 1E6; }
+
+extern jlib_decl void formatTime(StringBuffer & out, unsigned __int64 value);
 //---------------------------------------------------------------------------------------------------------------------
 
 //Represents a single level of a scope
@@ -557,7 +561,7 @@ class jlib_decl CRuntimeStatisticCollection
 {
 public:
     CRuntimeStatisticCollection(const StatisticsMapping & _mapping, bool _ignoreUnknown = false) : mapping(_mapping)
-#ifdef _DEBUG
+#ifdef _TESTING
     ,ignoreUnknown(_ignoreUnknown)
 #endif
     {
@@ -570,9 +574,12 @@ public:
     inline CRuntimeStatistic & queryStatistic(StatisticKind kind)
     {
         unsigned index = queryMapping().getIndex(kind);
-#ifdef _DEBUG
-        if (!ignoreUnknown)
-            dbgassertex(index < mapping.numStatistics());
+#ifdef _TESTING
+        if (!ignoreUnknown && (index >= mapping.numStatistics()))
+        {
+            VStringBuffer errMsg("Unknown mapping kind: %u", (unsigned)kind);
+            throwUnexpectedX(errMsg.str());
+        }
 #endif
         return values[index];
     }
@@ -586,9 +593,12 @@ public:
     inline const CRuntimeStatistic & queryStatistic(StatisticKind kind) const
     {
         unsigned index = queryMapping().getIndex(kind);
-#ifdef _DEBUG
-        if (!ignoreUnknown)
-            dbgassertex(index < mapping.numStatistics());
+#ifdef _TESTING
+        if (!ignoreUnknown && (index >= mapping.numStatistics()))
+        {
+            VStringBuffer errMsg("Unknown mapping kind: %u", (unsigned)kind);
+            throwUnexpectedX(errMsg.str());
+        }
 #endif
         return values[index];
     }
@@ -667,7 +677,7 @@ protected:
     CRuntimeStatistic * values;
     std::atomic<CNestedRuntimeStatisticMap *> nested {nullptr};
     static CriticalSection nestlock;
-#ifdef _DEBUG
+#ifdef _TESTING
     bool ignoreUnknown = false;
 #endif
 };
@@ -838,6 +848,21 @@ void mergeStat(CRuntimeStatisticCollection & stats, INTERFACE * source, Statisti
 template <class INTERFACE>
 void mergeStat(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, StatisticKind kind) { mergeStat(stats, source.get(), kind); }
 
+// helper templates that add delta of previous vs current (from source) to tgtStats (and update prevStats)
+template <class INTERFACE>
+void updateStatsDelta(CRuntimeStatisticCollection & tgtStats, CRuntimeStatisticCollection & prevStats, INTERFACE * source)
+{
+    CRuntimeStatisticCollection curStats(tgtStats.queryMapping());
+    mergeStats(curStats, source);
+    prevStats.updateDelta(tgtStats, curStats); // NB: adds delta to tgtStats, and updates prevStats
+}
+
+template <class INTERFACE>
+void updateStatsDelta(CRuntimeStatisticCollection & tgtStats, CRuntimeStatisticCollection & prevStats, const Shared<INTERFACE> & source)
+{
+    updateStatsDelta(tgtStats, prevStats, source.get());
+}
+
 
 //Some template helper classes for overwriting/setting statistics from external sources.
 
@@ -873,6 +898,55 @@ void setStat(CRuntimeStatisticCollection & stats, INTERFACE * source, StatisticK
 
 template <class INTERFACE>
 void setStat(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, StatisticKind kind) { setStat(stats, source.get(), kind); }
+
+
+typedef std::map<StatisticKind, StatisticKind> StatKindMap;
+
+template <class INTERFACE>
+void mergeRemappedStats(CRuntimeStatisticCollection & stats, INTERFACE * source, const StatisticsMapping & mapping, const StatKindMap & remaps)
+{
+    if (!source)
+        return;
+    unsigned max = mapping.numStatistics();
+    for (unsigned i=0; i < max; i++)
+    {
+        StatisticKind kind = mapping.getKind(i);
+        if (remaps.find(kind) == remaps.end())
+            stats.mergeStatistic(kind, source->getStatistic(kind));
+    }
+    for (auto remap: remaps)
+    {
+        if (mapping.hasKind(remap.second))
+            stats.mergeStatistic(remap.second, source->getStatistic(remap.first));
+    }
+}
+
+template <class INTERFACE>
+void mergeRemappedStats(CRuntimeStatisticCollection & stats, INTERFACE * source, const StatKindMap & remaps)
+{
+    mergeRemappedStats(stats, source, stats.queryMapping(), remaps);
+}
+
+template <class INTERFACE>
+void mergeRemappedStats(CRuntimeStatisticCollection & stats, const Shared<INTERFACE> & source, const StatKindMap & remaps)
+{
+    mergeRemappedStats(stats, source.get(), stats.queryMapping(), remaps);
+}
+
+template <class INTERFACE>
+void updateRemappedStatsDelta(CRuntimeStatisticCollection & tgtStats, CRuntimeStatisticCollection & prevStats, INTERFACE * source, const StatKindMap & remap)
+{
+    CRuntimeStatisticCollection curStats(tgtStats.queryMapping());
+    ::mergeRemappedStats(curStats, source, remap);
+    prevStats.updateDelta(tgtStats, curStats); // NB: adds delta to tgtStats, and updates prevStats
+}
+
+template <class INTERFACE>
+void updateRemappedStatsDelta(CRuntimeStatisticCollection & tgtStats, CRuntimeStatisticCollection & prevStats, const Shared<INTERFACE> & source, const StatKindMap & remap)
+{
+    updateRemappedStatsDelta(tgtStats, prevStats, source.get(), remap);
+}
+
 
 //---------------------------------------------------------------------------------------------------------------------
 
@@ -965,6 +1039,8 @@ protected:
     CRuntimeStatisticCollection & target;
 };
 
+inline double calcCost(double ratePerHour, unsigned __int64 ms) { return ratePerHour * ms / 1000 / 3600; }
+inline double calcCostNs(double ratePerHour, unsigned __int64 ns) { return ratePerHour * ns / 1000000000 / 3600; }
 extern jlib_decl StringBuffer & formatMoney(StringBuffer &out, unsigned __int64 value);
 
 #endif

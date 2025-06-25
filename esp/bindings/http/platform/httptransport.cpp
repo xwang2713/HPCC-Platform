@@ -163,7 +163,7 @@ class SOAPMessageLog : implements IPTreeNotifyEvent, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
 
-    SOAPMessageLog() : m_readNext(true), m_foundPassword(false), m_lastTagFound(NONE), m_pPassword(NULL), m_pStart(NULL)
+    SOAPMessageLog() : m_lastTagFound(NONE), m_pStart(NULL), m_pPassword(NULL), m_foundPassword(false), m_readNext(true)
     {
         m_messageForLog.clear();
         m_skipTag.clear();
@@ -1341,8 +1341,8 @@ bool CHttpMessage::checkPersistentEligible()
               CHttpRequest Implementation
 *******************************************************************************/
 
-CHttpRequest::CHttpRequest(ISocket& socket) : CHttpMessage(socket), m_pathIsParsed(false), 
-    m_sstype(sub_serv_unknown), m_MaxRequestEntityLength(0)
+CHttpRequest::CHttpRequest(ISocket& socket) : CHttpMessage(socket),
+    m_sstype(sub_serv_unknown), m_pathIsParsed(false), m_MaxRequestEntityLength(0)
 {
 };
 
@@ -1446,7 +1446,8 @@ int CHttpRequest::parseFirstLine(char* oneline)
 {
     //if (getEspLogLevel()>LogNormal)
     //  DBGLOG("First Line of request=%s", oneline);
-    DBGLOG("HTTP First Line: %s", oneline);
+    if (doTrace(traceHttp))
+        DBGLOG("HTTP First Line: %s", oneline);
 
     if(*oneline == 0)
         return -1;
@@ -1924,12 +1925,12 @@ ISpan * CHttpRequest::createServerSpan(const char * serviceName, const char * me
         spanName.append("/").append(methodName);
     spanName.toLowerCase();
     Owned<IProperties> httpHeaders = getHeadersAsProperties(m_headers);
-    return queryTraceManager().createServerSpan(spanName, httpHeaders, SpanFlags::EnsureGlobalId);
+    return queryTraceManager().createServerSpan(spanName, httpHeaders, &m_receivedAt, SpanFlags::EnsureGlobalId);
 }
 
 void CHttpRequest::annotateSpan(const char * key, const char * value)
 {
-    m_context->queryActiveSpan()->setSpanAttribute(key, value);
+    queryThreadedActiveSpan()->setSpanAttribute(key, value);
 }
 
 void CHttpRequest::updateContext()
@@ -2089,6 +2090,7 @@ int CHttpRequest::processHeaders(IMultiException *me)
     char oneline[MAX_HTTP_HEADER_LEN + 2];
 
     int lenread = m_bufferedsocket->readline(oneline, MAX_HTTP_HEADER_LEN + 1, me);
+    m_receivedAt.setNow(); // use receipt of a first line as the start time for a server span
     if(lenread <= 0) //special case client connected and disconnected, load balancer ping?
         return -1;
     else if (lenread > MAX_HTTP_HEADER_LEN)
@@ -2123,22 +2125,23 @@ int CHttpRequest::processHeaders(IMultiException *me)
 
 bool CHttpRequest::readContentToBuffer(MemoryBuffer& buffer, __int64& bytesNotRead)
 {
-    char buf[1024 + 1];
-    __int64 buflen = 1024;
-    if (buflen > bytesNotRead)
-        buflen = bytesNotRead;
+    constexpr size32_t readChunkSize = 0x100000;
+    size32_t sizeToRead = bytesNotRead > readChunkSize ? readChunkSize: (size32_t)bytesNotRead;
+    size32_t prevLen = buffer.length();
 
-    int readlen = m_bufferedsocket->read(buf, (int) buflen);
-    if(readlen < 0)
-        DBGLOG("Failed to read from socket");
+    // BufferedSocket::read buffer must be at least one larger than its maxlen argument
+    char * target = (char *)buffer.reserve(sizeToRead + 1);
+    int readLen = m_bufferedsocket->read(target, sizeToRead);
+    if(readLen <= 0)
+    {
+        if(readLen < 0)
+            DBGLOG("Failed to read from socket");
+        buffer.setLength(prevLen);
+        return false;
+    }
 
-    if(readlen <= 0)
-       return false;
-
-    buf[readlen] = 0;
-    buffer.append(readlen, buf);//'buffer' may have some left-over from previous read
-
-    bytesNotRead -= readlen;
+    buffer.setLength(prevLen + readLen);
+    bytesNotRead -= readLen;
     return true;
 }
 

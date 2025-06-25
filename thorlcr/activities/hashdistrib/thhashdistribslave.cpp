@@ -64,11 +64,11 @@
 
 // JCSMORE should really use JLog trace levels and make configurable
 #ifdef _DEBUG
-#define HDSendPrintLog(M) PROGLOG(M)
-#define HDSendPrintLog2(M,P1) PROGLOG(M,P1)
-#define HDSendPrintLog3(M,P1,P2) PROGLOG(M,P1,P2)
-#define HDSendPrintLog4(M,P1,P2,P3) PROGLOG(M,P1,P2,P3)
-#define HDSendPrintLog5(M,P1,P2,P3,P4) PROGLOG(M,P1,P2,P3,P4)
+#define HDSendPrintLog(M) DBGLOG(M)
+#define HDSendPrintLog2(M,P1) DBGLOG(M,P1)
+#define HDSendPrintLog3(M,P1,P2) DBGLOG(M,P1,P2)
+#define HDSendPrintLog4(M,P1,P2,P3) DBGLOG(M,P1,P2,P3)
+#define HDSendPrintLog5(M,P1,P2,P3,P4) DBGLOG(M,P1,P2,P3,P4)
 #else
 #define HDSendPrintLog(M)
 #define HDSendPrintLog2(M,P1)
@@ -95,6 +95,7 @@ class CDistributorBase : implements IHashDistributor, implements IExceptionHandl
     size32_t fixedEstSize;
     Owned<IRowWriter> pipewr;
     Owned<ISmartRowBuffer> piperd;
+    mutable CriticalSection critPiperd;
 
 protected:
     /*
@@ -329,7 +330,7 @@ protected:
             activeWriters = 0;
         }
         void send(CMessageBuffer &mb); // Not used for ALL
-        void sendToOthers(CMessageBuffer &mb); // Only used by ALL
+        unsigned sendToOthers(CMessageBuffer &mb); // Only used by ALL
         inline unsigned getNumPendingBuckets() const
         {
             return pendingBuckets.ordinality();
@@ -406,32 +407,39 @@ protected:
             {
                 Owned<CSendBucket> sendBucket = _sendBucket.getClear();
                 size32_t writerTotalSz = 0;
-                size32_t sendSz = 0;
+                offset_t remoteSendSz = 0;
+                offset_t remoteRowCount = 0;
                 CMessageBuffer msg;
                 while (!owner.aborted)
                 {
                     writerTotalSz += sendBucket->querySize(); // NB: This size is pre-dedup, and is the correct amount to pass to decTotal
                     owner.dedup(sendBucket); // conditional
-
                     if (target->isSelf())
                     {
                         HDSendPrintLog2("CWriteHandler, sending raw=%d to LOCAL", writerTotalSz);
                         if (!owner.getSelfFinished())
+                        {
+                            owner.addLocalRowCount(sendBucket->count());
                             distributor.addLocalClear(sendBucket);
+                        }
                     }
                     else // remote
                     {
                         if (owner.owner.isAll)
                         {
                             if (!owner.getSelfFinished())
+                            {
+                                owner.addLocalRowCount(sendBucket->count());
                                 distributor.addLocal(sendBucket);
+                            }
                         }
+                        remoteRowCount += sendBucket->count();
                         if (compressor)
-                            sendSz += sendBucket->serializeCompressClear(msg, *compressor);
+                            remoteSendSz += sendBucket->serializeCompressClear(msg, *compressor);
                         else
-                            sendSz += sendBucket->serializeClear(msg);
+                            remoteSendSz += sendBucket->serializeClear(msg);
                         // NB: buckets will typically be large enough already, if not check pending buckets
-                        if (sendSz < distributor.bucketSendSize)
+                        if (remoteSendSz < distributor.bucketSendSize)
                         {
                             // more added to target I'm processing?
                             sendBucket.setown(target->dequeuePendingBucket());
@@ -442,11 +450,18 @@ protected:
                                 continue; // NB: it will flow into else "remote" arm
                             }
                         }
+                        unsigned numSent = 0;
                         if (owner.owner.isAll)
-                            target->sendToOthers(msg);
+                            numSent = target->sendToOthers(msg);
                         else
+                        {
                             target->send(msg);
-                        sendSz = 0;
+                            numSent = 1;
+                        }
+                        owner.addRemoteRowCount(numSent*remoteRowCount);
+                        owner.addRemoteWriteSize(numSent*remoteSendSz);
+                        remoteSendSz = 0;
+                        remoteRowCount = 0;
                         msg.clear();
                     }
                     // see if others to process
@@ -487,6 +502,10 @@ protected:
         unsigned totalActiveWriters;
         PointerArrayOf<CTarget> targets;
         std::atomic<bool> *sendersFinished = nullptr;
+        RelaxedAtomic<stat_type> numLocalRows {0};
+        RelaxedAtomic<stat_type> numRemoteRows {0};
+        RelaxedAtomic<size_t> sizeRemoteWrite {0};
+        RelaxedAtomic<cycle_t> lookAheadCycles {0};
 
         void init()
         {
@@ -622,6 +641,19 @@ protected:
                 }
             }
         }
+        inline void addLocalRowCount(stat_type numRows)
+        {
+            numLocalRows += numRows;
+        }
+        inline void addRemoteRowCount(stat_type numRows)
+        {
+            numRemoteRows += numRows;
+        }
+        inline void addRemoteWriteSize(size_t size)
+        {
+            sizeRemoteWrite += size;
+        }
+
     public:
         IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
 
@@ -828,10 +860,19 @@ protected:
                     }
                     if (aborted)
                         break;
-                    const void *row = input->ungroupedNextRow();
+                    const void *row;
+                    if (owner.activity->queryTimeActivities())
+                    {
+                        CCycleTimer rowTimer;
+                        row = input->ungroupedNextRow();
+                        lookAheadCycles.fastAdd(rowTimer.elapsedCycles());
+                    }
+                    else
+                    {
+                        row = input->ungroupedNextRow();
+                    }
                     if (!row)
                         break;
-
                     CTarget *target = nullptr;
                     if (owner.isAll)
                         target = targets.item(0);
@@ -910,6 +951,16 @@ protected:
             }
         }
         void markSelfStopped() { markStopped(self); }
+        void mergeStats(CRuntimeStatisticCollection &stats) const
+        {
+            stats.setStatistic(StNumLocalRows, numLocalRows.load());
+            stats.setStatistic(StNumRemoteRows, numRemoteRows.load());
+            stats.setStatistic(StSizeRemoteWrite, sizeRemoteWrite.load());
+        }
+        virtual unsigned __int64 queryLookAheadCycles() const
+        {
+            return lookAheadCycles.load();
+        }
     // IThreadFactory impl.
         virtual IPooledThread *createNew()
         {
@@ -1036,6 +1087,8 @@ protected:
     StringAttr id; // for tracing
     ICompressHandler *compressHandler;
     StringBuffer compressOptions;
+    LookAheadOptions options;
+    bool newLookAhead = false;
 public:
     IMPLEMENT_IINTERFACE_USING(CInterface);
 
@@ -1090,6 +1143,10 @@ public:
         ::ActPrintLog(activity, thorDetailedLogLevel, "inputBufferSize : %d, bucketSendSize = %d, pullBufferSize=%d", inputBufferSize, bucketSendSize, pullBufferSize);
         targetWriterLimit = activity->getOptUInt(THOROPT_HDIST_TARGETWRITELIMIT);
         ::ActPrintLog(activity, thorDetailedLogLevel, "targetWriterLimit : %d", targetWriterLimit);
+
+        newLookAhead = activity->getOptBool("newlookahead", false);
+        if (newLookAhead)
+            populateLookAheadOptions(*activity, options);
     }
 
     virtual void beforeDispose()
@@ -1147,14 +1204,24 @@ public:
         ihash = _ihash;
         iCompare = _iCompare;
         keepBestCompare = _keepBestCompare;
-        if (allowSpill)
         {
-            StringBuffer temp;
-            GetTempFilePath(temp,"hddrecvbuff");
-            piperd.setown(createSmartBuffer(activity, temp.str(), pullBufferSize, rowIf));
+            CriticalBlock block(critPiperd);
+            if (allowSpill)
+            {
+                StringBuffer temp;
+                GetTempFilePath(temp,"hddrecvbuff");
+                if (newLookAhead)
+                {
+                    options.totalCompressionBufferSize = pullBufferSize; // hd option overrides defaults
+                    ICompressHandler *compressHandler = pullBufferSize ? queryDefaultCompressHandler() : nullptr;
+                    piperd.setown(createCompressedSpillingRowStream(activity, temp.str(), false, rowIf, options, compressHandler));
+                }
+                else
+                    piperd.setown(createSmartBuffer(activity, temp.str(), pullBufferSize, rowIf));
+            }
+            else
+                piperd.setown(createSmartInMemoryBuffer(activity, rowIf, pullBufferSize));
         }
-        else
-            piperd.setown(createSmartInMemoryBuffer(activity, rowIf, pullBufferSize));
 
         pipewr.set(piperd->queryWriter());
         connected = true;
@@ -1196,10 +1263,24 @@ public:
         deserializer = NULL;
         fixedEstSize = 0;
         input.clear();
-        piperd.clear();
+        {
+            CriticalBlock block(critPiperd);
+            piperd.clear();
+        }
         pipewr.clear();
         ihash = NULL;
         iCompare = NULL;
+    }
+    virtual void mergeStats(CRuntimeStatisticCollection &stats) const
+    {
+        sender.mergeStats(stats);
+        CriticalBlock block(critPiperd);
+        if (piperd)
+            mergeRemappedStats(stats, piperd, diskToTempStatsMap);
+    }
+    virtual unsigned __int64 queryLookAheadCycles() const
+    {
+        return sender.queryLookAheadCycles();
     }
     virtual void abort()
     {
@@ -1217,7 +1298,7 @@ public:
         {
             ::ActPrintLog(activity, thorDetailedLogLevel, "Read loop start");
             CMessageBuffer recvMb;
-            Owned<ISerialStream> stream = createMemoryBufferSerialStream(tempMb);
+            Owned<IBufferedSerialInputStream> stream = createMemoryBufferSerialStream(tempMb);
             CThorStreamDeserializerSource rowSource;
             rowSource.setStream(stream);
             unsigned left=numnodes-1;
@@ -1413,17 +1494,22 @@ void CDistributorBase::CTarget::send(CMessageBuffer &mb) // Not used for ALL
         owner.sendBlock(destination, mb);
 }
 
-void CDistributorBase::CTarget::sendToOthers(CMessageBuffer &mb) // Only used by ALL
+unsigned CDistributorBase::CTarget::sendToOthers(CMessageBuffer &mb) // Only used by ALL
 {
+    unsigned numSent = 0;
     CriticalBlock b(crit); // protects against multiple parallel sender threads sending to ALL clashing
     for (unsigned dest=0; dest<owner.owner.numnodes; dest++)
     {
         if (dest != owner.self)
         {
             if (!owner.getSenderFinished(dest))
+            {
                 owner.sendBlock(dest, mb);
+                ++numSent;
+            }
         }
     }
+    return numSent;
 }
 
 void CDistributorBase::CTarget::incActiveWriters()
@@ -1620,7 +1706,7 @@ class CRowPullDistributor: public CDistributorBase
         }
     } *txthread;
 
-    class cSortedDistributeMerger : implements IRowProvider, public CSimpleInterface
+    class cSortedDistributeMerger : implements IMergeRowProvider, public CSimpleInterface
     {
         CDistributorBase &parent;
         Owned<IRowStream> out;
@@ -1642,7 +1728,7 @@ class CRowPullDistributor: public CDistributorBase
             dszs = new CThorStreamDeserializerSource[numnodes];
             for (unsigned node=0; node < numnodes; node++)
             {
-                Owned<ISerialStream> stream = createMemoryBufferSerialStream(bufs[node]);
+                Owned<IBufferedSerialInputStream> stream = createMemoryBufferSerialStream(bufs[node]);
                 dszs[node].setStream(stream);
             }
             expander.setown(parent.getExpander()); // NB: must be created before this passed to createRowStreamMerger
@@ -2057,7 +2143,7 @@ protected:
     bool setupDist = true;
     bool isAll = false;
 public:
-    HashDistributeSlaveBase(CGraphElementBase *_container, const StatisticsMapping &statsMapping = basicActivityStatistics)
+    HashDistributeSlaveBase(CGraphElementBase *_container, const StatisticsMapping &statsMapping = hashDistribActivityStatistics)
         : CSlaveActivity(_container, statsMapping)
     {
         appendOutputLinked(this);
@@ -2147,6 +2233,11 @@ public:
         info.canStall = true; // currently
         info.unknownRowsOutput = true; // mixed about
     }
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
+    {
+        PARENT::gatherActiveStats(activeStats);
+        distributor->mergeStats(activeStats);
+    }
 };
 
 
@@ -2228,13 +2319,15 @@ public:
 
     ~CHDRproportional()
     {
-        try {
+        try
+        {
             tempstrm.clear();
             if (tempfile)
                 tempfile->remove();
         }
-        catch (IException *e) {
-            EXCLOG(e,"REDISTRIBUTE");
+        catch (IException *e)
+        {
+            IWARNLOG(e,"REDISTRIBUTE");
             e->Release();
         }
         free(sizes);
@@ -2269,7 +2362,7 @@ public:
                     activity->getOpt(THOROPT_COMPRESS_SPILL_TYPE, compType);
                     setCompFlag(compType, rwFlags);
                 }
-                Owned<IExtRowWriter> out = createRowWriter(tempfile, activity, rwFlags);
+                Owned<ILogicalRowWriter> out = createRowWriter(tempfile, activity, rwFlags);
                 if (!out)
                     throw MakeStringException(-1,"Could not created file %s",tempname.str());
                 for (;;)
@@ -2508,7 +2601,7 @@ public:
         // NB: this TLK is an in-memory TLK serialized from the master - the name is for tracing by the key code only
         VStringBuffer name("index");
         name.append(queryId()).append("_tlk");
-        lookup = new CKeyLookup(*this, helper, createKeyIndex(name.str(), 0, *iFileIO, (unsigned) -1, true)); // MORE - crc is not 0...
+        lookup = new CKeyLookup(*this, helper, createKeyIndex(name.str(), 0, *iFileIO, (unsigned) -1, true, 0)); // MORE - crc is not 0...
         ihash = lookup;
     }
     virtual void stop() override
@@ -2675,8 +2768,7 @@ public:
         StringBuffer tempname, prefix("hashdedup_bucket");
         prefix.append(bucketN).append('_').append(desc);
         GetTempFilePath(tempname, prefix.str());
-        OwnedIFile iFile = createIFile(tempname.str());
-        spillFile.setown(new CFileOwner(iFile.getLink()));
+        spillFile.setown(owner.createOwnedTempFile(tempname.str()));
         if (owner.getOptBool(THOROPT_COMPRESS_SPILLS, true))
         {
             rwFlags |= rw_compress;
@@ -2684,7 +2776,7 @@ public:
             owner.getOpt(THOROPT_COMPRESS_SPILL_TYPE, compType);
             setCompFlag(compType, rwFlags);
         }
-        spillFileIO.setown(iFile->open(IFOcreate));
+        spillFileIO.setown(spillFile->queryIFile().open(IFOcreate));
         writer = createRowWriter(spillFileIO, rowIf, rwFlags);
     }
     IRowStream *getReader(rowcount_t *_count=NULL) // NB: also detaches ownership of 'fileOwner'
@@ -2711,24 +2803,10 @@ public:
         ::Release(writer);
         writer = NULL;
         spillFileIO->flush();
-        mergeStats(stats, this);
+        mergeRemappedStats(stats, spillFileIO, diskToTempStatsMap);
+        stats.addStatistic(StNumSpills, 1);
+        spillFile->noteSize(spillFileIO->getStatistic(StSizeDiskWrite));
         spillFileIO.clear();
-    }
-    inline __int64 getStatistic(StatisticKind kind) const
-    {
-        switch (kind)
-        {
-        case StSizeSpillFile:
-            return spillFileIO->getStatistic(StSizeDiskWrite);
-        case StTimeSortElapsed:
-            return spillFileIO->getStatistic(StTimeDiskWriteIO);
-        case StSizeDiskWrite:
-            return 0; // Return file size as StSizeSpillFile kind. To avoid confusion, StSizeDiskWrite will not be returned
-        case StNumSpills:
-            return 1;
-        default:
-            return spillFileIO->getStatistic(kind);
-        }
     }
 // IRowWriter
     virtual void putRow(const void *row) override
@@ -2736,9 +2814,18 @@ public:
         writer->putRow(row);
         ++count; // NULL's too (but there won't be any in usage of this impl.)
     }
+    virtual void writeRow(const void *row) override
+    {
+        writer->writeRow(row);
+        ++count;
+    }
     virtual void flush() override
     {
         writer->flush();
+    }
+    virtual void noteStopped() override
+    {
+        writer->noteStopped();
     }
 };
 
@@ -3374,7 +3461,6 @@ void CHashTableRowTable::rehash(const void **newRows)
 CBucket::CBucket(HashDedupSlaveActivityBase &_owner, IThorRowInterfaces *_rowIf, IThorRowInterfaces *_keyIf, bool _extractKey, unsigned _bucketN, CHashTableRowTable *_htRows)
     : owner(_owner), keyIf(_keyIf), extractKey(_extractKey), bucketN(_bucketN), htRows(_htRows),
       rowSpill(owner, _rowIf, "rows", _bucketN), keySpill(owner, _keyIf, "keys", _bucketN)
-
 {
     spilt = false;
     /* Although, using a unique allocator per bucket would mean on a spill event, the pages could be freed,
@@ -3993,6 +4079,7 @@ public:
         strmR.clear();
         {
             CriticalBlock b(joinHelperCrit);
+            joinhelper->gatherStats(inactiveStats);
             joinhelper.clear();
         }
         PARENT::stop();
@@ -4038,9 +4125,19 @@ public:
         }
         else
         {
+            joinhelper->gatherStats(activeStats);
             activeStats.setStatistic(StNumLeftRows, joinhelper->getLhsProgress());
             activeStats.setStatistic(StNumRightRows, joinhelper->getRhsProgress());
         }
+    }
+    virtual unsigned __int64 queryLookAheadCycles() const
+    {
+        cycle_t lookAheadCycles = PARENT::queryLookAheadCycles();
+        if (lhsDistributor)
+            lookAheadCycles += lhsDistributor->queryLookAheadCycles();
+        if (rhsDistributor)
+            lookAheadCycles += rhsDistributor->queryLookAheadCycles();
+        return lookAheadCycles;
     }
 };
 #ifdef _MSC_VER
@@ -4522,6 +4619,13 @@ public:
         initMetaInfo(info);
         info.canStall = true;
         // maybe more?
+    }
+    virtual unsigned __int64 queryLookAheadCycles() const
+    {
+        cycle_t lookAheadCycles = PARENT::queryLookAheadCycles();
+        if (distributor)
+            lookAheadCycles += distributor->queryLookAheadCycles();
+        return lookAheadCycles;
     }
 // IHThorRowAggregator impl
     virtual size32_t clearAggregate(ARowBuilder & rowBuilder) override { return helper->clearAggregate(rowBuilder); }

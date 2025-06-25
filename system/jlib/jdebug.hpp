@@ -275,7 +275,7 @@ public:
 
 protected:
     cycle_t timePeriodCycles = 0;
-    cycle_t lastElapsedCycles = 0;
+    std::atomic<cycle_t> lastElapsedCycles{0};
 };
 
 
@@ -307,7 +307,34 @@ Also since you are only ever interested in (sumEndTimestamps - sumStartTimestamp
 
 There are two versions, one that uses a critical section, and a second that uses atomics, but is limited to the number
 of active blocked items.
+
+There is a second potential use for the BlockedTimeTracker class - for monitoring how many queries overlap the execution of the current query.
+This can be calculated in the following way:
+
+a) When a server query starts it calls
+   serverLoadTracker.extractInfo(startServer, true)
+   workerLoadTracker.extractInfo(startWorker, true);
+   startCycles = serverLoadTracker.noteWaiting();
+b) When a server query finished it calls
+   serverLoadTracker.noteComplete();
+   serverLoadTracker.extractInfo(finishServer, true)
+   endCycles = workerLoadTracker.extractInfo(finishWorker, true);
+c) When a worker query starts it calls
+   workerLoadTracker.noteWaiting();
+d) When a worker query finished it calls
+   workerLoadTracker.noteComplete();
+
+* (finishX.count - startX.count) gives the total number of queries (including this one) that executed at the same time as the query
+* (finishX.elapsedNs - startX.elapsedNs) gives the total execution time of all queries (including this one)
+* endCycles - startCycles gives the elapsed time for this query.
+* This can be reported separately for the server and worker to give an estimate of the concurrent load when a query was running.
 */
+
+struct OverlapTimeInfo
+{
+    unsigned count;
+    stat_type elapsedNs;
+};
 
 class jlib_decl BlockedTimeTracker
 {
@@ -315,13 +342,23 @@ public:
     BlockedTimeTracker() = default;
     BlockedTimeTracker(const BlockedTimeTracker &) = delete;
 
-    void noteWaiting();
-    void noteComplete();
+    //The following return get_cycles_now() - which can be used for tracking elapsed time.
+    cycle_t noteWaiting();
+    cycle_t noteWaiting(unsigned numWaiting);
+    cycle_t noteComplete();
     __uint64 getWaitingNs() const;
+    unsigned numInFlight() const;
+
+    //A helper function to help calculate the overlapping load on the system
+    void extractOverlapInfo(OverlapTimeInfo & info, bool isStart) const;
+
+protected:
+    __uint64 calcActiveTime(cycle_t tally, unsigned active) const;
 
 private:
     mutable CriticalSection cs;
-    unsigned numWaiting = 0;
+    unsigned numStarted = 0;
+    unsigned numFinished = 0;
     cycle_t timeStampTally = 0;
 };
 
@@ -446,6 +483,10 @@ public:
     unsigned getSystemPercent() const;
     unsigned getUserPercent() const;
 
+    __uint64 getNumPeriods() const { return numPeriods; }
+    __uint64 getNumThrottledPeriods() const { return numThrottledPeriods; }
+    __uint64 getTimeThrottledNs() const { return timeThrottledNs; }
+
     __uint64 getTotal() const { return user + system + idle + iowait; }
 protected:
     __uint64 user = 0;      // user time in jiffies (~`1/100s)
@@ -461,6 +502,9 @@ protected:
     __uint64 activeDataMemory = 0;
     __uint64 majorFaults = 0;
     __uint64 numThreads = 0;
+    __uint64 numPeriods = 0;
+    __uint64 numThrottledPeriods = 0;
+    __uint64 timeThrottledNs = 0;
 };
 
 class jlib_decl ProcessInfo : public SystemProcessInfo

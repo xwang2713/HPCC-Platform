@@ -6,7 +6,7 @@ import * as all from "dojo/promise/all";
 import * as Observable from "dojo/store/Observable";
 import * as topic from "dojo/topic";
 
-import { Workunit as HPCCWorkunit, WorkunitsService, WUQuery, WUUpdate } from "@hpcc-js/comms";
+import { Workunit as HPCCWorkunit, WorkunitsService, WsWorkunits as WsWorkunitsNS, WUUpdate } from "@hpcc-js/comms";
 import { IEvent } from "@hpcc-js/util";
 
 import * as ESPRequest from "./ESPRequest";
@@ -113,6 +113,37 @@ export function getStateImageHTML(stateID: number, complete: boolean, archived: 
     return Utility.getImageHTML(getStateImageName(stateID, complete, archived));
 }
 
+export function formatQuery(_filter): { [id: string]: any } {
+    const filter = { ..._filter };
+    if (filter.LastNDays) {
+        const end = new Date();
+        const start = new Date();
+        start.setDate(end.getDate() - filter.LastNDays);
+        filter.StartDate = start.toISOString();
+        filter.EndDate = end.toISOString();
+        delete filter.LastNDays;
+    } else {
+        if (filter.StartDate) {
+            if (filter.StartDate.indexOf("Z") < 0) { filter.StartDate += ":00.000Z"; }
+            filter.StartDate = new Date(filter.StartDate).toISOString();
+        }
+        if (filter.EndDate) {
+            if (filter.EndDate.indexOf("Z") < 0) { filter.EndDate += ":00.000Z"; }
+            filter.EndDate = new Date(filter.EndDate).toISOString();
+        }
+    }
+    if (filter.Type === true) {
+        filter.Type = "archived workunits";
+    }
+    if (filter.Protected === true) {
+        filter.Protected = "Protected";
+    }
+    return filter;
+}
+
+export const emptyFilter: { [id: string]: any } = {};
+export const defaultSort = { attribute: "Wuid", descending: true };
+
 class Store extends ESPRequest.Store {
 
     service = "WsWorkunits";
@@ -128,8 +159,8 @@ class Store extends ESPRequest.Store {
     busy: boolean;
     _toUnwatch: any;
 
-    constructor(options?) {
-        super(options);
+    constructor() {
+        super();
         this._watched = {};
     }
 
@@ -631,6 +662,7 @@ const Workunit = declare([ESPUtil.Singleton], {  // jshint ignore:line
                 IncludeDebugValues: args.onGetDebugValues ? true : false,
                 IncludeApplicationValues: args.onGetApplicationValues ? true : false,
                 IncludeWorkflows: args.onGetWorkflows ? true : false,
+                IncludeProcesses: args.onGetProcesses ? true : false,
                 IncludeXmlSchemas: false,
                 IncludeServiceNames: args.onGetServiceNames ? true : false,
                 SuppressResultSchemas: true
@@ -712,6 +744,9 @@ const Workunit = declare([ESPUtil.Singleton], {  // jshint ignore:line
                 }
                 if (args.onGetWorkflows && lang.exists("Workflows.ECLWorkflow", context)) {
                     args.onGetWorkflows(context.Workflows.ECLWorkflow);
+                }
+                if (args.onGetProcesses && lang.exists("ECLWUProcessList.ECLWUProcess", context)) {
+                    args.onGetProcesses(context.ECLWUProcessList.ECLWUProcess);
                 }
                 if (args.onGetServiceNames && lang.exists("ServiceNames.Item", context)) {
                     args.onGetServiceNames(context.ServiceNames.Item);
@@ -1036,28 +1071,70 @@ export function Get(wuid, data?) {
     return retVal;
 }
 
-export function CreateWUQueryStoreLegacy(options) {
-    const store = new Store(options);
+export function CreateWUQueryStoreLegacy() {
+    const store = new Store();
     return new Observable(store);
 }
 
 const service = new WorkunitsService({ baseUrl: "" });
 
-export type WUQueryStore = BaseStore<WUQuery.Request, typeof Workunit>;
+export type WUQueryStore = BaseStore<WsWorkunitsNS.WUQuery, typeof Workunit>;
 
-export function CreateWUQueryStore(): BaseStore<WUQuery.Request, typeof Workunit> {
-    const store = new Paged<WUQuery.Request, typeof Workunit>({
+export function CreateWUQueryStore(): BaseStore<WsWorkunitsNS.WUQuery, typeof Workunit> {
+    const store = new Paged<WsWorkunitsNS.WUQuery, typeof Workunit>({
         start: "PageStartFrom",
         count: "PageSize",
         sortBy: "Sortby",
         descending: "Descending"
-    }, "Wuid", request => {
+    }, "Wuid", (request, abortSignal) => {
         if (request.Sortby && request.Sortby === "TotalClusterTime") {
             request.Sortby = "ClusterTime";
         }
-        return service.WUQuery(request).then(response => {
+        return service.WUQuery(request, abortSignal).then(response => {
+            const page = {
+                start: undefined,
+                end: undefined
+            };
+            const data = response.Workunits.ECLWorkunit.map(wu => {
+                const start = Utility.wuidToDateTime(wu.Wuid);
+                if (!page.start || page.start > start) {
+                    page.start = start;
+                }
+                let timePartsSection = 0;
+                const end = new Date(start);
+                const timeParts = wu.TotalClusterTime?.split(":") ?? [];
+                while (timeParts.length) {
+                    const timePart = timeParts.pop();
+                    switch (timePartsSection) {
+                        case 0:
+                            end.setSeconds(end.getSeconds() + +timePart);
+                            break;
+                        case 1:
+                            end.setMinutes(end.getMinutes() + +timePart);
+                            break;
+                        case 2:
+                            end.setHours(end.getHours() + +timePart);
+                            break;
+                        case 3:
+                            end.setDate(end.getDate() + +timePart);
+                            break;
+                    }
+                    ++timePartsSection;
+                }
+                if (!page.end || page.end < end) {
+                    page.end = end;
+                }
+                return {
+                    ...Get(wu.Wuid, wu),
+                    timings: {
+                        start,
+                        end,
+                        page
+                    }
+                };
+            });
             return {
-                data: response.Workunits.ECLWorkunit.map(wu => Get(wu.Wuid, wu)),
+                data,
                 total: response.NumWUs
             };
         });

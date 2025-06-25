@@ -40,7 +40,6 @@
 #include "rtlds_imp.hpp"
 #include "rtlcommon.hpp"
 #include "rtldynfield.hpp"
-#include "workunit.hpp"
 #include "eventqueue.hpp"
 #include "schedulectrl.hpp"
 #include "jhtree.hpp"
@@ -563,20 +562,7 @@ EclAgent::EclAgent(IConstWorkUnit *wu, const char *_wuid, bool _checkVersion, bo
             w->setXmlParams(_queryXML);
         updateSuppliedXmlParams(w);
     }
-    agentMachineCost = getMachineCostRate();
-    if (agentMachineCost > 0.0)
-    {
-        Owned<const IPropertyTree> costs = getCostsConfiguration();
-        if (costs)
-        {
-            double softCostLimit = costs->getPropReal("@limit");
-            double guillotineCost = wu->getDebugValueReal("maxCost", softCostLimit);
-            double hardCostLimit = costs->getPropReal("@hardlimit");
-            if (hardCostLimit && ((guillotineCost == 0) || (guillotineCost > hardCostLimit)))
-                guillotineCost = hardCostLimit;
-            abortmonitor->setGuillotineCost(money2cost_type(guillotineCost));
-        }
-    }
+    abortmonitor->setGuillotineCost(getGuillotineCost(wu));
     configurePreferredPlanes();
 }
 
@@ -1590,7 +1576,7 @@ char *EclAgent::getEnv(const char *name, const char *defaultValue) const
 
 void EclAgent::selectCluster(const char *newCluster)
 {
-    const char *oldCluster = queryWorkUnit()->queryClusterName();
+    StringAttr oldCluster = queryWorkUnit()->queryClusterName();
     if (getClusterType(clusterType)==HThorCluster)
     {
         // If the current cluster is an hthor cluster, it's an error to change it...
@@ -1877,7 +1863,7 @@ void EclAgent::doProcess()
             if (agentTopology->hasProp("@name"))
             {
                 if (isContainerized())
-                    w->setContainerizedProcessInfo("EclAgent", agentTopology->queryProp("@name"), k8s::queryMyPodName(), nullptr);
+                    w->setContainerizedProcessInfo("EclAgent", agentTopology->queryProp("@name"), k8s::queryMyPodName(), k8s::queryMyContainerName(), nullptr, nullptr);
                 else
                     w->addProcess("EclAgent", agentTopology->queryProp("@name"), GetCurrentProcessId(), 0, nullptr, false, logname.str());
             }
@@ -2023,15 +2009,6 @@ void EclAgent::doProcess()
             break;
         }
 
-        if (w->getState() == WUStateCompleted && getClusterType(clusterType)==ThorLCRCluster)
-        {
-            if (w->getDebugValueBool("analyzeWorkunit", agentTopology->getPropBool("@analyzeWorkunit", true)))
-            {
-                double costPerMs = calculateThorCost(1, getNodes());
-                IPropertyTree *analyzerOptions = agentTopology->queryPropTree("analyzerOptions");
-                analyseWorkunit(w.get(), analyzerOptions, costPerMs);
-            }
-        }
         if(w->queryEventScheduledCount() > 0)
             switch(w->getState())
             {
@@ -2120,6 +2097,11 @@ void EclAgent::doProcess()
         e->Release();
     }
     DBGLOG("Workunit written complete");
+
+    if (getClusterType(clusterType)==ThorLCRCluster)
+    {
+        runWorkunitAnalyser(*wuRead, getComponentConfigSP(), nullptr, true, calculateThorCostPerHour(getNodes()));
+    }
 }
 
 void EclAgent::runProcess(IEclProcess *process)
@@ -2128,7 +2110,7 @@ void EclAgent::runProcess(IEclProcess *process)
     allocatorMetaCache.setown(createRowAllocatorCache(this));
 
     Owned<IProperties> traceHeaders = extractTraceDebugOptions(queryWorkUnit());
-    OwnedSpanScope requestSpan = queryTraceManager().createServerSpan("run_workunit", traceHeaders);
+    OwnedActiveSpanScope requestSpan = queryTraceManager().createServerSpan("run_workunit", traceHeaders);
     ContextSpanScope spanScope(updateDummyContextLogger(), requestSpan);
     requestSpan->setSpanAttribute("hpcc.wuid", queryWorkUnit()->queryWuid());
 
@@ -3181,7 +3163,7 @@ char * EclAgent::queryIndexMetaData(char const * lfn, char const * xpath)
                 rfn.getPath(remotePath);
                 unsigned crc;
                 part->getCrc(crc);
-                key.setown(createKeyIndex(remotePath.str(), crc, false));
+                key.setown(createKeyIndex(remotePath.str(), crc, false, 0));
                 break;
             }
         }
@@ -3592,6 +3574,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], Owned<ILocalWor
         printStart(argc, argv);
         DBGLOG("Build %s", hpccBuildInfo.buildTag);
     }
+    workunitGraphCacheEnabled = agentTopology->getPropBool("expert/@workunitGraphCacheEnabled", workunitGraphCacheEnabled);
 
     // Extract any params into stored - primarily for standalone case but handy for debugging eclagent sometimes too
     Owned<IPropertyTree> query;
@@ -3756,7 +3739,7 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], Owned<ILocalWor
             }
         }
 
-        initializeStorageGroups(daliClientActive());
+        initializeStoragePlanes(daliClientActive(), true);
 
         if (!standAloneWorkUnit)
         {

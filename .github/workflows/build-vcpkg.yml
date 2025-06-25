@@ -1,5 +1,4 @@
-name: Test Build
-
+name: PR Build and Test (build-vcpkg.yml)
 on:
   workflow_dispatch:
     inputs:
@@ -10,9 +9,7 @@ on:
           - 'ubuntu-22.04'
           - 'ubuntu-20.04'
           - 'rockylinux-8'
-          - 'centos-8'
           - 'centos-7'
-          - 'amazonlinux'
         description: 'Operating System'
         required: false
         default: 'ubuntu-22.04'
@@ -27,8 +24,17 @@ on:
         required: false
         default: false
 
-  # Do not include "push" in final version (uncomment for testing on users own repo)
-  # push:
+  push:
+    tags:
+      - "community_*"
+      - "!community_8.10.*"
+      - "!community_8.8.*"
+      - "!community_8.6.*"
+      - "!community_8.4.*"
+      - "!community_8.2.*"
+      - "!community_8.0.*"
+      - "!community_7.*"
+      - "!HPCC*"
 
   pull_request:
     branches:
@@ -52,7 +58,7 @@ jobs:
     uses: ./.github/workflows/build-docker.yml
     with:
       os: ${{ inputs.os }}
-      ln: ${{ inputs.ln }}
+      ln: ${{ inputs.ln == true }}
       upload-package: true
       asset-name: 'docker-package'
     secrets: inherit
@@ -66,11 +72,27 @@ jobs:
       asset-name: 'docker-package'
     secrets: inherit
 
+  build-docker-ubuntu-24_04-arm:
+    if: ${{ contains('pull_request,push', github.event_name) }}
+    uses: ./.github/workflows/build-docker.yml
+    with:
+      os: ubuntu-24.04
+      tag_postfix: "-arm"
+    secrets: inherit
+
   build-docker-ubuntu-24_04:
     if: ${{ contains('pull_request,push', github.event_name) }}
     uses: ./.github/workflows/build-docker.yml
     with:
       os: ubuntu-24.04
+    secrets: inherit
+
+  build-docker-ubuntu-22_04-arm:
+    if: ${{ contains('pull_request,push', github.event_name) }}
+    uses: ./.github/workflows/build-docker.yml
+    with:
+      os: ubuntu-22.04
+      tag_postfix: "-arm"
     secrets: inherit
 
   build-docker-ubuntu-22_04:
@@ -117,13 +139,53 @@ jobs:
       asset-name: 'docker-ubuntu-22_04'
     secrets: inherit
 
+  test-bundles-on-thor-ubuntu-22_04:
+    if: ${{ contains('pull_request,push', github.event_name) }}
+    needs: build-docker-ubuntu-22_04
+    uses: ./.github/workflows/bundleTest-thor.yml
+    with:
+      os: ubuntu-22.04
+      asset-name: 'docker-ubuntu-22_04'
+      generate-zap: ""
+    secrets: inherit
+
+  check-documentation-changes:
+    if: ${{ contains('pull_request,push', github.event_name) }}
+    runs-on: ubuntu-22.04
+    outputs:
+      documentation_contents_changed: ${{ steps.variables.outputs.documentation_contents_changed }}
+    steps:
+      - name: Check for Documentation Changes
+        id: changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            src:
+              - 'docs/**'
+              - '.github/workflows/test-documentation.yml'
+      - name: Set Output
+        id: variables
+        run: |
+          echo "documentation_contents_changed=${{ steps.changed.outputs.src }}" >> $GITHUB_OUTPUT
+      - name: Print Variables
+        run: |
+          echo "${{ toJSON(steps.variables.outputs)}}"
+
+  test-documentation-ubuntu-22_04:
+    needs: check-documentation-changes
+    if: ${{ contains('pull_request,push', github.event_name) && needs.check-documentation-changes.outputs.documentation_contents_changed == 'true' }}
+    uses: ./.github/workflows/test-documentation.yml
+    with:
+      os: 'ubuntu-22.04'
+      asset-name: 'Documentation'
+
   build-docker-ubuntu-20_04:
     if: ${{ contains('schedule,push', github.event_name) }}
     uses: ./.github/workflows/build-docker.yml
     with:
       os: ubuntu-20.04
     secrets: inherit
-
+    
   build-docker-rockylinux-8:
     if: ${{ contains('schedule,push', github.event_name) }}
     uses: ./.github/workflows/build-docker.yml
@@ -131,27 +193,11 @@ jobs:
       os: rockylinux-8
     secrets: inherit
 
-  build-docker-centos-8:
-    if: ${{ contains('schedule,push', github.event_name) }}
-    uses: ./.github/workflows/build-docker.yml
-    with:
-      os: centos-8
-    secrets: inherit
-
   build-docker-centos-7:
     if: ${{ contains('pull_request,push', github.event_name) }}
     uses: ./.github/workflows/build-docker.yml
     with:
       os: centos-7
-      cmake-configuration-ex: "-DVCPKG_TARGET_TRIPLET=x64-centos-7-dynamic"
-    secrets: inherit
-
-  build-docker-amazonlinux:
-    if: ${{ contains('schedule,push', github.event_name) }}
-    uses: ./.github/workflows/build-docker.yml
-    with:
-      os: amazonlinux
-      cmake-configuration-ex: "-DVCPKG_TARGET_TRIPLET=x64-amazonlinux-dynamic"
     secrets: inherit
 
   build-gh_runner-ubuntu-22_04:
@@ -176,11 +222,11 @@ jobs:
       cmake-configuration-ex: '-T host=x64 -A x64 -DUSE_CPPUNIT=OFF -DCLIENTTOOLS_ONLY=ON -DUSE_AZURE=OFF -DINCLUDE_PLUGINS=OFF -DUSE_CASSANDRA=OFF -DUSE_PARQUET=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF'
     secrets: inherit
 
-  build-gh_runner-windows-2019:
+  build-gh_runner-windows-2025:
     if: ${{ contains('schedule,push', github.event_name) }}
     uses: ./.github/workflows/build-gh_runner.yml
     with:
-      os: windows-2019
+      os: windows-2025
       cmake-configuration-ex: '-T host=x64 -A x64 -DUSE_CPPUNIT=OFF -DCLIENTTOOLS_ONLY=ON -DINCLUDE_PLUGINS=OFF -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_PARQUET=OFF -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF'
     secrets: inherit
 
@@ -190,15 +236,29 @@ jobs:
     with:
       os: macos-13
       build-type: 'Release'
-      cmake-configuration-ex: '-DUSE_CPPUNIT=OFF -DCLIENTTOOLS_ONLY=ON -DINCLUDE_PLUGINS=OFF -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_PARQUET=OFF -DSUPPRESS_CASSANDRAEMBED=ON -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF'
+      cmake-configuration-ex: '-DUSE_CPPUNIT=OFF -DCLIENTTOOLS_ONLY=ON -DINCLUDE_PLUGINS=OFF -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DSUPPRESS_CASSANDRAEMBED=ON -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF'
     secrets: inherit
 
-  build-gh_runner-macos-12:
-    if: ${{ contains('schedule,push', github.event_name) }}
+  build-gh_runner-macos-14:
+    if: ${{ contains('pull_request,push', github.event_name) }}
     uses: ./.github/workflows/build-gh_runner.yml
     with:
-      os: macos-12
+      os: macos-14
       build-type: 'Release'
-      cmake-configuration-ex: '-DUSE_CPPUNIT=OFF -DCLIENTTOOLS_ONLY=ON -DINCLUDE_PLUGINS=OFF -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DUSE_PARQUET=OFF -DSUPPRESS_CASSANDRAEMBED=ON -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF'
+      cmake-configuration-ex: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DUSE_CPPUNIT=OFF -DCLIENTTOOLS_ONLY=ON -DINCLUDE_PLUGINS=OFF -DUSE_AZURE=OFF -DUSE_CASSANDRA=OFF -DSUPPRESS_CASSANDRAEMBED=ON -DUSE_JAVA=OFF -DUSE_OPENLDAP=OFF'
     secrets: inherit
 
+  build-eclwatch:
+    if: ${{ contains('pull_request,push', github.event_name) }}
+    uses: ./.github/workflows/build-eclwatch.yml
+    with:
+      asset-name: 'eclwatch'
+    secrets: inherit
+
+  test-eclwatch:
+    if: ${{ contains('pull_request,push', github.event_name) }}
+    needs: build-eclwatch
+    uses: ./.github/workflows/test-eclwatch.yml
+    with:
+      asset-name: 'eclwatch'
+    secrets: inherit

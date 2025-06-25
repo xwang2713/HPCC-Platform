@@ -12,22 +12,22 @@ collectionName := 'test1';
 
 // Records for defining the layout of example datasets
 reviewsRec := RECORD
-    INTEGER review_scores_cleanliness; 
-    INTEGER review_scores_checkin; 
-    INTEGER review_scores_communication; 
-    INTEGER review_scores_location; 
-    INTEGER review_scores_value; 
-    INTEGER review_scores_rating; 
+    INTEGER review_scores_cleanliness;
+    INTEGER review_scores_checkin;
+    INTEGER review_scores_communication;
+    INTEGER review_scores_location;
+    INTEGER review_scores_value;
+    INTEGER review_scores_rating;
     INTEGER review_scores_accuracy;
 END;
 
 layoutairbnb := RECORD
-    UTF8 name; 
-    UTF8 space; 
-    UTF8 description; 
-    INTEGER beds; 
+    UTF8 name;
+    UTF8 space;
+    UTF8 description;
+    INTEGER beds;
     INTEGER accommodates;
-    SET OF STRING amenities; 
+    SET OF STRING amenities;
     DATASET(reviewsRec) review_scores;
 END;
 
@@ -57,12 +57,24 @@ layoutDates := {STRING bucket_start_date, STRING bucket_end_date};
 layoutEmployee := {INTEGER1 id, STRING25 first, STRING25 last, REAL salary};
 layoutperson := {String username, String address, String email};
 
+layoutRegex := RECORD
+    STRING name;
+    INTEGER uniqueID;
+    mongodb.regexType regex;
+END;
+
+layoutTimestamp := RECORD
+    STRING name;
+    INTEGER uniqueID;
+    mongodb.timestampType timestamp;
+END;
+
 // Example/Test functions
 
 // Returns the unique _id and name every document in the listingsAndReviews collection
 dataset({STRING _id, STRING name}) getAll() := EMBED(mongodb : user(user), password(pwd), server(server), database('sample_airbnb'),  collection('listingsAndReviews'))
     find({});
-ENDEMBED; 
+ENDEMBED;
 
 INTEGER beds := 3;
 INTEGER accommodates := 5;
@@ -128,13 +140,13 @@ ENDEMBED;
 // Matches all the documents where the price is greater than or equal to the min argument and less than the max argument. Then sorts the results by price first then extra_people then security_deposit.
 dataset(layoutFees) findAndSort(REAL4 max, REAL4 min, INTEGER asc) := Embed(mongodb : user(user), password(pwd), server(server), database('sample_airbnb'),  collection('listingsAndReviews'))
     aggregate([{$match: { price: { $gte: $min, $lt: $max}}}, {$sort: {price: $asc, extra_people: $asc, security_deposit: $asc}}]);
-ENDEMBED; 
+ENDEMBED;
 
 // Inserts a dataset using insert_many and returns the count of documents that were inserted.
 dataset(mongodb.insertManyResultRecord) insertMany(dataset(layoutEmployee) employees) := Embed(mongodb : user(user), password(pwd), server(server), database('mydb'),  collection('test2'))
     insert({$employees});
 ENDEMBED;
-employeeDS := DATASET ([{1, 'John', 'Andrews', 101000.5}, {2, 'Anne', 'Smith', 100000.7}, {3, 'Amy', 'Isaac', 103000.1}, {4, 'Kirk', 'Captain', 109000.9}, {5, 'Steve', 'Rogers', 99000.6}, 
+employeeDS := DATASET ([{1, 'John', 'Andrews', 101000.5}, {2, 'Anne', 'Smith', 100000.7}, {3, 'Amy', 'Isaac', 103000.1}, {4, 'Kirk', 'Captain', 109000.9}, {5, 'Steve', 'Rogers', 99000.6},
             {6, 'Evan', 'Bosch', 104000.5}, {7, 'Jack', 'Adams', 101000.5}, {8, 'Vince', 'Carter', 306000.5}, {9, 'Beth', 'Stevens', 102000.2}, {10, 'Samantha', 'Rogers', 107000.5}], layoutEmployee);
 
 // Creates an Index on the fields "first" and "last" and sorts them in ascending order.
@@ -161,12 +173,22 @@ dataset(layoutEmployee) findInfo(BOOLEAN mybool) := EMBED(mongodb : user(user), 
     );
 ENDEMBED;
 
+// Gets all the documents from the regexTest collection for testing the coversion of MongoDB regex data to ECL
+dataset(layoutRegex) getRegex() := EMBED(mongodb : user(user), password(pwd), server(server), database('mydb'),  collection('regexTest'))
+    find({});
+ENDEMBED;
+
+// Gets all the documents from the timestampTest collection for testing the coversion of MongoDB timestamp data to ECL
+dataset(layoutTimestamp) getTimestamp() := EMBED(mongodb : user(user), password(pwd), server(server), database('mydb'),  collection('timestampTest'))
+    find({});
+ENDEMBED;
+
 // $or is not allowed in the M0 tier of MongoDB atlas
 INTEGER ppl := 8;
 // Matches all the documents that match either expression. Then it groups them by the number of beds they have and counts the number of documents in each group.
 dataset({String _id, Integer count}) findCountOR(INTEGER min_nights, INTEGER people) := EMBED(mongodb : user(user), password(pwd), server(server), database('sample_airbnb'),  collection('listingsAndReviews'))
-    aggregate([{ $match: 
-                    { $or: [ 
+    aggregate([{ $match:
+                    { $or: [
                         {"$expr" : {"$gt" : [{"$toInt" : "$minimum_nights"} , $min_nights]}}, 
                         {"$expr" : {"$gte" : [$accommodates, $people]}}
                         ]
@@ -193,6 +215,8 @@ SEQUENTIAL
     OUTPUT(insertMany(employeeDS), NAMED('InsertMany'));
     createIndex(1);
     OUTPUT(findInfo(mybool), NAMED('RemoveOnQuery'));
+    OUTPUT(getRegex(), NAMED('TestRegexSupport'));
+    OUTPUT(getTimestamp(), NAMED('TestTimestampSupport'));
     OUTPUT(findCountOR(nights,ppl), NAMED('OrCountAggregate'));
     OUTPUT('Done', Named('Status'));
 );

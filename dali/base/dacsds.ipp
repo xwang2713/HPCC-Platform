@@ -329,13 +329,14 @@ public:
     virtual IPropertyTree *create(MemoryBuffer &mb) override;
     virtual void createChildMap() override;
     virtual IPropertyTree *ownPTree(IPropertyTree *tree) override;
-    virtual void setLocal(size32_t size, const void *data, bool _binary) override;
+    virtual void setLocal(size32_t size, const void *data, bool _binary, CompressionMethod compressType) override;
     virtual void appendLocal(size32_t size, const void *data, bool binary) override;
     virtual void addingNewElement(IPropertyTree &child, int pos) override;
     virtual void removingElement(IPropertyTree *tree, unsigned pos) override;
     virtual void setAttribute(const char *attr, const char *val, bool encoded) override;
     virtual bool removeAttribute(const char *attr) override;
     virtual void serializeSelf(MemoryBuffer &tgt) override;
+    virtual IPTArrayValue * cloneValue() const override;
 
 // IPropertyTree
     virtual bool renameTree(IPropertyTree *tree, const char *newName) override;
@@ -345,15 +346,16 @@ public:
     virtual void setPropInt64(const char *xpath, __int64 val) override;
     virtual void addPropReal(const char *xpath, double val) override;
     virtual void setPropReal(const char *xpath, double val) override;
-    virtual void setPropBin(const char *xpath, size32_t size, const void *data) override;
+    virtual void setPropBin(const char *xpath, size32_t size, const void *data, CompressionMethod preferredCompression) override;
     virtual IPropertyTree *setPropTree(const char *xpath, IPropertyTree *val) override;
     virtual IPropertyTree *addPropTree(const char *xpath, IPropertyTree *val) override;
     virtual bool removeProp(const char *xpath) override;
     virtual bool removeTree(IPropertyTree *child) override;
     virtual IPropertyTreeIterator *getElements(const char *xpath, IPTIteratorCodes flags = iptiter_null) const override;
     virtual bool isCompressed(const char *xpath=NULL) const override;
+    virtual CompressionMethod getCompressionType() const override;
     virtual bool getProp(const char *xpath, StringBuffer &ret) const override;
-    virtual const char *queryProp(const char * xpath) const override;
+    virtual const char *queryProp(const char * xpath, const char * dft = nullptr) const override;
     virtual bool getPropBool(const char *xpath, bool dft=false) const override;
     virtual __int64 getPropInt64(const char *xpath, __int64 dft=0) const override;
     virtual bool getPropBin(const char *xpath, MemoryBuffer &ret) const override;
@@ -418,6 +420,7 @@ public:
     virtual void setConfigOpt(const char *opt, const char *value);
     virtual unsigned queryCount(const char *xpath);
     virtual bool updateEnvironment(IPropertyTree *newEnv, bool forceGroupUpdate, StringBuffer &response);
+    virtual void closedown() override;
 
 private:
     void noteDisconnected(CRemoteConnection &connection);

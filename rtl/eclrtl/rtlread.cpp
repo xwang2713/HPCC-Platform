@@ -25,13 +25,13 @@
 
 //=====================================================================================================
 
-CThorStreamDeserializerSource::CThorStreamDeserializerSource(ISerialStream * _in) : in(_in)
+CThorStreamDeserializerSource::CThorStreamDeserializerSource(IBufferedSerialInputStream * _in) : in(_in)
 {
 }
 
 CThorStreamDeserializerSource::CThorStreamDeserializerSource(size32_t len, const void * data)
 {
-    in.setown(createMemorySerialStream(data, len, NULL));
+    in.setown(createMemorySerialStream(data, len));
 }
 
 size32_t CThorStreamDeserializerSource::read(size32_t len, void * ptr)

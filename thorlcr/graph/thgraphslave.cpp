@@ -16,6 +16,7 @@
 ############################################################################## */
 
 #include "jlib.hpp"
+#include "jcontainerized.hpp"
 #include "jlzw.hpp"
 #include "jhtree.hpp"
 #include "rmtfile.hpp"
@@ -124,6 +125,12 @@ bool CThorInput::isFastThrough() const
 {
     return itdl->queryFromActivity()->isFastThrough();
 }
+
+bool CThorInput::suppressLookAhead() const
+{
+    return itdl->queryFromActivity()->suppressLookAhead();
+}
+
 // 
 
 CSlaveActivity::CSlaveActivity(CGraphElementBase *_container, const StatisticsMapping &statsMapping)
@@ -251,28 +258,32 @@ bool CSlaveActivity::isInputFastThrough(unsigned index) const
     return input.isFastThrough();
 }
 
-/* If fastThrough, return false.
- * If !fastThrough (indicating needs look ahead) and has existing lookahead, start it, return false.
- * If !fastThrough (indicating needs look ahead) and no existing lookahead, return true, caller will install.
+/* If fastThrough or suppressLookAhead, return false.
+ * If not (indicating needs look ahead) and has existing lookahead, start it, return false.
+ * If not (indicating needs look ahead) and no existing lookahead, return true, caller will install.
  *
  * NB: only return true if new lookahead needs installing.
  */
 bool CSlaveActivity::ensureStartFTLookAhead(unsigned index)
 {
     CThorInput &input = inputs.item(index);
-    if (input.isFastThrough())
+    if (input.isFastThrough() || input.suppressLookAhead())
         return false; // no look ahead required
     else
     {
         // look ahead required
         if (input.hasLookAhead())
         {
+            //ActPrintLog("Already has lookahead");
             // no change, start existing look ahead
             startLookAhead(index);
             return false; // no [new] look ahead required
         }
         else
+        {
+            //ActPrintLog("lookahead will be inserted");
             return true; // new look ahead required
+        }
     }
 }
 
@@ -308,7 +319,7 @@ bool CSlaveActivity::canStall() const
     getMetaInfo(info);
     if (info.canStall)
         return true;
-    if (info.isSource || info.buffersInput || info.canBufferInput)
+    if (info.isSource || info.canBufferInput)
         return false;
 
     for (unsigned i=0; i<queryNumInputs(); i++)
@@ -324,6 +335,29 @@ bool CSlaveActivity::canStall() const
     return false;
 }
 
+// check if activity is suppressLookAhead, or if fastThrough, check that inputs are suppressLookAhead
+bool CSlaveActivity::suppressLookAhead() const
+{
+    if (!hasStarted())
+        return true;
+    ThorDataLinkMetaInfo info;
+    getMetaInfo(info);
+    if (info.suppressLookAhead)
+        return true;
+    if (!info.fastThrough || info.canStall) // NB: JIC - but should never be marked fastThrough==true if canStall==true
+        return false;
+    for (unsigned i=0; i<queryNumInputs(); i++)
+    {
+        IThorDataLink *input = queryInput(i);
+        if (input && queryInputStarted(i))
+        {
+            CSlaveActivity *inputAct = input->queryFromActivity();
+            if (!inputAct->suppressLookAhead())
+                return false;
+        }
+    }
+    return true;
+}
 
 
 IStrandJunction *CSlaveActivity::getOutputStreams(CActivityBase &ctx, unsigned idx, PointerArrayOf<IEngineRowStream> &streams, const CThorStrandOptions * consumerOptions, bool consumerOrdered, IOrderedCallbackCollection * orderedCallbacks)
@@ -520,7 +554,7 @@ MemoryBuffer &CSlaveActivity::getInitializationData(unsigned slave, MemoryBuffer
     return mb.append(queryInitializationData(slave));
 }
 
-unsigned __int64 CSlaveActivity::queryLocalCycles() const
+unsigned __int64 CSlaveActivity::queryLocalCycles(unsigned __int64 totalCycles, unsigned __int64 blockedCycles, unsigned __int64 lookAheadCycles) const
 {
     unsigned __int64 inputCycles = 0;
     if (1 == inputs.ordinality())
@@ -553,14 +587,21 @@ unsigned __int64 CSlaveActivity::queryLocalCycles() const
                 break;
         }
     }
-    unsigned __int64 localCycles = queryTotalCycles();
-    if (localCycles < inputCycles) // not sure how/if possible, but guard against
+    unsigned __int64 processCycles = totalCycles + lookAheadCycles;
+    if (processCycles < inputCycles) // not sure how/if possible, but guard against
         return 0;
-    localCycles -= inputCycles;
-    const unsigned __int64 blockedCycles = queryBlockedCycles();
-    if (localCycles < blockedCycles)
+    processCycles -= inputCycles;
+    if (processCycles < blockedCycles)
+    {
+        ActPrintLog("CSlaveActivity::queryLocalCycles - process %" I64F "uns < blocked %" I64F "uns", cycle_to_nanosec(processCycles), cycle_to_nanosec(blockedCycles));
         return 0;
-    return localCycles-blockedCycles;
+    }
+    return processCycles-blockedCycles;
+}
+
+unsigned __int64 CSlaveActivity::queryLocalCycles() const
+{
+    return queryLocalCycles(queryTotalCycles(), queryBlockedCycles(), queryLookAheadCycles());
 }
 
 void CSlaveActivity::serializeStats(MemoryBuffer &mb)
@@ -582,9 +623,16 @@ void CSlaveActivity::serializeStats(MemoryBuffer &mb)
     queryCodeContext()->gatherStats(serializedStats);
 
     // JCS->GH - should these be serialized as cycles, and a different mapping used on master?
-    serializedStats.setStatistic(StTimeLocalExecute, (unsigned __int64)cycle_to_nanosec(queryLocalCycles()));
-    serializedStats.setStatistic(StTimeTotalExecute, (unsigned __int64)cycle_to_nanosec(queryTotalCycles()));
-    serializedStats.setStatistic(StTimeBlocked, (unsigned __int64)cycle_to_nanosec(queryBlockedCycles()));
+    //
+    // Note: Look ahead cycles are not being kept up to date in slaverStats as multiple objects and threads are updating
+    // look ahead cycles.  At the moment, each thread and objects that generate look ahead cycles, track its own look ahead
+    // cycles and the up to date lookahead cycles is only available with a call to queryLookAheadCycles().  The code would
+    // need to be refactored to change this behaviour.
+    unsigned __int64 lookAheadCycles = queryLookAheadCycles();
+    unsigned __int64 localCycles = queryLocalCycles(queryTotalCycles(), queryBlockedCycles(), lookAheadCycles);
+    serializedStats.setStatistic(StTimeLookAhead, (unsigned __int64)cycle_to_nanosec(lookAheadCycles));
+    serializedStats.setStatistic(StTimeLocalExecute, (unsigned __int64)cycle_to_nanosec(localCycles));
+    slaveTimerStats.addStatistics(serializedStats);
     serializedStats.serialize(mb);
     ForEachItemIn(i, outputs)
     {
@@ -693,6 +741,7 @@ void CThorStrandedActivity::strandedStop()
 //For some reason gcc doesn't let you specify a function as pure virtual and define it at the same time.
 void CThorStrandedActivity::start()
 {
+    SimpleActivityTimer t(startCycles, timeActivities);
     CSlaveActivity::start();
     startJunction(splitter);
     onStartStrands();
@@ -816,7 +865,7 @@ IStrandJunction *CThorStrandedActivity::getOutputStreams(CActivityBase &ctx, uns
 
 unsigned __int64 CThorStrandedActivity::queryTotalCycles() const
 {
-    unsigned __int64 total = 0;;
+    unsigned __int64 total = startCycles;
     ForEachItemIn(i, strands)
     {
         CThorStrandProcessor &strand = strands.item(i);
@@ -1038,7 +1087,7 @@ bool CSlaveGraph::recvActivityInitData(size32_t parentExtractSz, const byte *par
             if (error)
             {
                 Owned<IException> e = deserializeException(msg);
-                EXCLOG(e, "Master hit exception");
+                IERRLOG(e, "Master hit exception");
                 msg.clear();
                 if (!queryJobChannel().queryJobComm().send(msg, 0, replyTag, LONGTIMEOUT))
                     throw MakeStringException(0, "Timeout sending init data back to master");
@@ -1222,6 +1271,8 @@ void CSlaveGraph::executeSubGraph(size32_t parentExtractSz, const byte *parentEx
 
 void CSlaveGraph::abort(IException *e)
 {
+    if (aborted)
+        return;
     if (!graphDone) // set pre done(), no need to abort if got that far.
         CGraphBase::abort(e);
     getDoneSem.signal();
@@ -1229,23 +1280,27 @@ void CSlaveGraph::abort(IException *e)
 
 void CSlaveGraph::done()
 {
-    GraphPrintLog("End of sub-graph");
-    progressActive.store(false);
-    setProgressUpdated(); // NB: ensure collected after end of graph
-    if (!queryOwner() || isGlobal())
+    if (started)
     {
-        if (aborted || !graphDone)
+        GraphPrintLog("End of sub-graph");
+        progressActive.store(false);
+        setProgressUpdated(); // NB: ensure collected after end of graph
+
+        if (initialized && (!queryOwner() || isGlobal()))
         {
-            if (!getDoneSem.wait(SHORTTIMEOUT)) // wait on master to clear up, gather info from slaves
-                WARNLOG("CSlaveGraph::done - timedout waiting for master to signal done()");
+            if (aborted || !graphDone)
+            {
+                if (!getDoneSem.wait(SHORTTIMEOUT)) // wait on master to clear up, gather info from slaves
+                    IWARNLOG("CSlaveGraph::done - timedout waiting for master to signal done()");
+            }
+            else
+                getDoneSem.wait();
         }
-        else
-            getDoneSem.wait();
-    }
-    if (!queryOwner())
-    {
-        if (globals->getPropBool("@watchdogProgressEnabled"))
-            jobS->queryProgressHandler()->stopGraph(*this, NULL);
+        if (!queryOwner())
+        {
+            if (globals->getPropBool("@watchdogProgressEnabled"))
+                jobS->queryProgressHandler()->stopGraph(*this, NULL);
+        }
     }
 
     Owned<IException> exception;
@@ -1280,8 +1335,15 @@ bool CSlaveGraph::serializeStats(MemoryBuffer &mb)
     jobS->querySharedAllocator()->queryRowManager()->reportSummaryStatistics(stats);
 
     IGraphTempHandler *tempHandler = owner ? queryTempHandler(false) : queryJob().queryTempHandler();
+    offset_t sizeGraphSpill = tempHandler ? tempHandler->getActiveUsageSize() : 0;
     if (tempHandler)
-        stats.mergeStatistic(StSizeGraphSpill, tempHandler->getActiveUsageSize());
+        stats.mergeStatistic(StSizeGraphSpill, sizeGraphSpill);
+
+    offset_t peakTempSize = queryPeakTempSize();
+    if (peakTempSize)
+        stats.mergeStatistic(StSizePeakTempDisk, peakTempSize);
+    if (peakTempSize + sizeGraphSpill)
+        stats.mergeStatistic(StSizePeakEphemeralDisk, peakTempSize + sizeGraphSpill);
     stats.serialize(mb);
 
     unsigned cPos = mb.length();
@@ -1459,7 +1521,7 @@ IThorResult *CSlaveGraph::getGlobalResult(CActivityBase &activity, IThorRowInter
     Owned<IRowWriter> resultWriter = result->getWriter();
 
     MemoryBuffer mb;
-    Owned<ISerialStream> stream = createMemoryBufferSerialStream(mb);
+    Owned<IBufferedSerialInputStream> stream = createMemoryBufferSerialStream(mb);
     CThorStreamDeserializerSource rowSource(stream);
 
     for (;;)
@@ -1616,7 +1678,13 @@ public:
     virtual bool allowDaliAccess() const
     {
         // NB. includes access to foreign Dalis.
-        return jobChannel.queryJob().getOptBool("slaveDaliClient");
+        // slaveDaliClient option deprecated, but maintained for compatibility
+        return jobChannel.queryJob().getOptBool("allowDaliAccess", jobChannel.queryJob().getOptBool("slaveDaliClient"));
+    }
+    virtual bool allowSashaAccess() const
+    {
+        bool defaultAccess = isContainerized() ? false : true; // BM had access before, but not sure it should - kept for backwards compatibility
+        return jobChannel.queryJob().getOptBool("allowSashaAccess", defaultAccess);
     }
     virtual StringBuffer &getQueryId(StringBuffer &result, bool isShared) const
     {
@@ -1680,7 +1748,7 @@ CJobSlave::CJobSlave(ISlaveWatchdog *_watchdog, IPropertyTree *_workUnitInfo, co
     init();
 
     Owned<IProperties> traceHeaders = deserializeTraceDebugOptions(workUnitInfo->queryPropTree("Debug"));
-    OwnedSpanScope requestSpan = queryTraceManager().createServerSpan("run_graph", traceHeaders);
+    OwnedActiveSpanScope requestSpan = queryTraceManager().createServerSpan("run_graph", traceHeaders);
     ContextSpanScope spanScope(*logctx, requestSpan);
     requestSpan->setSpanAttribute("hpcc.wuid", wuid);
     requestSpan->setSpanAttribute("hpcc.graph", graphName);
@@ -1723,7 +1791,7 @@ CJobSlave::CJobSlave(ISlaveWatchdog *_watchdog, IPropertyTree *_workUnitInfo, co
 
     unsigned sharedMemoryLimitPercentage = (unsigned)getWorkUnitValueInt("globalMemoryLimitPC", globals->getPropInt("@sharedMemoryLimit", 90));
     unsigned sharedMemoryMB = queryMemoryMB*sharedMemoryLimitPercentage/100;
-    PROGLOG("Shared memory = %d%%", sharedMemoryLimitPercentage);
+    DBGLOG("Shared memory = %d%%", sharedMemoryLimitPercentage);
 
     sharedAllocator.setown(::createThorAllocator(queryMemoryMB, sharedMemoryMB, numChannels, memorySpillAtPercentage, *logctx, crcChecking, usePackedAllocator));
 
@@ -1795,9 +1863,10 @@ void CJobSlave::endJob()
 void CJobSlave::reportGraphEnd(graph_id gid)
 {
     if (nodesLoaded) // wouldn't mean much if parallel jobs running
-        PROGLOG("Graph[%" GIDPF "u] - JHTree node stats:\ncacheAdds=%d\ncacheHits=%d\nnodesLoaded=%d\nblobCacheHits=%d\nblobCacheAdds=%d\nleafCacheHits=%d\nleafCacheAdds=%d\nnodeCacheHits=%d\nnodeCacheAdds=%d\n",
-             gid, blobCacheAdds + leafCacheAdds + nodeCacheAdds, blobCacheHits + leafCacheHits + nodeCacheHits,
-             nodesLoaded.load(), blobCacheHits.load(), blobCacheAdds.load(), leafCacheHits.load(), leafCacheAdds.load(), nodeCacheHits.load(), nodeCacheAdds.load());
+    {
+        StringBuffer prefix("Graph[%" GIDPF "u] - JHTree node stats:");
+        logNodeCacheStats(prefix);
+    }
     if (!REJECTLOG(MCthorDetailedDebugInfo))
     {        
         JSocketStatistics stats;
@@ -1836,7 +1905,63 @@ double CJobSlave::getWorkUnitValueReal(const char *prop, double defVal) const
 
 void CJobSlave::debugRequest(MemoryBuffer &msg, const char *request) const
 {
-    if (watchdog) watchdog->debugRequest(msg, request);
+    Owned<IPropertyTree> req = createPTreeFromXMLString(request);
+    const char *command = req->queryName();
+
+    if (strieq(command, "print"))
+    {
+        if (watchdog) watchdog->debugRequest(msg, req);
+    }
+    else if (strieq(command, "debuginfo"))
+    {
+        try
+        {
+            StringBuffer instanceDir;
+            if (!req->getProp("@dir", instanceDir))
+                throw makeStringException(0, "deguginfo command missing 'dir' attribute");
+            JobInfoCaptureType captureFlags = (JobInfoCaptureType)req->getPropInt("@flags", 0);
+            // NB: stacks are for all channels, but file naming is based on 1st channel
+            rank_t myRank = queryJobChannel(0).queryMyRank();
+            StringBuffer suffix;
+            suffix.append((unsigned)myRank);
+
+            msg.append(true);
+
+            std::vector<std::string> capturedFiles;
+            if (isContainerized())
+            {
+                addInstanceContextPaths(instanceDir);
+                if (hasMask(captureFlags, JobInfoCaptureType::logs))
+                {
+                    StringBuffer logFilename(instanceDir);
+                    addPathSepChar(logFilename);
+                    logFilename.appendf("thorworker.%s.log", suffix.str());
+                    copyPostMortemLogging(logFilename, hasMask(jobInfoCaptureBehaviour, JobInfoCaptureBehaviour::clearLogs));
+                }
+            }
+            if (hasMask(captureFlags, JobInfoCaptureType::stacks))
+            {
+                std::vector<std::string> capturedFiles = captureDebugInfo(instanceDir, "thorworker", suffix);
+                for (auto &file : capturedFiles)
+                {
+                    RemoteFilename rfn;
+                    rfn.setLocalPath(file.c_str());
+                    StringBuffer fullPath;
+                    rfn.getRemotePath(fullPath);
+                    msg.append(fullPath.str());
+                }
+            }
+            msg.append("");
+        }
+        catch (IException *e)
+        {
+            msg.append(false);
+            serializeException(e, msg);
+            e->Release();
+        }
+    }
+    else
+        throw makeStringExceptionV(5300, "Command '%s' not supported by Thor", command);
 }
 
 IGraphTempHandler *CJobSlave::createTempHandler(bool errorOnMissing)
@@ -1998,7 +2123,7 @@ public:
         {
             StringBuffer locations;
             IException *e = MakeActivityException(&activity, TE_FileNotFound, "No physical file part for logical file %s, found at given locations: %s (Error = %d)", logicalFilename.get(), getFilePartLocations(*partDesc, locations).str(), GetLastError());
-            EXCLOG(e, NULL);
+            IERRLOG(e);
             throw e;
         }
     }
@@ -2032,7 +2157,6 @@ class CLazyFileIO : public CInterfaceOf<IFileIO>
     Owned<IFileIO> iFileIO; // real IFileIO
     CActivityBase *activity = nullptr;
     StringAttr filename, id;
-    size32_t blockedFileIOSize = 0;
 
     IFileIO *getFileIO()
     {
@@ -2045,15 +2169,10 @@ class CLazyFileIO : public CInterfaceOf<IFileIO>
         return iFileIO.getClear();
     }
 public:
-    CLazyFileIO(CFileCache &_cache, const char *_filename, const char *_id, IActivityReplicatedFile *_repFile, bool _compressed, IExpander *_expander, const StatisticsMapping & _statMapping, size32_t _blockedFileIOSize)
+    CLazyFileIO(CFileCache &_cache, const char *_filename, const char *_id, IActivityReplicatedFile *_repFile, bool _compressed, IExpander *_expander, const StatisticsMapping & _statMapping)
         : cache(_cache), filename(_filename), id(_id), repFile(_repFile), compressed(_compressed), expander(_expander),
-          fileStats(_statMapping), blockedFileIOSize(_blockedFileIOSize)
+          fileStats(_statMapping)
     {
-        if (blockedFileIOSize) // enabled
-        {
-            if (compressed || expander)
-                blockedFileIOSize = 0; // ignore. Compressed files use their own blocked format, but may want to revisit this area.
-        }
     }
     virtual void beforeDispose() override;
     void setActivity(CActivityBase *_activity)
@@ -2157,7 +2276,7 @@ public:
         assertex(limit);
         purgeN = globals->getPropInt("@fileCachePurgeN", 10);
         if (purgeN > limit) purgeN=limit; // why would it be, but JIC.
-        PROGLOG("FileCache: limit = %d, purgeN = %d", limit, purgeN);
+        DBGLOG("FileCache: limit = %d, purgeN = %d", limit, purgeN);
     }
     void opening(CLazyFileIO &lFile)
     {
@@ -2185,7 +2304,7 @@ public:
         CriticalBlock b(crit);
         return _remove(id);
     }
-    virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilename, IPartDescriptor &partDesc, IExpander *expander, const StatisticsMapping & _statMapping, size32_t blockedFileIOSize) override
+    virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilename, IPartDescriptor &partDesc, IExpander *expander, const StatisticsMapping & _statMapping) override
     {
         StringBuffer filename;
         RemoteFilename rfn;
@@ -2195,15 +2314,13 @@ public:
         unsigned crc = partDesc.queryProperties().getPropInt("@fileCrc");
         if (crc)
             id.append(crc);
-        if (blockedFileIOSize)
-            id.append('_').append(blockedFileIOSize);
         CriticalBlock b(crit);
         CLazyFileIO * file = files.find(id);
         if (!file || !file->isAliveAndLink())
         {
             Owned<IActivityReplicatedFile> repFile = createEnsurePrimaryPartFile(logicalFilename, &partDesc);
             bool compressed = partDesc.queryOwner().isCompressed();
-            file = new CLazyFileIO(*this, filename, id, repFile.getClear(), compressed, expander, _statMapping, blockedFileIOSize);
+            file = new CLazyFileIO(*this, filename, id, repFile.getClear(), compressed, expander, _statMapping);
             files.replace(* file); // NB: files does not own 'file', CLazyFileIO will remove itself from cache on destruction
 
             /* NB: there will be 1 CLazyFileIO per physical file part name
@@ -2243,11 +2360,7 @@ IFileIO *CLazyFileIO::getOpenFileIO(CActivityBase &activity)
         else if (compressed)
             iFileIO.setown(createCompressedFileReader(iFile));
         else
-        {
             iFileIO.setown(iFile->open(IFOread));
-            if (blockedFileIOSize)
-                iFileIO.setown(createBlockedIO(iFileIO.getClear(), blockedFileIOSize));
-        }
         if (!iFileIO.get())
             throw MakeThorException(0, "CLazyFileIO: failed to open: %s", filename.get());
     }

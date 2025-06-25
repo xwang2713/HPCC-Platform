@@ -35,9 +35,17 @@
         "remote": {
           "$ref": "#/definitions/remoteStorage"
         },
+        "spillPlane": {
+          "$ref": "#/definitions/spillPlane"
+        },
         "indexBuildPlane": {
-          "type": "string",
-          "description": "Default plane for index builds"
+          "$ref": "#/definitions/indexBuildPlane"
+        },
+        "persistPlane": {
+          "$ref": "#/definitions/persistPlane"
+        },
+        "jobTempPlane": {
+          "$ref": "#/definitions/jobTempPlane"
         }
       },
       "additionalProperties": false
@@ -69,16 +77,7 @@
         "timeout": {
           "type": "integer"
         },
-        "storage": {
-          "$ref": "#/definitions/secrets"
-        },
         "authn": {
-          "$ref": "#/definitions/secrets"
-        },
-        "ecl": {
-          "$ref": "#/definitions/secrets"
-        },
-        "eclUser": {
           "$ref": "#/definitions/secrets"
         },
         "codeSign": {
@@ -87,14 +86,25 @@
         "codeVerify": {
           "$ref": "#/definitions/secrets"
         },
+        "ecl": {
+          "$ref": "#/definitions/secrets"
+        },
+        "eclUser": {
+          "$ref": "#/definitions/secrets"
+        },
+        "esp": {
+          "$ref": "#/definitions/secrets"
+        },
         "git": {
           "$ref": "#/definitions/secrets"
         },
-        "system": {
+        "jfrog": {
           "$ref": "#/definitions/secrets"
-        }
-        ,
-        "esp": {
+        },
+        "storage": {
+          "$ref": "#/definitions/secrets"
+        },
+        "system": {
           "$ref": "#/definitions/secrets"
         }
       },
@@ -107,19 +117,7 @@
         "timeout": {
           "type": "integer"
         },
-        "storage": {
-          "$ref": "#/definitions/vaultCategory"
-        },
         "authn": {
-          "$ref": "#/definitions/vaultCategory"
-        },
-        "esp": {
-          "$ref": "#/definitions/vaultCategory"
-        },
-        "ecl": {
-          "$ref": "#/definitions/vaultCategory"
-        },
-        "eclUser": {
           "$ref": "#/definitions/vaultCategory"
         },
         "codeSign": {
@@ -128,10 +126,26 @@
         "codeVerify": {
           "$ref": "#/definitions/vaultCategory"
         },
+        "ecl": {
+          "$ref": "#/definitions/vaultCategory"
+        },
+        "eclUser": {
+          "$ref": "#/definitions/vaultCategory"
+        },
+        "esp": {
+          "$ref": "#/definitions/vaultCategory"
+        },
         "git": {
+          "$ref": "#/definitions/vaultCategory"
+        },
+        "jfrog": {
+          "$ref": "#/definitions/vaultCategory"
+        },
+        "storage": {
           "$ref": "#/definitions/vaultCategory"
         }
       },
+      "$comment": "The system secrets are used for vault configuration so cannot themselves be defined in a vault",
       "additionalProperties": false
     },
     "bundles": {
@@ -142,7 +156,7 @@
     "dali": {
       "description": "dali process",
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
       "maxItems": 1,
       "items": { "$ref": "#/definitions/dali" }
     },
@@ -176,14 +190,6 @@
               "type": "string",
               "description": "The (optional) file prefix to add to relative filenames"
             },
-            "dataPlane": {
-              "description": "The default storage plane to write data files to",
-              "type": "string"
-            },
-            "spillPlane": {
-              "description": "The storage plane to write spill files to",
-              "type": "string"
-            },
             "required": [ "name" ]
           }
         ]
@@ -198,6 +204,9 @@
           "name": {
             "type": "string",
             "description": "The name of the dfuserver process"
+          },
+          "replicas": {
+            "type": "integer"
           },
           "disabled": {
             "type": "boolean"
@@ -273,6 +282,14 @@
           "description": "if set, no resource definitions are generated from the helm charts",
           "type": "boolean"
         },
+        "resourceCpusWithLimits": {
+          "description": "if set, cpu resources are provided as limits rather than requests.  Not recommended because this can lead to painful throttling on roxie and thor",
+          "type": "boolean"
+        },
+        "resourceWholeCpusWithLimits": {
+          "description": "if set, whole cpu resource are provided as limits rather than requests.  On K8s systems where cpuManagerPolicy=static this allows binding using affinities.",
+          "type": "boolean"
+        },
         "privileged": {
           "type": "boolean"
         },
@@ -344,6 +361,42 @@
             }
           }
         },
+        "analyzerOptions": {
+          "description": "Default cost optimizer options",
+          "type": "object",
+          "properties": {
+            "disabled": {
+                "type": "boolean",
+                "default": false
+            },
+            "analyzeInEclAgent" : {
+                "description": "Analyse workunit in ECL Agent (if false, workunit will be analysed by Thor manager)",
+                "type": "boolean",
+                "default": false
+            },
+            "analyzeWhenComplete" : {
+                "description": "Analyse workunit after completion (if false, the analysis willl be executed incrementally after each graph completes)",
+                "type": "boolean",
+                "default": false
+            },
+            "minInterestingCost": {
+              "description": "Only report issues that may be costing more than this value (decimal $ value)",
+              "type": "number"
+            },
+            "minInterestingTimeWaste": {
+              "description": "Only report issues that may be wasting more than this time (milliseconds)",
+              "type": "number"
+            },
+            "minInterestingTime": {
+              "description": "Only analyse activities that have a longer execute time than this threshold (milliseconds)",
+              "type": "number"
+            },
+            "skewThreshold": {
+              "description": "Only report issues that exceed this threshold (for skew related issued only report)",
+              "type": "number"
+            }
+          }
+        },
         "expert": {
           "$ref": "#/definitions/expert"
         },
@@ -396,6 +449,11 @@
               "ingress": {
                 "$ref" : "#/definitions/ingress"
               },
+              "externalTrafficPolicy": {
+                "type": "string",
+                "enum": ["Cluster", "Local"],
+                "description": "Route clients to all (Cluster), or local VM only (Local). Preserves client source IPs."
+              },
               "loadBalancerSourceRanges": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -412,6 +470,14 @@
           "type": "object",
           "additionalProperties": { "type": "string" },
           "description": "Global component annotations, generated into all components"
+        },
+        "plugins": {
+          "$ref": "#/definitions/plugins"
+        },
+        "infrastructure": {
+          "type": "object",
+          "additionalProperties": { "type": ["integer", "string", "boolean", "object", "array"] },
+          "description": "External infrastructure information"
         }
       },
       "additionalProperties": false
@@ -571,6 +637,11 @@
               "type": "integer",
               "default": 0
             },
+            "blockedRandomIOKB": {
+              "description": "Optimal block size for efficient random access reading from this plane. Implementations will use if they can",
+              "type": "integer",
+              "default": 0
+            },
             "compressLogicalFiles" : {
               "description": "Compress all logical file outputs on this plane.",
               "type": "boolean",
@@ -578,6 +649,11 @@
             },
             "eclwatchVisible": {
               "type": "boolean"
+            },
+            "writeSyncMarginMs": {
+              "description": "Time that is required to elapse between writing a file and all read copies to be consistently updated",
+              "type": "integer",
+              "default": 0
             },
             "components": {},
             "prefix": {},
@@ -664,7 +740,7 @@
               "description": "Secret id",
               "type": "string"
             },
-      	    "containers": {
+            "containers": {
               "type": "array",
               "description": "List of containers",
               "items": {
@@ -684,8 +760,7 @@
                     "type" : "string"
                   }
                 },
-                "additionalProperties": false,
-                "required": [ "name" ]
+                "additionalProperties": false
               }
             }
           },
@@ -901,6 +976,10 @@
         "writeTimeout": {
           "description": "optional timeout (in ms) for socket writing to vault",
           "type": "number"
+        },
+        "backoffTimeout": {
+          "description": "optional time (in ms) to back-off connecting to a vault that cannot be reached, or fails to authenticate",
+          "type": "number"
         }
       },
       "required": [ "name", "url" ],
@@ -1068,6 +1147,14 @@
         "checkScopeScans": {
           "type": "boolean",
           "description": "Only return iterated logical file metadata for files that user has scope permission to access"
+        },
+        "disableDefaultUser": {
+          "type": "boolean",
+          "description": "Disable deprecated files default user"
+        },
+        "useLegacyDefaultFileScopePermissionCache": {
+          "type": "boolean",
+          "description": "Use legacy default filescope permissions that cached value for first user"
         }
       }
     },
@@ -1096,10 +1183,14 @@
           "description": "Number of log entries to drop from the log queue when it is full. Disabled if 0, or if queueLength is 0",
           "default": 0
         },
-        "dataFormat": {
+        "format": {
           "type": "string",
           "description": "The data format used to report logging: xml|json|table(space delimited values)",
           "enum": [ "xml", "json", "table"]
+        },
+        "enableGlobalSysLog": {
+            "type": "boolean",
+                "description" : "Enable centralized reporting of important user/operator logging messages"
         }
       },
       "additionalProperties": { "type": ["integer", "string", "boolean"] }
@@ -1123,12 +1214,49 @@
           "type": "boolean",
           "description": "If true, creates a trace exporter outputting to the log using the default options"
         },
+        "enableOTELDebugLogging": {
+          "type": "boolean",
+          "description": "If true, sets OTEL library logging to debug level (otherwise set to warning)"
+        },
+        "sampling": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["AlwaysOff", "AlwaysOn", "Ratio"],
+              "description": "Name of the Head Sampling type AlwaysOff|AlwaysOn|Ratio"
+            },
+            "ratio" : {
+              "type": "number",
+              "description": "Required if sampling type set to Ratio - Represents the sampling ratio value."
+            },
+            "parentBased" : {
+              "type": "boolean",
+              "description": "Optional - Determines if the sampling policy honors the remote root span sampled flag."
+            },
+            "additionalProperties": false
+          }
+        },
         "exporters": {
           "type": "array",
           "description": "List of trace exporters",
           "items": {
             "$ref": "#/definitions/traceExporter"
           }
+        },
+        "resourceAttributes": {
+          "type": "object",
+          "properties": {
+            "deploymentEnvironment": {
+              "type": "string",
+              "description": "Name of the deployment environment (aka deployment tier) such as staging/development/production. "
+            },
+            "serviceNamespace": {
+              "type": "string",
+              "description": "Identifier used to help distinguish instances of same service"
+            }
+          },
+          "additionalProperties": { "type": ["integer", "string", "boolean"] }
         }
       },
       "additionalProperties": { "type": ["integer", "string", "boolean"] }
@@ -1147,9 +1275,25 @@
             "enabled": {
               "type": "boolean",
               "description": "If true, trace data is processed in a batch, if false, trace data is processed immediately"
+            },
+            "maxQueueSize": {
+              "type": "number",
+              "description": "The maximum buffer/queue size. After the size is reached, spans are dropped."
+            },
+            "scheduledDelayMillis": {
+              "type": "number",
+              "description": "The time interval between two consecutive exports."
+            },
+            "maxExportBatchSize": {
+              "type": "number",
+              "description": " The maximum batch size of every export. It must be smaller or equal to max_queue_size."
             }
           },
           "additionalProperties": { "type": ["integer", "string", "boolean"] }
+        },
+        "metered": {
+          "type": "boolean",
+          "description": "Track and report export action latency"
         },
         "additionalProperties": { "type": ["integer", "string", "boolean"] }
       }
@@ -1212,7 +1356,7 @@
               "items": { "type": "object" }
             }
           }
-        }  
+        }
       ]
     },
     "globalEgress": {
@@ -1241,7 +1385,7 @@
         {
           "egress": {
             "$ref" : "#/definitions/egress"
-          },              
+          },
           "additionalProperties": false
         }
       }
@@ -1278,6 +1422,11 @@
         "labels": {
           "type": "object",
           "additionalProperties": { "type": "string" }
+        },
+        "externalTrafficPolicy": {
+          "type": "string",
+          "enum": ["Cluster", "Local"],
+          "description": "Route clients to all (Cluster), or local VM only (Local). Preserves client source IPs."
         },
         "loadBalancerSourceRanges": {
           "type": "array",
@@ -1421,10 +1570,17 @@
           "type": "string",
           "description": "The default repo version used if not supplied for the defaultRepo"
         },
+        "guardGitUpdates": {
+          "type": "boolean",
+          "description": "If enabled all updates of the git repositories are protected by holding a lock in dali"
+        },
         "terminationGracePeriodSeconds": {
           "$ref": "#/definitions/terminationGracePeriodSeconds"
         },
         "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "timedChildResources": {
           "$ref": "#/definitions/resources"
         },
         "cost": {
@@ -1556,6 +1712,13 @@
         },
         "expert": {
           "$ref": "#/definitions/expert"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/definitions/terminationGracePeriodSeconds"
+        },
+        "traceFlags": {
+          "type": "object",
+          "additionalProperties": { "type": ["integer", "boolean"] }
         }
       }
     },
@@ -1595,12 +1758,19 @@
           "$ref": "#/definitions/tracing"
         },
         "dataPlane": {
-          "description": "The default storage plane to write data files to",
-          "type": "string"
+          "$ref": "#/definitions/dataPlane"
+        },
+        "spillPlane": {
+          "$ref": "#/definitions/spillPlane"
         },
         "indexBuildPlane": {
-          "description": "The default storage plane to write index files to",
-          "type": "string"
+          "$ref": "#/definitions/indexBuildPlane"
+        },
+        "persistPlane": {
+          "$ref": "#/definitions/persistPlane"
+        },
+        "jobTempPlane": {
+          "$ref": "#/definitions/jobTempPlane"
         },
         "annotations": {
           "type": "object",
@@ -1611,6 +1781,9 @@
           "additionalProperties": { "type": "string" }
         },
         "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "stubResources": {
           "$ref": "#/definitions/resources"
         },
         "jobMemory": {
@@ -1646,8 +1819,14 @@
           "default": false,
           "description": "Require SOAPCALL and HTTPCALL URLs are secrets or mapped to secrets"
         },
+        "plugins": {
+          "$ref": "#/definitions/plugins"
+        },
         "expert": {
           "$ref": "#/definitions/expert"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/definitions/terminationGracePeriodSeconds"
         }
       }
     },
@@ -1695,22 +1874,25 @@
           "type": "array",
           "items": { "$ref": "#/definitions/roxieservice" }
         },
-        "dataPlane": {
-          "description": "The default storage plane to write data files to",
-          "type": "string"
-        },
         "directAccessPlanes": {
           "description": "A list of storage planes suitable for roxie to read from directly and not have roxie copy the data to roxie's default plane",
           "type": "array",
           "items": { "type": "string" }
         },
+        "dataPlane": {
+          "$ref": "#/definitions/dataPlane"
+        },
         "spillPlane": {
-          "description": "The storage plane to write spill files to",
-          "type": "string"
+          "$ref": "#/definitions/spillPlane"
         },
         "indexBuildPlane": {
-          "description": "The default storage plane to write index files to",
-          "type": "string"
+          "$ref": "#/definitions/indexBuildPlane"
+        },
+        "persistPlane": {
+          "$ref": "#/definitions/persistPlane"
+        },
+        "jobTempPlane": {
+          "$ref": "#/definitions/jobTempPlane"
         },
         "resources": {
           "$ref": "#/definitions/resources"
@@ -1719,6 +1901,9 @@
           "$ref": "#/definitions/resources"
         },
         "channelResources": {
+          "$ref": "#/definitions/resources"
+        },
+        "topoResources": {
           "$ref": "#/definitions/resources"
         },
         "annotations": {
@@ -1733,128 +1918,128 @@
           "type": "string",
           "description": "Name of the secret which contains the TLS certificate.  Custom configuration instead of using, or overriding cert-manager certificate."
         },
-        "allFilesDynamic": { 
+        "allFilesDynamic": {
           "type": "boolean",
           "default": false,
           "description": "If enabled, files will be resolved per-query and not locked between queries"
         },
-        "backgroundCopyClass": { 
+        "backgroundCopyClass": {
           "type": "string",
           "default": "none",
           "enum": [ "none", "best-effort", "idle"],
           "description": "Specify an IONICE class for the background copy thread."
         },
-        "backgroundCopyPrio": { 
+        "backgroundCopyPrio": {
           "type": "integer",
           "default": 0,
           "description": "Specify an IONICE value for the background copy thread, if backgroundCopyClass set to best-effort."
         },
-        "blockedLocalAgent": { 
+        "blockedLocalAgent": {
           "type": "boolean",
           "default": true,
           "description": "Used DataBuffer blocks to return agent data in localAgent mode."
         },
-        "callbackRetries": { 
+        "callbackRetries": {
           "type": "integer",
           "default": 3,
           "minimum": 1,
           "description": "Number of retries before callbacks from agents to server are aborted"
         },
-        "callbackTimeout": { 
+        "callbackTimeout": {
           "type": "integer",
           "default": 5000,
           "minimum": 0,
           "description": "Timeout (in ms) before callbacks from agents to server are resent"
         },
-        "checkFileDate": { 
+        "checkFileDate": {
           "type": "boolean",
           "default": true,
           "description": "Compare file dates of physical files with the information in DFS."
         },
-        "collectFactoryStatistics": { 
+        "collectFactoryStatistics": {
           "type": "boolean",
           "default": true,
           "description": "Accumulate summary statistics for all queries"
         },
-        "copyResources": { 
+        "copyResources": {
           "type": "boolean",
           "default": true,
           "description": "Copies any missing data files/keys from the position they were in when query was deployed."
         },
-        "defaultHighPriorityTimeLimit": { 
+        "defaultHighPriorityTimeLimit": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Maximum run time (in ms) for any single active high-priority query (if not overridden)"
         },
-        "defaultHighPriorityTimeWarning": { 
+        "defaultHighPriorityTimeWarning": {
           "type": "integer",
           "default": 5000,
           "minimum": 0,
           "description": "Time (in ms) before generating SNMP warning for a high-priority query (if not overridden)"
         },
-        "defaultLowPriorityTimeLimit": { 
+        "defaultLowPriorityTimeLimit": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Maximum run time (in ms) for any single active low-priority query (if not overridden)"
         },
-        "defaultLowPriorityTimeWarning": { 
+        "defaultLowPriorityTimeWarning": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Time (in ms) before generating SNMP warning for a low-priority query (if not overridden)"
         },
-        "defaultMemoryLimit": { 
+        "defaultMemoryLimit": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Maximum amount of memory available for row data in any single active query (if not overridden)"
         },
-        "defaultSLAPriorityTimeLimit": { 
+        "defaultSLAPriorityTimeLimit": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Maximum run time (in ms) for any single active SLA-high-priority query (if not overridden)"
         },
-        "defaultSLAPriorityTimeWarning": { 
+        "defaultSLAPriorityTimeWarning": {
           "type": "integer",
           "default": 5000,
           "minimum": 0,
           "description": "Time (in ms) before generating SNMP warning for a SLA-high-priority query (if not overridden)"
         },
-        "defaultStripLeadingWhitespace": { 
+        "defaultStripLeadingWhitespace": {
           "type": "boolean",
           "default": true,
           "description": "Default value for stripping leading whitespace in input XML values"
         },
-        "encryptionInTransit": { 
+        "encryptionInTransit": {
           "type": "boolean",
           "default": false,
           "description": "Encrypt traffic between Roxie nodes."
         },
-        "flushJHtreeCacheOnOOM": { 
+        "flushJHtreeCacheOnOOM": {
           "type": "boolean",
           "default": true,
           "description": "Should the index node memory allocation flush the cache and retry if memory allocation fails"
         },
         "fieldTranslationEnabled": {
-          "default": "payload",
-          "enum": ["false", "true", "payload"],
+          "default": "payloadRemoveOnly",
+          "enum": ["false", "true", "payload", "payloadRemoveOnly"],
           "description": "Enables translation (where possible) of mismatched file layouts on-the-fly. Specify 'payload' to attempt to translate payload fields only"
         },
-        "highTimeout": { 
+        "highTimeout": {
           "type": "integer",
           "default": 2000,
           "minimum": 0,
           "description": "Timeout (in ms) before high priority requests are resent to agents"
         },
-        "ignoreOrphans": { 
+        "ignoreOrphans": {
           "type": "boolean",
           "default": true,
           "description": "Treat out-of-date local files as if they were not present."
         },
-        "ignoreFileDateMismatches": { 
+        "ignoreFileDateMismatches": {
           "type": "boolean",
           "default": false,
           "description": "Ignore mismatched file dates on local files"
@@ -1864,7 +2049,7 @@
           "default": false,
           "description": "Ignore mismatched file sizes on local files"
         },
-        "fileTimeFuzzySeconds": { 
+        "fileTimeFuzzySeconds": {
           "type": "integer",
           "default": 0,
           "description": "Ignore mismatched file dates of up to this amount"
@@ -1874,460 +2059,454 @@
           "default": false,
           "description": "Delay opening files until first use."
         },
-        "localAgent": { 
+        "localAgent": {
           "type": "boolean",
           "default": false,
           "description": "Communication between server and agent uses a memory queue rather than network. Implies singleNode, and defaults on if singleNode set."
         },
-        "localFilesExpire": { 
+        "localFilesExpire": {
           "type": "integer",
           "default": -1,
           "description": "Period (in ms) of inactivity before a local datafile handle is closed"
         },
-        "lockSuperFiles": { 
+        "lockSuperFiles": {
           "type": "boolean",
           "default": false,
           "description": "If enabled, superfiles will be locked while queries that use them are loaded"
         },
-        "lowTimeout": { 
+        "lowTimeout": {
           "type": "integer",
           "default": 10000,
           "minimum": 0,
           "description": "Timeout (in ms) before low priority requests are resent to agents"
         },
-        "maxHttpConnectionRequests": { 
+        "maxHttpConnectionRequests": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Max number of query requests per persistent http connection"
         },
-        "maxHttpKeepAliveWait": { 
+        "maxHttpKeepAliveWait": {
           "type": "integer",
           "default": 5000,
           "minimum": 0,
           "description": "Max number of miliseconds to wait for additional requests on a persistent http connection"
         },
-        "maxLocalFilesOpen": { 
+        "maxLocalFilesOpen": {
           "type": "integer",
           "default": 4000,
           "minimum": 0,
           "description": "Maximum number of local files to keep open"
         },
-        "maxRemoteFilesOpen": { 
+        "maxRemoteFilesOpen": {
           "type": "integer",
           "default": 1000,
           "minimum": 0,
           "description": "Maximum number of remote files to keep open"
         },
-        "minLocalFilesOpen": { 
+        "minLocalFilesOpen": {
           "type": "integer",
           "default": 2000,
           "minimum": 0,
           "description": "Minimum number of local files to keep open"
         },
-        "minRemoteFilesOpen": { 
+        "minRemoteFilesOpen": {
           "type": "integer",
           "default": 500,
           "minimum": 0,
           "description": "Minimum number of remote files to keep open"
         },
-        "packetAcknowledgeTimeout": { 
+        "packetAcknowledgeTimeout": {
           "type": "integer",
           "default": 100,
           "minimum": 10,
           "description": "Maximum time to wait for agent query packets to be acknowledged before resending"
         },
-        "parallelQueryLoadThreads": { 
+        "parallelQueryLoadThreads": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Use up to n multiple threads for initial query loading"
         },
-        "preloadOnceData": { 
+        "preloadOnceData": {
           "type": "boolean",
           "default": true,
           "description": "Evaluate : ONCE sections of queries at query load time"
         },
-        "prestartAgentThreads": { 
+        "prestartAgentThreads": {
           "type": "boolean",
           "default": false,
           "description": "Prestart agent worker threads at startup"
         },
-        "reloadRetriesSuspended": { 
+        "reloadRetriesSuspended": {
           "type": "boolean",
           "default": true,
           "description": "Retry loading of suspended queries whenever QuerySet reloads"
         },
-        "remoteFilesExpire": { 
+        "remoteFilesExpire": {
           "type": "integer",
           "default": 3600000,
           "minimum": 0,
           "description": "Period (in ms) of inactivity before a remote datafile handle is closed"
         },
-        "serverThreads": { 
+        "serverThreads": {
           "type": "integer",
           "default": 30,
           "minimum": 0,
           "description": "Default number of threads processing Roxie server requests (if not specified on service)"
         },
-        "singleNode": { 
+        "singleNode": {
           "type": "boolean",
           "default": false,
           "description": "Roxie is deployed as an array of self-contained single nodes, with all agents part of the server process."
         },
-        "slaTimeout": { 
+        "slaTimeout": {
           "type": "integer",
           "default": 2000,
           "minimum": 0,
           "description": "Timeout (in ms) before SLA high priority requests are resent to agents"
         },
-        "agentQueryReleaseDelaySeconds": { 
+        "agentQueryReleaseDelaySeconds": {
           "type": "integer",
           "default": 60,
           "minimum": 0,
           "description": "Delay before unregistering slave queries to allow in-flight to complete. Files are locked until query is unregistered."
         },
-        "agentThreads": { 
+        "agentThreads": {
           "type": "integer",
           "default": 30,
           "minimum": 0,
           "description": "Number of threads processing agent requests"
         },
-        "statsExpiryTime": { 
+        "statsExpiryTime": {
           "type": "integer",
           "default": 3600,
           "minimum": 0,
           "description": "Time (in seconds) that detailed reporting stats are kept"
         },
-        "totalMemoryLimit": { 
+        "totalMemoryLimit": {
           "type": "string",
           "description": "Maximum amount of memory available for row data in all active queries"
         },
-        "heapUseHugePages": { 
+        "heapUseHugePages": {
           "type": "boolean",
           "default": false,
           "description": "Allow roxie to use memory from huge pages if they have been configured."
         },
-        "heapUseTransparentHugePages": { 
+        "heapUseTransparentHugePages": {
           "type": "boolean",
           "default": true,
           "description": "Allow roxie to use memory from transparent huge pages."
         },
-        "heapRetainMemory": { 
+        "heapRetainMemory": {
           "type": "boolean",
           "default": false,
           "description": "Retain and do not return unused memory to the operating system."
         },
-        "trapTooManyActiveQueries": { 
+        "trapTooManyActiveQueries": {
           "type": "boolean",
           "default": true,
           "description": "should an SNMP trap get sent when too many active query error occurs"
         },
-        "useMemoryMappedIndexes": { 
+        "useMemoryMappedIndexes": {
           "type": "boolean",
           "default": false,
           "description": "Using memory-mapped files when merging multiple result streams from row-compressed indexes."
         },
-        "useRemoteResources": { 
+        "useRemoteResources": {
           "type": "boolean",
           "default": false,
           "description": "Reads any missing data files/keys from the position they were in when deployed."
         },
-        "traceLevel": { 
+        "traceLevel": {
           "type": "integer",
           "default": 1,
           "minimum": 0,
           "description": "Level of detail in reporting (set to 0 for none, 1 for normal, > 1 or more for extended)"
         },
-        "logFullQueries": { 
+        "logFullQueries": {
           "type": "boolean",
           "default": false,
           "description": "Log full text (unless blindLogging) and resource usage of all queries received "
         },
-        "blindLogging": { 
+        "blindLogging": {
           "type": "boolean",
           "default": false,
           "description": "Suppress all logging of any data or query text"
         },
-        "memTraceLevel": { 
+        "memTraceLevel": {
           "type": "integer",
           "default": 1,
           "minimum": 0,
           "description": "Level of detail in reporting mem mgr information(set to 0 for none, 1 for normal, >1 or more for extended)"
         },
-        "miscDebugTraceLevel": { 
+        "miscDebugTraceLevel": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Level of miscellaneous debug tracing unrelated to all other tracing(set to 0 for none, 1 for normal, >1 or more for extended)"
         },
-        "soapTraceLevel": { 
+        "soapTraceLevel": {
           "type": "integer",
           "default": 1,
           "minimum": 0,
           "description": "Level of detail in reporting SOAPCALL information(set to 0 for none, 1 for normal, >1 or more for extended)"
         },
-        "traceTranslations": { 
+        "traceTranslations": {
           "type": "boolean",
           "default": true,
           "description": "Trace record layout translations to log file"
         },
-        "traceEnabled": { 
+        "traceEnabled": {
           "type": "boolean",
           "default": false,
           "description": "TRACE activity output enabled by default (can be overridden in workunit or query)"
         },
-        "traceLimit": { 
+        "traceLimit": {
           "type": "integer",
           "default": 10,
           "minimum": 0,
           "description": "Number of rows output by TRACE activity"
         },
-        "udpTraceLevel": { 
+        "udpTraceLevel": {
           "type": "integer",
           "default": 1,
           "minimum": 0,
           "description": "Level of detail in reporting udp information(set to 0 for none, 1 for normal, >1 or more for extended)"
         },
-        "udpAdjustThreadPriorities": { 
+        "udpAdjustThreadPriorities": {
           "type": "boolean",
           "default": false,
           "description": "Should UDP socket reading threads operate at elevated priority"
         },
-        "udpFlowSocketsSize": { 
+        "udpFlowSocketsSize": {
           "type": "integer",
           "default": 131072,
           "minimum": 0,
           "description": "Controls the read socket buffer size of the UDP layer flow control sockets"
         },
-        "udpLocalWriteSocketSize": { 
+        "udpLocalWriteSocketSize": {
           "type": "integer",
           "default": 1024000,
           "minimum": 0,
           "description": "Controls the write socket buffer size of the local UDP sockets (Agent to Server on same node)"
         },
-        "udpAgentBufferSize": { 
+        "udpAgentBufferSize": {
           "type": "integer",
           "default": 262142,
           "minimum": 0,
           "description": "Controls the read socket buffer size of the UDP agent read sockets"
         },
-        "udpOutQsPriority": { 
+        "udpOutQsPriority": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Turns on/off Priority weight-based for output queues (0 round-robin no priority - old logic, 1 round-robin new logic, 2 and higher is factor of priority)"
         },
-        "udpQueueSize": { 
+        "udpQueueSize": {
           "type": "integer",
           "default": 100,
           "minimum": 0,
           "description": "UDP transport layer receive queue size"
         },
-        "udpResendLostPackets": { 
+        "udpResendLostPackets": {
           "type": "boolean",
           "default": true,
           "description": "UDP transport layer resend lost packets"
         },
-        "udpSendQueueSize": { 
+        "udpSendQueueSize": {
           "type": "integer",
           "default": 50,
           "minimum": 0,
           "description": "UDP transport layer send queue size"
         },
-        "udpStatsReportInterval": { 
+        "udpStatsReportInterval": {
           "type": "integer",
           "default": 60000,
           "minimum": 0,
           "description": "UDP transport layer stats reporting interval"
         },
-        "blobCacheMem": { 
+        "blobCacheMem": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Size (in Mb) of blob index page cache"
         },
-        "leafCacheMem": { 
+        "leafCacheMem": {
           "type": "integer",
           "default": 50,
           "minimum": 0,
           "description": "Size (in Mb) of leaf index page cache"
         },
-        "nodeCacheMem": { 
+        "nodeCacheMem": {
           "type": "integer",
           "default": 100,
           "minimum": 0,
           "description": "Size (in Mb) of non-leaf index page cache"
         },
-        "mysqlCacheCheckPeriod": { 
+        "mysqlCacheCheckPeriod": {
           "type": "integer",
           "default": 10000,
           "minimum": 0,
           "description": "Time to wait (ms) between checking if any cached MySQL connections can be closed"
         },
-        "mysqlCacheTimeoutPeriod": { 
+        "mysqlCacheTimeoutPeriod": {
           "type": "integer",
           "default": 60000,
           "minimum": 0,
           "description": "Time to wait (ms) before closing a cached MySQL connection"
         },
-        "mysqlConnectionCacheSize": { 
+        "mysqlConnectionCacheSize": {
           "type": "integer",
           "default": 10000,
           "minimum": 0,
           "description": "Number of MySQL connections to hold in cache"
         },
-        "checkCompleted": { 
+        "checkCompleted": {
           "type": "boolean",
           "default": true,
           "description": "Check pending replies when agent gets a retry request"
         },
-        "dafilesrvLookupTimeout": { 
+        "dafilesrvLookupTimeout": {
           "type": "integer",
           "default": 10000,
           "minimum": 0,
           "description": "Maximum time (in milliseconds) dafilesrv will wait before timing out the first time through the list"
         },
-        "defaultConcatPreload": { 
+        "defaultConcatPreload": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Default concat preload"
         },
-        "defaultFetchPreload": { 
+        "defaultFetchPreload": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Default fetch preload"
         },
-        "defaultFullKeyedJoinPreload": { 
+        "defaultFullKeyedJoinPreload": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Default full keyed join preload"
         },
-        "defaultKeyedJoinPreload": { 
+        "defaultKeyedJoinPreload": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Default keyed join preload"
         },
-        "defaultParallelJoinPreload": { 
+        "defaultParallelJoinPreload": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Default parallel join preload"
         },
-        "defaultPrefetchProjectPreload": { 
+        "defaultPrefetchProjectPreload": {
           "type": "integer",
           "default": 10,
           "minimum": 0,
           "description": "Default prefetch value for PROJECT,PREFETCH activity"
         },
-        "doIbytiDelay": { 
+        "doIbytiDelay": {
           "type": "boolean",
           "default": true,
           "description": "Enables the IBYTI delay logic in the agents."
         },
-        "enableHeartBeat": { 
+        "enableHeartBeat": {
           "type": "boolean",
           "default": true,
           "description": "Enable HeartBeat messages to roxiepipe clients"
         },
-        "fastLaneQueue": { 
+        "fastLaneQueue": {
           "type": "boolean",
           "default": true,
           "description": "Enable special fast-lane queue for simple queries."
         },
-        "ignoreMissingFiles": { 
+        "ignoreMissingFiles": {
           "type": "boolean",
           "default": false,
           "description": "Ignore missing files"
         },
-        "indexReadChunkSize": { 
+        "indexReadChunkSize": {
           "type": "integer",
           "default": 60000,
           "minimum": 0,
           "description": "Break up results from indexRead (and other remote activities) every N bytes"
         },
-        "initIbytiDelay": { 
+        "initIbytiDelay": {
           "type": "integer",
           "default": 50,
           "minimum": 0,
           "description": "Initial time (in milliseconds) a secondary agent will wait for an IBYTI packet from a primary peer."
         },
-        "mtuPayload": { 
+        "mtuPayload": {
           "type": "integer",
           "default": 1400,
           "minimum": 1400,
           "maximum": 9000,
           "description": "Set higher than 1400 for networks with a larger MTU."
         },
-        "linuxYield": { 
+        "linuxYield": {
           "type": "boolean",
           "default": false,
           "description": "Yield to scheduler in some tight loops. May help latency on uniprocessor machines"
         },
-        "maxBlockSize": { 
+        "maxBlockSize": {
           "type": "integer",
           "default": 10000000,
           "minimum": 0,
           "description": "Max size of block read from client socket"
         },
-        "maxLockAttempts": { 
+        "maxLockAttempts": {
           "type": "integer",
           "default": 5,
           "minimum": 0,
           "description": "Number of retries to get lock for global queries"
         },
-        "memoryStatsInterval": { 
+        "memoryStatsInterval": {
           "type": "integer",
           "default": 60,
           "minimum": 0,
           "description": "Interval (in seconds) between reports on Roxie heap usage"
         },
-        "memTraceSizeLimit": { 
+        "memTraceSizeLimit": {
           "type": "integer",
           "default": 10,
           "minimum": 0,
           "description": "Generate stacktrace whenever a request is made for a row larger than this threshold (0 to disable)"
         },
-        "parallelAggregate": { 
+        "parallelAggregate": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
           "description": "Number of parallel threads to use for in-memory aggregate processing. Set to 0 to use one per CPU, 1 to disable parallel processing of in-memory aggregates"
         },
-        "perChannelFlowLimit": { 
+        "perChannelFlowLimit": {
           "type": "integer",
           "default": 10,
           "minimum": 1,
           "description": "Number of pending queries permitted per channel (per active activity) before blocking"
         },
-        "pingInterval": { 
-          "type": "integer",
-          "default": 60,
-          "minimum" : 0,
-          "description": "Interval (in seconds) between Roxie server ping tests"
-        },
-        "preabortIndexReadsThreshold": { 
+        "preabortIndexReadsThreshold": {
           "type": "integer",
           "default": 100,
           "minimum": 0,
           "description": "Use seek to precheck keyed limits (i.e. assume ,COUNT) on index reads if limit greater than this value"
         },
-        "preabortKeyedJoinsThreshold": { 
+        "preabortKeyedJoinsThreshold": {
           "type": "integer",
           "minimum" : 0,
           "default": 100,
           "description": "Use seek to precheck limits on keyed joins if limit greater than this value"
         },
-        "simpleLocalKeyedJoins": { 
+        "simpleLocalKeyedJoins": {
           "type": "boolean",
           "default": true,
           "description": "Enable single-threaded local keyed joins"
         },
-        "socketCheckInterval": { 
+        "socketCheckInterval": {
           "type": "integer",
           "default": 5000,
           "minimum": 0,
@@ -2366,6 +2545,12 @@
         },
         "hpa": {
           "$ref": "#/definitions/hpa"
+        },
+        "plugins": {
+          "$ref": "#/definitions/plugins"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/definitions/terminationGracePeriodSeconds"
         }
       }
     },
@@ -2556,16 +2741,19 @@
           "$ref": "#/definitions/tracing"
         },
         "dataPlane": {
-          "description": "The default storage plane to write data files to",
-          "type": "string"
+          "$ref": "#/definitions/dataPlane"
         },
         "spillPlane": {
-          "description": "The storage plane to write spill files to",
-          "type": "string"
+          "$ref": "#/definitions/spillPlane"
         },
         "indexBuildPlane": {
-          "description": "The default storage plane to write index files to",
-          "type": "string"
+          "$ref": "#/definitions/indexBuildPlane"
+        },
+        "persistPlane": {
+          "$ref": "#/definitions/persistPlane"
+        },
+        "jobTempPlane": {
+          "$ref": "#/definitions/jobTempPlane"
         },
         "annotations": {
           "type": "object",
@@ -2591,6 +2779,9 @@
           "$ref": "#/definitions/resources"
         },
         "eclAgentResources": {
+          "$ref": "#/definitions/resources"
+        },
+        "stubResources": {
           "$ref": "#/definitions/resources"
         },
         "cost": {
@@ -2622,6 +2813,12 @@
           "type": "boolean",
           "default": false,
           "description": "Require SOAPCALL and HTTPCALL URLs are secrets or mapped to secrets"
+        },
+        "plugins": {
+          "$ref": "#/definitions/plugins"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/definitions/terminationGracePeriodSeconds"
         }
       }
     },
@@ -2693,6 +2890,9 @@
         },
         "expert": {
           "$ref": "#/definitions/expert"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/definitions/terminationGracePeriodSeconds"
         }
       }
     },
@@ -2733,7 +2933,8 @@
             "annotations": {},
             "labels": {},
             "egress": {},
-            "expert": {}
+            "expert": {},
+            "terminationGracePeriodSeconds": {}
           },
           "additionalProperties": false
         }
@@ -2746,7 +2947,7 @@
         { "$ref": "#/definitions/sashacommon" },
         { "$ref": "#/definitions/sasha-limitcutoff" },
         {
-          "properties": 
+          "properties":
           {
             "backup": {
               "type": "integer",
@@ -2782,7 +2983,8 @@
             "limit": {},
             "cutoff": {},
             "egress": {},
-            "expert": {}
+            "expert": {},
+            "terminationGracePeriodSeconds": {}
           },
           "additionalProperties": false
         }
@@ -2791,11 +2993,11 @@
     "sasha-dfuwu-archiver": {
       "type": "object",
       "required": [ "plane" ],
-      "allOf": [ 
+      "allOf": [
         { "$ref": "#/definitions/sashacommon" },
         { "$ref": "#/definitions/sasha-limitcutoff" },
         {
-          "properties": 
+          "properties":
           {
             "disabled": {},
             "interval": {},
@@ -2811,7 +3013,8 @@
             "limit": {},
             "cutoff": {},
             "egress": {},
-            "expert": {}
+            "expert": {},
+            "terminationGracePeriodSeconds": {}
           },
           "additionalProperties": false
         }
@@ -2838,7 +3041,8 @@
             "limit": {},
             "cutoff": {},
             "egress": {},
-            "expert": {}
+            "expert": {},
+            "terminationGracePeriodSeconds": {}
           },
           "additionalProperties": false
         }
@@ -2873,7 +3077,8 @@
         "annotations": {},
         "labels": {},
         "egress": {},
-        "expert": {}
+        "expert": {},
+        "terminationGracePeriodSeconds": {}
       },
       "additionalProperties": false
     },
@@ -2899,9 +3104,64 @@
         "resources": {},
         "annotations": {},
         "labels": {},
-        "egress": {}
+        "egress": {},
+        "expert": {},
+        "terminationGracePeriodSeconds": {}
       },
       "additionalProperties": false
+    },
+    "sasha-debugplane-housekeeping": {
+      "type": "object",
+      "allOf": [{ "$ref": "#/definitions/sashacommon" }],
+      "properties": {
+        "expiryDays": {
+          "type": "integer",
+          "description": "Default number of days passed that debug plane files or directories are deleted.",
+          "default": "14"
+        },
+        "disabled": {},
+        "interval": {},
+        "at" : {},
+        "image": {},
+        "resources": {},
+        "annotations": {},
+        "labels": {},
+        "expert": {},
+        "terminationGracePeriodSeconds": {}
+      },
+      "additionalProperties": false
+    },
+    "sasha-xref": {
+        "type": "object",
+        "allOf": [{ "$ref": "#/definitions/sashacommon" }],
+        "properties": {
+          "disabled": {},
+          "interval": {},
+          "env": {},
+          "annotations": {},
+          "labels": {},
+          "at" : {},
+          "image": {},
+          "resources": {},
+          "expert": {},
+          "terminationGracePeriodSeconds": {},
+          "cutoff": {
+            "type": "integer",
+            "description": "cutoff (in days) to ignore recent files.",
+            "default": "1"
+          },
+          "planes": {
+            "type": "string",
+            "description": "comma separated list of storage planes to xref (* for all planes).",
+            "default": "*"
+          },
+          "numThreads": {
+            "type": "integer",
+            "description": "maximum thread count for scanning directories",
+            "default": "500"
+          }
+        },
+        "additionalProperties": false
     },
     "sashaservice": {
       "oneOf": [
@@ -2926,6 +3186,12 @@
             },
             "thor-qmon": {
               "$ref": "#/definitions/sasha-thor-qmon"
+            },
+            "debugplane-housekeeping": {
+              "$ref": "#/definitions/sasha-debugplane-housekeeping"
+            },
+            "xref": {
+              "$ref": "#/definitions/sasha-xref"
             },
             "disabled": {
               "type": "boolean"
@@ -2990,6 +3256,9 @@
         },
         "expert": {
           "$ref": "#/definitions/expert"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/definitions/terminationGracePeriodSeconds"
         }
       }
     },
@@ -3140,7 +3409,7 @@
         "type": {
           "type": "string",
           "description" : "The searchable HPCC log column to be mapped - 'global' applies to all known fields",
-          "enum": [ "global", "workunits", "components", "audience", "class", "instance", "host", "node", "message", "logid", "processid", "threadid", "timestamp", "pod"]
+          "enum": [ "global", "workunits", "components", "audience", "class", "instance", "host", "node", "message", "logid", "processid", "threadid", "timestamp", "pod", "traceid", "spanid"]
         },
         "timeStampColumn": {
           "description" : "Name of timestamp column related to mapped field (only requried for 'global' mapping)",
@@ -3423,6 +3692,31 @@
     "expert": {
       "description": "Settings for developers, debugging and testing",
       "type": "object"
+    },
+    "plugins": {
+      "description": "plugin configurations",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "dataPlane": {
+      "description": "The default storage plane to write data files to",
+      "type": "string"
+    },
+    "spillPlane": {
+      "description": "The storage plane to write spill files to",
+      "type": "string"
+    },
+    "indexBuildPlane": {
+      "type": "string",
+      "description": "Default plane for index builds"
+    },
+    "persistPlane": {
+      "type": "string",
+      "description": "Default plane for persist files"
+    },
+    "jobTempPlane": {
+      "type": "string",
+      "description": "Default plane for persisted temporary job files"
     }
-  }
+}
 }

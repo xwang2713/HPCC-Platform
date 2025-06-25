@@ -20,6 +20,8 @@
 #include "jlz4.hpp"
 #include "lz4.h"
 #include "lz4hc.h"
+#include "jlog.hpp"
+#include "jlzbase.hpp"
 
 /* Format:
     size32_t totalexpsize;
@@ -27,6 +29,8 @@
     size32_t trailsize; bytes traildata;    // unexpanded
 */
 
+//--------------------------------------------------------------------------------------------------------------------
+// Non Streaming implementation of LZ4 compression
 class CLZ4Compressor final : public CFcmpCompressor
 {
     bool hc;
@@ -154,13 +158,43 @@ protected:
         return compressedSize + 3 * sizeof(size32_t);
     }
 
+    virtual size32_t compressDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src, size32_t * numCompressed) override
+    {
+        dbgassertex(srcSize != 0);
+        int compressedSize;
+        if (numCompressed)
+        {
+            //Write as much data as possible into the target buffer - update numCompressed with size actually written
+            int numRead = srcSize;
+            if (hc)
+            {
+                MemoryAttr state(LZ4_sizeofStateHC());
+                compressedSize = LZ4_compress_HC_destSize(state.mem(), (const char *)src, (char *)dest, &numRead, destSize, hcLevel);
+            }
+            else
+            {
+                compressedSize = LZ4_compress_destSize((const char *)src, (char *)dest, &numRead, destSize);
+            }
+            *numCompressed = numRead;
+        }
+        else
+        {
+            if (hc)
+                compressedSize = LZ4_compress_HC((const char *)src, (char *)dest, srcSize, destSize, hcLevel);
+            else
+                compressedSize = LZ4_compress_default((const char *)src, (char *)dest, srcSize, destSize);
+        }
+
+        return compressedSize;
+    }
+
     virtual CompressionMethod getCompressionMethod() const override { return hc ? COMPRESS_METHOD_LZ4HC : COMPRESS_METHOD_LZ4; }
 public:
     CLZ4Compressor(const char * options, bool _hc) : hc(_hc)
     {
         auto processOption = [this](const char * option, const char * value)
         {
-            if (strieq(option, "hclevel"))
+            if (strieq(option, "hclevel") || strieq(option, "level"))
                 hcLevel = atoi(value);
         };
         processOptionString(options, processOption);
@@ -168,7 +202,9 @@ public:
 };
 
 
-class jlib_decl CLZ4Expander : public CFcmpExpander
+//---------------------------------------------------------------------------------------------------------------------
+
+class CLZ4Expander final : public CFcmpExpander
 {
     size32_t totalExpanded = 0;
 public:
@@ -234,6 +270,13 @@ public:
         size32_t written;
         if (szchunk+totalExpanded<outlen)
         {
+            if (unlikely(szchunk == 0))
+            {
+                //Special case this corruption - otherwise it enters an infinite loop
+                VStringBuffer msg("Unexpected zero length block at block offset %u", (size32_t)((const byte *)in - (const byte *)original));
+                throwUnexpectedX(msg.str());
+            }
+
             //All but the last block are compressed (see expand() function above).
             //Slightly concerning there always has to be one trailing byte for this to work!
             size32_t maxOut = target.capacity();
@@ -246,7 +289,7 @@ public:
 
             for (;;)
             {
-                //Try and compress into the current target buffer.  If too small increase size and repeat
+                //Try and decompress into the current target buffer.  If too small increase size and repeat
                 written = LZ4_decompress_safe((const char *)in, (char *)target.reserve(maxOut), szchunk, maxOut);
                 if ((int)written > 0)
                 {
@@ -256,7 +299,10 @@ public:
 
                 //Sanity check to catch corrupt lz4 data that always returns an error.
                 if (maxOut > outlen)
-                    throwUnexpected();
+                {
+                    VStringBuffer msg("Decompression expected max %u bytes, but now %u at block offset %u", outlen, maxOut, (size32_t)((const byte *)in - (const byte *)original));
+                    throwUnexpectedX(msg.str());
+                }
 
                 maxOut += szchunk; // Likely to quickly approach the actual expanded size
                 target.clear();
@@ -275,92 +321,166 @@ public:
             throw MakeStringException(0, "LZ4Expander - corrupt data(3) %d %d",written,szchunk);
         return written;
     }
+
+    virtual size32_t expandDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src) override
+    {
+        assertex(destSize != 0);
+        return LZ4_decompress_safe((const char *)src, (char *)dest, srcSize, destSize);
+    }
+
+    virtual bool supportsBlockDecompression() const override
+    {
+        return true;
+    }
 };
 
-void LZ4CompressToBuffer(MemoryBuffer & out, size32_t len, const void * src)
+
+//---------------------------------------------------------------------------------------------------------------------
+// Streaming implementation of LZ4 compression
+//
+// See notes on CStreamCompressor in jlzbase.hpp for the serialized stream format
+class CLZ4StreamCompressor final : public CStreamCompressor
 {
-    size32_t outbase = out.length();
-    out.append(len);
-    DelayedMarker<size32_t> cmpSzMarker(out);
-    void *cmpData = out.reserve(LZ4_COMPRESSBOUND(len));
-    if (len < 64)
-        memcpy(cmpData, src, len);
-    else
+public:
+    CLZ4StreamCompressor(const char * options, bool _hc) : hc(_hc)
     {
-        size32_t cmpSz = LZ4_compress_default((const char *)src, (char *)cmpData, len, LZ4_COMPRESSBOUND(len));
-        if (!cmpSz)
-            memcpy(cmpData, src, len);
+        auto processOption = [this](const char * option, const char * textValue)
+        {
+            this->processOption(option, textValue);
+        };
+        processOptionString(options, processOption);
+        if (hc)
+            lz4HCStream = LZ4_createStreamHC();
         else
-            len = cmpSz;
+            lz4Stream = LZ4_createStream();
     }
-    cmpSzMarker.write(len);
-    out.setLength(outbase+len+sizeof(size32_t)*2);
-}
 
-void LZ4DecompressToBuffer(MemoryBuffer & out, const void * src)
-{
-    size32_t *sz = (size32_t *)src;
-    size32_t expsz = *(sz++);
-    size32_t cmpsz = *(sz++);
-    void *o = out.reserve(expsz);
-    if (cmpsz!=expsz)
+    virtual ~CLZ4StreamCompressor()
     {
-        size32_t written = LZ4_decompress_safe((const char *)sz, (char *)o, cmpsz, expsz);
-        if (written!=expsz)
-            throw MakeStringException(0, "LZ4DecompressToBuffer - corrupt data(1) %d %d",written,expsz);
+        LZ4_freeStream(lz4Stream);
+        LZ4_freeStreamHC(lz4HCStream);
     }
-    else
-        memcpy(o,sz,expsz);
-}
 
-void LZ4DecompressToBuffer(MemoryBuffer & out, MemoryBuffer & in)
-{
-    size32_t expsz;
-    size32_t cmpsz;
-    in.read(expsz).read(cmpsz);
-    void *o = out.reserve(expsz);
-    if (cmpsz!=expsz)
+    virtual void open(void *buf,size32_t max) override
     {
-        size32_t written = LZ4_decompress_safe((const char *)in.readDirect(cmpsz), (char *)o, cmpsz, expsz);
-        if (written!=expsz)
-            throw MakeStringException(0, "LZ4DecompressToBuffer - corrupt data(3) %d %d",written,expsz);
+        CStreamCompressor::open(buf, max);
+        if (hc)
+            LZ4_resetStreamHC_fast(lz4HCStream, compressionLevel);
+        else
+            LZ4_resetStream_fast(lz4Stream);
     }
-    else
-        memcpy(o,in.readDirect(cmpsz),expsz);
-}
 
-void LZ4DecompressToAttr(MemoryAttr & out, const void * src)
-{
-    size32_t *sz = (size32_t *)src;
-    size32_t expsz = *(sz++);
-    size32_t cmpsz = *(sz++);
-    void *o = out.allocate(expsz);
-    if (cmpsz!=expsz)
+    virtual CompressionMethod getCompressionMethod() const override { return hc ? COMPRESS_METHOD_LZ4SHC : COMPRESS_METHOD_LZ4S; }
+
+protected:
+    bool processOption(const char * option, const char * textValue)
     {
-        size32_t written = LZ4_decompress_safe((const char *)sz, (char *)o, cmpsz, expsz);
-        if (written!=expsz)
-            throw MakeStringException(0, "LZ4DecompressToBuffer - corrupt data(2) %d %d",written,expsz);
-    }
-    else
-        memcpy(o,sz,expsz);
-}
+        if (CStreamCompressor::processOption(option, textValue))
+            return true;
+        int intValue = atoi(textValue);
+        if (strieq(option, "hclevel") || strieq(option, "level"))
+        {
+            if ((intValue >= LZ4HC_CLEVEL_MIN) && (intValue <= LZ4HC_CLEVEL_MAX))
+                compressionLevel = intValue;
+        }
+        else
+            return false;
+        return true;
+    };
 
-void LZ4DecompressToBuffer(MemoryAttr & out, MemoryBuffer & in)
-{
-    size32_t expsz;
-    size32_t cmpsz;
-    in.read(expsz).read(cmpsz);
-    void *o = out.allocate(expsz);
-    if (cmpsz!=expsz)
+    virtual void resetStreamContext() override
     {
-        size32_t written = LZ4_decompress_safe((const char *)in.readDirect(cmpsz), (char *)o, cmpsz, expsz);
-        if (written!=expsz)
-            throw MakeStringException(0, "LZ4DecompressToBuffer - corrupt data(4) %d %d",written,expsz);
+        if (hc)
+            LZ4_resetStreamHC_fast(lz4HCStream, compressionLevel);
+        else
+            LZ4_resetStream_fast(lz4Stream);
     }
-    else
-        memcpy(o,in.readDirect(cmpsz),expsz);
-}
 
+    virtual bool tryCompress(bool isFinalCompression [[maybe_unused]]) override
+    {
+        size32_t uncompressed = inlen - lastCompress;
+        //Sanity check - this could be the case when a limit has been reduced
+        if (uncompressed < minSizeToCompress)
+            return false;
+
+        size32_t compressedSize = outlen;
+        size32_t remaining = outMax - compressedSize - outputExtra;
+
+        const char * from = (const char *)inbuf + lastCompress;
+        char * to = (char *)queryOutputBuffer() + outlen;
+        int newCompressedSize;
+        if (hc)
+            newCompressedSize = LZ4_compress_HC_continue(lz4HCStream, from, to, uncompressed, remaining);
+        else
+            newCompressedSize = LZ4_compress_fast_continue(lz4Stream, from, to, uncompressed, remaining, 1);
+
+#ifdef LZ4LOGGING
+        DBGLOG("Compress limit(%u,%u) compressed(%u:0..%u), uncompressed(%u:%u..%u)->%u total(%u)", outMax, remaining, outlen, lastCompress, uncompressed, lastCompress, inlen, newCompressedSize, outlen + 8 + inlen - lastCompress);
+#endif
+
+        if (newCompressedSize == 0)
+            return false;
+
+        size32_t lenLen = sizePacked(newCompressedSize);
+        if (newCompressedSize + lenLen > remaining)
+            return false;
+
+        compressedSizes.append(newCompressedSize);
+        outputExtra += lenLen;
+        outlen += newCompressedSize;
+        lastCompress = inlen;
+        return true;
+    }
+
+protected:
+    LZ4_stream_t * lz4Stream = nullptr;
+    LZ4_streamHC_t * lz4HCStream = nullptr;
+
+    //Options for configuring the compressor:
+    bool hc = false;
+    byte compressionLevel = LZ4HC_CLEVEL_DEFAULT;
+};
+
+
+//---------------------------------------------------------------------------------------------------------------------
+
+class CLZ4StreamExpander final : public CStreamExpander
+{
+public:
+    CLZ4StreamExpander()
+    {
+        lz4Stream = LZ4_createStreamDecode();
+    }
+
+    ~CLZ4StreamExpander()
+    {
+        LZ4_freeStreamDecode(lz4Stream);
+    }
+
+    virtual size32_t expandDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src) override
+    {
+        assertex(destSize != 0);
+        return LZ4_decompress_safe((const char *)src, (char *)dest, srcSize, destSize);
+    }
+
+protected:
+    virtual void resetStreamContext() override
+    {
+        LZ4_setStreamDecode(lz4Stream, nullptr, 0);
+    }
+
+    virtual int decodeStreamBlock(const void * src, size32_t srcSize, void * dest, size32_t destSize) override
+    {
+        return LZ4_decompress_safe_continue(lz4Stream, (const char *)src, (char *)dest, srcSize, destSize);
+
+    }
+
+    virtual void *bufptr() { return nullptr;}
+    virtual size32_t buflen() { return outlen;}
+
+protected:
+    LZ4_streamDecode_t * lz4Stream = nullptr;
+};
 
 ICompressor *createLZ4Compressor(const char * options, bool hc)
 {
@@ -372,75 +492,12 @@ IExpander *createLZ4Expander()
     return new CLZ4Expander;
 }
 
-#define LZ4STRMCOMPRESSEDFILEFLAG (I64C(0xc129b02d53545e91))
-
-class CLZ4Stream : public CFcmpStream
+ICompressor *createLZ4StreamCompressor(const char * options, bool hc)
 {
-    bool load()
-    {
-        bufpos = 0;
-        bufsize = 0;
-        if (expOffset==expSize)
-            return false;
-        size32_t sz[2];
-        if (baseio->read(cmpOffset,sizeof(size32_t)*2,&sz)!=sizeof(size32_t)*2)
-            return false;
-        bufsize = sz[0];
-        if (!bufsize)
-            return false;
-        cmpOffset += sizeof(size32_t)*2;
-        if (ma.length()<bufsize)
-            ma.allocate(bufsize);
-        MemoryAttr cmpma;
-        byte *cmpbuf = (byte *)cmpma.allocate(sz[1]);
-        if (baseio->read(cmpOffset,sz[1],cmpbuf)!=sz[1])
-            throw MakeStringException(-1,"CLZ4Stream: file corrupt.1");
-        size32_t amnt = LZ4_decompress_safe((const char *)cmpbuf, (char *)ma.bufferBase(), sz[1], bufsize);
-        if (amnt!=bufsize)
-            throw MakeStringException(-1,"CLZ4Stream: file corrupt.2");
-        cmpOffset += sz[1];
-        return true;
-    }
-
-    void save()
-    {
-        if (bufsize)
-        {
-            MemoryAttr dstma;
-            byte *dst = (byte *)dstma.allocate(sizeof(size32_t)*2+LZ4_COMPRESSBOUND(bufsize));
-            size32_t sz = LZ4_compress_default((const char *)ma.get(), (char *)(sizeof(size32_t)*2+dst), bufsize, LZ4_COMPRESSBOUND(bufsize));
-            if (!sz)
-            {
-                sz = bufsize;
-                memcpy((sizeof(size32_t)*2+dst), ma.get(), bufsize);
-            }
-            memcpy(dst,&bufsize,sizeof(size32_t));
-            memcpy(dst+sizeof(size32_t),&sz,sizeof(size32_t));
-            baseio->write(cmpOffset,sz+sizeof(size32_t)*2,dst);
-            cmpOffset += sz+sizeof(size32_t)*2;
-        }
-        bufsize = 0;
-    }
-
-
-public:
-    CLZ4Stream() : CFcmpStream(LZ4STRMCOMPRESSEDFILEFLAG) { }
-
-    virtual ~CLZ4Stream() { flush(); }
-
-};
-
-IFileIOStream *createLZ4StreamRead(IFileIO *base)
-{
-    Owned<CLZ4Stream> strm = new CLZ4Stream();
-    if (strm->attach(base))
-        return strm.getClear();
-    return NULL;
+    return new CLZ4StreamCompressor(options, hc);
 }
 
-IFileIOStream *createLZ4StreamWrite(IFileIO *base)
+IExpander *createLZ4StreamExpander()
 {
-    Owned<CLZ4Stream> strm = new CLZ4Stream();
-    strm->create(base);
-    return strm.getClear();
+    return new CLZ4StreamExpander();
 }

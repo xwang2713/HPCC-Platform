@@ -213,7 +213,13 @@ void CWriteMasterBase::init()
             else
             {
                 StringBuffer defaultCluster;
-                if (getDefaultStoragePlane(defaultCluster))
+                if (TDWpersist & diskHelperBase->getFlags())
+                    getDefaultPersistPlane(defaultCluster);
+                else if (TDXjobtemp & diskHelperBase->getFlags())
+                    getDefaultJobTempPlane(defaultCluster);
+                else
+                    getDefaultStoragePlane(defaultCluster);
+                if (defaultCluster.length())
                 {
                     clusters.append(defaultCluster);
                     Owned<IPropertyTree> plane = getStoragePlane(defaultCluster);
@@ -324,6 +330,9 @@ void CWriteMasterBase::publish()
                 compMethod = COMPRESS_METHOD_LZ4HC;
             bool blockCompressed;
             bool compressed = fileDesc->isCompressed(&blockCompressed);
+
+            // NB: it would be far preferable to avoid this and have the file reference a group with the correct number of parts
+            // Possibly could use subgroup syntax: 'data[1..n]'
             for (unsigned clusterIdx=0; clusterIdx<fileDesc->numClusters(); clusterIdx++)
             {
                 StringBuffer clusterName;
@@ -336,6 +345,7 @@ void CWriteMasterBase::publish()
                         p += queryJob().querySlaves();
                     IPartDescriptor *partDesc = fileDesc->queryPart(p);
                     CDateTime createTime, modifiedTime;
+                    offset_t compSize = 0;
                     for (unsigned c=0; c<partDesc->numCopies(); c++)
                     {
                         RemoteFilename rfn;
@@ -347,15 +357,22 @@ void CWriteMasterBase::publish()
                             ensureDirectoryForFile(path.str());
                             OwnedIFile iFile = createIFile(path.str());
                             Owned<IFileIO> iFileIO;
-                            if (compressed)
-                                iFileIO.setown(createCompressedFileWriter(iFile, recordSize, false, true, NULL, compMethod));
+                            if (compressed) // NB: this would not be necessary if all builds have the changes in HPCC-32651
+                            {
+                                size32_t compBlockSize = 0; // i.e. default
+                                size32_t blockedIoSize = -1; // i.e. default
+                                iFileIO.setown(createCompressedFileWriter(iFile, recordSize, false, true, NULL, compMethod, compBlockSize, blockedIoSize, IFEnone));
+                            }
                             else
                                 iFileIO.setown(iFile->open(IFOcreate));
                             dbgassertex(iFileIO.get());
                             iFileIO.clear();
                             // ensure copies have matching datestamps, as they would do normally (backupnode expects it)
                             if (0 == c)
+                            {
                                 iFile->getTime(&createTime, &modifiedTime, NULL);
+                                compSize = iFile->size();
+                            }
                             else
                                 iFile->setTime(&createTime, &modifiedTime, NULL);
                         }
@@ -376,7 +393,7 @@ void CWriteMasterBase::publish()
                     props.setPropInt64("@recordCount", 0);
                     props.setPropInt64("@size", 0);
                     if (compressed)
-                        props.setPropInt64("@compressedSize", 0);
+                        props.setPropInt64("@compressedSize", compSize);
                     p++;
                 }
             }
@@ -463,8 +480,6 @@ void CWriteMasterBase::slaveDone(size32_t slaveIdx, MemoryBuffer &mb)
         mb.read(size);
         mb.read(physicalSize);
 
-        unsigned fileCrc;
-        mb.read(fileCrc);
         CDateTime modifiedTime(mb);
 
         IPartDescriptor *partDesc = fileDesc->queryPart(targetOffset+slaveIdx);
@@ -472,7 +487,6 @@ void CWriteMasterBase::slaveDone(size32_t slaveIdx, MemoryBuffer &mb)
         props.setPropInt64("@size", size);
         if (fileDesc->isCompressed())
             props.setPropInt64("@compressedSize", physicalSize);
-        props.setPropInt64("@fileCrc", fileCrc);
         StringBuffer timeStr;
         modifiedTime.getString(timeStr);
         props.setProp("@modified", timeStr.str());

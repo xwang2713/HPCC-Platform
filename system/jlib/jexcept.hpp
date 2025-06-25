@@ -77,6 +77,7 @@ IException jlib_decl *makeStringExceptionVA(MessageAudience aud, int code, const
 IException jlib_decl *makeStringException(MessageAudience aud, int code, const char *why);
 IException jlib_decl *makePrefixedException(const char * prefix, const IException * e);
 __declspec(noreturn) void jlib_decl throwStringExceptionV(int code, const char *format, ...) __attribute__((format(printf, 2, 3), noreturn));
+IException jlib_decl *makeWrappedException(IException *e, int code, const char *why);
 IException jlib_decl *makeWrappedExceptionVA(IException *e, int code, const char *why, va_list args) __attribute__((format(printf, 3, 0)));
 IException jlib_decl *makeWrappedExceptionV(IException *e, int code, const char *why, ...) __attribute__((format(printf, 3, 4)));
 
@@ -128,6 +129,7 @@ void  jlib_decl disableSEHtoExceptionMapping();
 
 void jlib_decl *setSEHtoExceptionHandler(IExceptionHandler *handler); // sets handler and return old value
 
+void jlib_decl raiseSignalInFuture(int signo, unsigned timeoutSec);
 
 void jlib_decl setTerminateOnSEHInSystemDLLs(bool set=true);
 void jlib_decl setTerminateOnSEH(bool set=true);

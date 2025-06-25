@@ -409,8 +409,302 @@ offset_t CGeneralTransformer::tell()
     return cursor.inputOffset;
 }
 
+//----------------------------------------------------------------------------
+
+#include "jhtree.hpp"
+#include "ctfile.hpp"
+#include "keybuild.hpp"
+#include "eclhelper_dyn.hpp"
+#include "eclhelper_base.hpp"
+#include "hqlexpr.hpp"
+#include "hqlutil.hpp"
+#include "rtldynfield.hpp"
+
+class CIndexTransformer : public CTransformerBase
+{
+public:
+    CIndexTransformer(const char * _targetCompression) : targetCompression(_targetCompression)
+    {
+    }
+
+    virtual bool setPartition(RemoteFilename & remoteInputName, offset_t _startOffset, offset_t _length, bool compressedInput, const char *decryptKey) override
+    {
+        return CTransformerBase::setPartition(remoteInputName, _startOffset, _length);
+    }
+
+    virtual size32_t getBlock(IFileIOStream * out) override;
+
+    virtual offset_t tell() override
+    {
+        return sizeRead;
+    }
+
+    virtual stat_type getStatistic(StatisticKind kind) override
+    {
+        //MORE:
+        return 0;
+    }
+
+protected:
+    void rebuildIndex(IFile * in, IFileIOStream * out, const char * outputCompression);
+
+protected:
+    StringAttr targetCompression;
+    offset_t sizeRead = 0;
+};
+
+class TrivialVirtualFieldCallback : public CInterfaceOf<IVirtualFieldCallback>
+{
+public:
+    TrivialVirtualFieldCallback(IKeyManager *_manager) : manager(_manager)
+    {
+    }
+    virtual const char * queryLogicalFilename(const void * row) override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual unsigned __int64 getFilePosition(const void * row) override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual unsigned __int64 getLocalFilePosition(const void * row) override
+    {
+        UNIMPLEMENTED;
+    }
+    virtual const byte * lookupBlob(unsigned __int64 id) override
+    {
+        size32_t blobSize;
+        return manager->loadBlob(id, blobSize, nullptr);
+    }
+private:
+    Linked<IKeyManager> manager;
+};
+
+
+//This code is copied from equivalent code inside dumpkey.cpp, and then simplied/adapted
+//A few bugs inn the original implementation have been fixed, both here and in dumpkey.cpp
+//Later the code should be refactored to that blocks of nodes can be processsed to allow
+//progress reporting - by moving some of the logic into beginTransform/endTransform
+void CIndexTransformer::rebuildIndex(IFile * in, IFileIOStream * out, const char * outputCompression)
+{
+    const char * fieldSelection = nullptr; // could allow projection...
+    const char * keyName = in->queryFilename();
+    Owned<IFileIO> io = in->open(IFOread);
+    if (!io)
+        throw MakeStringException(999, "Failed to open file %s", keyName);
+
+    //read with a buffer size of 4MB - for optimal speed, and minimize azure read costs
+    Owned <IKeyIndex> index(createKeyIndex(keyName, 0, *io, -1, false, 0x400000));
+    size32_t key_size = index->keySize();  // NOTE - in variable size case, this may be 32767 + sizeof(offset_t)
+    size32_t keyedSize = index->keyedSize();
+    unsigned nodeSize = index->getNodeSize();
+    bool isTLK = index->isTopLevelKey();
+
+    Owned<IKeyManager> manager;
+    Owned<IPropertyTree> metadata = index->getMetadata();
+    Owned<IOutputMetaData> diskmeta;
+    Owned<IOutputMetaData> translatedmeta;
+    ArrayOf<const RtlFieldInfo *> deleteFields;
+    ArrayOf<const RtlFieldInfo *> fields;  // Note - the lifetime of the array needs to extend beyond the lifetime of outmeta. The fields themselves are shared with diskmeta, and do not need to be released.
+    Owned<IOutputMetaData> outmeta;
+    Owned<const IDynamicTransform> translator;
+    RowFilter rowFilter;
+    const RtlRecordTypeInfo *outRecType = nullptr;
+    if (metadata && metadata->hasProp("_rtlType"))
+    {
+        MemoryBuffer layoutBin;
+        metadata->getPropBin("_rtlType", layoutBin);
+        try
+        {
+            diskmeta.setown(createTypeInfoOutputMetaData(layoutBin, false));
+        }
+        catch (IException *E)
+        {
+            EXCLOG(E);
+            E->Release();
+        }
+    }
+    if (!diskmeta && metadata && metadata->hasProp("_record_ECL"))
+    {
+        MultiErrorReceiver errs;
+        Owned<IHqlExpression> expr = parseQuery(metadata->queryProp("_record_ECL"), &errs);
+        if (errs.errCount() == 0)
+        {
+            MemoryBuffer layoutBin;
+            if (exportBinaryType(layoutBin, expr, true))
+                diskmeta.setown(createTypeInfoOutputMetaData(layoutBin, false));
+        }
+    }
+    if (!diskmeta)
+    {
+        // We don't have record info - fake it? We could pretend it's a single field...
+        UNIMPLEMENTED;
+        // manager.setown(createLocalKeyManager(fake, index, nullptr));
+    }
+
+    const RtlRecord &inrec = diskmeta->queryRecordAccessor(true);
+    manager.setown(createLocalKeyManager(inrec, index, nullptr, true, false));
+    size32_t minRecSize = 0;
+    if (fieldSelection)
+    {
+        StringArray fieldNames;
+        fieldNames.appendList(fieldSelection, ",");
+        ForEachItemIn(idx, fieldNames)
+        {
+            unsigned fieldNum = inrec.getFieldNum(fieldNames.item(idx));
+            if (fieldNum == (unsigned) -1)
+                throw MakeStringException(0, "Requested output field '%s' not found", fieldNames.item(idx));
+            const RtlFieldInfo *field = inrec.queryOriginalField(fieldNum);
+            if (field->type->getType() == type_blob)
+            {
+                // We can't just use the original source field in this case (as blobs are only supported in the input)
+                // So instead, create a field in the target with the original type.
+                field = new RtlFieldStrInfo(field->name, field->xpath, field->type->queryChildType());
+                deleteFields.append(field);
+            }
+            fields.append(field);
+            minRecSize += field->type->getMinSize();
+        }
+        fields.append(nullptr);
+        outRecType = new RtlRecordTypeInfo(type_record, minRecSize, fields.getArray(0));
+        outmeta.setown(new CDynamicOutputMetaData(*outRecType));
+        translator.setown(createRecordTranslator(outmeta->queryRecordAccessor(true), inrec));
+    }
+    else
+    {
+        // Copy all fields from the source record
+        unsigned numFields = inrec.getNumFields();
+        for (unsigned idx = 0; idx < numFields;idx++)
+        {
+            const RtlFieldInfo *field = inrec.queryOriginalField(idx);
+            if (field->type->getType() == type_blob)
+            {
+                if (isTLK)
+                    continue;  // blob IDs in TLK are not valid
+                // See above - blob field in source needs special treatment
+                field = new RtlFieldStrInfo(field->name, field->xpath, field->type->queryChildType());
+                deleteFields.append(field);
+            }
+            fields.append(field);
+            minRecSize += field->type->getMinSize();
+        }
+        fields.append(nullptr);
+        outmeta.set(diskmeta);
+    }
+
+#if 0
+    //Could also filter records
+    if (filters.ordinality())
+    {
+        ForEachItemIn(idx, filters)
+        {
+            const IFieldFilter &thisFilter = rowFilter.addFilter(diskmeta->queryRecordAccessor(true), filters.item(idx));
+            unsigned idx = thisFilter.queryFieldIndex();
+            const RtlFieldInfo *field = inrec.queryOriginalField(idx);
+            if (field->flags & RFTMispayloadfield)
+                throw MakeStringException(0, "Cannot filter on payload field '%s'", field->name);
+        }
+    }
+    rowFilter.createSegmentMonitors(manager);
+#endif
+
+    manager->finishSegmentMonitors();
+    manager->reset();
+
+    Owned<IFileIOStream> outFileStream(createNoSeekIOStream(out));
+
+    unsigned flags = COL_PREFIX | HTREE_FULLSORT_KEY | HTREE_COMPRESSED_KEY | USE_TRAILING_HEADER | TRAILING_HEADER_ONLY;
+    if (!outmeta->isFixedSize())
+        flags |= HTREE_VARSIZE;
+    //if (quickCompressed)
+    //    flags |= HTREE_QUICK_COMPRESSED_KEY;
+    // MORE - other global options
+    bool isVariable = outmeta->isVariableSize();
+    size32_t fileposSize = hasTrailingFileposition(outmeta->queryTypeInfo()) ? sizeof(offset_t) : 0;
+    size32_t maxDiskRecordSize;
+    if (isTLK)
+        maxDiskRecordSize = keyedSize;
+    else if (isVariable)
+        maxDiskRecordSize = KEYBUILD_MAXLENGTH;
+    else
+        maxDiskRecordSize = outmeta->getFixedSize()-fileposSize;
+    const RtlRecord &indexRecord = outmeta->queryRecordAccessor(true);
+//    size32_t keyedSize = indexRecord.getFixedOffset(indexRecord.getNumKeyedFields());
+
+    //MORE: Need to rebuild/copy bloom filters
+    Owned<IKeyBuilder> keyBuilder = createKeyBuilder(outFileStream, flags, maxDiskRecordSize, nodeSize, keyedSize, 0, nullptr, outputCompression, false, isTLK);
+
+    TrivialVirtualFieldCallback callback(manager);
+    size32_t maxSizeSeen = 0;
+    while (manager->lookup(true))
+    {
+        byte const * buffer = manager->queryKeyBuffer();
+        size32_t size = manager->queryRowSize();
+        unsigned __int64 seq = manager->querySequence();
+        if (translator)
+        {
+            MemoryBuffer buf;
+            MemoryBufferBuilder aBuilder(buf, 0);
+            size = translator->translate(aBuilder, callback, buffer);
+            if (size)
+            {
+                // MORE - think about fpos
+                keyBuilder->processKeyData((const char *) aBuilder.getSelf(), 0, size);
+            }
+        }
+        else
+        {
+            if (hasTrailingFileposition(outmeta->queryTypeInfo()))
+                size -= sizeof(offset_t);
+            keyBuilder->processKeyData((const char *) buffer, manager->queryFPos(), size);
+            if (size > maxSizeSeen)
+                maxSizeSeen = size;
+        }
+        manager->releaseBlobs();
+    }
+
+    //Clone any bloom filters from the input dataset - they should be rebuild if the index was ever filtered.
+    BloomFilterArray clonedBlooms;
+    for (unsigned i = 0; ; i++)
+    {
+        const BloomFilter *bloom = index->queryBloom(i);
+        if (!bloom)
+            break;
+        clonedBlooms.push_back(bloom);
+    }
+
+    keyBuilder->finish(metadata, nullptr, maxSizeSeen, &clonedBlooms);
+
+    printf("New key has %" I64F "u leaves, %" I64F "u branches, %" I64F "u duplicates\n", keyBuilder->getStatistic(StNumLeafCacheAdds), keyBuilder->getStatistic(StNumNodeCacheAdds), keyBuilder->getStatistic(StNumDuplicateKeys));
+    printf("Original key size: %" I64F "u bytes\n", const_cast<IFileIO *>(index->queryFileIO())->size());
+    printf("New key size: %" I64F "u bytes (%" I64F "u bytes written in %" I64F "u writes)\n", outFileStream->size(), outFileStream->getStatistic(StSizeDiskWrite), outFileStream->getStatistic(StNumDiskWrites));
+    keyBuilder.clear();
+
+    if (outRecType)
+        outRecType->doDelete();
+
+    ForEachItemIn(idx, deleteFields)
+    {
+        delete deleteFields.item(idx);
+    }
+
+    sizeRead = io->size();
+}
+
+//The index transform reads an entire index, and outputs the final index as a single block - no recovery etc.
+size32_t CIndexTransformer::getBlock(IFileIOStream * out)
+{
+    rebuildIndex(inputFile, out, targetCompression);
+    return 0;
+}
+
 
 //----------------------------------------------------------------------------
+
+ITransformer * createIndexTransformer(const FileFormat & srcFormat, const FileFormat & tgtFormat, const char * keyCompression)
+{
+    return new CIndexTransformer(keyCompression);
+}
 
 ITransformer * createTransformer(const FileFormat & srcFormat, const FileFormat & tgtFormat, size32_t buffersize)
 {
@@ -418,7 +712,9 @@ ITransformer * createTransformer(const FileFormat & srcFormat, const FileFormat 
 
 #ifdef OPTIMIZE_COMMON_TRANSFORMS
     if (srcFormat.equals(tgtFormat))
+    {
         transformer = new CNullTransformer(buffersize);
+    }
     else
     {
         switch (srcFormat.type)
@@ -475,6 +771,8 @@ ITransformer * createTransformer(const FileFormat & srcFormat, const FileFormat 
                 throwError(DFTERR_BadSrcTgtCombination);
             }
             break;
+        case FFTkey:
+            throwError(DFTERR_BadSrcTgtCombination);
         }
     }
 #endif
@@ -537,7 +835,7 @@ void TransferServer::appendTransformed(unsigned chunkIndex, ITransformer * input
 
             offset_t outputOffset = out->tell();
             offset_t inputOffset = input->tell();
-            if (totalLengthToRead)
+            if (totalLengthToRead && doTrace(traceSprayDetails))
                 LOG(MCdebugProgress, "Progress: %d%% done. [%" I64F "u]", (unsigned)(totalLengthRead*100/totalLengthToRead), (unsigned __int64)totalLengthRead);
 
             curProgress.status = (gotLength == 0) ? OutputProgress::StatusCopied : OutputProgress::StatusActive;
@@ -611,15 +909,15 @@ void TransferServer::deserializeAction(MemoryBuffer & msg, unsigned action)
     if (action == FTactionpull)
     {
         partition.item(0).outputName.getPath(localFilename);
-        LOG(MCdebugProgress, "Process Pull Command: %s", localFilename.str());
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugProgress, "Process Pull Command: %s", localFilename.str());
     }
     else
     {
         partition.item(0).inputName.getPath(localFilename);
-        LOG(MCdebugProgress, "Process Push Command: %s", localFilename.str());
+        if (doTrace(traceSprayDetails))
+            LOG(MCdebugProgress, "Process Push Command: %s", localFilename.str());
     }
-    LOG(MCdebugProgress, "Num Parallel Slaves=%d Adjust=%d/%d", numParallelSlaves, adjust, updateFrequency);
-    LOG(MCdebugProgress, "copySourceTimeStamp(%d) mirror(%d) safe(%d) incrc(%d) outcrc(%d)", copySourceTimeStamp, mirror, isSafeMode, calcInputCRC, calcOutputCRC);
 
     displayPartition(partition);
 
@@ -657,14 +955,8 @@ void TransferServer::deserializeAction(MemoryBuffer & msg, unsigned action)
         ForEachItemIn(i2, progress)
             progress.item(i2).deserializeExtra(msg, 2);
     }
-
-    LOG(MCdebugProgress, "throttle(%d), transferBufferSize(%d)", throttleNicSpeed, transferBufferSize);
-    PROGLOG("compressedInput(%d), compressedOutput(%d), copyCompressed(%d)", compressedInput?1:0, compressOutput?1:0, copyCompressed?1:0);
-    PROGLOG("encrypt(%d), decrypt(%d)", encryptKey.isEmpty()?0:1, decryptKey.isEmpty()?0:1);
-    if (fileUmask != -1)
-        PROGLOG("umask(0%o)", fileUmask);
-    else
-        PROGLOG("umask(default)");
+    if (msg.remaining())
+        msg.readOpt(keyCompression);
 
     //---Finished deserializing ---
     displayProgress(progress);
@@ -691,8 +983,11 @@ void TransferServer::transferChunk(unsigned chunkIndex)
 
     StringBuffer targetPath;
     curPartition.outputName.getPath(targetPath);
-    LOG(MCdebugProgress, "Begin to transfer chunk %d (offset: %" I64F "d, size: %" I64F "d) to target:'%s' (offset: %" I64F "d, size: %" I64F "d) ",
-                        chunkIndex, curPartition.inputOffset, curPartition.inputLength, targetPath.str(), curPartition.outputOffset, curPartition.outputLength);
+
+    if (doTrace(traceSprayDetails))
+        LOG(MCdebugProgress, "Begin to transfer chunk %d (offset: %" I64F "d, size: %" I64F "d) to target:'%s' (offset: %" I64F "d, size: %" I64F "d) ",
+                            chunkIndex, curPartition.inputOffset, curPartition.inputLength, targetPath.str(), curPartition.outputOffset, curPartition.outputLength);
+
     const unsigned __int64 startOutOffset = out->tell();
     if (startOutOffset != curPartition.outputOffset+curProgress.outputLength)
         throwError4(DFTERR_OutputOffsetMismatch, out->tell(), curPartition.outputOffset+curProgress.outputLength, "start", chunkIndex);
@@ -712,7 +1007,11 @@ void TransferServer::transferChunk(unsigned chunkIndex)
     }
     else
     {
-        Owned<ITransformer> transformer = createTransformer(srcFormat, tgtFormat, transferBufferSize);
+        Owned<ITransformer> transformer;
+        if (keyCompression)
+            transformer.setown(createIndexTransformer(srcFormat, tgtFormat, keyCompression));
+        else
+            transformer.setown(createTransformer(srcFormat, tgtFormat, transferBufferSize));
         if (!transformer->setPartition(curPartition.inputName, 
                                        curPartition.inputOffset+curProgress.inputLength, 
                                        curPartition.inputLength-curProgress.inputLength,
@@ -790,13 +1089,16 @@ bool TransferServer::pull()
             assertex(curProgress.status != OutputProgress::StatusRenamed);
             if (curProgress.status != OutputProgress::StatusCopied)
             {
+                if (out)
+                    out->close();
                 out.setown(createIOStream(outio));
                 out->seek(progressOffset, IFSbegin);
                 wrapOutInCRC(curProgress.outputCRC);
 
                 StringBuffer localFilename;
                 localTempFilename.getPath(localFilename);
-                LOG(MCdebugProgress, "Continue pulling to file: %s from recovery position", localFilename.str());
+                if (doTrace(traceSprayDetails))
+                    LOG(MCdebugProgress, "Continue pulling to file: %s from recovery position", localFilename.str());
                 start = i;
                 goto processedProgress; // break out of both loops
             }
@@ -835,7 +1137,8 @@ processedProgress:
             curOutput = curPartition.whichOutput;
             if (curProgress.status == OutputProgress::StatusRenamed)
             {
-                LOG(MCdebugProgress, "Renamed file found - must be CRC recovery");
+                if (doTrace(traceSprayDetails))
+                    LOG(MCdebugProgress, "Renamed file found - must be CRC recovery");
                 idx = queryLastOutput(curOutput);
                 continue;
             }
@@ -868,8 +1171,6 @@ processedProgress:
                 outio.setown(createCompressedFileWriter(outio, false, 0, true, compressor, COMPRESS_METHOD_LZ4));
             }
 
-            LOG(MCdebugProgress, "Start pulling to file: %s", localFilename.str());
-
             //Find the last partition entry that refers to the same file.
             if (!compressOutput && fsProperties.preExtendOutput)
             {
@@ -881,10 +1182,13 @@ processedProgress:
                     stat_type prevWrites = outio->getStatistic(StNumDiskWrites);
                     outio->write(lastOffset-sizeof(null),sizeof(null),&null);
                     curProgress.numWrites += (outio->getStatistic(StNumDiskWrites)-prevWrites);
-                    LOG(MCdebugProgress, "Extend length of target file to %" I64F "d", lastOffset);
+                    if (doTrace(traceSprayDetails))
+                        LOG(MCdebugProgress, "Extend length of target file to %" I64F "d", lastOffset);
                 }
             }
 
+            if (out)
+                out->close();
             out.setown(createIOStream(outio));
             out->seek(0, IFSbegin);
             wrapOutInCRC(0);
@@ -903,7 +1207,10 @@ processedProgress:
     }
 
     crcOut.clear();
+    if (out)
+        out->close();
     out.clear();
+
     //Once the transfers have completed, rename the files, and sync file times
     //if replicating...
     if (!isSafeMode)
@@ -997,6 +1304,7 @@ bool TransferServer::push()
                 }
                 outio.setown(createCompressedFileWriter(outio, false, 0, true, compressor, COMPRESS_METHOD_LZ4));
             }
+
             out.setown(createIOStream(outio));
             if (!compressOutput)
                 out->seek(curPartition.outputOffset + curProgress.outputLength, IFSbegin);
@@ -1011,6 +1319,7 @@ bool TransferServer::push()
                 sendProgress(curProgress);
             }
             crcOut.clear();
+            out->close();
             out.clear();
         }
     }

@@ -52,6 +52,7 @@ public:
     inline bool     isEmpty() const                     { return (curLen == 0); }
     void            setLength(size_t len);
     inline void     ensureCapacity(size_t max)        { if (maxLen <= curLen + max) _realloc(curLen + max); }
+    char *          ensureCapacity(size_t max, size_t & got); // ensure there is space, but do not increase curLen
     size32_t        lengthUtf8() const;
 
     StringBuffer &  append(char value);
@@ -70,6 +71,7 @@ public:
     StringBuffer &  append(const String & value);
     StringBuffer &  append(const IStringVal & value);
     StringBuffer &  append(const IStringVal * value);
+    StringBuffer &  append(const std::string & value) { return append(value.size(), value.c_str()); }
     StringBuffer &  appendN(size_t count, char fill);
     StringBuffer &  appendf(const char *format, ...) __attribute__((format(printf, 2, 3)));
     StringBuffer &  appendLower(size_t len, const char * value);
@@ -78,7 +80,7 @@ public:
     StringBuffer &  setf(const char* format, ...) __attribute__((format(printf,2,3)));
     StringBuffer &  limited_valist_appendf(size_t szLimit, const char *format, va_list args) __attribute__((format(printf,3,0)));
     inline StringBuffer &valist_appendf(const char *format, va_list args) __attribute__((format(printf,2,0))) { return limited_valist_appendf(0, format, args); }
-    StringBuffer &  appendhex(unsigned char value, char lower);
+    StringBuffer &  appendhex(unsigned char value, bool lower);
     inline char     charAt(size_t pos) { return buffer[pos]; }
     inline StringBuffer & clear() { curLen = 0; return *this; }
     void            kill();
@@ -98,6 +100,7 @@ public:
     StringBuffer &  insert(size_t offset, const IStringVal * value);
     StringBuffer &  reverse();
     void            setCharAt(size_t offset, char value);
+    void            replace(size_t offset, size_t len, const void * value);
 
     //Non-standard functions:
     MemoryBuffer &  deserialize(MemoryBuffer & in);
@@ -124,6 +127,7 @@ public:
     char *          reserve(size_t size);
     char *          reserveTruncate(size_t size);
     void            setown(StringBuffer &other);
+    size_t          space() const { return maxLen - curLen - 1; }
     StringBuffer &  stripChar(char oldChar);
     void            swapWith(StringBuffer &other);
     void setBuffer(size_t buffLen, char * newBuff, size_t strLen);
@@ -407,7 +411,7 @@ extern jlib_decl void decodeXML(ISimpleReadStream &in, StringBuffer &out, unsign
 extern jlib_decl int utf8CharLen(unsigned char ch);
 extern jlib_decl int utf8CharLen(const unsigned char *ch, unsigned maxsize = (unsigned)-1);
 
-extern jlib_decl StringBuffer &replaceString(StringBuffer & result, size_t lenSource, const char *source, size_t lenOldStr, const char* oldStr, size_t lenNewStr, const char* newStr);
+extern jlib_decl bool replaceString(StringBuffer & result, size_t lenSource, const char *source, size_t lenOldStr, const char* oldStr, size_t lenNewStr, const char* newStr, bool avoidCopyIfUnmatched);
 
 interface IVariableSubstitutionHelper
 {
@@ -478,6 +482,11 @@ inline StringBuffer &delimitJSON(StringBuffer &s, bool addNewline=false, bool es
     }
     return s;
 }
+
+/*
+* Encodes a CSV column, not an entire CSV record
+*/
+jlib_decl StringBuffer &encodeCSVColumn(StringBuffer &s, const char *value);
 
 jlib_decl StringBuffer &encodeJSON(StringBuffer &s, const char *value);
 jlib_decl StringBuffer &encodeJSON(StringBuffer &s, unsigned len, const char *value);
@@ -627,13 +636,36 @@ void processLines(const StringBuffer & content, LineProcessor process)
     const char * cur = content;
     while (*cur)
     {
-        process(cur);
         const char * next = strchr(cur, '\n');
-        if (!next)
+        if (next)
+        {
+            if (next != cur)
+                process(next-cur, cur);
+            cur = next+1;
+        }
+        else
+        {
+            process(strlen(cur), cur);
             break;
-        cur = next+1;
+        }
     }
 }
+
+//Convert a character to the underlying value - out of range values are undefined
+inline unsigned hex2digit(char c)
+{
+    if (c >= 'a')
+        return (c - 'a' + 10);
+    else if (c >= 'A')
+        return (c - 'A' + 10);
+    return (c - '0');
+}
+
+inline byte getHexPair(const char * s)
+{
+    return hex2digit(s[0]) << 4 | hex2digit(s[1]);
+}
+
 
 //General purpose function for processing option strings in the form option[=value],option[=value],...
 using optionCallback = std::function<void(const char * name, const char * value)>;
@@ -641,5 +673,13 @@ extern jlib_decl void processOptionString(const char * options, optionCallback c
 
 extern jlib_decl const char * stristr(const char *haystack, const char *needle);
 extern jlib_decl void getSnakeCase(StringBuffer & out, const char * camelValue);
+//If the string has any characters, ensure the last character matches the separator
+extern jlib_decl void ensureSeparator(StringBuffer & out, char separator);
+
+//Search for one block of bytes within another block of bytes - memmem is not standard, so we provide our own
+extern jlib_decl const void * jmemmem(size_t lenHaystack, const void * haystack, size_t lenNeedle, const void *needle);
+
+// For preventing command injection, sanitize the argument to be passed to the system command
+extern jlib_decl StringBuffer& sanitizeCommandArg(const char* arg, StringBuffer& sanitized);
 
 #endif

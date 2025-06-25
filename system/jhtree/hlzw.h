@@ -31,8 +31,9 @@ public:
     ~KeyCompressor();
     void open(void *blk,int blksize, bool isVariable, bool rowcompression);
     void open(void *blk,int blksize, ICompressHandler * compressionHandler, const char * options, bool _isVariable, size32_t fixedRowSize);
+    void open(void *blk,int blksize, ICompressor * compressor, bool _isVariable, size32_t _fixedRowSize);
 
-    int writekey(offset_t fPtr,const char *key,unsigned datalength, unsigned __int64 sequence);
+    int writekey(offset_t fPtr, const char *key, unsigned datalength);
     bool write(const void * data, size32_t datalength);
 
     bool compressBlock(size32_t destSize, void * dest, size32_t srcSize, const void * src, ICompressHandler * compressionHandler, const char * options, bool isVariable, size32_t fixedSize);

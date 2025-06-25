@@ -9,6 +9,7 @@
 #include <libxml/xinclude.h>
 #include <libxml/catalog.h>
 #include <libxml/xpathInternals.h>
+#include <libxml/xmlsave.h>
 #include <libxslt/xslt.h>
 #include <libxslt/xsltInternals.h>
 #include <libxslt/transform.h>
@@ -45,7 +46,7 @@ public:
         srcType = IO_TYPE_FILE;
     }
 
-    CLibXsltSource(IIncludeHandler *handler, const char* rootpath, const char *_cacheId) : cacheId(_cacheId), compiledXslt(NULL), filename(rootpath)
+    CLibXsltSource(IIncludeHandler *handler, const char* rootpath, const char *_cacheId) : filename(rootpath), cacheId(_cacheId), compiledXslt(NULL)
     {
         srcType = IO_TYPE_BUFFER;
         bool pathOnly=false;
@@ -288,7 +289,7 @@ public:
     IMPLEMENT_IINTERFACE;
 
     CLibXslFunction(const char* _name, TextFunctionType* _fn, IXslTransform* trans)
-        : name(_name), fn(_fn), parent(trans), assigned(false) {}
+        : name(_name), fn(_fn), assigned(false), parent(trans) {}
 
     virtual ~CLibXslFunction(){}
 
@@ -729,7 +730,6 @@ CLibXslProcessor::CLibXslProcessor()
 {
     m_cachetimeout = XSLT_DEFAULT_CACHETIMEOUT;
 
-    xmlInitMemory();
     xmlInitParser();
 
     xmlSubstituteEntitiesDefault(1);
@@ -747,7 +747,6 @@ CLibXslProcessor::~CLibXslProcessor()
 {
     xsltCleanupGlobals();
     xmlCleanupParser();
-    xmlCleanupMemory();
 }
 
 static CLibXslProcessor xslProcessor;

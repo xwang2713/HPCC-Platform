@@ -121,7 +121,7 @@ extern bool isCompressedIndex(const char *filename)
                         return false;
                     SwapBigEndian(hdr);
                 }
-                if (hdr.root && hdr.root % hdr.nodeSize == 0 && hdr.phyrec == size-1 && hdr.ktype & (HTREE_COMPRESSED_KEY|HTREE_QUICK_COMPRESSED_KEY))
+                if (hdr.root && hdr.root % hdr.nodeSize == 0 && (__uint64)hdr.phyrec == size-1 && hdr.ktype & (HTREE_COMPRESSED_KEY|HTREE_QUICK_COMPRESSED_KEY))
                 {
                     NodeHdr root;
                     if (io->read(hdr.root, sizeof(root), &root) == sizeof(root))
@@ -164,7 +164,7 @@ extern jhtree_decl bool isIndexFile(IFile *file)
                 SwapBigEndian(hdr);
 
             }
-            if (!hdr.root || !hdr.nodeSize || !hdr.root || size % hdr.nodeSize ||  hdr.phyrec != size-1 || hdr.root % hdr.nodeSize || hdr.root >= size)
+            if (!hdr.root || !hdr.nodeSize || !hdr.root || size % hdr.nodeSize || (__uint64)hdr.phyrec != size-1 || hdr.root % hdr.nodeSize || (__uint64)hdr.root >= size)
                 return false;
             return true;    // Reasonable heuristic...
         }
@@ -330,7 +330,7 @@ bool CPOCWriteNode::add(offset_t pos, const void *data, size32_t size, unsigned 
     zlib_deflate(thisRowBuffer, tmp.toByteArray(), tmp.length(), GZ_DEFAULT_COMPRESSION, ZlibCompressionType::ZLIB_DEFLATE);
     size32_t deflateLen = thisRowBuffer.length();
     // This row will require keyedLen bytes for the key, deflateLen for the payload, and a short for the offset
-    if (hdr.keyBytes + keyedLen + deflateLen + sizeof(unsigned short) > maxBytes)
+    if (hdr.keyBytes + keyedLen + deflateLen + sizeof(unsigned short) > (size32_t)maxBytes)
         return false;
     payloadBuffer.append(deflateLen, thisRowBuffer.toByteArray());
     offsets.append(prevLength);
@@ -355,7 +355,7 @@ void CPOCWriteNode::write(IFileIOStream *out, CRC32 *crc)
     }
     memcpy(keyPtr, payloadBuffer.toByteArray(), payloadBuffer.length());
     keyPtr += payloadBuffer.length();
-    assert(keyPtr - nodeBuf == hdr.keyBytes + sizeof(NodeHdr));
+    assert((size_t)(keyPtr - nodeBuf) == hdr.keyBytes + sizeof(NodeHdr));
     SplitNodeHdr *splitHdr = (SplitNodeHdr *) (nodeBuf + sizeof(NodeHdr));
     splitHdr->firstSequence = firstSequence; 
     CWriteNode::write(out, crc);
@@ -400,7 +400,7 @@ bool CLegacyWriteNode::add(offset_t pos, const void *indata, size32_t insize, un
     {
         if (0 == hdr.numKeys)
             lzwcomp.open(keyPtr, maxBytes-hdr.keyBytes, keyHdr->isVariable(), (keyType&HTREE_QUICK_COMPRESSED_KEY)==HTREE_QUICK_COMPRESSED_KEY);
-        if (0xffff == hdr.numKeys || 0 == lzwcomp.writekey(pos, (const char *)indata, insize, sequence))
+        if (0xffff == hdr.numKeys || 0 == lzwcomp.writekey(pos, (const char *)indata, insize))
         {
             lzwcomp.close();
             return false;
@@ -411,7 +411,6 @@ bool CLegacyWriteNode::add(offset_t pos, const void *indata, size32_t insize, un
     {
         if (0xffff == hdr.numKeys)
             return false;
-        bool lastnode = false;
         assertex (indata);
         //assertex(insize==keyLen);
         const void *data;
@@ -447,6 +446,7 @@ bool CLegacyWriteNode::add(offset_t pos, const void *indata, size32_t insize, un
     memcpy(lastKeyValue, indata, insize);
     lastSequence = sequence;
     hdr.numKeys++;
+    memorySize += insize + sizeof(pos);
     return true;
 }
 
@@ -558,7 +558,7 @@ void CBloomFilterWriteNode::put4(unsigned val)
     unsigned short written;
     _WINCPYREV2(&written, keyPtr);
 
-    assertex(written + sizeof(val) + sizeof(unsigned short) <= maxBytes);
+    assertex(written + sizeof(val) + sizeof(unsigned short) <= (size32_t)maxBytes);
     _WINCPYREV4(keyPtr+sizeof(unsigned short)+written, &val);
     written += sizeof(val);
     _WINCPYREV2(keyPtr, &written);
@@ -570,7 +570,7 @@ void CBloomFilterWriteNode::put8(__int64 val)
     unsigned short written;
     _WINCPYREV2(&written, keyPtr);
 
-    assertex(written + sizeof(val) + sizeof(unsigned short) <= maxBytes);
+    assertex(written + sizeof(val) + sizeof(unsigned short) <= (size32_t)maxBytes);
     _WINCPYREV8(keyPtr+sizeof(unsigned short)+written, &val);
     written += sizeof(val);
     _WINCPYREV2(keyPtr, &written);
@@ -684,7 +684,7 @@ unsigned CJHSplitSearchNode::expandPayload(unsigned int index, StringBuffer &tmp
     return tmp.length();
 }
 
-bool CJHSplitSearchNode::fetchPayload(unsigned int index, char *dst) const
+bool CJHSplitSearchNode::fetchPayload(unsigned int index, char *dst, PayloadReference & activePayload) const
 {
     if (index >= hdr.numKeys) return false;
     if (dst)
@@ -980,6 +980,11 @@ void CJHLegacySearchNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _
     }
 }
 
+void PayloadReference::clear()
+{
+    data.reset();
+}
+
 offset_t CJHSearchNode::prevNodeFpos() const
 {
     offset_t ll;
@@ -1007,7 +1012,7 @@ int CJHLegacySearchNode::compareValueAt(const char *src, unsigned int index) con
     return memcmp(src, keyBuf + index*keyRecLen + (keyHdr->hasSpecialFileposition() ? sizeof(offset_t) : 0), keyCompareLen);
 }
 
-bool CJHLegacySearchNode::fetchPayload(unsigned int index, char *dst) const
+bool CJHLegacySearchNode::fetchPayload(unsigned int index, char *dst, PayloadReference & activePayload) const
 {
     if (index >= hdr.numKeys) return false;
     if (dst)
@@ -1070,13 +1075,16 @@ unsigned __int64 CJHLegacySearchNode::getSequence(unsigned int index) const
 void CJHLegacySearchNode::dump(FILE *out, int length, unsigned rowCount, bool raw) const
 {
     CJHSearchNode::dump(out, length, rowCount, raw);
+
     if (rowCount==0 || rowCount > getNumKeys())
         rowCount = getNumKeys();
     char *dst = (char *) alloca(keyHdr->getMaxKeyLength() + sizeof(offset_t));
+
+    PayloadReference activePayload;
     for (unsigned int i=0; i<rowCount; i++)
     {
         getKeyAt(i, dst);
-        fetchPayload(i, dst);
+        fetchPayload(i, dst, activePayload);
         if (raw)
         {
             fwrite(dst, 1, length, out);
@@ -1125,7 +1133,7 @@ int CJHVarTreeNode::compareValueAt(const char *src, unsigned int index) const
     return memcmp(src, recArray[index] + (keyHdr->hasSpecialFileposition() ? sizeof(offset_t) : 0), keyCompareLen);
 }
 
-bool CJHVarTreeNode::fetchPayload(unsigned int num, char *dst) const
+bool CJHVarTreeNode::fetchPayload(unsigned int num, char *dst, PayloadReference & activePayload) const
 {
     if (num >= hdr.numKeys) return false;
 
@@ -1202,7 +1210,7 @@ int CJHRowCompressedNode::compareValueAt(const char *src, unsigned int index) co
     return rowexp->cmpRow(src,index,keyHdr->hasSpecialFileposition() ? sizeof(offset_t) : 0,keyCompareLen);
 }
 
-bool CJHRowCompressedNode::fetchPayload(unsigned int num, char *dst) const
+bool CJHRowCompressedNode::fetchPayload(unsigned int num, char *dst, PayloadReference & activePayload) const
 {
     if (num >= hdr.numKeys) return false;
     if (dst)
@@ -1260,7 +1268,6 @@ void CJHTreeBlobNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _fpos
 {
     CJHTreeNode::load(_keyHdr, rawData, _fpos, needCopy);
     const byte *data = ((const byte *) rawData) + sizeof(hdr);
-    char keyType = keyHdr->getKeyType();
     expandedSize = keyHdr->getNodeSize();
     keyBuf = expandData(data, expandedSize);
 }
@@ -1299,6 +1306,22 @@ void CJHTreeRawDataNode::load(CKeyHdr *_keyHdr, const void *rawData, offset_t _f
 void CJHTreeMetadataNode::get(StringBuffer & out) const
 {
     out.append(expandedSize, keyBuf);
+}
+
+void CJHTreeBloomTableNode::dump(FILE *out, int length, unsigned rowCount, bool raw) const
+{
+    CJHTreeRawDataNode::dump(out, length, rowCount, raw);
+
+    //The bloom class should not have a read member in it, but will not fix now
+    CJHTreeBloomTableNode * bloom = const_cast<CJHTreeBloomTableNode *>(this);
+    unsigned savedRead = bloom->read;
+    offset_t nextbloom = bloom->get8();
+    unsigned numHashes = bloom->get4();
+    __uint64 fields =  bloom->get8();
+    unsigned bloomTableSize = bloom->get4();
+    bloom->read = savedRead;
+
+    fprintf(out, "Node dump: next(%" I64F "d) hashes(%u) fields(%llx), size(%u)\n", nextbloom, numHashes, fields, bloomTableSize);
 }
 
 void CJHTreeBloomTableNode::get(MemoryBuffer & out) const

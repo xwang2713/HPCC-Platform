@@ -36,9 +36,8 @@
 #include "SOAP/xpp/xjx/xjxpp.hpp"
 #include "jmetrics.hpp"
 
-#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
-static auto pSoapRequestCount = hpccMetrics::registerCounterMetric("esp.soap_requests.received", "Number of JSON and SOAP POST requests received", SMeasureCount);
-#endif
+static std::once_flag metricsInitialized;
+static std::shared_ptr<hpccMetrics::CounterMetric> pSoapRequestCount;
 
 
 #define ESP_FACTORY DECL_EXPORT
@@ -68,15 +67,18 @@ int CSoapBinding::processRequest(IRpcMessage* rpc_call, IRpcMessage* rpc_respons
     return 0;
 }
 
-CHttpSoapBinding::CHttpSoapBinding():EspHttpBinding(NULL, NULL, NULL)
+CHttpSoapBinding::CHttpSoapBinding()
+: CHttpSoapBinding(NULL, NULL, NULL)
 {
-    log_level_=hsl_none;
 }
 
 CHttpSoapBinding::CHttpSoapBinding(IPropertyTree* cfg, const char *bindname, const char *procname, http_soap_log_level level)
 : EspHttpBinding(cfg, bindname, procname)
 {
     log_level_=level;
+    std::call_once(metricsInitialized, [](){
+        pSoapRequestCount = hpccMetrics::registerCounterMetric("esp.soap.requests.received", "Number of JSON and SOAP POST requests received", SMeasureCount);
+    });
 }
 
 CHttpSoapBinding::~CHttpSoapBinding()
@@ -103,9 +105,7 @@ static CSoapFault* makeSoapFault(CHttpRequest* request, IMultiException* me, con
 
 int CHttpSoapBinding::onSoapRequest(CHttpRequest* request, CHttpResponse* response)
 {
-#ifdef _SOLVED_DYNAMIC_METRIC_PROBLEM
     pSoapRequestCount->inc(1);
-#endif
     IEspContext* ctx = request->queryContext();
     if (ctx && ctx->getResponseFormat()==ESPSerializationJSON)
     {
@@ -258,7 +258,7 @@ int CHttpSoapBinding::HandleSoapRequest(CHttpRequest* request, CHttpResponse* re
             response->sendBasicChallenge(m_challenge_realm.str(), false);
         else if (status == SOAP_AUTHENTICATION_ERROR)
         {
-            throw MakeStringExceptionDirect(401,"Unauthorized Access");
+            throw makeStringExceptionV(401, "Unauthorized Access: %s - user=%s", ctx->queryServiceName(nullptr), nullText(ctx->queryUserId()));
         }
         else
             response->setStatus(HTTP_STATUS_OK);

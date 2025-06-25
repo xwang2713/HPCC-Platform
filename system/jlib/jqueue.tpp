@@ -271,6 +271,8 @@ public:
     using PARENT::ensure;
 };
 
+//Sending signals once the critical section has been released generally gives better performance.
+#define SIGNAL_OUTSIDE
 
 template <class BASE, bool ALLOWNULLS> 
 class SimpleInterThreadQueueOf : protected SafeQueueOf<BASE, ALLOWNULLS>
@@ -288,6 +290,10 @@ protected:
     bool qwait(Semaphore &sem,unsigned &waiting,unsigned timeout,unsigned &start) 
     { 
         // in crit block
+        // Prevent any more threads from waiting once the queue has been stopped
+        if (stopped)
+            return false;
+
         unsigned remaining;
         if (timeout) {
             if (timeout==INFINITE) 
@@ -356,20 +362,57 @@ public:
         stopped = false;
     }
 
+    bool queryStopped() const { return stopped; }
+
     bool enqueue(BASE *e,unsigned timeout=INFINITE) 
     { 
-        CriticalBlock b(SELF::crit);    
-        if (limit) {
-            unsigned start=0;
-            while (limit<=SafeQueueOf<BASE, ALLOWNULLS>::unsafeordinality()) 
-                if (stopped||!qwait(deqwaitsem,deqwaiting,timeout,start))
-                    return false;
-        }
-        SafeQueueOf<BASE, ALLOWNULLS>::unsafeenqueue(e); 
-        if (enqwaiting) {
-            enqwaitsem.signal(enqwaiting);
+        unsigned numToSignal = 0;
+        {
+            CriticalBlock b(SELF::crit);
+            if (limit) {
+                unsigned start=0;
+                while (limit<=SafeQueueOf<BASE, ALLOWNULLS>::unsafeordinality())
+                    if (stopped||!qwait(deqwaitsem,deqwaiting,timeout,start))
+                        return false;
+            }
+            SafeQueueOf<BASE, ALLOWNULLS>::unsafeenqueue(e);
+#ifdef SIGNAL_OUTSIDE
+            numToSignal = enqwaiting;
             enqwaiting = 0;
+#else
+            if (enqwaiting) {
+                enqwaitsem.signal(enqwaiting);
+                enqwaiting = 0;
+            }
+#endif
         }
+        // Signal when critical section no longer held so the reader can actually remove the item
+        if (numToSignal)
+            enqwaitsem.signal(numToSignal);
+        return true;
+    }
+
+    bool enqueueMany(unsigned num, BASE * *e,unsigned timeout=INFINITE)
+    {
+        assertex(!limit);
+        unsigned numToSignal = 0;
+        {
+            CriticalBlock b(SELF::crit);
+            for (unsigned i=0; i < num; i++)
+                SafeQueueOf<BASE, ALLOWNULLS>::unsafeenqueue(e[i]);
+
+#ifdef SIGNAL_OUTSIDE
+            numToSignal = enqwaiting;
+            enqwaiting = 0;
+#else
+            if (enqwaiting) {
+                enqwaitsem.signal(enqwaiting);
+                enqwaiting = 0;
+            }
+#endif
+        }
+        if (numToSignal)
+            enqwaitsem.signal(numToSignal);
         return true;
     }
 
@@ -409,21 +452,31 @@ public:
 
     BASE *dequeue(unsigned timeout=INFINITE) 
     { 
-        CriticalBlock b(SELF::crit); 
-        unsigned start=0;
-        while (!stopped) {
-            BASE *ret;
-            if (get(ret,false)) {
-                if (deqwaiting) {
-                    deqwaitsem.signal(deqwaiting);
+        BASE *ret = nullptr;
+        unsigned numToSignal = 0;
+        {
+            CriticalBlock b(SELF::crit);
+            unsigned start=0;
+            while (!stopped) {
+                if (get(ret,false)) {
+#ifdef SIGNAL_OUTSIDE
+                    numToSignal = deqwaiting;
                     deqwaiting = 0;
+#else
+                    if (deqwaiting) {
+                        deqwaitsem.signal(deqwaiting);
+                        deqwaiting = 0;
+                    }
+#endif
+                    break;
                 }
-                return ret;
+                if (!qwait(enqwaitsem,enqwaiting,timeout,start))
+                    break;
             }
-            if (!qwait(enqwaitsem,enqwaiting,timeout,start))
-                break;
         }
-        return NULL;
+        if (numToSignal)
+            deqwaitsem.signal(numToSignal);
+        return ret;
     }
 
     BASE *dequeueTail(unsigned timeout=INFINITE) 
@@ -478,21 +531,15 @@ public:
     void stop() // stops all waiting operations
     {
         CriticalBlock b(SELF::crit); 
-        do {
-            stopped = true;
-            if (enqwaiting) {
-                enqwaitsem.signal(enqwaiting);
-                enqwaiting = 0;
-            }
-            if (deqwaiting) {
-                deqwaitsem.signal(deqwaiting);
-                deqwaiting = 0;
-            }
-            {
-                CriticalUnblock ub(SELF::crit); 
-                Sleep(10);      // bit of a kludge
-            }
-        } while (enqwaiting||deqwaiting);
+        stopped = true;
+        if (enqwaiting) {
+            enqwaitsem.signal(enqwaiting);
+            enqwaiting = 0;
+        }
+        if (deqwaiting) {
+            deqwaitsem.signal(deqwaiting);
+            deqwaiting = 0;
+        }
     }
 };
 

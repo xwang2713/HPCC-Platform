@@ -1143,7 +1143,7 @@ void insertUniqueString(StringAttrArray & array, const char * text)
     array.append(* new StringAttrItem(text));
 }
 
-HqlCppInstance::HqlCppInstance(IWorkUnit *_wu, const char * _wupathname) : resources(*this)
+HqlCppInstance::HqlCppInstance(IWorkUnit *_wu, const char * _wupathname, CompilerType _compilerType) : resources(*this), compilerType(_compilerType)
 {
     workunit.set(_wu);
     wupathname.set(_wupathname);
@@ -1437,7 +1437,7 @@ void HqlCppInstance::flushResources(const char *filename, ICodegenContextCallbac
         bool target64bit = workunit->getDebugValueBool("target64bit", false);
 #endif
         StringBuffer resname;
-        bool isObjectFile = resources.flush(resname, filename, flushText, target64bit);
+        bool isObjectFile = resources.flush(resname, filename, flushText, target64bit, compilerType);
 
         StringBuffer resTextName;
         if (flushText && resources.queryWriteText(resTextName, resname))
@@ -1452,9 +1452,9 @@ void HqlCppInstance::flushResources(const char *filename, ICodegenContextCallbac
     }
 }
 
-IHqlCppInstance * createCppInstance(IWorkUnit *wu, const char * wupathname)
+IHqlCppInstance * createCppInstance(IWorkUnit *wu, const char * wupathname, CompilerType compiler)
 {
-    return new HqlCppInstance(wu, wupathname);
+    return new HqlCppInstance(wu, wupathname, compiler);
 }
 
 //===========================================================================
@@ -1823,6 +1823,7 @@ void HqlCppTranslator::cacheOptions()
         DebugOption(options.forceVariableWuid,"forceVariableWuid", false),
         DebugOption(options.okToDeclareAndAssign,"okToDeclareAndAssign", false),
         DebugOption(options.noteRecordSizeInGraph,"noteRecordSizeInGraph", true),
+        DebugOption(options.noteFieldsInGraph,"noteFieldsInGraph", false),
         DebugOption(options.convertRealAssignToMemcpy,"convertRealAssignToMemcpy", false),
         DebugOption(options.allowActivityForKeyedJoin,"allowActivityForKeyedJoin", false),
         DebugOption(options.forceActivityForKeyedJoin,"forceActivityForKeyedJoin", false),
@@ -1857,6 +1858,7 @@ void HqlCppTranslator::cacheOptions()
         DebugOption(options.reportFieldUsage,"reportFieldUsage",false),
         DebugOption(options.reportFileUsage,"reportFileUsage",false),
         DebugOption(options.recordFieldUsage,"recordFieldUsage",false),
+        DebugOption(options.recordUnusedFields,"recordUnusedFields",true), // option if recordFieldUsage is enabled.
         DebugOption(options.subsortLocalJoinConditions,"subsortLocalJoinConditions",false),
         DebugOption(options.projectNestedTables,"projectNestedTables",true),
         DebugOption(options.showSeqInGraph,"showSeqInGraph",false),  // For tracking down why projects are not commoned up
@@ -1908,7 +1910,7 @@ void HqlCppTranslator::cacheOptions()
         DebugOption(options.checkDuplicateMinActivities, "checkDuplicateMinActivities", 100),
         DebugOption(options.diskReadsAreSimple, "diskReadsAreSimple", false), // Not yet enabled - needs filters to default to generating keyed info first
         DebugOption(options.allKeyedFiltersOptional, "allKeyedFiltersOptional", false),
-        DebugOption(options.genericDiskReads, "genericDiskReads", false), // Can be enabled for hthor, but locking not currently supported
+        DebugOption(options.genericDiskReadWrites, "genericDiskReadWrites", false), // Can be enabled for hthor, but locking not currently supported
         DebugOption(options.generateActivityFormats, "generateActivityFormats", false),
         DebugOption(options.generateDiskFormats, "generateDiskFormats", false),
         DebugOption(options.maxOptimizeSize, "maxOptimizeSize", 5),             // Remove the overhead from very small functions e.g. function prolog
@@ -1945,6 +1947,8 @@ void HqlCppTranslator::cacheOptions()
             options.traceOptions.emplace(std::string(name.str() + 5), strToBool(val.str()));
         }
     }
+
+    updateTraceFlags(loadTraceFlags(wu(), eclccTraceOptions, queryTraceFlags()));
 
     //Configure the divide by zero action
     options.divideByZeroAction = DBZzero;
@@ -2027,10 +2031,18 @@ void HqlCppTranslator::postProcessOptions()
     }
 
     if (!targetHThor())
-        options.genericDiskReads = false;
+        options.genericDiskReadWrites = false;
 
     if (options.resourceSequential)
         options.resourceConditionalActions = true;
+
+    if (options.allowStaticRegex && wu()->getDebugValueBool("standAloneExe", false))
+    {
+        //Static regexes are not generated in stand-alone executables because they are initialised
+        //before the regex cache - causing a crash.
+        options.defaultStaticRegex = false;
+        options.allowStaticRegex = false;
+    }
 
     options.generateActivityThresholdCycles = nanosec_to_cycle(options.generateActivityThreshold * I64C(1000000));
 
@@ -2224,8 +2236,51 @@ void HqlCppTranslator::buildFunctionCall(BuildCtx & ctx, IIdAtom * name, HqlExpr
 void HqlCppTranslator::callProcedure(BuildCtx & ctx, IIdAtom * name, HqlExprArray & args)
 {
     OwnedHqlExpr call = bindTranslatedFunctionCall(name, args);
-    assertex(call->queryExternalDefinition());
+    IHqlExpression * funcdef = call->queryExternalDefinition();
+
+    assertex(funcdef);
+
+    CHqlBoundExpr boundTimer, boundStart;
+    IHqlExpression * external = funcdef->queryChild(0);
+    bool needsStartStopTimer = external->hasAttribute(timeAtom);
+    if (needsStartStopTimer)
+    {
+        StringBuffer nameTemp;
+        const char * timerName = str(external->queryId());
+        if (getStringValue(nameTemp, queryAttributeChild(external, timeAtom, 0)).length())
+            timerName = nameTemp;
+        buildStartTimer(ctx, boundTimer, boundStart, timerName);
+    }
+    else if (external->hasAttribute(timerAtom))
+    {
+        // Timing performed by helper, but we need to build the timer that will be passed to the helper
+        StringBuffer nameTemp;
+        const char * timerName = str(external->queryId());
+        if (getStringValue(nameTemp, queryAttributeChild(external, timerAtom, 0)).length())
+            timerName = nameTemp;
+        // Grab optional ThorStatOption enum (as an int)
+        int statOption = getIntValue(queryAttributeChild(external, timerAtom, 1), 0);
+        buildHelperTimer(ctx, boundTimer, timerName, statOption);
+        // We need to patch the args to include the timer; helper timers will always be the first argument
+        // passed to the helper function, which means that it is either the first argument in the
+        // array (for a bare function call) or the second argument (for a method call)
+        bool isMethod = external->hasAttribute(methodAtom) || external->hasAttribute(omethodAtom);
+        unsigned int timerPos = (isMethod ? 1 : 0);
+        HqlExprArray newArgs;
+        unwindChildren(newArgs, call);
+        if (timerPos < newArgs.length())
+            newArgs.add(*LINK(boundTimer.expr), timerPos);
+        else
+            newArgs.append(*LINK(boundTimer.expr));
+        call.setown(bindTranslatedFunctionCall(name, newArgs));
+    }
+
     ctx.addExpr(call);
+
+    if (needsStartStopTimer)
+    {
+        buildStopTimer(ctx, boundTimer, boundStart);
+    }
 }
 
 bool HqlCppTranslator::getDebugFlag(const char * name, bool defValue)
@@ -6076,6 +6131,19 @@ void HqlCppTranslator::doBuildCall(BuildCtx & ctx, const CHqlBoundTarget * tgt, 
         buildExpr(ctx, expr->queryChild(firstParam++), bound);
         args.append(*bound.expr.getClear());
     }
+    if (external->hasAttribute(timerAtom))
+    {
+        // helper timers will always be the first argument passed to the helper function
+        CHqlBoundExpr boundTimer;
+        StringBuffer nameTemp;
+        const char * name = str(external->queryId());
+        if (getStringValue(nameTemp, queryAttributeChild(external, timerAtom, 0)).length())
+            name = nameTemp;
+        // Grab optional ThorStatOption enum (as an int)
+        int statOption = getIntValue(queryAttributeChild(external, timerAtom, 1), 0);
+        buildHelperTimer(ctx, boundTimer, name, statOption);
+        args.append(*LINK(boundTimer.expr));
+    }
     if (external->hasAttribute(userMatchFunctionAtom))
     {
         //MORE: Test valid in this location...
@@ -6694,6 +6762,11 @@ void HqlCppTranslator::doBuildAssignCast(BuildCtx & ctx, const CHqlBoundTarget &
                 case no_substring:
                     //don't do this if the target type is unicode at the moment
                     ignoreStretched = isStringType(targetType);
+                    break;
+                case no_regex_replace:
+                case no_regex_find:
+                    // Returning result into a fixed-sized target should not require a temp
+                    useTemp = false;
                     break;
                 }
 
@@ -9805,6 +9878,19 @@ void HqlCppTranslator::doBuildExprTransfer(BuildCtx & ctx, IHqlExpression * expr
         {
             switch (to->getTypeCode())
             {
+            case type_utf8:
+                if (size->isConstant())
+                {
+                    tgt.length.setown(getSizetConstant(rtlUtf8Length((size32_t)getIntValue(size), bound.expr->queryValue()->queryValue())));
+                }
+                else
+                {
+                    HqlExprArray args;
+                    args.append(*LINK(size));
+                    args.append(*getElementPointer(bound.expr));
+                    tgt.length.setown(bindTranslatedFunctionCall(utf8LengthId, args));
+                }
+                break;
             case type_unicode:
                 if (size->isConstant())
                     tgt.length.setown(getSizetConstant((size32_t)getIntValue(size)/sizeof(UChar)));

@@ -22,6 +22,7 @@
 #include "jhash.hpp"
 #include "jsort.hpp"
 #include "jregexp.hpp"
+#include "jevent.hpp"
 
 #include "udptopo.hpp"
 #include "ccd.hpp"
@@ -240,6 +241,25 @@ void stopDelayedReleaser()
     delayedReleaser.clear();
 }
 
+
+//-------------------------------------------------------------------------
+
+bool startRoxieEventRecording(const char * options, const char * filename)
+{
+    if (!startComponentRecording("roxie", options, filename, true))
+        return false;
+
+    //Generate information about all files that are already registered - others will be added as they are opened
+    recordEventIndexInformation();
+
+    queryRecorder().pauseRecording(false, false);
+    return true;
+}
+
+bool stopRoxieEventRecording(EventRecordingSummary * optSummary)
+{
+    return queryRecorder().stopRecording(optSummary);
+}
 
 //-------------------------------------------------------------------------
 
@@ -2318,7 +2338,7 @@ private:
             {
                 blobCacheMB = control->getPropInt("@val", 0);
                 topology->setPropInt("@blobCacheMem", blobCacheMB);
-                setBlobCacheMem(blobCacheMB * 0x100000);
+                setBlobCacheMem(blobCacheMB * 0x100000ULL);
             }
             else
                 unknown = true;
@@ -2463,7 +2483,7 @@ private:
                 if (val)
                     fieldTranslationEnabled = getTranslationMode(val, false);
                 else
-                    fieldTranslationEnabled = RecordTranslationMode::Payload;
+                    fieldTranslationEnabled = RecordTranslationMode::PayloadRemoveOnly;
                 val = getTranslationModeText(fieldTranslationEnabled);
                 topology->setProp("@fieldTranslationEnabled", val);
             }
@@ -2549,7 +2569,7 @@ private:
             {
                 leafCacheMB = control->getPropInt("@val", 50);
                 topology->setPropInt("@leafCacheMem", leafCacheMB);
-                setLeafCacheMem(leafCacheMB * 0x100000);
+                setLeafCacheMem(leafCacheMB * 0x100000ULL);
             }
             else if (stricmp(queryName, "control:listFileOpenErrors")==0)
             {
@@ -2656,7 +2676,7 @@ private:
             {
                 nodeCacheMB = control->getPropInt("@val", 100);
                 topology->setPropInt("@nodeCacheMem", nodeCacheMB);
-                setNodeCacheMem(nodeCacheMB * 0x100000);
+                setNodeCacheMem(nodeCacheMB * 0x100000ULL);
             }
             else if (stricmp(queryName, "control:numFilesToProcess")==0)
             { 
@@ -2678,6 +2698,12 @@ private:
                     parallelAggregate = 1;
                 topology->setPropInt("@parallelAggregate", parallelAggregate);
             }
+            else if (stricmp(queryName, "control:pauseEventRecording")==0)
+            {
+                bool addEventForChange = control->getPropBool("@audit", false);
+                bool success = queryRecorder().pauseRecording(true, addEventForChange);
+                reply.appendf("<EventRecording success='%s'/>", boolToStr(success));
+            }
             else if (stricmp(queryName, "control:perf")==0)
             {
                 unsigned perfTime = (unsigned) control->getPropInt64("@time", 60);
@@ -2686,19 +2712,6 @@ private:
                 perf.setInterval(interval);
                 perf.traceFor(perfTime);
                 reply.append(perf.queryResult().str());
-            }
-            else if (stricmp(queryName, "control:pingInterval")==0)
-            {
-                unsigned newInterval = (unsigned) control->getPropInt64("@val", 0);
-                if (newInterval && !pingInterval)
-                {
-                    pingInterval = newInterval; // best to set before the start...
-                    startPingTimer();
-                }
-                else if (pingInterval && !newInterval)
-                    stopPingTimer();  // but after the stop
-                pingInterval = newInterval;
-                topology->setPropInt64("@pingInterval", pingInterval);
             }
             else if (stricmp(queryName, "control:preabortIndexReadsThreshold")==0)
             {
@@ -2873,6 +2886,12 @@ private:
             {
                 FatalError("Roxie process restarted by operator request");
             }
+            else if (stricmp(queryName, "control:resumeEventRecording")==0)
+            {
+                bool addEventForChange = control->getPropBool("@audit", false);
+                bool success = queryRecorder().pauseRecording(false, addEventForChange);
+                reply.appendf("<EventRecording success='%s'/>", boolToStr(success));
+            }
             else if (stricmp(queryName, "control:retrieveActivityDetails")==0)
             {
                 UNIMPLEMENTED;
@@ -2929,6 +2948,24 @@ private:
             {
                 socketCheckInterval = (unsigned) control->getPropInt64("@val", 0);
                 topology->setPropInt64("@socketCheckInterval", socketCheckInterval);
+            }
+            else if (stricmp(queryName, "control:startEventRecording")==0)
+            {
+                const char * options = control->queryProp("@options");
+                const char * filename = control->queryProp("@filename");
+                bool success = startRoxieEventRecording(options, filename);
+                reply.appendf("<EventRecording success='%s'/>", boolToStr(success));
+            }
+            else if (stricmp(queryName, "control:stopEventRecording")==0)
+            {
+                EventRecordingSummary summary;
+                bool success = stopRoxieEventRecording(&summary);
+                if (success)
+                {
+                    reply.appendf("<EventRecording success='true' numEvents='%u' filename='%s' size='%llu'/>", summary.numEvents, summary.filename.str(), summary.totalSize);
+                }
+                else
+                    reply.appendf("<EventRecording success='false'/>");
             }
             else if (stricmp(queryName, "control:state")==0)
             {

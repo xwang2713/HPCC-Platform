@@ -257,6 +257,7 @@ public:
     virtual WUState getState() const;
     virtual IStringVal & getStateEx(IStringVal & str) const;
     virtual __int64 getAgentSession() const;
+    virtual __int64 getEngineSession() const;
     virtual unsigned getAgentPID() const;
     virtual const char *queryStateDesc() const;
     virtual IConstWUResult * getTemporaryByName(const char * name) const;
@@ -315,7 +316,7 @@ public:
     void commit();
     IWUException *createException();
     void addProcess(const char *type, const char *instance, unsigned pid, unsigned max, const char *pattern, bool singleLog, const char *log);
-    bool setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *sequence);
+    bool setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *containerName, const char *graphName, const char *sequence);
     void setAction(WUAction action);
     void setApplicationValue(const char * application, const char * propname, const char * value, bool overwrite);
     void setApplicationValueInt(const char * application, const char * propname, int value, bool overwrite);
@@ -336,6 +337,7 @@ public:
     void setState(WUState state);
     void setStateEx(const char * text);
     void setAgentSession(__int64 sessionId);
+    void setEngineSession(__int64 sessionId);
     bool setDistributedAccessToken(const char * user);
     void setStatistic(StatisticCreatorType creatorType, const char * creator, StatisticScopeType scopeType, const char * scope, StatisticKind kind, const char * optDescription, unsigned __int64 value, unsigned __int64 count, unsigned __int64 maxValue, StatsMergeAction mergeAction);
     void setTracingValue(const char * propname, const char * value);
@@ -378,6 +380,9 @@ public:
     void deleteTemporaries();
     void setTimeScheduled(const IJlibDateTime &val);
     virtual void subscribe(WUSubscribeOptions options) {};
+
+    virtual bool getSummary(SummaryType type, SummaryMap &map) const override;
+    virtual void setSummary(SummaryType type, const SummaryMap &map) override;
 
 // ILocalWorkUnit - used for debugging etc
     void loadXML(const char *xml);
@@ -590,7 +595,7 @@ public:
         const char *importDir, const char *app, const char *user, ISecManager *secMgr, ISecUser *secUser);
     virtual bool deleteWorkUnit(const char * wuid, ISecManager *secmgr, ISecUser *secuser);
     virtual bool deleteWorkUnitEx(const char * wuid, bool throwException, ISecManager *secmgr, ISecUser *secuser);
-    virtual IConstWorkUnit * openWorkUnit(const char * wuid, ISecManager *secmgr, ISecUser *secuser);
+    virtual IConstWorkUnit * openWorkUnit(const char * wuid, ISecManager *secmgr, ISecUser *secuser, bool expected);
     virtual IWorkUnit * updateWorkUnit(const char * wuid, ISecManager *secmgr, ISecUser *secuser);
     virtual bool restoreWorkUnit(const char *base, const char *wuid, bool restoreAssociated);
     virtual int setTracingLevel(int newlevel);
@@ -621,7 +626,7 @@ public:
     }
 
 protected:
-    void reportAbnormalTermination(const char *wuid, WUState &state, SessionId agent);
+    void reportAbnormalTermination(const char *wuid, WUState &state, SessionId agent, const char *sessionText);
 
     // These need to be implemented by the derived classes
     virtual CLocalWorkUnit* _createWorkUnit(const char *wuid, ISecManager *secmgr, ISecUser *secuser) = 0;
@@ -694,20 +699,33 @@ class WorkUnitWaiter : public CInterface, implements IAbortHandler, implements I
 {
     Semaphore changed;
     Owned<IWorkUnitWatcher> watcher;
-    bool aborted;
+    mutable bool aborted = false;
+    mutable bool abortDirty = false;
+    StringAttr wuid;
 public:
     IMPLEMENT_IINTERFACE;
-    WorkUnitWaiter(const char *wuid, WUSubscribeOptions watchFor)
+    WorkUnitWaiter(const char *_wuid, WUSubscribeOptions watchFor) : wuid(_wuid)
     {
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         watcher.setown(factory->getWatcher(this, watchFor, wuid));
-        aborted = false;
+        if (watchFor & SubscribeOptionAbort)
+            abortDirty = true;
     }
     ~WorkUnitWaiter()
     {
         unsubscribe();
     }
-    bool isAborted() const { return aborted; }
+    bool isAborted() const
+    {
+        if (!aborted && abortDirty)
+        {
+            Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
+            if (factory->isAborting(wuid))
+                aborted = true;
+            abortDirty = false;
+        }
+        return aborted;
+    }
     bool wait(unsigned timeout)
     {
         return changed.wait(timeout) && !aborted;
@@ -723,6 +741,8 @@ public:
 // IWorkUnitSubscriber
     virtual void notify(WUSubscribeOptions flags, unsigned valueLen, const void *valueData) override
     {
+        if (SubscribeOptionAbort == flags)
+             abortDirty = true;
         changed.signal();
     }
 // IAbortHandler

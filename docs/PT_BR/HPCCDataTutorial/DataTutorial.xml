@@ -19,8 +19,11 @@
 
     <legalnotice>
       <para>Sua opinião e comentários sobre este documento são muito
-      bem-vindos e podem ser enviados por e-mail para
-      <email>docfeedback@hpccsystems.com</email></para>
+      bem-vindos e podem ser enviados por e-mail para <email/></para>
+
+      <para role="syntax">
+        <email>docfeedback@hpccsystems.com</email>
+      </para>
 
       <para>Inclua a frase <emphasis role="bold">Feedback sobre
       documentação</emphasis> na linha de assunto e indique o nome do
@@ -123,7 +126,7 @@
           <para>Baixar um arquivo de dados bruto</para>
 
           <para>Há links para arquivos de dados disponíveis na página <ulink
-          url="http://hpccsystems.com/community/docs/data-tutorial-guide">http://hpccsystems.com/community/docs/data-tutorial-guide</ulink></para>
+          url="https://hpccsystems.com/training/documentation/learning-ecl">https://hpccsystems.com/training/documentation/learning-ecl</ulink></para>
 
           <para>O download tem cerca de 30 MB (compactado) e está disponível
           nos formatos ZIP ou .tar.gz. Selecione o link correto.</para>
@@ -289,7 +292,7 @@
 
             <para>O arquivo de dados está disponível nos links na página
             <ulink
-            url="http://hpccsystems.com/community/docs/data-tutorial-guide">http://hpccsystems.com/community/docs/data-tutorial-guide</ulink>.
+            url="https://hpccsystems.com/training/documentation/tutorials">https://hpccsystems.com/training/documentation/tutorials</ulink>.
             O download tem cerca de 30 MB (compactado) e está disponível nos
             formatos ZIP ou .tar.gz.(<emphasis
             role="bold">OriginalPerson.tar.gz </emphasis> ou <emphasis

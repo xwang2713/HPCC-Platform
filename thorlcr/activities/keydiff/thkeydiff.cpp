@@ -71,10 +71,7 @@ public:
 
         originalDesc.setown(originalIndexFile->getFileDescriptor());
         newIndexDesc.setown(newIndexFile->getFileDescriptor());
-        Owned<IPartDescriptor> tlkDesc = originalDesc->getPart(originalDesc->numParts()-1);
-        const char *kind = tlkDesc->queryProperties().queryProp("@kind");
-        local = NULL == kind || 0 != stricmp("topLevelKey", kind);
-
+        local = !hasTLK(*originalIndexFile, this);
         if (!local)
             width--; // 1 part == No n distributed / Monolithic key
         if (width > container.queryJob().querySlaves())
@@ -180,15 +177,18 @@ public:
         Owned<IDistributedFile> patchFile;
         // set part sizes etc
         queryThorFileManager().publish(container.queryJob(), outputName, *patchDesc, &patchFile);
-        try { // set file size
-            if (patchFile) {
+        try // set file size
+        {
+            if (patchFile)
+            {
                 __int64 fs = patchFile->getFileSize(true,false);
                 if (fs!=-1)
                     patchFile->queryAttributes().setPropInt64("@size",fs);
             }
         }
-        catch (IException *e) {
-            EXCLOG(e,"keydiff setting file size");
+        catch (IException *e)
+        {
+            IERRLOG(e, "keydiff setting file size");
             e->Release();
         }
         // Add a new 'Patch' description to the secondary key.

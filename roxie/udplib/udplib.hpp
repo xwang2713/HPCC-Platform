@@ -33,7 +33,8 @@ typedef unsigned ruid_t;   // at 1000/sec recycle every 49 days
 #define RUIDF   "0x%.8x"
 #define RUID_PING 0
 #define RUID_DISCARD 1
-#define RUID_FIRST 2
+#define RUID_NONE 2
+#define RUID_FIRST 3
 
 typedef unsigned RecordLengthType;
 #define MAX_RECORD_LENGTH 0xffffffff
@@ -156,7 +157,7 @@ interface ISendManager : extends IInterface
 extern UDPLIB_API IReceiveManager *createReceiveManager(int server_flow_port, int data_port, int client_flow_port, int queue_size, bool encrypted);
 extern UDPLIB_API ISendManager *createSendManager(int server_flow_port, int data_port, int client_flow_port, int queue_size_pr_server, int queues_pr_server, const IpAddress &myIP, TokenBucket *rateLimiter, bool encryptionInTransit);
 
-#if defined( __linux__) || defined(__APPLE__)
+#if defined( __linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
 extern UDPLIB_API void setLinuxThreadPriority(int level);
 #endif
 extern UDPLIB_API void queryMemoryPoolStats(StringBuffer &memStats);
@@ -175,9 +176,6 @@ interface IRoxieOutputQueueManager : public IInterface
     virtual IMessagePacker *createOutputStream(RoxiePacketHeader &x, bool outOfBand, const IRoxieContextLogger &logctx) = 0;
     virtual bool replyPending(RoxiePacketHeader &x) = 0;
     virtual bool abortCompleted(RoxiePacketHeader &x) = 0;
-
-    virtual unsigned getHeadRegionSize() const = 0;
-    virtual void setHeadRegionSize(unsigned newsize) = 0;
 
     virtual void start() = 0;
     virtual void stop() = 0;

@@ -21,8 +21,11 @@
 
     <legalnotice>
       <para>Sua opinião e comentários sobre este documento são muito
-      bem-vindos e podem ser enviados por e-mail para
-      <email>docfeedback@hpccsystems.com</email></para>
+      bem-vindos e podem ser enviados por e-mail para <email/></para>
+
+      <para role="syntax">
+        <email>docfeedback@hpccsystems.com</email>
+      </para>
 
       <para>Inclua a frase <emphasis role="bold">Feedback sobre
       documentação</emphasis> na linha de assunto e indique o nome do
@@ -1574,7 +1577,7 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
           </listitem>
         </itemizedlist>
 
-        <para><?hard-pagebreak ?> <emphasis
+        <para><?hard-pagebreak ?><emphasis
         role="bold">Exemplos:</emphasis></para>
 
         <para>Este exemplo instala os pacotes da plataforma do HPCC nos nós
@@ -2165,10 +2168,6 @@ sudo /etc/init.d/hpcc-init -c esp start
         <listitem>
           <para>Faça o download do msxml3.msi da Microsoft (Pacote de Serviço
           7 ou mais recente).</para>
-
-          <para><emphasis role="underline"> <ulink
-          url="http://www.microsoft.com/en-us/download/details.aspx?id=3988">http://www.microsoft.com/en-us/download/details.aspx?id=3988</ulink>
-          </emphasis></para>
         </listitem>
 
         <listitem>
@@ -2385,7 +2384,7 @@ add1(10);
         <para>Outros exemplos de código HPCC podem ser encontrados em:</para>
 
         <para><ulink
-        url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl</ulink></para>
+        url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed">https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed</ulink></para>
       </sect2>
 
       <sect2 id="Add_On_Javascript" role="brk">
@@ -2448,7 +2447,7 @@ add1(10);
             em:</para>
 
             <para><ulink
-            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl</ulink></para>
+            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed">https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed</ulink></para>
           </listitem>
         </orderedlist>
       </sect2>
@@ -2712,7 +2711,7 @@ SUM(NOFOLD(s1b + s2b), a);
             em:</para>
 
             <para><ulink
-            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/regress/embedR.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/regress/ecl/embedR.ecl</ulink></para>
+            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed">https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed</ulink></para>
           </listitem>
         </orderedlist>
 
@@ -2739,7 +2738,7 @@ SUM(NOFOLD(s1b + s2b), a);
           desses conceitos estão disponíveis em:</para>
 
           <para><ulink
-          url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/regress/embedR2.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/regress/ecl/embedR2.ecl</ulink></para>
+          url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed">https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed</ulink></para>
 
           <para/>
         </sect3>

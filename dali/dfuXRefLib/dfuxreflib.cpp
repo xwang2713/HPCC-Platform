@@ -606,7 +606,7 @@ public:
 struct CLogicalNameEntry: public CInterface
 {
     CLogicalNameEntry(CXRefManagerBase &_manager, const char *_lname,IPropertyTree &file) // takes ownership of grp
-        : manager(_manager),lname(_lname) 
+        : lname(_lname) , manager(_manager)
     {
         replicated = false;
         outsidedir = 0;
@@ -957,7 +957,7 @@ static bool parseFileName(const char *name,StringBuffer &mname,unsigned &num,uns
     return false;
 }           
 
-        
+
 
 
 
@@ -978,7 +978,7 @@ public:
     CXRefManagerBase &manager;
     byte incompletestate; // 0 unknown, 1 ignore, 2 incomplete
     COrphanEntry(CXRefManagerBase &_manager, const char *_fname,const char *_basedir,unsigned _max,const char *_modified,CLogicalNameEntry *_misplaced)
-        : manager(_manager),fname(_fname), basedir(_basedir), modified(_modified)
+        : basedir(_basedir), fname(_fname), modified(_modified), manager(_manager)
     {
         dirfailed = false;
         max = _max;
@@ -1528,7 +1528,7 @@ void loadFromDFS(CXRefManagerBase &manager,IGroup *grp,unsigned numdirs,const ch
                         manager.warn(lnentry->lname.get(),"No group found, ignoring logical file");
                         return;
                     }
-                    constructPartFilename(grp,partno,numparts,partname,partmask,partdir,replicate,replicateoffset,rfn);
+                    deprecatedConstructPartFilename(grp,partno,numparts,partname,partmask,partdir,replicate,replicateoffset,rfn);
                     SocketEndpoint rep=rfn.queryEndpoint();
                     if (manager.EndpointTable.find(rep)!=NULL) {
                         rfn.getLocalPath(localname.clear());
@@ -1606,7 +1606,7 @@ void loadFromDFS(CXRefManagerBase &manager,IGroup *grp,unsigned numdirs,const ch
 
 
 
-    
+
 
 class CPhysicalXREF
 {
@@ -2596,7 +2596,7 @@ public:
         msgcallback.set(_msgcallback);
 
         IPropertyTree *out=NULL;
-        
+
         Owned<IGroup> g;
         unsigned j;
         if (!nclusters) {
@@ -2625,7 +2625,7 @@ public:
         logicalnamelist.kill();
         dirlist.kill();
         orphanlist.kill();
-        
+
         const char* cluster = clusters[0];
         loadFromDFS(*this,g,numdirs,dirbaselist,cluster);
 

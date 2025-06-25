@@ -1,19 +1,22 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { useConst } from "@fluentui/react-hooks";
-import { GetLogsExRequest, TargetAudience, LogType } from "@hpcc-js/comms";
-import { Level } from "@hpcc-js/util";
-import { CreateLogsQueryStore } from "src/ESPLog";
+import { GetLogsExRequest, LogaccessService, LogType, TargetAudience, WsLogaccess } from "@hpcc-js/comms";
+import { Level, scopedLogger } from "@hpcc-js/util";
 import nlsHPCC from "src/nlsHPCC";
-import { logColor, wuidToDate, wuidToTime } from "src/Utility";
+import { formatDateString, logColor, removeAllExcept, timestampToDate, wuidToDate, wuidToTime } from "src/Utility";
+import { useLogAccessInfo } from "../hooks/platform";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { pushParams } from "../util/history";
-import { FluentPagedGrid, FluentPagedFooter, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
+import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { Filter } from "./forms/Filter";
 import { Fields } from "./forms/Fields";
 import { ShortVerticalDivider } from "./Common";
 
-const maximumTimeUntilRefresh = 8 * 60 * 60 * 1000;
+export const service = new LogaccessService({ baseUrl: "" });
+
+const logger = scopedLogger("src-react/components/Logs.tsx");
+
+const eightHours = 8 * 60 * 60 * 1000;
 const startTimeOffset = 1 * 60 * 60 * 1000;
 const endTimeOffset = 23 * 60 * 60 * 1000;
 const defaultStartDate = new Date(new Date().getTime() - startTimeOffset);
@@ -43,6 +46,14 @@ const FilterFields: Fields = {
     processid: { type: "string", label: nlsHPCC.ProcessID },
     threadid: { type: "string", label: nlsHPCC.ThreadID },
     message: { type: "string", label: nlsHPCC.Message },
+    LogLineLimit: {
+        type: "dropdown", label: nlsHPCC.LogLineLimit, options: [
+            { key: 100, text: "100" },
+            { key: 250, text: "250" },
+            { key: 500, text: "500" },
+            { key: 1000, text: "1000" },
+        ]
+    },
     StartDate: { type: "datetime", label: nlsHPCC.FromDate },
     EndDate: { type: "datetime", label: nlsHPCC.ToDate },
 };
@@ -83,6 +94,8 @@ const levelMap = (level) => {
     }
 };
 
+const columnOrder: string[] = [WsLogaccess.LogColumnType.timestamp, WsLogaccess.LogColumnType.message];
+
 export const Logs: React.FunctionComponent<LogsProps> = ({
     wuid,
     filter = defaultFilter,
@@ -92,44 +105,50 @@ export const Logs: React.FunctionComponent<LogsProps> = ({
 
     const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
     const [showFilter, setShowFilter] = React.useState(false);
+    const [data, setData] = React.useState<any[]>([]);
     const {
         selection, setSelection,
-        pageNum, setPageNum,
-        pageSize, setPageSize,
-        total, setTotal,
+        setTotal,
         refreshTable } = useFluentStoreState({ page });
 
     const now = React.useMemo(() => new Date(), []);
 
+    const { logsColumns: logColumns } = useLogAccessInfo();
+
     //  Grid ---
-    const gridStore = useConst(() => CreateLogsQueryStore());
-
-    const query = React.useMemo(() => {
-        if (wuid !== undefined) {
-            filter.workunits = wuid;
-            if (typeof filter.StartDate === "string") {
-                filter.StartDate = new Date(filter.StartDate + ":00Z");
-            } else {
-                filter.StartDate = new Date(`${wuidToDate(wuid)}T${wuidToTime(wuid)}Z`);
-            }
-        } else {
-            if (typeof filter.StartDate === "string") {
-                filter.StartDate = new Date(filter.StartDate + ":00Z");
-            }
-            if (filter.StartDate && now.getTime() - filter.StartDate.getTime() > maximumTimeUntilRefresh) {
-                filter.StartDate = new Date(now.getTime() - startTimeOffset);
-            }
-            if (!filter.EndDate) {
-                filter.EndDate = new Date(now.getTime() + endTimeOffset);
-            }
-        }
-        return formatQuery(filter);
-    }, [filter, now, wuid]);
-
     const columns = React.useMemo((): FluentColumns => {
-        return {
-            timestamp: { label: nlsHPCC.TimeStamp, width: 140, sortable: false, },
-            message: { label: nlsHPCC.Message, sortable: false, },
+        // we've defined the columnOrder array above to ensure specific columns will
+        // appear on the left-most side of the grid, eg timestamps and log messages
+        const cols = logColumns?.sort((a, b) => {
+            const logTypeA = columnOrder.indexOf(a.LogType);
+            const logTypeB = columnOrder.indexOf(b.LogType);
+
+            if (logTypeA >= 0) {
+                if (logTypeB >= 0) { return logTypeA - logTypeB; }
+                return -1;
+            } else if (logTypeB >= 0) {
+                return 1;
+            } else {
+                return 0;
+            }
+        });
+        const retVal = {
+            timestamp: {
+                label: nlsHPCC.TimeStamp, width: 140, sortable: false,
+                formatter: ts => {
+                    if (ts) {
+                        if (ts.indexOf(":") < 0) {
+                            const date = timestampToDate(ts);
+                            if (!isNaN(date.getTime())) {
+                                return date.toISOString();
+                            }
+                            return ts;
+                        }
+                        return formatDateString(ts);
+                    }
+                },
+            },
+            message: { label: nlsHPCC.Message, width: 600, sortable: false, },
             components: { label: nlsHPCC.ContainerName, width: 150, sortable: false },
             instance: { label: nlsHPCC.PodName, width: 150, sortable: false },
             audience: { label: nlsHPCC.Audience, width: 60, sortable: false, },
@@ -146,15 +165,50 @@ export const Logs: React.FunctionComponent<LogsProps> = ({
             logid: { label: nlsHPCC.Sequence, width: 70, sortable: false, },
             threadid: { label: nlsHPCC.ThreadID, width: 60, sortable: false, },
         };
-    }, [wuid]);
+        const colTypes = cols?.map(c => c.LogType.toString()) ?? [];
+        removeAllExcept(retVal, colTypes);
+        return retVal;
+    }, [logColumns, wuid]);
 
     const copyButtons = useCopyButtons(columns, selection, "logaccess");
+
+    const query = React.useMemo(() => {
+        if (wuid !== undefined) {
+            filter.workunits = wuid;
+            if (typeof filter.StartDate === "string") {
+                filter.StartDate = new Date(filter.StartDate + ":00Z");
+            } else {
+                filter.StartDate = new Date(`${wuidToDate(wuid)}T${wuidToTime(wuid)}Z`);
+            }
+        } else {
+            if (typeof filter.StartDate === "string") {
+                filter.StartDate = new Date(filter.StartDate + ":00Z");
+            }
+            if (!filter.StartDate) {
+                //assign a reasonable default start date if one isn't set
+                filter.StartDate = new Date(now.getTime() - eightHours);
+            }
+            if (typeof filter.EndDate === "string") {
+                filter.EndDate = new Date(filter.EndDate + ":00Z");
+            }
+            if (!filter.EndDate) {
+                filter.EndDate = new Date(now.getTime() + endTimeOffset);
+            }
+        }
+        return formatQuery(filter);
+    }, [filter, now, wuid]);
+
+    const refreshData = React.useCallback(() => {
+        service.GetLogsEx(query as any).then(response => {
+            setData(response.lines);
+        }).catch(err => logger.error(err));
+    }, [query]);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable.call()
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -163,7 +217,11 @@ export const Logs: React.FunctionComponent<LogsProps> = ({
                 setShowFilter(true);
             }
         },
-    ], [hasFilter, refreshTable]);
+    ], [hasFilter, refreshData]);
+
+    React.useEffect(() => {
+        refreshData();
+    }, [refreshData]);
 
     //  Filter  ---
     const filterFields: Fields = React.useMemo(() => {
@@ -175,19 +233,18 @@ export const Logs: React.FunctionComponent<LogsProps> = ({
                 delete retVal.jobId;
             }
         }
+        const colTypes = logColumns?.map(c => c.LogType.toString()) ?? [];
+        removeAllExcept(retVal, [...colTypes, "LogLineLimit", "StartDate", "EndDate"]);
         return retVal;
-    }, [filter, wuid]);
+    }, [filter, logColumns, wuid]);
 
     return <HolyGrail
         header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
-            <>
-                <FluentPagedGrid
-                    store={gridStore}
-                    query={query}
-                    pageNum={pageNum}
-                    pageSize={pageSize}
-                    total={total}
+            <div style={{ position: "relative", height: "100%" }}>
+                <FluentGrid
+                    data={data}
+                    primaryID={""}
                     columns={columns}
                     setSelection={setSelection}
                     setTotal={(total) => {
@@ -197,18 +254,9 @@ export const Logs: React.FunctionComponent<LogsProps> = ({
                         }
                     }}
                     refresh={refreshTable}
-                ></FluentPagedGrid>
+                ></FluentGrid>
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
-            </>
+            </div>
         }
-        footer={<FluentPagedFooter
-            persistID={"cloudlogs"}
-            pageNum={pageNum}
-            selectionCount={selection.length}
-            setPageNum={setPageNum}
-            setPageSize={setPageSize}
-            total={total}
-        ></FluentPagedFooter>}
-        footerStyles={{}}
     />;
 };

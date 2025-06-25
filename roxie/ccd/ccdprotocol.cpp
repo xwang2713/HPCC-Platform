@@ -123,7 +123,8 @@ public:
     virtual void start() override
     {
         // Note we allow a few additional threads than requested - these are the threads that return "Too many active queries" responses
-        pool.setown(createThreadPool("RoxieSocketWorkerPool", this, false, nullptr, sink->getPoolSize()+5, INFINITE));
+        // and reduce start delay
+        pool.setown(createThreadPool("RoxieSocketWorkerPool", this, false, nullptr, sink->getPoolSize()+5, 1));
         assertex(!running);
         Thread::start(false);
         started.wait();
@@ -1624,7 +1625,7 @@ private:
             throw MakeStringException(ROXIE_DATA_ERROR, "Malformed request");
     }
 
-    void sanitizeQuery(Owned<IPropertyTree> &queryPT, StringAttr &queryName, StringBuffer &saniText, HttpHelper &httpHelper, const char *&uid, bool &isBlind, bool &isDebug)
+    void sanitizeQuery(Owned<IPropertyTree> &queryPT, StringAttr &queryName, StringBuffer &saniText, HttpHelper &httpHelper, const char *&uid, bool &isBlind, bool &isDebug, IProperties * inlineTraceHeaders)
     {
         if (queryPT)
         {
@@ -1634,6 +1635,16 @@ private:
                 uid = queryPT->queryProp("_TransactionId");
             isBlind = queryPT->getPropBool("@blind", false) || queryPT->getPropBool("_blind", false);
             isDebug = queryPT->getPropBool("@debug");
+            if (queryPT->hasProp("_trace") && inlineTraceHeaders)
+            {
+                if (queryPT->hasProp("_trace/traceparent"))
+                    inlineTraceHeaders->setProp("traceparent", queryPT->queryProp("_trace/traceparent"));
+                if (queryPT->hasProp("_trace/Global-Id"))
+                    inlineTraceHeaders->setProp("Global-Id", queryPT->queryProp("_trace/Global-Id"));
+                if (queryPT->hasProp("_trace/Caller-Id"))
+                    inlineTraceHeaders->setProp("Caller-Id", queryPT->queryProp("_trace/Caller-Id"));
+            }
+
             toXML(queryPT, saniText, 0, isBlind ? (XML_SingleQuoteAttributeValues | XML_Sanitize) : XML_SingleQuoteAttributeValues);
         }
     }
@@ -1765,6 +1776,8 @@ readAnother:
             return;
         }
 
+        SpanTimeStamp spanStartTimeStamp(true);
+
         PerfTracer perf;
         IRoxieContextLogger &logctx = static_cast<IRoxieContextLogger&>(*msgctx->queryLogContext());
         bool isHTTP = httpHelper.isHttp();
@@ -1827,18 +1840,30 @@ readAnother:
                 if (httpHelper.isHttp())
                     httpHelper.setUseEnvelope(extractor.isSoap);
             }
+
+            if (!queryName && !isStatus)
+            {
+                // or should we set("") ?  Is an empty queryName ever valid ?
+                if (doTrace(traceSockets, TraceFlags::Max))
+                {
+                    DBGLOG("missing/invalid query name from socket");
+                }
+                client.clear();
+                return;
+            }
+
             if (streq(queryPrefix.str(), "control"))
             {
                 if (httpHelper.isHttp())
                     client->setHttpMode(queryName, false, httpHelper);
 
-                bool aclupdate = strieq(queryName, "aclupdate"); //ugly
+                bool aclupdate = strieq(queryName.str(), "aclupdate"); //ugly
                 byte iptFlags = aclupdate ? ipt_caseInsensitive|ipt_fast : ipt_fast;
 
                 createQueryPTree(queryPT, httpHelper, rawText, iptFlags, (PTreeReaderOptions)(ptr_ignoreWhiteSpace|ptr_ignoreNameSpaces), queryName);
 
                 //IPropertyTree *root = queryPT;
-                if (!strchr(queryName, ':'))
+                if (!strchr(queryName.str(), ':'))
                 {
                     VStringBuffer fullname("control:%s", queryName.str()); //just easier to keep for debugging and internal checking
                     queryPT->renameProp("/", fullname);
@@ -1846,7 +1871,7 @@ readAnother:
                 Owned<IHpccProtocolResponse> protocol = createProtocolResponse(queryPT->queryName(), client, httpHelper, logctx, protocolFlags | HPCC_PROTOCOL_CONTROL, global->defaultXmlReadFlags);
                 sink->onControlMsg(msgctx, queryPT, protocol);
                 protocol->finalize(0);
-                if (streq(queryName, "lock") || streq(queryName, "childlock")) //don't reset startNs, lock time should be included
+                if (streq(queryName.str(), "lock") || streq(queryName.str(), "childlock")) //don't reset startNs, lock time should be included
                     goto readAnother;
             }
             else if (isStatus)
@@ -1877,6 +1902,8 @@ readAnother:
                 unsigned readFlags = (unsigned) global->defaultXmlReadFlags | ptr_ignoreNameSpaces;
                 readFlags &= ~ptr_ignoreWhiteSpace;
                 readFlags |= (whitespace == WhiteSpaceHandling::Strip ? ptr_ignoreWhiteSpace : ptr_none);
+
+                CCycleTimer xmlTimer;
                 try
                 {
                     createQueryPTree(queryPT, httpHelper, rawText.str(), ipt_caseInsensitive|ipt_fast, (PTreeReaderOptions)readFlags, queryName);
@@ -1889,9 +1916,15 @@ readAnother:
                 }
 
                 uid = NULL;
-                sanitizeQuery(queryPT, queryName, sanitizedText, httpHelper, uid, isBlind, isDebug);
+                Owned<IProperties> inlineTraceHeaders = createProperties(true);
+                sanitizeQuery(queryPT, queryName, sanitizedText, httpHelper, uid, isBlind, isDebug, inlineTraceHeaders);
 
-                msgctx->startSpan(uid, querySetName, queryName, httpHelper.queryRequestHeaders());
+                __uint64 timeProcessQueryText = xmlTimer.elapsedNs();
+
+                msgctx->startSpan(uid, querySetName, queryName, isHTTP ? httpHelper.queryRequestHeaders() : inlineTraceHeaders, &spanStartTimeStamp);
+
+                //This must be set after the startSpan - since that resets the stats in the logctx
+                logctx.noteStatistic(StTimeQueryConsume, timeProcessQueryText); // include in the span an complete lines.
 
                 if (!uid)
                     uid = "-";

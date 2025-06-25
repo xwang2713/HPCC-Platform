@@ -32,6 +32,7 @@
 #include "thgraphmaster.hpp"
 #include "thmfilemanager.hpp"
 #include "thgraphmanager.hpp"
+#include "dautils.hpp"
 
 
 interface ILoadedDllEntry;
@@ -73,6 +74,18 @@ public:
             total += nodeStats[n]->getValue(index);
         return total;
     }
+    stat_type getStatisticMax(StatisticKind kind)
+    {
+        stat_type result = 0;
+        unsigned index = mapping.getIndex(kind);
+        for (unsigned n=0; n < nodeStats.size(); n++) // NB: size is = queryClusterWidth()
+        {
+            stat_type value = nodeStats[n]->getValue(index);
+            if (value > result)
+                result = value;
+        }
+        return result;
+    }
 };
 
 class graphmaster_decl CThorEdgeCollection : public CThorStatsCollection
@@ -94,6 +107,8 @@ class graphmaster_decl CMasterGraph : public CGraphBase
     bool sentGlobalInit = false;
     CThorStatsCollection graphStats;
     CReplyCancelHandler activityInitMsgHandler, bcastMsgHandler, executeReplyMsgHandler;
+    AtomicShared<IFileReadPropertiesUpdater> fileReadPropsUpdater;
+    CriticalSection fileReadPropsUpdaterCrit;
 
     void sendQuery();
     void jobDone();
@@ -129,7 +144,8 @@ public:
     IThorResult *createResult(CActivityBase &activity, unsigned id, IThorGraphResults *results, IThorRowInterfaces *rowIf, ThorGraphResultType resultType, unsigned spillPriority=SPILL_PRIORITY_RESULT);
     IThorResult *createResult(CActivityBase &activity, unsigned id, IThorRowInterfaces *rowIf, ThorGraphResultType resultType, unsigned spillPriority=SPILL_PRIORITY_RESULT);
     IThorResult *createGraphLoopResult(CActivityBase &activity, IThorRowInterfaces *rowIf, ThorGraphResultType resultType, unsigned spillPriority=SPILL_PRIORITY_RESULT);
-
+    IFileReadPropertiesUpdater * queryFileReadPropsUpdater();
+    virtual void end() override;
 // IExceptionHandler
     virtual bool fireException(IException *e);
 // IThorChildGraph impl.
@@ -161,6 +177,7 @@ class graphmaster_decl CJobMaster : public CJobBase
     Owned<CSlaveMessageHandler> slaveMsgHandler;
     SocketEndpoint agentEp;
     CriticalSection sendQueryCrit, spillCrit;
+    graph_id currentSubGraphId = 0;
 
     void initNodeDUCache();
 
@@ -180,6 +197,10 @@ public:
     void saveSpills();
     bool go();
     void pause(bool abort);
+    void issueWorkerDebugCmd(const char *rawText, unsigned workerNum, std::function<void(unsigned, MemoryBuffer &mb)> responseFunc, unsigned debugInfoWorkerTimeoutMs);
+    void captureJobInfo(IConstWorkUnit &wu, JobInfoCaptureType flags);
+    void setCurrentSubGraphId(graph_id _subGraphId) { currentSubGraphId = _subGraphId; }
+    graph_id queryCurrentSubGraphId() const { return currentSubGraphId; }
 
     virtual IConstWorkUnit &queryWorkUnit() const
     {

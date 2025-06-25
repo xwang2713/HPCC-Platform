@@ -15,8 +15,9 @@
     limitations under the License.
 ############################################################################## */
 
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "platform.h"
 #include "portlist.h"
@@ -97,42 +98,6 @@ static const char *splitpath(const char *path,StringBuffer &head,StringBuffer &t
     if (!tail)
         throw MakeStringException(0, "Expecting xpath tail node in: %s", path);
     return tail;
-}
-
-// NB: there's strtoll under Linux
-static unsigned __int64 hextoll(const char *str, bool &error)
-{
-    unsigned len = strlen(str);
-    if (!len)
-    {
-        error = true;
-        return 0;
-    }
-
-    unsigned __int64 factor = 1;
-    unsigned __int64 rolling = 0;
-    char *ptr = (char *)str+len-1;
-    for (;;) {
-        char c = *ptr;
-        unsigned v;
-        if (isdigit(c))
-            v = c-'0';
-        else if (c>='A' && c<='F')
-            v = 10+(c-'A');
-        else if (c>='a' && c<='f')
-            v = 10+(c-'a');
-        else {
-            error = true;
-            return 0;
-        }
-        rolling += v * factor;
-        factor <<= 4;
-        if (ptr == str)
-            break;
-        --ptr;
-    }
-    error = false;
-    return rolling;
 }
 
 void setDaliConnectTimeoutMs(unsigned timeoutMs)
@@ -265,34 +230,24 @@ bool importFromFile(const char *path,const char *filename,bool add,StringBuffer 
 //=============================================================================
 
 
-bool erase(const char *path,bool backup,StringBuffer &out)
+bool erase(const char *path, bool backup, StringBuffer &out)
 {
-    StringBuffer head;
-    StringBuffer tmp;
-    const char *tail=splitpath(path,head,tmp);
-    Owned<IRemoteConnection> conn = querySDS().connect(head.str(),myProcessSession(),RTM_LOCK_WRITE, daliConnectTimeoutMs);
-    if (!conn) {
+    Owned<IRemoteConnection> conn = querySDS().connect(path, myProcessSession(), RTM_LOCK_WRITE, daliConnectTimeoutMs);
+    if (!conn)
+    {
         out.appendf("Could not connect to %s",path);
         return false;
     }
-    Owned<IPropertyTree> root = conn->getRoot();
-    Owned<IPropertyTree> child = root->getPropTree(tail);
-    if (!child) {
-        out.appendf("Couldn't find %s/%s",head.str(),tail);
-        return false;
-    }
-    if (backup) {
+    IPropertyTree *root = conn->queryRoot();
+    if (backup)
+    {
         StringBuffer bakname;
-        Owned<IFileIO> io = createUniqueFile(NULL,"daliadmin", "bak", bakname);
-        out.appendf("Saving backup of %s/%s to %s",head.str(),tail,bakname.str());
+        Owned<IFileIO> io = createUniqueFile(NULL, "daliadmin", "bak", bakname);
+        out.appendf("Saving backup of %s to %s", path, bakname.str());
         Owned<IFileIOStream> fstream = createBufferedIOStream(io);
-        toXML(child, *fstream);         // formatted (default)
+        toXML(root, *fstream);         // formatted (default)
     }
-    root->removeTree(child);
-    child.clear();
-    root.clear();
-    conn->commit();
-    conn->close();
+    conn->close(true);
     return true;
 }
 
@@ -517,7 +472,7 @@ bool dfspart(const char *lname, IUserDescriptor *userDesc, unsigned partnum, Str
 void dfsmeta(const char *filename,IUserDescriptor *userDesc, bool includeStorage)
 {
     //This function isn't going to work on a container system because it won't have access to the storage planes
-    initializeStorageGroups(true);
+    initializeStoragePlanes(true, true);
     ResolveOptions options = ROpartinfo|ROdiskinfo|ROsizes;
     if (includeStorage)
         options = options | ROincludeLocation;
@@ -2264,6 +2219,101 @@ void getxref(const char *dst)
     conn->close();
 }
 
+void checkFileSizeOne(IUserDescriptor *user, const char *lfn, bool fix)
+{
+    try
+    {
+        CDfsLogicalFileName dlfn;
+        dlfn.set(lfn);
+        Owned<IDistributedFile> dFile = queryDistributedFileDirectory().lookup(dlfn, user, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser, 30000); // 30 sec timeout
+        if (dFile)
+        {
+            if (dFile->querySuperFile())
+                WARNLOG("Skipping: file '%s' is a superfile", lfn);
+            else
+            {
+                bool fileLocked = false;
+                COnScopeExit ensureFileUnlock([&]() { if (fileLocked) dFile->unlockProperties(); });
+                unsigned numParts = dFile->numParts();
+                for (unsigned p=0; p<numParts; p++)
+                {
+                    IDistributedFilePart &part = dFile->queryPart(p);
+                    IPropertyTree &attrs = part.queryAttributes();
+                    if (!attrs.hasProp("@size"))
+                    {
+                        if (fix)
+                        {
+                            offset_t partSize;
+                            try
+                            {
+                                partSize = part.getFileSize(true, true);
+                                if (!fileLocked)
+                                {
+                                    // we lock the file once, so that the individual part lock/unlocks are effectively a NOP
+                                    dFile->lockProperties(30000);
+                                    fileLocked = true;
+                                    PROGLOG("File '%s' has missing @size attributes", lfn);
+                                }
+                                part.lockProperties(30000);
+                            }
+                            catch (IException *e)
+                            {
+                                EXCLOG(e);
+                                e->Release();
+                                continue;
+                            }
+                            COnScopeExit ensurePartUnlock([&]() { part.unlockProperties(); });
+                            PROGLOG("Part %u: Setting @size to %" I64F "u", p+1, partSize);
+                            attrs.setPropInt64("@size", partSize);
+                        }
+                        else
+                            PROGLOG("File '%s' missing @size on part %u", lfn, p+1);
+                    }
+                }
+            }
+        }
+        else
+            WARNLOG("File '%s' not found", lfn);
+    }
+    catch (IException *e)
+    {
+        EXCLOG(e);
+        e->Release();
+    }
+}
+
+void checkFileSize(IUserDescriptor *user, const char *lfnPattern, bool fix)
+{
+    if (containsWildcard(lfnPattern))
+    {
+        unsigned count = 0;
+        Owned<IDFAttributesIterator> iter = queryDistributedFileDirectory().getDFAttributesIterator(lfnPattern, user, true, false); // no supers
+        CCycleTimer timer;
+        if (iter->first())
+        {
+            while (true)
+            {
+                IPropertyTree &attr = iter->query();
+                const char *lfn = attr.queryProp("@name");
+                checkFileSizeOne(user, lfn, fix);
+                ++count;
+
+                if (!iter->next())
+                    break;
+                else if (timer.elapsedCycles() >= queryOneSecCycles()*10) // log every 10 secs
+                {
+                    PROGLOG("Processed %u files", count);
+                    timer.reset();
+                }
+            }
+        }
+        PROGLOG("Total files processed %u files", count);
+    }
+    else
+        checkFileSizeOne(user, lfnPattern, fix);
+}
+
+
 struct CTreeItem : public CInterface
 {
     String *tail;
@@ -2470,6 +2520,82 @@ void xmlSize(const char *filename, double pc)
         pexception("xmlSize", e);
         e->Release();
     }
+}
+
+void loadXMLTest(const char *filename, bool parseOnly, bool useLowMemPTree, bool saveFormattedXML, bool freePTree)
+{
+    OwnedIFile iFile = createIFile(filename);
+    OwnedIFileIO iFileIO = iFile->open(IFOread);
+    if (!iFileIO)
+    {
+        WARNLOG("File '%s' not found", filename);
+        return;
+    }
+
+    class CDummyPTreeMaker : public CSimpleInterfaceOf<IPTreeMaker>
+    {
+        StringBuffer xpath;
+        unsigned level = 0;
+    public:
+        virtual IPropertyTree *queryRoot() override { return nullptr; }
+        virtual IPropertyTree *queryCurrentNode() override { return nullptr; }
+        virtual void reset() override { }
+        virtual IPropertyTree *create(const char *tag) override { return nullptr; }
+        // IPTreeNotifyEvent impl.
+        virtual void beginNode(const char *tag, bool sequence, offset_t startOffset) override { }
+        virtual void newAttribute(const char *name, const char *value) override { }
+        virtual void beginNodeContent(const char *tag) override { }
+        virtual void endNode(const char *tag, unsigned length, const void *value, bool binary, offset_t endOffset) override { }
+    };
+
+    byte flags=ipt_none;
+    PTreeReaderOptions readFlags=ptr_ignoreWhiteSpace;
+    Owned<IPTreeMaker> iMaker;
+    if (!parseOnly)
+    {
+        PROGLOG("Creating property tree from file: %s", filename);
+        byte flags = ipt_none;
+        if (useLowMemPTree)
+        {
+            PROGLOG("Using low memory property trees");
+            flags = ipt_lowmem;
+        }
+        iMaker.setown(createPTreeMaker(flags));
+    }
+    else
+    {
+        PROGLOG("Reading property tree from file (without creating it): %s", filename);
+        iMaker.setown(new CDummyPTreeMaker());
+    }
+
+    offset_t fSize = iFileIO->size();
+    OwnedIFileIOStream stream = createIOStream(iFileIO);
+    OwnedIFileIOStream progressedIFileIOStream = createProgressIFileIOStream(stream, fSize, "Load progress", 1);
+    Owned<IPTreeReader> reader = createXMLStreamReader(*progressedIFileIOStream, *iMaker, readFlags);
+
+    ProcessInfo memInfo(ReadMemoryInfo);
+    __uint64 rss = memInfo.getActiveResidentMemory();
+    CCycleTimer timer;
+    reader->load();
+    memInfo.update(ReadMemoryInfo);
+    __uint64 rssUsed = memInfo.getActiveResidentMemory() - rss;
+    reader.clear();
+    progressedIFileIOStream.clear();
+    PROGLOG("Load took: %.2f - RSS consumed: %.2f MB", (float)timer.elapsedMs()/1000, (float)rssUsed/0x100000);
+
+    if (!parseOnly && saveFormattedXML)
+    {
+        assertex(iMaker->queryRoot());
+        StringBuffer outFilename(filename);
+        outFilename.append(".out.xml");
+        PROGLOG("Saving to %s", outFilename.str());
+        timer.reset();
+        saveXML(outFilename, iMaker->queryRoot(), 2);
+        PROGLOG("Save took: %.2f", (float)timer.elapsedMs()/1000);
+    }
+
+    if (!freePTree)
+        ::LINK(iMaker->queryRoot()); // intentionally leak (avoid time clearing up)
 }
 
 void translateToXpath(const char *logicalfile, DfsXmlBranchKind tailType)
@@ -3297,6 +3423,182 @@ void removeOrphanedGlobalVariables(bool dryrun, bool reconstruct)
     {
         cycle_t avgCycles = timer.elapsedCycles() / total;
         PROGLOG("%sChecked: [%u / %u] - deletes: %u, auxDeletes: %u, persists: %u. [Avg ms: %2.2f]", dryrun?"DRYRUN:":"", checked, total, deletes, auxDeletes, existingPersists, static_cast<unsigned>(cycle_to_microsec(avgCycles))/1000.0);
+    }
+}
+
+void cleanJobQueues(bool dryRun)
+{
+    Owned<IRemoteConnection> conn = querySDS().connect("/JobQueues", myProcessSession(), 0, SDS_LOCK_TIMEOUT);
+    if (!conn)
+    {
+        WARNLOG("Failed to connect to /JobQueues");
+        return;
+    }
+    Owned<IPropertyTreeIterator> queueIter = conn->queryRoot()->getElements("Queue");
+    ForEach(*queueIter)
+    {
+        IPropertyTree &queue = queueIter->query();
+        const char *name = queue.queryProp("@name");
+        if (isEmptyString(name)) // should not be blank, but guard
+            continue;
+        PROGLOG("Processing queue: %s", name);
+        VStringBuffer queuePath("/JobQueues/Queue[@name=\"%s\"]", name);
+        Owned<IRemoteConnection> queueConn = querySDS().connect(queuePath, myProcessSession(), RTM_LOCK_WRITE, SDS_LOCK_TIMEOUT);
+        IPropertyTree *queueRoot = queueConn->queryRoot();
+
+        Owned<IPropertyTreeIterator> clientIter = queueRoot->getElements("Client");
+        std::vector<IPropertyTree *> toRemove;
+        ForEach (*clientIter)
+        {
+            IPropertyTree &client = clientIter->query();
+            if (client.getPropInt("@connected") == 0)
+                toRemove.push_back(&client);
+        }
+        if (!dryRun)
+        {
+            for (auto &client: toRemove)
+                queue.removeTree(client);
+        }
+        PROGLOG("Job queue '%s': %s %u stale client entries", name, dryRun ? "dryrun, there are" : "removed", (unsigned)toRemove.size());
+        queueConn->commit();
+        queueConn.clear();
+    }
+}
+
+void cleanGeneratedDlls(bool dryRun, bool backup)
+{
+    PROGLOG("Gathering workunits for referencd generated dlls");
+    CCycleTimer timer;
+    Owned<IRemoteConnection> conn = querySDS().connect("/", myProcessSession(), 0, SDS_LOCK_TIMEOUT);
+    if (!conn)
+    {
+        WARNLOG("Failed to connect to /WorkUnits");
+        return;
+    }
+    IPropertyTree *root = conn->queryRoot();
+    IPropertyTree *wuidsTree = root->queryPropTree("WorkUnits");
+    if (!wuidsTree)
+    {
+        PROGLOG("No WorkUnits found");
+        return;
+    }
+    Owned<IPropertyTreeIterator> wuidIter = wuidsTree->getElements("*");
+    std::unordered_set<std::string> referencedGDlls;
+    ForEach(*wuidIter)
+    {
+        IPropertyTree &wuid = wuidIter->query();
+        Owned<IPropertyTreeIterator> gdIter = wuid.getElements("Query/Associated/File[@type='dll']");
+        ForEach(*gdIter)
+        {
+            IPropertyTree &gd = gdIter->query();
+            const char *fullPath = gd.queryProp("@filename");
+            const char *filename = pathTail(fullPath);
+            if (filename)
+                referencedGDlls.emplace(filename);
+        }
+    }
+    PROGLOG("Found %u workunits that reference generated dlls, took: %u ms", (unsigned)referencedGDlls.size(), timer.elapsedMs());
+    PROGLOG("Scanning GeneratedDlls");
+    timer.reset();
+    IPropertyTree *generatedDllsTree = root->queryPropTree("GeneratedDlls");
+    if (!generatedDllsTree)
+    {
+        PROGLOG("No GeneratedDlls found");
+        return;
+    }
+    std::vector<IPropertyTree *> gDllsToRemove;
+    unsigned totalGDlls = 0;
+    Owned<IPropertyTreeIterator> gDlls = generatedDllsTree->getElements("*");
+    ForEach(*gDlls)
+    {
+        ++totalGDlls;
+        IPropertyTree &gDll = gDlls->query();
+        const char *name = gDll.queryProp("@name");
+        if (referencedGDlls.find(name) == referencedGDlls.end())
+            gDllsToRemove.push_back(&gDll);
+    }
+    PROGLOG("Found %u GeneratedDlls, %u not referenced, took: %u ms", totalGDlls, (unsigned)gDllsToRemove.size(), timer.elapsedMs());
+    if (!dryRun)
+    {
+        if (backup)
+        {
+            StringBuffer bakName;
+            Owned<IFileIO> iFileIO = createUniqueFile(NULL, "daliadmin_generateddlls", "bak", bakName);
+            if (!iFileIO)
+                throw makeStringException(0, "Failed to create backup file");
+            PROGLOG("Saving backup of GeneratedDlls to %s", bakName.str());
+            saveXML(*iFileIO, generatedDllsTree, 2);
+        }
+        PROGLOG("Deleting %u unreferenced GeneratedDlls", (unsigned)gDllsToRemove.size());
+        timer.reset();
+        for (auto &item: gDllsToRemove)
+            generatedDllsTree->removeTree(item);
+        PROGLOG("Removed %u unreferenced GeneratedDlls, took: %u ms", (unsigned)gDllsToRemove.size(), timer.elapsedMs());
+    }
+}
+
+
+void cleanStaleGroups(const char *groupPattern, bool dryRun)
+{
+    PROGLOG("Collecting group names from logical files");
+    Owned<IRemoteConnection> conn = querySDS().connect("/Files", myProcessSession(), 0, daliConnectTimeoutMs);
+
+    std::unordered_set<std::string> fileGroups;
+    Owned<IPropertyTreeIterator> filesIter = conn->queryRoot()->getElements("//File", iptiter_remote);
+    ForEach(*filesIter)
+    {
+        IPropertyTree &file = filesIter->query();
+        const char *group = file.queryProp("@group");
+        if (!isEmptyString(group))
+            fileGroups.insert(group);
+    }
+    PROGLOG("Found %zu unique groups in /Files", fileGroups.size());
+    conn.clear();
+
+    PROGLOG("Collecting group names from /Groups");
+    conn.setown(querySDS().connect("/Groups", myProcessSession(), dryRun ? 0 : RTM_LOCK_WRITE, daliConnectTimeoutMs));
+    if (!conn)
+    {
+        PROGLOG("Failed to connect to /Groups");
+        return;
+    }
+
+    std::unordered_set<std::string> groupToDelete;
+
+    StringBuffer xpath("Group");
+    if (!isEmptyString(groupPattern))
+        xpath.appendf("[@name=~'%s']", groupPattern);
+    Owned<IPropertyTreeIterator> publishedGroupIter = conn->queryRoot()->getElements(xpath, iptiter_remote);
+    ForEach(*publishedGroupIter)
+    {
+        IPropertyTree &file = publishedGroupIter->query();
+        const char *group = file.queryProp("@name");
+        if (!isEmptyString(group))
+        {
+            if (fileGroups.find(group) == fileGroups.end())
+            {
+                PROGLOG("Group %s is published but not used by any file", group);
+                groupToDelete.insert(group);
+            }
+        }
+    }
+    PROGLOG("Found %zu groups in /Groups that are not referenced by any file", groupToDelete.size());
+
+    if (!dryRun)
+    {
+        size_t deleteCount = 0;
+        PROGLOG("Deleting %zu unreferenced groups", groupToDelete.size());
+        for (auto &group : groupToDelete)
+        {
+            VStringBuffer xpath("Group[@name='%s']", group.c_str());
+            if (conn->queryRoot()->removeProp(xpath))
+                deleteCount++;
+            else
+                WARNLOG("Failed to remove group: %s", group.c_str());
+        }
+        PROGLOG("Committing changes");
+        conn->commit();
+        PROGLOG("Complete - %zu groups deleted", deleteCount);
     }
 }
 

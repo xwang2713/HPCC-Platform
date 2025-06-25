@@ -30,6 +30,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 //-------------------------------------------------------------------------------------------------------------
 inline bool strieq(const char* s,const char* t) { return stricmp(s,t)==0; }
@@ -2911,7 +2912,7 @@ void EspMessageInfo::write_esp()
     if (hasMapInfo())
     {
         outf("\tIEspContext* ctx = rpc_resp.queryContext();\n");
-        outf("\tdouble clientVer= ctx ? ctx->getClientVersion() : -1; /* no context gets everything */\n");
+        outf("\t[[maybe_unused]] double clientVer= ctx ? ctx->getClientVersion() : -1; /* no context gets everything */\n");
     }
 
     outf("\trpc_resp.set_ns(%s);\n", getMetaString("ns_var", "\"\""));
@@ -3039,7 +3040,7 @@ void EspMessageInfo::write_esp()
             outf("\t\tC%s::serializeContent(ctx,buffer);\n", parent);
 
         if (hasMapInfo())
-            outf("\t\tdouble clientVer = ctx ? ctx->getClientVersion() : -1;\n");
+            outf("\t\t[[maybe_unused]] double clientVer = ctx ? ctx->getClientVersion() : -1;\n");
 
         bool encodeJSON = true;
         const char * name = getName();
@@ -3063,7 +3064,7 @@ void EspMessageInfo::write_esp()
         if (parent)
             outf("\tC%s::serializeContent(ctx,buffer);\n", parent);
         if (hasMapInfo())
-            outf("\tdouble clientVer = ctx ? ctx->getClientVersion() : -1;\n");
+            outf("\t[[maybe_unused]] double clientVer = ctx ? ctx->getClientVersion() : -1;\n");
         //attributes first
         int attribCount=0;
         for (pi=getParams();pi!=NULL;pi=pi->next)
@@ -3166,7 +3167,7 @@ void EspMessageInfo::write_esp()
     // -- versioning
     if (hasMapInfo())
     {
-        outf("\tdouble clientVer = ctx ? ctx->getClientVersion() : -1;\n");
+        outf("\t[[maybe_unused]] double clientVer = ctx ? ctx->getClientVersion() : -1;\n");
     }
 
     // not respecting nil_remove: backward compatible
@@ -3931,7 +3932,7 @@ void EspServInfo::write_esp_binding_ipp()
 {
     EspMethodInfo *mthi=NULL;
 
-    outf("\n\nclass C%sSoapBinding : public CHttpSoapBinding\n", name_);
+    outf("\n\nclass C%sSoapBinding : public CHttpSoapHidlBinding\n", name_);
     outs("{\npublic:\n");
 
     //dom
@@ -3940,6 +3941,7 @@ void EspServInfo::write_esp_binding_ipp()
 
     outs("\tvirtual void init_strings();\n");
     outs("\tvoid init_metrics();\n");
+    outs("\tvoid init_maps();\n");
 
     outs("\tvirtual unsigned getCacheMethodCount(){return m_cacheMethodCount;}\n");
 
@@ -3957,9 +3959,6 @@ void EspServInfo::write_esp_binding_ipp()
 
     //method ==> isValidServiceName
     outs("\tbool isValidServiceName(IEspContext &context, const char *name);\n");
-
-    //method ==> qualifyMethodName
-    outs("\tbool qualifyMethodName(IEspContext &context, const char *methname, StringBuffer *methQName);\n");
 
     //method ==> qualifyServiceName
     outs("\tbool qualifyServiceName(IEspContext &context, const char *servname, const char *methname, StringBuffer &servQName, StringBuffer *methQName);\n");
@@ -4037,27 +4036,16 @@ void EspServInfo::write_esp_binding_ipp()
 
     //
     // Create scaled histogram metric member variables enabled methods
-    // Only output the ifdef if needed
-    bool needIfDef = true;
+    // Always output, even if they are never initialised to prevent problems
+    // where the header is included with inconsistent #defines
     for (mthi = methods; mthi != NULL; mthi = mthi->next)
     {
         if (mthi->isExecutionProfilingEnabled())
         {
-            if (needIfDef)
-            {
-                outf("#ifdef ESP_SERVICE_%s\n", name_);
-                needIfDef = false;
-            }
             outs("\tstd::shared_ptr<hpccMetrics::ScaledHistogramMetric> ");
             outs(mthi->getExecutionProfilingMetricVariableName());
             outs(";\n");
         }
-    }
-
-    // If false, then ifdef was output, close it
-    if (!needIfDef)
-    {
-        outf("#endif\n");
     }
 
     outs("};\n\n");
@@ -4080,16 +4068,17 @@ void EspServInfo::write_esp_binding(const char *packagename)
     StrBuffer servicefeatureurl;
     getMetaStringValue(servicefeatureurl,FEATEACCESSATTRIBUTE);
 
-    outf("\nC%sSoapBinding::C%sSoapBinding(http_soap_log_level level):CHttpSoapBinding(NULL, NULL, NULL, level)\n", name_, name_);
+    outf("\nC%sSoapBinding::C%sSoapBinding(http_soap_log_level level):CHttpSoapHidlBinding(NULL, NULL, NULL, level)\n", name_, name_);
     outf("{\n");
     outf("\tinit_strings();\n");
     outf("\tsetWsdlVersion(%s);\n", wsdlVer.str());
     outf("}\n");
 
-    outf("\nC%sSoapBinding::C%sSoapBinding(IPropertyTree* cfg, const char *bindname, const char *procname, http_soap_log_level level):CHttpSoapBinding(cfg, bindname, procname, level)\n", name_, name_);
+    outf("\nC%sSoapBinding::C%sSoapBinding(IPropertyTree* cfg, const char *bindname, const char *procname, http_soap_log_level level):CHttpSoapHidlBinding(cfg, bindname, procname, level)\n", name_, name_);
     outf("{\n");
     outf("\tinit_strings();\n");
     outf("\tinit_metrics();\n");
+    outf("\tinit_maps();\n");
     outf("\tsetWsdlVersion(%s);\n", wsdlVer.str());
     outf("}\n");
 
@@ -4160,6 +4149,27 @@ void EspServInfo::write_esp_binding(const char *packagename)
     }
     outs("}\n");
 
+    // init_maps implementation
+    outf("\nvoid C%sSoapBinding::init_maps()\n", name_);
+    outs("{\n");
+    outs("\tstd::initializer_list<const char *> names = {\n");
+    for (mthi=methods; mthi!= nullptr; mthi=mthi->next)
+    {
+        outf("\t\t\"%s\"", mthi->getName());
+        if (mthi->next != nullptr)
+        {
+            outs(",\n");
+        }
+        else
+        {
+            outs("\n");
+        }
+    }
+    outs("\t};\n");
+
+    outs("\tregisterMethodNames(names);\n");
+    outs("}");
+
     outf("\nint C%sSoapBinding::processRequest(IRpcMessage* rpc_call, IRpcMessage* rpc_response)\n", name_);
     outs("{\n");
     outs("\tif(rpc_call == NULL || rpc_response == NULL)\n\t\treturn -1;\n\n");
@@ -4167,7 +4177,7 @@ void EspServInfo::write_esp_binding(const char *packagename)
     outs(1, "IEspContext *ctx=rpc_call->queryContext();\n");
     outs(1, "DBGLOG(\"Client version: %g\", ctx->getClientVersion());\n");
     outs(1, "StringBuffer serviceName;\n");
-    outs(1, "double clientVer=(ctx) ? ctx->getClientVersion() : 0.0;\n");
+    outs(1, "[[maybe_unused]] double clientVer=(ctx) ? ctx->getClientVersion() : 0.0;\n");
     outs(1, "qualifyServiceName(*ctx, ctx->queryServiceName(NULL), NULL, serviceName, NULL);\n");
     outs(1, "CRpcCall* thecall = static_cast<CRpcCall *>(rpc_call);\n"); //interface must be from a class derived from CRpcCall
     outs(1, "CRpcResponse* response = static_cast<CRpcResponse*>(rpc_response);\n");  //interface must be from a class derived from CRpcResponse
@@ -4244,8 +4254,12 @@ void EspServInfo::write_esp_binding(const char *packagename)
             if (hasMinVer)
             {
                 outf("\t\t\tif (clientVer!=-1.0 && clientVer<%s)\n", minVer.str());
-                outs("\t\t\t\tthrow MakeStringException(-1, \"Client version is too old, please update your client application.\");");
+                outs("\t\t\t\tthrow MakeStringException(-1, \"Client version is too old, please update your client application.\");\n");
             }
+
+            if (mthi->getMetaInt("do_not_log",0))
+                outs(2, "context.queryRequestParameters()->setProp(\"do_not_log\",1);\n");
+
             outs("\t\t\tresponse->set_status(SOAP_OK);\n");
 
             if (servicefeatureurl.length() != 0)
@@ -4358,30 +4372,6 @@ void EspServInfo::write_esp_binding(const char *packagename)
     outs(1, "else\n");
     outs(2,     "return (hasSubService(context, name));\n");
     outs("}\n");
-
-    //method ==> qualifyMethodName
-    outf("\nbool C%sSoapBinding::qualifyMethodName(IEspContext &context, const char *methname, StringBuffer *methQName)\n", name_);
-    outs("{\n");
-
-    outs("\tif (!methname || !*methname)\n");
-    outs("\t{\n");
-    outs("\t\tif (methQName!=NULL)\n");
-    outs("\t\t\tmethQName->clear();\n");
-    outs("\t\treturn true;\n");
-    outs("\t}\n");
-
-    for (mthi=methods;mthi!=NULL;mthi=mthi->next)
-    {
-        outf("\tif (Utils::strcasecmp(methname, \"%s\")==0)\n", mthi->getName());
-        outs("\t{\n");
-        outs("\t\tif (methQName!=NULL)\n");
-        outf("\t\t\tmethQName->set(\"%s\");\n", mthi->getName());
-        outs("\t\treturn true;\n");
-        outs("\t}\n");
-    }
-    outs("\treturn false;\n");
-    outs("}\n");
-
 
     //method ==> qualifyServiceName
     outf("\nbool C%sSoapBinding::qualifyServiceName(IEspContext &context, const char *servname, const char *methname, StringBuffer &servQName, StringBuffer *methQName)\n", name_);
@@ -4653,6 +4643,8 @@ void EspServInfo::write_esp_binding(const char *packagename)
             {
                 if (servicefeatureurl.length() != 0)
                     outf("\t\t\tif(accessmap.ordinality()>0)\n\t\t\t\tonFeaturesAuthorize(context, accessmap, \"%s\", \"%s\");\n", name_, mthi->getName());
+                if (mthi->getMetaInt("do_not_log",0))
+                    outf("\t\t\t\tcontext.queryRequestParameters()->setProp(\"do_not_log\",1);\n");
                 outf("\t\t\tiserv->on%s(*request->queryContext(), *esp_request.get(), *resp);\n", mthi->getName());
                 if (clearCacheGroupIDs.length() > 0)
                     outf("\t\t\tclearCacheByGroupID(\"%s\");\n", clearCacheGroupIDs.str());
@@ -4706,7 +4698,7 @@ void EspServInfo::write_esp_binding(const char *packagename)
             outs("\t\t\telse\n");
             outs("\t\t\t{\n");
 
-            outs("\t\t\t\tIProperties *props=request->queryParameters();\n");
+            outs("\t\t\t\t[[maybe_unused]] IProperties *props=request->queryParameters();\n");
             outs("\t\t\t\tif (skipXslt(context))\n");
             outs("\t\t\t\t{\n");
             outs("\t\t\t\t\tMemoryBuffer content;\n");
@@ -4914,12 +4906,15 @@ void EspServInfo::write_esp_client_ipp()
     outs("\tIMPLEMENT_IINTERFACE;\n\n");
 
     outf("\tCClient%s()\n\t{\n", name_);
-    outs("\t\tsoap_reqid=0;\n\t");
-    outf("\t\tsoap_action.append(\"%s\");\n\t", name_);
-    const char *ver = getMetaString("default_client_version", NULL);
+    outs("\t\tsoap_reqid=0;\n");
+    outf("\t\tsoap_action.append(\"%s\");\n", name_);
+    // use latest 'version' unless 'generated_client_version' provided
+    const char *ver = getMetaString("generated_client_version", nullptr);
+    if (!ver || !*ver)
+        ver = getMetaString("version", nullptr);
     if (ver && *ver)
-        outf("\t\tsoap_action.append(\"?ver_=\").append(%s);\n\t", ver);
-    outf("}\n\tvirtual ~CClient%s(){}\n", name_);
+        outf("\t\tsoap_action.append(\"?ver_=\").append(%s);\n", ver);
+    outf("\t}\n\tvirtual ~CClient%s(){}\n", name_);
 
     outs("\tvirtual void setProxyAddress(const char *address)\n\t{\n\t\tsoap_proxy.set(address);\n\t}\n");
     outs("\tvirtual void addServiceUrl(const char *url)\n\t{\n\t\tsoap_url.set(url);\n\t}\n");
@@ -5526,7 +5521,12 @@ void HIDLcompiler::write_esp_ex_ipp()
 
     outf("#ifndef %s_EX_ESPGEN_INCLUDED\n", packagename);
     outf("#define %s_EX_ESPGEN_INCLUDED\n\n", packagename);
-    outs("#pragma warning( disable : 4786)\n\n");
+    outs("#ifdef _MSC_VER\n");
+    outs("#pragma warning( disable : 4786)\n");
+    outs("#else\n");
+    outs("#pragma GCC diagnostic push\n");
+    outs("#pragma GCC diagnostic ignored \"-Woverloaded-virtual\"\n");
+    outs("#endif\n\n");
     outs("//JLib\n");
     outs("#include \"jliball.hpp\"\n");
     outs("\n");
@@ -5539,6 +5539,7 @@ void HIDLcompiler::write_esp_ex_ipp()
     outs("#include \"SOAP/Platform/soapmacro.hpp\"\n");
     outs("#include \"SOAP/Platform/soapservice.hpp\"\n");
     outs("#include \"SOAP/Platform/soapparam.hpp\"\n");
+    outs("#include \"SOAP/Platform/soaphidlbind.hpp\"\n");
     outs("#include \"SOAP/client/soapclient.hpp\"\n");
     outs("\n\n");
 
@@ -5569,6 +5570,12 @@ void HIDLcompiler::write_esp_ex_ipp()
 
     outs("}\n");
     outf("using namespace %s;\n\n", packagename);
+
+    outs("#ifdef _MSC_VER\n");
+    outs("#pragma pop\n");
+    outs("#else\n");
+    outs("#pragma GCC diagnostic pop\n");
+    outs("#endif\n");
 
     outf("#endif //%s_ESPGEN_INCLUDED\n", packagename);
 }

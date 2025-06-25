@@ -92,7 +92,7 @@ class CSocketRowStream: public CSimpleInterface, implements IRowStream
     Linked<IEngineRowAllocator> allocator;
     Linked<IOutputRowDeserializer> deserializer;
     Linked<ISocket> socket;
-    Owned<ISerialStream> bufferStream;
+    Owned<IBufferedSerialInputStream> bufferStream;
     CThorStreamDeserializerSource dsz;
     unsigned id;
     bool stopped;
@@ -160,7 +160,7 @@ public:
 #endif
             }
             catch (IException *e) {
-                EXCLOG(e,"CSocketRowStream::stop");
+                IERRLOG(e,"CSocketRowStream::stop");
                 e->Release();
             }
         }
@@ -238,7 +238,7 @@ public:
         }
     }
 
-    void putRow(const void *row)
+    inline void _putRow(const void *row, bool _release)
     {
         if (row==NULL) 
             stop();
@@ -251,8 +251,20 @@ public:
             if (outbuf.length()>bufsize) 
                 flush();
         }
-        ReleaseThorRow(row);
+        if (_release)
+            ReleaseThorRow(row);
     }
+
+    void putRow(const void *row)
+    {
+        _putRow(row, true);
+    }
+
+    void writeRow(const void *row)
+    {
+        _putRow(row, false);
+    }
+
     void flush()
     {
         size32_t l = outbuf.length();
@@ -270,6 +282,9 @@ public:
                 preallocated = l;  // assume the worst
             initbuf = true;
         }
+    }
+    virtual void noteStopped() override
+    {
     }
     virtual offset_t getPosition()
     {

@@ -50,8 +50,6 @@
 #include "dafdesc.hpp"
 #include "rmtfile.hpp"
 
-#include "slavmain.hpp"
-
 #ifdef _CONTAINERIZED
 #include "dafsserver.hpp"
 #endif
@@ -79,6 +77,7 @@ static const unsigned defaultStrandBlockSize = 512;
 static const unsigned defaultForceNumStrands = 0;
 
 static const char **cmdArgs;
+static ILogMsgHandler *logHandler = nullptr;
 
 static void replyError(unsigned errorCode, const char *errorMsg)
 {
@@ -119,7 +118,7 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
 {
     StringBuffer slfStr;
     StringBuffer masterStr;
-    LOG(MCdebugProgress, "registering %s - master %s",slfEp.getEndpointHostText(slfStr).str(),masterEp.getEndpointHostText(masterStr).str());
+    PROGLOG("registering %s - master %s",slfEp.getEndpointHostText(slfStr).str(),masterEp.getEndpointHostText(masterStr).str());
     try
     {
         SocketEndpoint ep = masterEp;
@@ -128,11 +127,14 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
         CMessageBuffer msg;
         msg.append(mySlaveNum);
         if (isContainerized())
+        {
             msg.append(k8s::queryMyPodName());
+            msg.append(k8s::queryMyContainerName());
+        }
         queryWorldCommunicator().send(msg, masterNode, MPTAG_THORREGISTRATION);
         if (!queryWorldCommunicator().recv(msg, masterNode, MPTAG_THORREGISTRATION))
             return false;
-        PROGLOG("Initialization received");
+        DBGLOG("Initialization received");
         unsigned vmajor, vminor;
         msg.read(vmajor);
         msg.read(vminor);
@@ -151,6 +153,15 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
 
         Owned<IPropertyTree> mergedComponentConfig = createPTreeFromIPT(globals);
         mergeConfiguration(*mergedComponentConfig, *masterComponentConfig);
+        if (masterComponentConfig->hasProp("logging/@thorworkerdetail"))
+        {
+            unsigned workerDetailLevel = masterComponentConfig->getPropInt("logging/@thorworkerdetail");
+            mergedComponentConfig->setPropInt("logging/@detail", workerDetailLevel);
+            ILogMsgFilter *existingLogFilter = queryLogMsgManager()->queryMonitorFilter(logHandler);
+            dbgassertex(existingLogFilter);
+            if (existingLogFilter->queryMaxDetail() != workerDetailLevel)
+                verifyex(queryLogMsgManager()->changeMonitorFilterOwn(logHandler, getCategoryLogMsgFilter(existingLogFilter->queryAudienceMask(), existingLogFilter->queryClassMask(), workerDetailLevel)));
+        }
         replaceComponentConfig(mergedComponentConfig, masterGlobalConfig);
         globals.set(mergedComponentConfig);
 #ifdef _DEBUG
@@ -164,8 +175,8 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
         }
 #endif
         unsigned channelsPerSlave = globals->getPropInt("@channelsPerSlave", 1);
-        unsigned localThorPortInc = globals->getPropInt("@localThorPortInc", DEFAULT_SLAVEPORTINC);
-        unsigned slaveBasePort = globals->getPropInt("@slaveport", DEFAULT_THORSLAVEPORT);
+        unsigned localThorPortInc = globals->getPropInt("@localThorPortInc", DEFAULT_WORKERPORTINC);
+        unsigned slaveBasePort = globals->getPropInt("@slaveport", DEFAULT_THORWORKERPORT);
         setupCluster(masterNode, processGroup, channelsPerSlave, slaveBasePort, localThorPortInc);
 
         if (vmajor != THOR_VERSION_MAJOR || vminor != THOR_VERSION_MINOR)
@@ -184,6 +195,7 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
         getExpertOptPath(nullptr, xpath); // 'expert' in container world, or 'Debug' in bare-metal
         ensurePTree(globals, xpath);
         unsigned numStrands, blockSize;
+        workunitGraphCacheEnabled = getExpertOptBool("workunitGraphCacheEnabled", workunitGraphCacheEnabled);
         getExpertOptPath("forceNumStrands", xpath.clear());
         if (globals->hasProp(xpath))
             numStrands = globals->getPropInt(xpath);
@@ -200,7 +212,7 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
             blockSize = defaultStrandBlockSize;
             globals->setPropInt(xpath, defaultStrandBlockSize);
         }
-        PROGLOG("Strand defaults: numStrands=%u, blockSize=%u", numStrands, blockSize);
+        DBGLOG("Strand defaults: numStrands=%u, blockSize=%u", numStrands, blockSize);
 
         const char *_masterBuildTag = globals->queryProp("@masterBuildTag");
         const char *masterBuildTag = _masterBuildTag?_masterBuildTag:"no build tag";
@@ -215,26 +227,26 @@ static bool RegisterSelf(SocketEndpoint &masterEp)
             return false;
 #endif
         }
-        readUnderlyingType<mptag_t>(msg, masterSlaveMpTag);
+        readUnderlyingType<mptag_t>(msg, managerWorkerMpTag);
         readUnderlyingType<mptag_t>(msg, kjServiceMpTag);
 
         msg.clear();
         if (!queryNodeComm().send(msg, 0, MPTAG_THORREGISTRATION))
             return false;
-        PROGLOG("Registration confirmation sent");
+        DBGLOG("Registration confirmation sent");
 
         if (!queryNodeComm().recv(msg, 0, MPTAG_THORREGISTRATION))
             return false;
-        PROGLOG("Registration confirmation receipt received");
+        DBGLOG("Registration confirmation receipt received");
 
         ::masterNode = LINK(masterNode);
 
-        PROGLOG("verifying mp connection to rest of cluster");
+        DBGLOG("verifying mp connection to rest of cluster");
         if (!queryNodeComm().verifyAll())
             OERRLOG("Failed to connect to all nodes");
         else
-            PROGLOG("verified mp connection to rest of cluster");
-        LOG(MCdebugProgress, "registered %s",slfStr.str());
+            DBGLOG("verified mp connection to rest of cluster");
+        PROGLOG("registered %s",slfStr.str());
     }
     catch (IException *e)
     {
@@ -258,7 +270,7 @@ bool UnregisterSelf(IException *e)
 
     StringBuffer slfStr;
     slfEp.getEndpointHostText(slfStr);
-    LOG(MCdebugProgress, "Unregistering slave : %s", slfStr.str());
+    DBGLOG("Unregistering slave : %s", slfStr.str());
     try
     {
         CMessageBuffer msg;
@@ -266,16 +278,17 @@ bool UnregisterSelf(IException *e)
         serializeException(e, msg); // NB: allows exception to be NULL
         if (!queryWorldCommunicator().send(msg, masterNode, MPTAG_THORREGISTRATION, 60*1000))
         {
-            LOG(MCerror, "Failed to unregister slave : %s", slfStr.str());
+            IERRLOG("Failed to unregister slave : %s", slfStr.str());
             return false;
         }
-        LOG(MCdebugProgress, "Unregistered slave : %s", slfStr.str());
+        DBGLOG("Unregistered slave : %s", slfStr.str());
         isRegistered = false;
         return true;
     }
-    catch (IException *e) {
+    catch (IException *e)
+    {
         if (!jobListenerStopped)
-            FLLOG(MCexception(e), e,"slave unregistration error");
+            IERRLOG(e, "slave unregistration error");
         e->Release();
     }
     return false;
@@ -283,10 +296,22 @@ bool UnregisterSelf(IException *e)
 
 bool ControlHandler(ahType type)
 {
+    static bool recvdSig = false;
+    if (recvdSig)
+    {
+        if (ahInterrupt == type)
+            _exit(128+SIGINT);
+        else
+            _exit(128+SIGTERM);
+    }
+    recvdSig = true;
+    raiseSignalInFuture(SIGTERM, 20);
+
     if (ahInterrupt == type)
-        LOG(MCdebugProgress, "CTRL-C detected");
+        DBGLOG("CTRL-C detected");
     else if (!jobListenerStopped)
-        LOG(MCdebugProgress, "SIGTERM detected");
+        DBGLOG("SIGTERM detected");
+
     bool unregOK = false;
     if (!jobListenerStopped)
     {
@@ -294,6 +319,8 @@ bool ControlHandler(ahType type)
             unregOK = UnregisterSelf(NULL);
         abortSlave();
     }
+    if (recvShutdown)
+        return false;
     return !unregOK;
 }
 
@@ -313,9 +340,8 @@ public:
 #endif
 
 
-ILogMsgHandler *startSlaveLog()
+void startSlaveLog()
 {
-    ILogMsgHandler *logHandler = nullptr;
     if (!isContainerized())
     {
         StringBuffer fileName("thorslave");
@@ -330,7 +356,7 @@ ILogMsgHandler *startSlaveLog()
         queryLogMsgManager()->removeMonitor(queryStderrLogMsgHandler());
 #endif
 
-        LOG(MCdebugProgress, "Opened log file %s", lf->queryLogFileSpec());
+        DBGLOG("Opened log file %s", lf->queryLogFileSpec());
     }
     else
     {
@@ -345,8 +371,7 @@ ILogMsgHandler *startSlaveLog()
     }
 
     //setupContainerizedStorageLocations();
-    LOG(MCdebugProgress, "Build %s", hpccBuildInfo.buildTag);
-    return logHandler;
+    PROGLOG("Build %s", hpccBuildInfo.buildTag);
 }
 
 int main( int argc, const char *argv[]  )
@@ -389,8 +414,15 @@ int main( int argc, const char *argv[]  )
         cmdArgs = argv+1;
 #ifdef _CONTAINERIZED
         globals.setown(loadConfiguration(thorDefaultConfigYaml, argv, "thor", "THOR", nullptr, nullptr, nullptr, false));
+        // pickup the default logging level from the thor default config yaml
+        if (globals->hasProp("logging/@thorworkerdetail"))
+        {
+            unsigned workerDetailLevel = globals->getPropInt("logging/@thorworkerdetail");
+            globals->setPropInt("logging/@detail", workerDetailLevel);
+            // NB: may be overridden by Thor config settings during RegisterSelf
+        }
 #else
-        globals.setown(loadConfiguration(globals, argv, "thor", "THOR", nullptr, nullptr, nullptr, false));
+        globals.setown(loadConfiguration(globals, nullptr, argv, "thor", "THOR", nullptr, nullptr, nullptr, false));
 #endif
 
         // NB: the thor configuration is serialized from the manager and only available after RegisterSelf
@@ -403,7 +435,7 @@ int main( int argc, const char *argv[]  )
         mySlaveNum = globals->getPropInt("@slavenum", NotFound);
         if (!isContainerized() && (NotFound == mySlaveNum))
             throw makeStringException(0, "Slave number not specified (@slavenum)");
-        ILogMsgHandler *slaveLogHandler = startSlaveLog();
+        startSlaveLog(); // configures 'logHandler'
 
         // In container world, SLAVE= will not be used
         const char *slave = globals->queryProp("@slave");
@@ -426,20 +458,20 @@ int main( int argc, const char *argv[]  )
 
 #ifdef USE_MP_LOG
         startLogMsgParentReceiver();
-        LOG(MCdebugProgress, "MPServer started on port %d", getFixedPort(TPORT_mp));
+        DBGLOG("MPServer started on port %d", getFixedPort(TPORT_mp));
 #endif
 
         SocketEndpoint masterEp(master);
         localHostToNIC(masterEp);
         setMasterPortBase(masterEp.port);
-        markNodeCentral(masterEp);
 
         if (RegisterSelf(masterEp))
         {
             if (globals->getPropBool("@MPChannelReconnect"))
                 getMPServer()->setOpt(mpsopt_channelreopen, "true");
 
-            if (getExpertOptBool("slaveDaliClient"))
+            // slaveDaliClient option deprecated, but maintained for compatibility
+            if (getExpertOptBool("allowDaliAccess", getExpertOptBool("slaveDaliClient")))
                 enableThorSlaveAsDaliClient();
 
             IDaFileSrvHook *daFileSrvHook = queryDaFileSrvHook();
@@ -455,7 +487,7 @@ int main( int argc, const char *argv[]  )
             if (err)
             {
                 IException *e = makeErrnoExceptionV(-1, "Failed to change dir to '%s'", thorPath.str());
-                FLLOG(MCexception(e), e);
+                OERRLOG(e);
                 throw e;
             }
 
@@ -464,7 +496,15 @@ int main( int argc, const char *argv[]  )
 
             StringBuffer str;
             if (globals->getProp("@externalProgDir", str.clear()))
-                _mkdir(str.str());
+            {
+                int err = _mkdir(str.str());
+                if (err)
+                {
+                    IException *e = makeErrnoExceptionV(-1, "Failed to create dir '%s'", str.str());
+                    OERRLOG(e);
+                    throw e;
+                }
+            }
             else
                 globals->setProp("@externalProgDir", thorPath);
 
@@ -500,22 +540,22 @@ int main( int argc, const char *argv[]  )
                     str.swapWith(uniqSoPath);
                     globals->setProp("@query_so_dir", str.str());
                 }
-                PROGLOG("Using querySo directory: %s", str.str());
+                DBGLOG("Using querySo directory: %s", str.str());
                 recursiveCreateDirectory(str.str());
             }
 
             useMemoryMappedRead(globals->getPropBool("@useMemoryMappedRead"));
 
-            LOG(MCdebugProgress, "ThorSlave Version LCR - %d.%d started",THOR_VERSION_MAJOR,THOR_VERSION_MINOR);
+            PROGLOG("ThorSlave Version LCR - %d.%d started",THOR_VERSION_MAJOR,THOR_VERSION_MINOR);
 #ifdef _WIN32
             ULARGE_INTEGER userfree;
             ULARGE_INTEGER total;
             ULARGE_INTEGER free;
             if (GetDiskFreeSpaceEx("c:\\",&userfree,&total,&free)&&total.QuadPart) {
                 unsigned pc = (unsigned)(free.QuadPart*100/total.QuadPart);
-                LOG(MCdebugInfo, "Total disk space = %" I64F "d k", total.QuadPart/1000);
-                LOG(MCdebugInfo, "Free  disk space = %" I64F "d k", free.QuadPart/1000);
-                LOG(MCdebugInfo, "%d%% disk free\n",pc);
+                PROGLOG("Total disk space = %" I64F "d k", total.QuadPart/1000);
+                PROGLOG"Free  disk space = %" I64F "d k", free.QuadPart/1000);
+                PROGLOG"%d%% disk free\n",pc);
             }
 #endif
      
@@ -552,7 +592,7 @@ int main( int argc, const char *argv[]  )
                 }
                 ~CServerThread()
                 {
-                    PROGLOG("Stopping dafilesrv");
+                    DBGLOG("Stopping dafilesrv");
                     dafsInstance->stop();
                     threaded.join();
                 }
@@ -562,12 +602,12 @@ int main( int argc, const char *argv[]  )
                     SocketEndpoint listenEp(DAFILESRV_PORT);
                     try
                     {
-                        PROGLOG("Starting dafilesrv");
+                        DBGLOG("Starting dafilesrv");
                         dafsInstance->run(nullptr, SSLNone, listenEp);
                     }
                     catch (IException *e)
                     {
-                        EXCLOG(e, "dafilesrv error");
+                        IERRLOG(e, "dafilesrv error");
                         throw;
                     }
                 }
@@ -577,10 +617,10 @@ int main( int argc, const char *argv[]  )
                 dafsThread.setown(new CServerThread);
 #endif
             installDefaultFileHooks(globals);
-            slaveMain(jobListenerStopped, slaveLogHandler);
+            slaveMain(jobListenerStopped, logHandler);
         }
 
-        LOG(MCdebugProgress, "ThorSlave terminated OK");
+        DBGLOG("ThorSlave terminated OK");
     }
     catch (IException *e) 
     {
@@ -596,16 +636,17 @@ int main( int argc, const char *argv[]  )
         setMultiThorMemoryNotify(0,NULL);
     roxiemem::releaseRoxieHeap();
 
-    if (unregisterException.get())
+    if (!recvShutdown && unregisterException.get())
         UnregisterSelf(unregisterException);
 
-    if (getExpertOptBool("slaveDaliClient"))
+    // slaveDaliClient option deprecated, but maintained for compatibility
+    if (getExpertOptBool("allowDaliAccess", getExpertOptBool("slaveDaliClient")))
         disableThorSlaveAsDaliClient();
 
 #ifdef USE_MP_LOG
     stopLogMsgReceivers();
 #endif
-    stopMPServer();
+    stopMPServer(!recvShutdown);
     releaseAtoms(); // don't know why we can't use a module_exit to destruct these...
 
     ExitModuleObjects(); // not necessary, atexit will call, but good for leak checking

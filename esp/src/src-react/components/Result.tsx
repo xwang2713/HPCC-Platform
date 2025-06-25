@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as ReactDOM from "react-dom";
-import { Checkbox, CommandBar, ContextualMenuItemType, DefaultButton, Dialog, DialogFooter, DialogType, ICommandBarItemProps, PrimaryButton, SpinButton, Stack } from "@fluentui/react";
+import { Checkbox, CommandBar, ContextualMenuItemType, DefaultButton, Dialog, DialogFooter, DialogType, ICommandBarItemProps, PrimaryButton, SpinButton, Spinner, Stack } from "@fluentui/react";
 import { useConst } from "@fluentui/react-hooks";
 import { Result as CommsResult, XSDXMLNode } from "@hpcc-js/comms";
 import { scopedLogger } from "@hpcc-js/util";
@@ -11,7 +11,7 @@ import { csvEncode } from "src/Utility";
 import { useWorkunit, useMyAccount, useConfirm } from "../hooks/index";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { AutosizeHpccJSComponent } from "../layouts/HpccJSAdapter";
-import { pushParams } from "../util/history";
+import { pushParams, replaceUrl } from "../util/history";
 import { ShortVerticalDivider } from "./Common";
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
@@ -239,25 +239,32 @@ export const Result: React.FunctionComponent<ResultProps> = ({
 
     const resultTable: ResultWidget = useConst(() => new ResultWidget()
         .baseUrl("")
-        .wuid(wuid)
-        .resultName(resultName)
-        .nodeGroup(cluster)
-        .logicalFile(logicalFile)
         .pagination(true)
         .pageSize(50) as ResultWidget
     );
 
-    resultTable
-        .filter(filter)
-        .renderHtml(renderHTML)
-        .lazyRender()
-        ;
-
     const { currentUser } = useMyAccount();
     const [wu] = useWorkunit(wuid);
-    const [result] = React.useState<CommsResult>(resultTable.calcResult());
+    const [result, setResult] = React.useState<CommsResult>(resultTable.calcResult());
     const [FilterFields, setFilterFields] = React.useState<Fields>({});
+    const [loading, setLoading] = React.useState(true);
     const [showFilter, setShowFilter] = React.useState(false);
+
+    React.useEffect(() => {
+        resultTable
+            .wuid(wuid)
+            .resultName(resultName)
+            .nodeGroup(cluster)
+            .logicalFile(logicalFile)
+            .filter(filter)
+            .renderHtml(renderHTML)
+            .render(() => setResult(resultTable.calcResult()))
+            ;
+    }, [cluster, filter, logicalFile, renderHTML, resultName, resultTable, wuid]);
+
+    React.useEffect(() => {
+        resultTable.filter(filter);
+    }, [filter, resultTable]);
 
     React.useEffect(() => {
         result?.fetchXMLSchema().then(() => {
@@ -270,8 +277,14 @@ export const Result: React.FunctionComponent<ResultProps> = ({
                 };
             });
             setFilterFields(filterFields);
-        }).catch(err => logger.error(err));
-    }, [result]);
+            setLoading(false);
+        }).catch(err => {
+            logger.error(err);
+            if (err.message.indexOf("Cannot open the workunit result") > -1) {
+                replaceUrl(`/workunits/${wuid}/outputs/`);
+            }
+        });
+    }, [result, wuid]);
 
     //  Filter  ---
     const [filterFields, hasHtml] = React.useMemo(() => {
@@ -304,7 +317,7 @@ export const Result: React.FunctionComponent<ResultProps> = ({
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
             onClick: () => {
                 resultTable.reset();
-                resultTable.lazyRender();
+                resultTable.render(() => setResult(resultTable.calcResult()));
             }
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
@@ -359,7 +372,10 @@ export const Result: React.FunctionComponent<ResultProps> = ({
         header={<CommandBar items={buttons} farItems={rightButtons} />}
         main={
             <>
-                <AutosizeHpccJSComponent widget={resultTable} />
+                {loading ?
+                    <Spinner label={nlsHPCC.Loading} /> :
+                    <AutosizeHpccJSComponent widget={resultTable} />
+                }
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
                 <ViewHTMLConfirm />
             </>

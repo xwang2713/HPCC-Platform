@@ -331,19 +331,13 @@ static void DeepAssign(IEspContext &context, IConstDFUWorkUnit *src, IEspDFUWork
         dest.setStateMessage(statemsg.str());
 
         CDateTime startAt;
-        CDateTime stoppAt;
+        CDateTime stopAt;
         prog->getTimeStarted(startAt);
-        prog->getTimeStopped(stoppAt);
+        prog->getTimeStopped(stopAt);
+
         StringBuffer tmpstr;
-        startAt.getDateString(tmpstr);
-        tmpstr.append(" ");
-        startAt.getTimeString(tmpstr);
-        dest.setTimeStarted(tmpstr.str());
-        tmpstr.clear();
-        stoppAt.getDateString(tmpstr);
-        tmpstr.append(" ");
-        stoppAt.getTimeString(tmpstr);
-        dest.setTimeStopped(tmpstr.str());
+        dest.setTimeStarted(startAt.getString(tmpstr).str());
+        dest.setTimeStopped(stopAt.getString(tmpstr.clear()).str());
 
         StringBuffer prgmsg;
         prog->formatProgressMessage(prgmsg);
@@ -930,10 +924,9 @@ bool CFileSprayEx::onGetDFUWorkunits(IEspContext &context, IEspGetDFUWorkunits &
     {
         context.ensureFeatureAccess(DFU_WU_URL, SecAccess_Read, ECLWATCH_DFU_WU_ACCESS_DENIED, "Access to DFU workunit is denied.");
 
-        StringBuffer wuidStr(req.getWuid());
-        const char* wuid = wuidStr.trim().str();
-        if (wuid && *wuid && looksLikeAWuid(wuid, 'D'))
-            return getOneDFUWorkunit(context, wuid, resp);
+        WuidPattern wuidPattern(req.getWuid());
+        if (!wuidPattern.isEmpty() && looksLikeAWuid(wuidPattern, 'D'))
+            return getOneDFUWorkunit(context, wuidPattern, resp);
 
         double version = context.getClientVersion();
         if (version > 1.02)
@@ -1061,11 +1054,11 @@ bool CFileSprayEx::onGetDFUWorkunits(IEspContext &context, IEspGetDFUWorkunits &
                 filterbuf.append("");
         }
 
-        if(wuid && *wuid)
+        if(!isEmptyString(wuidPattern))
         {
             filters[filterCount] = DFUsf_wildwuid;
             filterCount++;
-            filterbuf.append(wuid);
+            filterbuf.append(wuidPattern);
         }
 
         if(clusterName && *clusterName)
@@ -1115,7 +1108,14 @@ bool CFileSprayEx::onGetDFUWorkunits(IEspContext &context, IEspGetDFUWorkunits &
             resultWU->setID(wu->queryId());
             StringBuffer jobname, user, cluster;
             resultWU->setJobName(wu->getJobName(jobname).str());
-            resultWU->setCommand(wu->getCommand());
+            DFUcmd command = wu->getCommand();
+            resultWU->setCommand(command);
+            if (version >= 1.03)
+            {
+                StringBuffer cmdStr;
+                encodeDFUcommand(command, cmdStr);
+                resultWU->setCommandMessage(cmdStr.str());
+            }
             resultWU->setUser(wu->getUser(user).str());
 
             const char* clusterName = wu->getClusterName(cluster).str();
@@ -2803,6 +2803,7 @@ bool CFileSprayEx::onCopy(IEspContext &context, IEspCopy &req, IEspCopyResponse 
         }
         wuFSpecDest->setLogicalName(dstname);
         wuFSpecDest->setFileMask(fileMask.str());
+
         wuOptions->setOverwrite(req.getOverwrite());
         wuOptions->setEnsure(req.getEnsure());
         wuOptions->setPreserveCompression(req.getPreserveCompression());
@@ -2813,6 +2814,10 @@ bool CFileSprayEx::onCopy(IEspContext &context, IEspCopy &req, IEspCopyResponse 
             wuOptions->setNoSplit(true);
         if (!req.getNoCommon_isNull())
             wuOptions->setNoCommon(req.getNoCommon());
+
+        const char * keyCompression = req.getKeyCompression();
+        if (keyCompression)
+            wuOptions->setKeyCompression(keyCompression);
 
         if (bRoxie)
         {

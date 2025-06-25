@@ -33,7 +33,7 @@ class CDiskPartHandlerBase : public CPartHandler, implements IThorDiskCallback
 protected:
     OwnedIFile iFile;
     Owned<IPartDescriptor> partDesc;
-    bool compressed, blockCompressed, firstInGroup, checkFileCrc;
+    bool compressed, blockCompressed, firstInGroup;
     unsigned storedCrc, which;
     StringAttr filename, logicalFilename;
     unsigned __int64 fileBaseOffset;
@@ -56,7 +56,6 @@ public:
     {
         merged.merge(closedPartFileStats);
     }
-    virtual unsigned __int64 queryProgress() { return 0; }
 
 // IThorDiskCallback
     virtual offset_t getFilePosition(const void * row);
@@ -86,7 +85,8 @@ protected:
     StringArray subfileLogicalFilenames;
     IArrayOf<IPartDescriptor> partDescs;
     IHThorDiskReadBaseArg *helper;
-    bool checkFileCrc, crcCheckCompressed, markStart;
+    bool markStart;
+    bool checkFileDates = false;
     mutable bool gotMeta;
     mutable ThorDataLinkMetaInfo cachedMetaInfo;
     Owned<CDiskPartHandlerBase> partHandler;
@@ -114,12 +114,11 @@ class CDiskWriteSlaveActivityBase : public ProcessSlaveActivity, implements ICop
 protected:
     IHThorDiskWriteArg *diskHelperBase;
     Owned<IFileIO> outputIO;
-    Owned<IExtRowWriter> out;
+    Owned<ILogicalRowWriter> out;
     Owned<IFileIOStream> outraw;
     Owned<IPartDescriptor> partDesc;
     StringAttr fName;
-    CRC32 fileCRC;
-    bool compress, grouped, calcFileCrc, rfsQueryParallel;
+    bool compress, grouped, rfsQueryParallel;
     offset_t uncompressedBytesWritten;
     unsigned replicateDone;
     Owned<ICompressor> ecomp;

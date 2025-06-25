@@ -3,6 +3,8 @@ import { useConst, useForceUpdate } from "@fluentui/react-hooks";
 import { AccessService, AccountService, WsAccount } from "@hpcc-js/comms";
 import { cookieKeyValStore } from "src/KeyValStore";
 
+declare const dojoConfig;
+
 const defaults = {
     ESPSessionTimeout: 7200,
     ESPAuthenticated: false,
@@ -11,6 +13,12 @@ const defaults = {
 };
 
 const userSession = { ...defaults };
+
+export enum PasswordStatus {
+    NeverExpires = -2,
+    Expired = -1,
+    Unexpired = 0,
+}
 
 export interface UserSession {
     ESPSessionTimeout: number;
@@ -73,6 +81,31 @@ export function useUserSession(): {
     return { userSession, createUserSession, setUserSession, deleteUserSession };
 }
 
+export function useCheckEnvAuthType(): boolean {
+    const [envHasAuth, setEnvHasAuth] = React.useState(false);
+
+    React.useEffect(() => {
+        fetch("/esp/getauthtype.json").then(async response => {
+            const json = await response.json();
+            const authType = json.GetAuthTypeResponse.AuthType ?? "None";
+
+            switch (authType) {
+                case "Mixed":
+                case "PerSessionOnly":
+                    setEnvHasAuth(true);
+                    break;
+                case "PerRequestOnly":
+                case "UserNameOnly":
+                case "None":
+                default:
+                    setEnvHasAuth(false);
+            }
+        });
+    }, []);
+
+    return envHasAuth;
+}
+
 export function useMyAccount(): { currentUser: WsAccount.MyAccountResponse, isAdmin: boolean } {
 
     const [currentUser, setCurrentUser] = React.useState<WsAccount.MyAccountResponse>({ username: "" } as WsAccount.MyAccountResponse);
@@ -91,12 +124,12 @@ export function useMyAccount(): { currentUser: WsAccount.MyAccountResponse, isAd
                         const adminGroupNames = ["Administrator", "Directory Administrators"];
                         if (response.isLDAPAdmin || groups.filter(group => !adminGroupNames.indexOf(group.name)).length > 0) {
                             setIsAdmin(true);
+                            dojoConfig.isAdmin = true;
                         } else {
                             setIsAdmin(account.accountType === "Administrator");
+                            dojoConfig.isAdmin = account.accountType === "Administrator";
                         }
                     });
-                } else {
-                    setIsAdmin(true);
                 }
                 setCurrentUser(account);
             });

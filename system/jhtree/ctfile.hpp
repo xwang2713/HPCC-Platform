@@ -18,6 +18,8 @@
 #ifndef CTFILE_HPP
 #define CTFILE_HPP
 
+#include <memory>
+
 //#define TIME_NODE_SEARCH
 
 #include "jiface.hpp"
@@ -160,6 +162,7 @@ struct SplitNodeHdr
 interface IWritableNode
 {
     virtual void write(IFileIOStream *, CRC32 *crc) = 0;
+    virtual size32_t getMemorySize() const = 0; // only valid after a write, return 0 if unknown
 };
 
 class jhtree_decl CKeyHdr : public CInterface
@@ -192,6 +195,7 @@ public:
     inline offset_t getFirstLeafPos() const { return (offset_t)hdr.firstLeaf; }
     inline bool hasSpecialFileposition() const { return true; }
     inline bool isRowCompressed() const { return (hdr.ktype & (HTREE_QUICK_COMPRESSED_KEY|HTREE_VARSIZE)) == HTREE_QUICK_COMPRESSED_KEY; }
+    inline offset_t queryBloomHead() const { return hdr.bloomHead; }
     __uint64 getPartitionFieldMask() const
     {
         if (hdr.partitionFieldMask == (__uint64) -1)
@@ -216,6 +220,7 @@ class CWriteKeyHdr : public CKeyHdr, implements IWritableNode
 {
 public:
     virtual void write(IFileIOStream *, CRC32 *crc) override;
+    virtual size32_t getMemorySize() const override { return 0; }
 };
 
 // Data structures representing nodes in an index (other than the header)
@@ -267,6 +272,15 @@ public:
 
 // Abstract base class for any node that represents a searchable block of keys, either with payloads or with links to other such nodes
 
+class PayloadReference
+{
+public:
+    void clear();
+
+public:
+    std::shared_ptr<byte[]> data{nullptr};
+};
+
 class CJHSearchNode : public CJHTreeNode
 {
 public:
@@ -274,7 +288,7 @@ public:
     inline size32_t getNumKeys() const { return hdr.numKeys; }
 
     virtual bool getKeyAt(unsigned int num, char *dest) const = 0;         // Retrieve keyed fields
-    virtual bool fetchPayload(unsigned int num, char *dest) const = 0;     // Retrieve payload fields. Note destination is assumed to already contain keyed fields
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const = 0;     // Retrieve payload fields. Note destination is assumed to already contain keyed fields
     virtual size32_t getSizeAt(unsigned int num) const = 0;
     virtual offset_t getFPosAt(unsigned int num) const = 0;
     virtual unsigned __int64 getSequence(unsigned int num) const = 0;
@@ -303,7 +317,7 @@ protected:
 public:
     ~CJHSplitSearchNode();
     virtual bool getKeyAt(unsigned int num, char *dest) const override;         // Retrieve keyed fields
-    virtual bool fetchPayload(unsigned int num, char *dest) const override;     // Retrieve payload fields. Note destination is assumed to already contain keyed fields
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const override;     // Retrieve payload fields. Note destination is assumed to already contain keyed fields
     virtual size32_t getSizeAt(unsigned int num) const override;
     virtual offset_t getFPosAt(unsigned int num) const override;
     virtual unsigned __int64 getSequence(unsigned int num) const override;
@@ -334,7 +348,7 @@ public:
 //These are the key functions that need to be implemented for a node that can be searched
     inline size32_t getNumKeys() const { return hdr.numKeys; }
     virtual bool getKeyAt(unsigned int num, char *dest) const override;         // Retrieve keyed fields
-    virtual bool fetchPayload(unsigned int num, char *dest) const override;     // Retrieve payload fields. Note destination is assumed to already contain keyed fields
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const override;     // Retrieve payload fields. Note destination is assumed to already contain keyed fields
     virtual size32_t getSizeAt(unsigned int num) const override;
     virtual offset_t getFPosAt(unsigned int num) const override;
     virtual unsigned __int64 getSequence(unsigned int num) const override;
@@ -358,7 +372,7 @@ public:
     ~CJHVarTreeNode();
     virtual void load(CKeyHdr *keyHdr, const void *rawData, offset_t pos, bool needCopy) override;
     virtual bool getKeyAt(unsigned int num, char *dest) const;         // Retrieve keyed fields
-    virtual bool fetchPayload(unsigned int num, char *dest) const;       // Retrieve payload fields. Note destination is assumed to already contain keyed fields
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const;       // Retrieve payload fields. Note destination is assumed to already contain keyed fields
     virtual size32_t getSizeAt(unsigned int num) const;
     virtual offset_t getFPosAt(unsigned int num) const;
     virtual int compareValueAt(const char *src, unsigned int index) const;
@@ -371,7 +385,7 @@ class CJHRowCompressedNode : public CJHLegacySearchNode
 public:
     virtual void load(CKeyHdr *keyHdr, const void *rawData, offset_t pos, bool needCopy);
     virtual bool getKeyAt(unsigned int num, char *dest) const;         // Retrieve keyed fields
-    virtual bool fetchPayload(unsigned int num, char *dest) const;       // Retrieve payload fields. Note destination is assumed to already contain keyed fields
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const;       // Retrieve payload fields. Note destination is assumed to already contain keyed fields
     virtual offset_t getFPosAt(unsigned int num) const;
     virtual int compareValueAt(const char *src, unsigned int index) const;
 };
@@ -402,6 +416,7 @@ public:
 class CJHTreeBloomTableNode : public CJHTreeRawDataNode
 {
 public:
+    virtual void dump(FILE *out, int length, unsigned rowCount, bool raw) const override;
     void get(MemoryBuffer & out) const;
     __int64 get8();
     unsigned get4();
@@ -451,6 +466,7 @@ public:
     virtual bool add(offset_t pos, const void *data, size32_t size, unsigned __int64 sequence) override;
     virtual const void *getLastKeyValue() const override;
     virtual unsigned __int64 getLastSequence() const override { return firstSequence + hdr.numKeys; }
+    virtual size32_t getMemorySize() const override { return 0; }
 };
 
 
@@ -459,6 +475,7 @@ class jhtree_decl CLegacyWriteNode : public CWriteNode
 private:
     KeyCompressor lzwcomp;
     unsigned keyLen = 0;
+    size32_t memorySize = 0;
     char *lastKeyValue = nullptr;
     unsigned __int64 lastSequence = 0;
 
@@ -471,6 +488,7 @@ public:
     virtual bool add(offset_t pos, const void *data, size32_t size, unsigned __int64 sequence) override;
     virtual const void *getLastKeyValue() const override { return lastKeyValue; }
     virtual unsigned __int64 getLastSequence() const override { return lastSequence; }
+    virtual size32_t getMemorySize() const override { return memorySize; }
 };
 
 class jhtree_decl CBlobWriteNode : public CWriteNodeBase
@@ -483,6 +501,7 @@ public:
 
     virtual void write(IFileIOStream *, CRC32 *crc) override;
     unsigned __int64 add(const char * &data, size32_t &size);
+    virtual size32_t getMemorySize() const override { return 0; }
 };
 
 class jhtree_decl CMetadataWriteNode : public CWriteNodeBase
@@ -490,6 +509,7 @@ class jhtree_decl CMetadataWriteNode : public CWriteNodeBase
 public:
     CMetadataWriteNode(offset_t _fpos, CKeyHdr *keyHdr);
     size32_t set(const char * &data, size32_t &size);
+    virtual size32_t getMemorySize() const override { return 0; }
 };
 
 class jhtree_decl CBloomFilterWriteNode : public CWriteNodeBase
@@ -499,6 +519,7 @@ public:
     size32_t set(const byte * &data, size32_t &size);
     void put4(unsigned val);
     void put8(__int64 val);
+    virtual size32_t getMemorySize() const override { return 0; }
 };
 
 enum KeyExceptionCodes

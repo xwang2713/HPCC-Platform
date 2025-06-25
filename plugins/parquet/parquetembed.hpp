@@ -45,8 +45,6 @@ extern void UNSUPPORTED(const char *feature) __attribute__((noreturn));
 extern void failx(const char *msg, ...) __attribute__((noreturn)) __attribute__((format(printf, 1, 2)));
 extern void fail(const char *msg) __attribute__((noreturn));
 
-#define PARQUET_FILE_TYPE_NAME "parquet"
-
 #define reportIfFailure(st)                                                \
     if (!st.ok())                                                          \
     {                                                                      \
@@ -83,14 +81,14 @@ enum PathNodeType {CPNTScalar, CPNTDataset, CPNTSet};
  */
 struct ParquetColumnTracker
 {
-    const char *nodeName;
+    const RtlFieldInfo * field;
     PathNodeType nodeType;
     const arrow::Array *structPtr;
     unsigned int childCount = 0;
     unsigned int childrenProcessed = 0;
 
-    ParquetColumnTracker(const char *_nodeName, const arrow::Array *_struct, PathNodeType _nodeType)
-        : nodeName(_nodeName), nodeType(_nodeType), structPtr(_struct) {}
+    ParquetColumnTracker(const RtlFieldInfo * _field, const arrow::Array *_struct, PathNodeType _nodeType)
+        : field(_field), nodeType(_nodeType), structPtr(_struct) {}
 
     bool finishedChildren() { return childrenProcessed < childCount; }
 };
@@ -100,15 +98,19 @@ struct ParquetColumnTracker
  */
 struct ArrayBuilderTracker
 {
-    const char *nodeName;
+    const RtlFieldInfo * field;
     PathNodeType nodeType;
     arrow::FieldPath nodePath;
     arrow::ArrayBuilder *structPtr;
     unsigned int childCount = 0;
     unsigned int childrenProcessed = 0;
 
-    ArrayBuilderTracker(const char *_nodeName, arrow::ArrayBuilder *_struct, PathNodeType _nodeType, arrow::FieldPath  _nodePath)
-        : nodeName(_nodeName), nodeType(_nodeType), structPtr(_struct), nodePath(_nodePath) { if (nodeType == CPNTDataset) childCount == structPtr->num_children(); }
+    ArrayBuilderTracker(const RtlFieldInfo *_field, arrow::ArrayBuilder *_struct, PathNodeType _nodeType, arrow::FieldPath && _nodePath)
+        : field(_field), nodeType(_nodeType), nodePath(std::move(_nodePath)), structPtr(_struct)
+    {
+        if (nodeType == CPNTDataset)
+            childCount = structPtr->num_children();
+    }
 
     bool finishedChildren() { return childrenProcessed < childCount; }
 };
@@ -129,8 +131,10 @@ enum ParquetArrayType
     LargeBinaryType,
     DecimalType,
     ListType,
+    LargeListType,
     StructType,
-    RealType
+    RealType,
+    FixedSizeBinaryType
 };
 
 /**
@@ -268,6 +272,13 @@ public:
         size = 8;
         return arrow::Status::OK();
     }
+    arrow::Status Visit(const arrow::FixedSizeBinaryArray &array)
+    {
+        fixedSizeBinaryArr = &array;
+        type = FixedSizeBinaryType;
+        size = array.byte_width();
+        return arrow::Status::OK();
+    }
     arrow::Status Visit(const arrow::StringArray &array)
     {
         stringArr = &array;
@@ -312,6 +323,12 @@ public:
         type = ListType;
         return arrow::Status::OK();
     }
+    arrow::Status Visit(const arrow::LargeListArray &array)
+    {
+        largeListArr = &array;
+        type = LargeListType;
+        return arrow::Status::OK();
+    }
     arrow::Status Visit(const arrow::StructArray &array)
     {
         structArr = &array;
@@ -339,6 +356,7 @@ public:
     const arrow::HalfFloatArray *halfFloatArr = nullptr;
     const arrow::FloatArray *floatArr = nullptr;
     const arrow::DoubleArray *doubleArr = nullptr;
+    const arrow::FixedSizeBinaryArray *fixedSizeBinaryArr = nullptr;
     const arrow::StringArray *stringArr = nullptr;
     const arrow::LargeStringArray *largeStringArr = nullptr;
     const arrow::BinaryArray *binArr = nullptr;
@@ -346,10 +364,12 @@ public:
     const arrow::Decimal128Array *decArr = nullptr;
     const arrow::Decimal256Array *largeDecArr = nullptr;
     const arrow::ListArray *listArr = nullptr;
+    const arrow::LargeListArray *largeListArr = nullptr;
     const arrow::StructArray *structArr = nullptr;
 };
 
 using TableColumns = std::unordered_map<std::string, std::shared_ptr<arrow::Array>>;
+using NamedFileReader = std::tuple<std::string, std::shared_ptr<parquet::arrow::FileReader>>;
 
 /**
  * @brief Opens and reads Parquet files and partitioned datasets. The ParquetReader processes a file
@@ -361,7 +381,7 @@ class PARQUETEMBED_PLUGIN_API ParquetReader
 {
 public:
     ParquetReader(const char *option, const char *_location, int _maxRowCountInTable, const char *_partitionFields, const IThorActivityContext *_activityCtx);
-    ParquetReader(const char *option, const char *_location, int _maxRowCountInTable, const char *_partitionFields, const IThorActivityContext *_activityCtx, const RtlRecord *_expectedRecord);
+    ParquetReader(const char *option, const char *_location, int _maxRowCountInTable, const char *_partitionFields, const IThorActivityContext *_activityCtx, const RtlTypeInfo *_expectedRecord);
     ~ParquetReader();
 
     arrow::Status processReadFile();
@@ -397,13 +417,13 @@ private:
     size_t maxRowCountInTable = 0;                                     // Max table size set by user.
     std::string partOption;                                            // Begins with either read or write and ends with the partitioning type if there is one i.e. 'readhivepartition'.
     std::string location;                                              // Full path to location for reading parquet files. Can be a filename or directory.
-    const RtlRecord *expectedRecord = nullptr;                         // Expected record layout of Parquet file. Only available when used in the platform i.e. not available when used as a plugin.
+    const RtlTypeInfo * expectedRecord = nullptr;                      // Expected record layout of Parquet file. Only available when used in the platform i.e. not available when used as a plugin.
     const IThorActivityContext *activityCtx = nullptr;                 // Context about the thor worker configuration.
     std::shared_ptr<arrow::dataset::Scanner> scanner = nullptr;        // Scanner for reading through partitioned files.
     std::shared_ptr<arrow::RecordBatchReader> rbatchReader = nullptr;                           // RecordBatchReader reads a dataset one record batch at a time. Must be kept alive for rbatchItr.
     arrow::RecordBatchReader::RecordBatchReaderIterator rbatchItr;                              // Iterator of RecordBatches when reading a partitioned dataset.
     std::vector<__int64> fileTableCounts;                                                       // Count of RowGroups in each open file to get the correct row group when reading specific parts of the file.
-    std::vector<std::shared_ptr<parquet::arrow::FileReader>> parquetFileReaders;                // Vector of FileReaders that match the target file name. data0.parquet, data1.parquet, etc.
+    std::vector<NamedFileReader> parquetFileReaders;                                            // Vector of FileReaders that match the target file name. data0.parquet, data1.parquet, etc.
     std::shared_ptr<parquet::FileMetaData> currentTableMetadata = nullptr;                      // Parquet metadata for the current table.
     TableColumns parquetTable;                                                                  // The current table being read broken up into columns. Unordered map where the left side is a string of the field name and the right side is an array of the values.
     std::vector<std::string> partitionFields;                                                   // The partitioning schema for reading Directory Partitioned files.
@@ -427,16 +447,16 @@ public:
     void writeRecordBatch(std::size_t newSize);
     void updateRow();
     std::shared_ptr<arrow::NestedType> makeChildRecord(const RtlFieldInfo *field);
-    arrow::Status fieldToNode(const std::string &name, const RtlFieldInfo *field, std::vector<std::shared_ptr<arrow::Field>> &arrowFields);
+    arrow::Status fieldToNode(const RtlFieldInfo *field, std::vector<std::shared_ptr<arrow::Field>> &arrowFields);
     arrow::Status fieldsToSchema(const RtlTypeInfo *typeInfo);
-    void beginSet(const char *fieldName);
-    void beginRow(const char *fieldName);
+    void beginSet(const RtlFieldInfo *field);
+    void beginRow(const RtlFieldInfo *field);
     void endRow();
     arrow::Status checkDirContents();
     __int64 getMaxRowSize() {return maxRowCountInBatch;}
-    arrow::ArrayBuilder *getFieldBuilder(const char *fieldName);
-    arrow::FieldPath getNestedFieldBuilder(const char *fieldName, arrow::ArrayBuilder *&childBuilder);
-    void addFieldToBuilder(const char *fieldName, unsigned len, const char *data);
+    arrow::ArrayBuilder *getFieldBuilder(const RtlFieldInfo *field);
+    arrow::FieldPath getNestedFieldBuilder(const RtlFieldInfo *field, arrow::ArrayBuilder *&childBuilder);
+    void addFieldToBuilder(const RtlFieldInfo *field, unsigned len, const char *data);
 
 private:
     __int64 currentRow = 0;
@@ -487,7 +507,7 @@ class PARQUETEMBED_PLUGIN_API ParquetRowBuilder : public CInterfaceOf<IFieldSour
 {
 public:
     ParquetRowBuilder(TableColumns *_resultRows, int64_t _currentRow)
-        : resultRows(_resultRows), currentRow(_currentRow) {}
+        : currentRow(_currentRow), resultRows(_resultRows) {}
     virtual ~ParquetRowBuilder() = default;
     virtual bool getBooleanResult(const RtlFieldInfo *field) override;
     virtual void getDataResult(const RtlFieldInfo *field, size32_t &len, void *&result) override;
@@ -513,12 +533,11 @@ protected:
     double getCurrRealValue(const RtlFieldInfo *field);
     void nextField(const RtlFieldInfo *field);
     void nextFromStruct(const RtlFieldInfo *field);
-    void xpathOrName(StringBuffer &outXPath, const RtlFieldInfo *field) const;
     int64_t currArrayIndex();
 
 private:
     __int64 currentRow;                                                             // The index in the arrow Array to read the current value.
-    StringBuffer serialized;                                                        // Output string from serialization.
+    StringBuffer serialized;                                                        // Output string from serialization of numeric types.
     TableColumns *resultRows = nullptr;                                             // A pointer to the result rows map where the left side are the field names for the columns and the right is an array of values.
     std::vector<ParquetColumnTracker> pathStack;                                    // ParquetColumnTracker keeps track of nested data when reading sets.
     std::shared_ptr<ParquetArrayVisitor> arrayVisitor;                              // Visitor class for getting the correct type when reading a Parquet column.
@@ -532,7 +551,7 @@ class ParquetRecordBinder : public CInterfaceOf<IFieldProcessor>
 {
 public:
     ParquetRecordBinder(const IContextLogger &_logctx, const RtlTypeInfo *_typeInfo, int _firstParam, std::shared_ptr<ParquetWriter> _parquetWriter)
-        : logctx(_logctx), typeInfo(_typeInfo), firstParam(_firstParam), dummyField("<row>", NULL, typeInfo), thisParam(_firstParam), parquetWriter(std::move(_parquetWriter)) {}
+        : typeInfo(_typeInfo), logctx(_logctx), firstParam(_firstParam), dummyField("<row>", NULL, typeInfo), thisParam(_firstParam), parquetWriter(std::move(_parquetWriter)) {}
     virtual ~ParquetRecordBinder() = default;
     int numFields();
     void processRow(const byte *row);
@@ -543,26 +562,22 @@ public:
     virtual void processUInt(unsigned __int64 value, const RtlFieldInfo *field);
     virtual void processReal(double value, const RtlFieldInfo *field);
     virtual void processDecimal(const void *value, unsigned digits, unsigned precision, const RtlFieldInfo *field);
-    virtual void processUDecimal(const void *value, unsigned digits, unsigned precision, const RtlFieldInfo *field)
-    {
-        UNSUPPORTED("UNSIGNED decimals");
-    }
+    virtual void processUDecimal(const void *value, unsigned digits, unsigned precision, const RtlFieldInfo *field);
     virtual void processUnicode(unsigned chars, const UChar *value, const RtlFieldInfo *field);
     virtual void processQString(unsigned len, const char *value, const RtlFieldInfo *field);
     virtual void processUtf8(unsigned chars, const char *value, const RtlFieldInfo *field);
     virtual bool processBeginSet(const RtlFieldInfo *field, unsigned numElements, bool isAll, const byte *data)
     {
-        parquetWriter->beginSet(field->name);
+        parquetWriter->beginSet(field);
         return true;
     }
     virtual bool processBeginDataset(const RtlFieldInfo *field, unsigned rowsCount)
     {
         UNSUPPORTED("DATASET");
-        return false;
     }
     virtual bool processBeginRow(const RtlFieldInfo *field)
     {
-        parquetWriter->beginRow(field->name);
+        parquetWriter->beginRow(field);
         return true;
     }
     virtual void processEndSet(const RtlFieldInfo *field)
@@ -580,7 +595,7 @@ public:
 
 protected:
     inline unsigned checkNextParam(const RtlFieldInfo *field);
-
+    void addDecimalFieldToBuilder(rtlDataAttr *decText, size32_t bytes, int32_t digits, int32_t precision, const RtlFieldInfo *field);
     const RtlTypeInfo *typeInfo = nullptr;
     const IContextLogger &logctx;
     int firstParam;
@@ -606,7 +621,7 @@ public:
      * @param _firstParam Index of the first param.
      */
     ParquetDatasetBinder(const IContextLogger &_logctx, IRowStream *_input, const RtlTypeInfo *_typeInfo, std::shared_ptr<ParquetWriter> _parquetWriter, int _firstParam)
-        : input(_input), parquetWriter(_parquetWriter), ParquetRecordBinder(_logctx, _typeInfo, _firstParam, _parquetWriter)
+        : ParquetRecordBinder(_logctx, _typeInfo, _firstParam, _parquetWriter), input(_input), parquetWriter(_parquetWriter)
     {
         reportIfFailure(parquetWriter->fieldsToSchema(_typeInfo));
     }

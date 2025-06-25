@@ -1,10 +1,11 @@
 import UniversalRouter, { ResolveContext } from "universal-router";
-import { parse, ParsedQuery, pick, stringify } from "query-string";
+import queryString, { type ParsedQuery } from "query-string";
 import { hashSum, scopedLogger } from "@hpcc-js/util";
 import { userKeyValStore } from "src/KeyValStore";
 import { QuerySortItem } from "src/store/Store";
+import { ParamValue, SearchParams } from "./hashUrl";
 
-const logger = scopedLogger("../util/history.ts");
+const logger = scopedLogger("src-react/util/history.ts");
 
 let g_router: UniversalRouter;
 
@@ -39,7 +40,7 @@ export function parseHash(hash: string): HistoryLocation {
 
 export function parseQuery<T = ParsedQuery<string | boolean | number>>(_: string): T {
     if (_[0] !== "?") return {} as T;
-    return { ...parse(_.substring(1), { parseBooleans: true, parseNumbers: true }) } as unknown as T;
+    return { ...queryString.parse(_.substring(1), { parseBooleans: true, parseNumbers: true }) } as unknown as T;
 }
 
 export function parseSearch<T = ParsedQuery<string | boolean | number>>(_: string): T {
@@ -55,7 +56,7 @@ export function parseSearch<T = ParsedQuery<string | boolean | number>>(_: strin
 
 export function parseSort(_?: string): QuerySortItem | undefined {
     if (!_) return undefined;
-    const filter = parse(pick(_.substring(1), ["sortBy"]));
+    const filter = queryString.parse(queryString.pick(_.substring(1), ["sortBy"]));
     let descending = false;
     let sortBy = filter?.sortBy?.toString();
     if (filter?.sortBy?.toString().charAt(0) === "-") {
@@ -66,17 +67,28 @@ export function parseSort(_?: string): QuerySortItem | undefined {
 }
 
 export function updateSort(sorted: boolean, descending: boolean, sortBy: string) {
-    updateParam("sortBy", sorted ? (descending ? "-" : "") + sortBy : undefined);
+    updateParam("sortBy", sorted ? (descending ? "-" : "") + sortBy : null);    // null to remove param...
 }
 
 export function parsePage(_: string): number {
-    const filter = parse(pick(_.substring(1), ["pageNum"]));
+    const filter = queryString.parse(queryString.pick(_.substring(1), ["pageNum"]));
     const pageNum = filter?.pageNum?.toString() ?? "1";
     return parseInt(pageNum, 10);
 }
 
 export function updatePage(pageNum: string) {
     updateParam("pageNum", pageNum);
+}
+
+export function parseFullscreen(_: string): boolean {
+    const searchParams = new SearchParams(_);
+    return searchParams.fullscreen();
+}
+
+export function updateFullscreen(fullscreen: boolean) {
+    const searchParams = new SearchParams(hashHistory.location.search);
+    searchParams.fullscreen(fullscreen);
+    updateSearch(searchParams);
 }
 
 interface HistoryLocation {
@@ -91,6 +103,11 @@ export type ListenerCallback<S extends object = object> = (location: HistoryLoca
 const globalHistory = globalThis.history;
 
 const STORE_HISTORY_ID = "history";
+
+export function resetHistory() {
+    const store = userKeyValStore();
+    return store?.delete(STORE_HISTORY_ID);
+}
 
 class History<S extends object = object> {
 
@@ -143,6 +160,8 @@ class History<S extends object = object> {
     }
 
     push(to: { pathname?: string, search?: string }) {
+        to.pathname = to.pathname ?? this.location.pathname;
+        to.search = to.search ?? this.location.search;
         const newHash = this.fixHash(`${this.trimRightSlash(to.pathname || this.location.pathname)}${to.search || ""}`);
         if (window.location.hash !== newHash) {
             globalHistory.pushState(undefined, "", newHash);
@@ -198,14 +217,14 @@ class History<S extends object = object> {
 export const hashHistory = new History<any>();
 
 export function pushSearch(_: object) {
-    const search = stringify(_ as any);
+    const search = queryString.stringify(_ as any);
     hashHistory.push({
         search: search ? "?" + search : ""
     });
 }
 
-export function updateSearch(_: object) {
-    const search = stringify(_ as any);
+export function updateSearch(searchParams: SearchParams) {
+    const search = searchParams.serialize();
     hashHistory.replace({
         search: search ? "?" + search : ""
     });
@@ -232,7 +251,7 @@ export function pushParamExact(key: string, val?: string | string[] | number | b
     pushParams({ [key]: val }, true);
 }
 
-export function pushParams(search: { [key: string]: string | string[] | number | boolean }, keepEmpty: boolean = false) {
+function calcParams(search: { [key: string]: string | string[] | number | boolean }, keepEmpty: boolean = false) {
     const params = parseQuery(hashHistory.location.search);
     for (const key in search) {
         const val = search[key];
@@ -243,17 +262,21 @@ export function pushParams(search: { [key: string]: string | string[] | number |
             params[key] = val;
         }
     }
-    pushSearch(params);
+    return params;
 }
 
-export function updateParam(key: string, val?: string | string[] | number | boolean) {
-    const params = parseQuery(hashHistory.location.search);
-    if (val === undefined) {
-        delete params[key];
-    } else {
-        params[key] = val;
-    }
-    updateSearch(params);
+export function calcSearch(search: { [key: string]: string | string[] | number | boolean }, keepEmpty: boolean = false) {
+    return queryString.stringify(calcParams(search, keepEmpty));
+}
+
+export function pushParams(search: { [key: string]: string | string[] | number | boolean }, keepEmpty: boolean = false) {
+    pushSearch(calcParams(search, keepEmpty));
+}
+
+export function updateParam(key: string, val?: ParamValue) {
+    const searchParams = new SearchParams(hashHistory.location.search);
+    searchParams.param(key, val);
+    updateSearch(searchParams);
 }
 
 export function updateState(key: string, val?: string | string[] | number | boolean) {
@@ -264,4 +287,21 @@ export function updateState(key: string, val?: string | string[] | number | bool
         state[key] = val;
     }
     globalHistory.replaceState(state, "");
+}
+
+export function navCategory(hashPath: string, depth: number = 1): string {
+    const indexOfExclamation = hashPath.indexOf("!");
+    if (indexOfExclamation !== -1) {
+        const indexOfSlash = hashPath.indexOf("/", indexOfExclamation);
+        if (indexOfSlash !== -1) {
+            hashPath = hashPath.substring(0, indexOfExclamation) + hashPath.substring(indexOfSlash);
+        }
+    }
+
+    let category = hashPath.split("/").slice(0, depth + 1).join("/");
+    const indexOfQuestion = category.indexOf("?");
+    if (indexOfQuestion !== -1) {
+        category = category.substring(0, indexOfQuestion);
+    }
+    return category;
 }

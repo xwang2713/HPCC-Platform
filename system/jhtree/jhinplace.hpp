@@ -177,6 +177,7 @@ public:
         double minCompressionThreshold = 0.95; // use uncompressed if compressed is > 95% uncompressed
         unsigned maxCompressionFactor = 25;    // Don't compress payload to less than 4% of the original by default (beause when it is read it will use lots of memory)
         bool recompress = false;
+        bool reuseCompressor = true;
     } options;
 };
 
@@ -195,6 +196,7 @@ public:
 
 protected:
     const byte * queryPayload(const byte * data) const;
+    byte * expandPayload(size32_t & sizeExpanded, CompressionMethod payloadCompression, size32_t compressedLen, const byte * & data) const;
 
 protected:
     InplaceNodeSearcher searcher;
@@ -210,13 +212,14 @@ protected:
     byte sizeMask;
     byte bytesPerPosition = 0;
     bool ownedPayload = false;
+    bool expandPayloadOnDemand = false;
 };
 
 
 class jhtree_decl CJHInplaceBranchNode final : public CJHInplaceTreeNode
 {
 public:
-    virtual bool fetchPayload(unsigned int num, char *dest) const override;
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const override;
     virtual size32_t getSizeAt(unsigned int num) const override;
     virtual offset_t getFPosAt(unsigned int num) const override;
     virtual unsigned __int64 getSequence(unsigned int num) const override;
@@ -225,10 +228,14 @@ public:
 class jhtree_decl CJHInplaceLeafNode final : public CJHInplaceTreeNode
 {
 public:
-    virtual bool fetchPayload(unsigned int num, char *dest) const override;
+    virtual bool fetchPayload(unsigned int num, char *dest, PayloadReference & activePayload) const override;
     virtual size32_t getSizeAt(unsigned int num) const override;
     virtual offset_t getFPosAt(unsigned int num) const override;
     virtual unsigned __int64 getSequence(unsigned int num) const override;
+
+protected:
+    mutable CriticalSection cs;
+    mutable std::weak_ptr<byte[]> expandedPayload;
 };
 
 class jhtree_decl CInplaceWriteNode : public CWriteNode
@@ -254,6 +261,7 @@ public:
 
     virtual bool add(offset_t pos, const void *data, size32_t size, unsigned __int64 sequence) override;
     virtual void write(IFileIOStream *, CRC32 *crc) override;
+    virtual size32_t getMemorySize() const override { return nodeSize; }
 
 protected:
     unsigned getDataSize();
@@ -282,9 +290,12 @@ public:
 
     virtual bool add(offset_t pos, const void *data, size32_t size, unsigned __int64 sequence) override;
     virtual void write(IFileIOStream *, CRC32 *crc) override;
+    virtual size32_t getMemorySize() const override { return leafMemorySize; }
 
 protected:
     unsigned getDataSize(bool includePayload);
+    unsigned getCompressedPayloadSize() const { return sizeCompressedPayload ? sizeCompressedPayload : compressor.buflen(); }
+
     bool recompressAll(unsigned maxSize);
 
 protected:
@@ -301,6 +312,7 @@ protected:
     size32_t keyLen = 0;
     size32_t firstUncompressed = 0;
     size32_t sizeCompressedPayload = 0; // Set from closed compressor
+    size32_t leafMemorySize = 0;
     offset_t totalUncompressedSize = 0;
     bool isVariable = false;
     bool rowCompression = false;

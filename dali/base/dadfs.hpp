@@ -41,6 +41,7 @@
 #include "dafdesc.hpp"
 #include "seclib.hpp"
 #include "errorlist.h"
+#include "jlog.hpp"
 
 #include <vector>
 #include <string>
@@ -252,7 +253,8 @@ enum DFUQFilterField
     DFUQFFaccessed = 33,
     DFUQFFattrmaxskew = 34,
     DFUQFFattrminskew = 35,
-    DFUQFFterm = 36,
+    DFUQFFexpiredays = 36,
+    DFUQFFterm = 37,
     DFUQFFreverse = 256,
     DFUQFFnocase = 512,
     DFUQFFnumeric = 1024,
@@ -332,6 +334,12 @@ interface ICodeContext;
 /**
  * A distributed file, composed of one or more DistributedFileParts.
  */
+typedef std::pair<const char*, unsigned __int64> AttrValuePair;
+inline AttrValuePair makeAttrValuePair(const char * attr, unsigned __int64 val)
+{
+    return std::make_pair(attr, val);
+}
+
 interface IDistributedFile: extends IInterface
 {
     virtual unsigned numParts() = 0;
@@ -367,6 +375,7 @@ interface IDistributedFile: extends IInterface
     virtual void setAccessedTime(const CDateTime &dt) = 0;                      // set date and time last accessed
     virtual void setAccessed() = 0;                                             // set date and time last accessed to now (local time)
     virtual void addAttrValue(const char *attr, unsigned __int64 value) = 0;    // atomic add to attribute value
+    virtual void addAttrValues(std::initializer_list<AttrValuePair> attrs) = 0; // for each pair of attribute name and value, atomic add to attribute value
     virtual unsigned numCopies(unsigned partno) = 0;                            // number of copies
 
     virtual bool existsPhysicalPartFiles(unsigned short port) = 0;              // returns true if physical patrs all exist (on primary OR secondary)
@@ -384,7 +393,7 @@ interface IDistributedFile: extends IInterface
     virtual IDistributedSuperFileIterator *getOwningSuperFiles(IDistributedFileTransaction *_transaction=NULL)=0;           // returns iterator for all parents
     virtual bool isCompressed(bool *blocked=NULL)=0;
 
-    virtual StringBuffer &getClusterName(unsigned clusternum,StringBuffer &name) = 0;
+    virtual StringBuffer &getClusterName(unsigned clusternum,StringBuffer &name) const = 0;
     virtual unsigned getClusterNames(StringArray &clusters)=0;                  // returns ordinality
                                                                                       // (use findCluster)
     virtual unsigned numClusters()=0;
@@ -434,6 +443,10 @@ interface IDistributedFile: extends IInterface
     virtual int  getExpire(StringBuffer *expirationDate) = 0;
     virtual void setExpire(int expireDays) = 0;
     virtual void getCost(const char * cluster, cost_type & atRestCost, cost_type & accessCost) = 0;
+    virtual bool getNumReads(stat_type &numReads) const = 0;
+    virtual bool getNumWrites(stat_type &numWrites) const = 0;
+    virtual bool getReadCost(cost_type &cost, bool calculateIfMissing=false) const = 0;
+    virtual bool getWriteCost(cost_type &cost, bool calculateIfMissing=false) const = 0;
 };
 
 
@@ -811,14 +824,15 @@ enum DistributedFileSystemError
 
 
 // utility routines (used by xref and dfu)
-extern da_decl RemoteFilename &constructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,unsigned copy,ClusterPartDiskMapSpec &mspec,RemoteFilename &rfn);
+extern da_decl RemoteFilename &constructPartFilename(IGroup *grp,unsigned partNo,unsigned copy,unsigned max,unsigned lfnHash,int replicateOffset,bool dirPerPart,const char *lname,const char *prefix,const char *pmask,unsigned numDevices,RemoteFilename &rfn);
+extern da_decl RemoteFilename &deprecatedConstructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,unsigned copy,ClusterPartDiskMapSpec &mspec,RemoteFilename &rfn);
 // legacy version
-inline RemoteFilename &constructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,bool replicate,int replicateoffset,RemoteFilename &rfn,bool localmount=false)
+inline RemoteFilename &deprecatedConstructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,bool replicate,int replicateoffset,RemoteFilename &rfn,bool localmount=false)
 {
     // local mount ignored!
     ClusterPartDiskMapSpec mspec;
     mspec.replicateOffset = replicateoffset;
-    return constructPartFilename(grp,partno,partmax,name,partmask,partdir,replicate?1:0,mspec,rfn);
+    return deprecatedConstructPartFilename(grp,partno,partmax,name,partmask,partdir,replicate?1:0,mspec,rfn);
 }
 
 extern da_decl IDFPartFilter *createPartFilter(const char *filter);
@@ -827,9 +841,6 @@ extern da_decl IDFPartFilter *createPartFilter(const char *filter);
 <part_range>  ::=  <part_number>
               |    <part_number> '-' <part_number>
 */
-
-extern da_decl bool removePhysicalFiles(IGroup *grp,const char *_filemask,unsigned short port, ClusterPartDiskMapSpec &mspec,IMultiException *mexcept);
-// for removing orphaned files
 
 // for server use
 interface IDaliServer;
@@ -893,39 +904,90 @@ extern da_decl cost_type calcFileAtRestCost(const char * cluster, double sizeGB,
 extern da_decl cost_type calcFileAccessCost(const char * cluster, __int64 numDiskWrites, __int64 numDiskReads);
 extern da_decl cost_type calcFileAccessCost(IDistributedFile *f, __int64 numDiskWrites, __int64 numDiskReads);
 extern da_decl cost_type calcDiskWriteCost(const StringArray & clusters, stat_type numDiskWrites);
+extern da_decl cost_type updateCostAndNumReads(IDistributedFile *file, stat_type numDiskReads, cost_type curReadCost); // Update readCost and numDiskReads - return calculated read cost
 constexpr bool defaultPrivilegedUser = true;
 constexpr bool defaultNonPrivilegedUser = false;
 
 extern da_decl void configurePreferredPlanes();
-inline bool hasReadWriteCostFields(const IPropertyTree & fileAttr)
+
+template<typename Source>
+inline cost_type calcLegacyReadCost(const IPropertyTree & fileAttr, Source source)
 {
-    return fileAttr.hasProp(getDFUQResultFieldName(DFUQRFreadCost)) || fileAttr.hasProp(getDFUQResultFieldName(DFUQRFwriteCost));
+    // Calculate legacy read cost from numDiskReads
+    // (However, it is not possible to accurately calculate read cost for key
+    // files, as the reads may have been from page cache and not from disk.)
+    if (!isFileKey(fileAttr) && source)
+    {
+        stat_type numDiskReads = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
+        return calcFileAccessCost(source, 0, numDiskReads);
+    }
+    return 0;
+}
+
+// Get read cost from readCost field or calculate legacy read cost
+// - migrateLegacyCost: if true, update readCost field with legacy read cost
+template<typename Source>
+inline cost_type getReadCost(IPropertyTree & fileAttr, Source source, bool migrateLegacyCost = false)
+{
+    if (fileAttr.hasProp(getDFUQResultFieldName(DFUQRFreadCost)))
+        return fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), 0);
+    else
+    {
+        cost_type readCost = calcLegacyReadCost(fileAttr, source);
+        if (migrateLegacyCost)
+            fileAttr.setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), readCost);
+        return readCost;
+    }
+}
+
+// Get read cost from readCost field or calculate legacy read cost
+template<typename Source>
+inline cost_type getReadCost(const IPropertyTree & fileAttr, Source source)
+{
+    if (fileAttr.hasProp(getDFUQResultFieldName(DFUQRFreadCost)))
+        return fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), 0);
+    else
+        return calcLegacyReadCost(fileAttr, source);
 }
 
 template<typename Source>
-inline cost_type getLegacyReadCost(const IPropertyTree & fileAttr, Source source)
+inline cost_type calcLegacyWriteCost(const IPropertyTree & fileAttr, Source source)
 {
-    // Legacy files do not have @readCost attribute, so calculate from numDiskRead
-    // NB: Costs of index reading can not be reliably estimated based on 'numDiskReads'
-    if (!hasReadWriteCostFields(fileAttr) && fileAttr.hasProp(getDFUQResultFieldName(DFUQRFnumDiskReads))
-        && !isFileKey(fileAttr))
+    if (source)
     {
-        stat_type prevDiskReads = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
-        return calcFileAccessCost(source, 0, prevDiskReads);
+        stat_type numDiskWrites = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), 0);
+        return calcFileAccessCost(source, numDiskWrites, 0);
     }
-    else
-        return 0;
+    return 0;
 }
+
+// Get write cost from writeCost field or calculate legacy write cost
+// - migrateLegacyCost: if true, update writeCost field with legacy write cost
 template<typename Source>
-inline cost_type getLegacyWriteCost(const IPropertyTree & fileAttr, Source source)
+inline cost_type getWriteCost(IPropertyTree & fileAttr, Source source, bool migrateLegacyCost = false)
 {
-    // Legacy files do not have @writeCost attribute, so calculate from numDiskWrites
-    if (!hasReadWriteCostFields(fileAttr) && fileAttr.hasProp(getDFUQResultFieldName(DFUQRFnumDiskWrites)))
-    {
-        stat_type prevDiskWrites = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), 0);
-        return calcFileAccessCost(source, prevDiskWrites, 0);
-    }
+    if (fileAttr.hasProp(getDFUQResultFieldName(DFUQRFwriteCost)))
+        return fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), 0);
     else
-        return 0;
+    {
+        cost_type writeCost = calcLegacyWriteCost(fileAttr, source);
+        if (migrateLegacyCost)
+            fileAttr.setPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), writeCost);
+        return writeCost;
+    }
 }
+
+// Get write cost from writeCost field or calculate legacy write cost
+template<typename Source>
+inline cost_type getWriteCost(const IPropertyTree & fileAttr, Source source)
+{
+    if (fileAttr.hasProp(getDFUQResultFieldName(DFUQRFwriteCost)))
+        return fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), 0);
+    else
+        return calcLegacyWriteCost(fileAttr, source);
+}
+
+extern da_decl bool doesPhysicalMatchMeta(IPartDescriptor &partDesc, IFile &iFile, offset_t &expectedSize, offset_t &actualSize);
+extern da_decl bool doesPhysicalMatchMeta(IDistributedFilePart &partDesc, IFile &iFile, offset_t &expectedSize, offset_t &actualSize);
+
 #endif

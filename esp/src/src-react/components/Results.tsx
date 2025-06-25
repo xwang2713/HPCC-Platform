@@ -1,10 +1,12 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link, Pivot, PivotItem, ScrollablePane, Sticky } from "@fluentui/react";
-import { SizeMe } from "react-sizeme";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link, Pivot, PivotItem } from "@fluentui/react";
+import { SizeMe } from "../layouts/SizeMe";
 import nlsHPCC from "src/nlsHPCC";
 import { QuerySortItem } from "src/store/Store";
 import { useWorkunitResults } from "../hooks/workunit";
+import { HolyGrail } from "../layouts/HolyGrail";
 import { pivotItemStyle } from "../layouts/pivot";
+import { hashHistory } from "../util/history";
 import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { ShortVerticalDivider } from "./Common";
 import { Result } from "./Result";
@@ -43,13 +45,13 @@ export const Results: React.FunctionComponent<ResultsProps> = ({
             Name: {
                 label: nlsHPCC.Name, width: 180, sortable: true,
                 formatter: (Name, row) => {
-                    return <Link href={`#/workunits/${row.Wuid}/outputs/${Name}`}>{Name}</Link>;
+                    return <Link href={`#/workunits/${row.Wuid}/outputs/${Name}${hashHistory.location.search}`}>{Name}</Link>;
                 }
             },
             FileName: {
                 label: nlsHPCC.FileName, sortable: true,
                 formatter: (FileName, row) => {
-                    return <Link href={`#/files/${FileName}`}>{FileName}</Link>;
+                    return <Link href={`#/files/${FileName}${hashHistory.location.search}`}>{FileName}</Link>;
                 }
             },
             Value: {
@@ -79,10 +81,10 @@ export const Results: React.FunctionComponent<ResultsProps> = ({
             key: "open", text: nlsHPCC.Open, disabled: !uiState.hasSelection, iconProps: { iconName: "WindowEdit" },
             onClick: () => {
                 if (selection.length === 1) {
-                    window.location.href = `#/workunits/${wuid}/outputs/${selection[0].Name}`;
+                    window.location.href = `#/workunits/${wuid}/outputs/${selection[0].Name}${hashHistory.location.search}`;
                 } else {
                     for (let i = selection.length - 1; i >= 0; --i) {
-                        window.open(`#/workunits/${wuid}/outputs/${selection[i].Name}`, "_blank");
+                        window.open(`#/workunits/${wuid}/outputs/${selection[i].Name}${hashHistory.location.search}`, "_blank");
                     }
                 }
             }
@@ -141,38 +143,40 @@ export const Results: React.FunctionComponent<ResultsProps> = ({
         }));
     }, [results]);
 
-    return <ScrollablePane>
-        <Sticky>
-            <CommandBar items={buttons} farItems={copyButtons} />
-        </Sticky>
-        <FluentGrid
-            data={data}
-            primaryID={"__hpcc_id"}
-            alphaNumColumns={{ Name: true, Value: true }}
-            sort={sort}
-            columns={columns}
-            setSelection={setSelection}
-            setTotal={setTotal}
-            refresh={refreshTable}
-        ></FluentGrid>
-    </ScrollablePane >;
+    return <HolyGrail
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
+        main={
+            <FluentGrid
+                data={data}
+                primaryID={"__hpcc_id"}
+                alphaNumColumns={{ Name: true, Value: true }}
+                sort={sort}
+                columns={columns}
+                setSelection={setSelection}
+                setTotal={setTotal}
+                refresh={refreshTable}
+            ></FluentGrid>
+        }
+    />;
 };
 
 interface TabbedResultsProps {
     wuid: string;
+    filter?: { [id: string]: any };
 }
 
 export const TabbedResults: React.FunctionComponent<TabbedResultsProps> = ({
-    wuid
+    wuid,
+    filter = {}
 }) => {
 
     const [results] = useWorkunitResults(wuid);
 
-    return <SizeMe monitorHeight>{({ size }) =>
+    return <SizeMe>{({ size }) =>
         <Pivot overflowBehavior="menu" style={{ height: "100%" }}>
             {results.map(result => {
                 return <PivotItem key={`${result?.ResultName}_${result?.Sequence}`} headerText={result?.ResultName} style={pivotItemStyle(size)}>
-                    <Result wuid={wuid} resultName={result?.ResultName} />
+                    <Result wuid={wuid} resultName={result?.ResultName} filter={filter} />
                 </PivotItem>;
             })}
         </Pivot>

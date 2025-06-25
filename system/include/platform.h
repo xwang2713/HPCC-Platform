@@ -18,7 +18,11 @@
 #ifndef _PLATFORM_H_
 #define _PLATFORM_H_
 
-#define _TESTING // this should remain set for the near future
+#ifdef _DEBUG
+ #ifndef _TESTING
+  #define _TESTING
+ #endif
+#endif
 
 // **** Architecture detection ****
 // Ref: http://sourceforge.net/p/predef/wiki/Architectures/
@@ -88,7 +92,7 @@
 
 typedef unsigned size32_t;
 
-#if (defined (__linux__) || defined (__FreeBSD__)  || defined (__APPLE__))
+#if (defined (__linux__) || defined (__FreeBSD__)  || defined (__APPLE__) || defined (EMSCRIPTEN))
 typedef __SIZE_TYPE__ memsize_t;
 #else
 typedef size_t memsize_t;
@@ -276,9 +280,39 @@ inline int daemon(int, int) { return -1; }
 #define __cdecl
 
 
-#if defined(__linux__) || defined (__FreeBSD__)  || defined (__APPLE__)
+#if defined(__linux__) || defined (__FreeBSD__)  || defined (__APPLE__) || defined(EMSCRIPTEN)
 // **** START OF LINUX SPECIFIC SECTION ****
-#include <aio.h>
+#if not defined(EMSCRIPTEN)
+  #include <aio.h>
+#else
+  #include <utime.h>
+  #include <sys/types.h> // Include for off_t
+  #include <signal.h>    // Include for struct sigevent
+  struct aiocb
+  {
+    int aio_fildes;		/* File descriptor.  */
+    int aio_lio_opcode;		/* Operation to be performed.  */
+    int aio_reqprio;		/* Request priority offset.  */
+    volatile void *aio_buf;	/* Location of buffer.  */
+    size_t aio_nbytes;		/* Length of transfer.  */
+    struct sigevent aio_sigevent;	/* Signal number and value.  */
+
+    /* Internal members.  */
+    struct aiocb *__next_prio;
+    int __abs_prio;
+    int __policy;
+    int __error_code;
+    ssize_t __return_value;
+
+  #ifndef __USE_FILE_OFFSET64
+    __off_t aio_offset;		/* File offset.  */
+    char __pad[sizeof (__off64_t) - sizeof (__off_t)];
+  #else
+    off64_t aio_offset;		/* File offset.  */
+  #endif
+    char __glibc_reserved[32];
+  };
+#endif
 #define __BYTE_ORDER __LITTLE_ENDIAN
 #define _atoi64     atoll
 #define _lseek      lseek
@@ -430,13 +464,17 @@ inline bool DeleteFile(const char * name) { return unlink(name)==0; }
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#if defined(EMSCRIPTEN)
+#include <errno.h>
+#else
 #include <sys/errno.h>
+#endif
 #include <sys/utsname.h>
 
 #if defined (__FreeBSD__) || defined (__APPLE__)
 #define MAP_ANONYMOUS MAP_ANON
 #endif
-#if defined(__FreeBSD__) || defined(__linux__) || defined(__CYGWIN__) || defined (__APPLE__)
+#if defined(__FreeBSD__) || defined(__linux__) || defined(__CYGWIN__) || defined (__APPLE__) || defined(EMSCRIPTEN)
 #include <sys/ioctl.h>
 #else
 #include <sys/filio.h>
@@ -485,6 +523,7 @@ inline bool DeleteFile(const char * name) { return unlink(name)==0; }
 #define MAX_DECIMAL_LEADING    32          // Maximum number of leading digits in a decimal field
 #define MAX_DECIMAL_PRECISION  32          // Maximum digits in a decimal field
 #define MAX_DECIMAL_DIGITS     (MAX_DECIMAL_LEADING+MAX_DECIMAL_PRECISION)
+#define MAX_DECIMAL_CHARS      (MAX_DECIMAL_DIGITS+3) // Maximum digits with sign, decimal point, and null terminator
 
 #define strtok(a,b)   j_strtok_deprecated(a,b)  // will disappear at some point
 
@@ -492,7 +531,7 @@ typedef unsigned __int64 hash64_t;
 typedef unsigned __int64 __uint64;
 typedef __uint64 offset_t;
 typedef unsigned char byte;
-typedef __int64 cycle_t;
+typedef __uint64 cycle_t;                 // This must be unsigned to avoid integer overflow issues when subtracting
 typedef unsigned __int64 timestamp_type;
 
 // BUILD_TAG not needed here anymore - defined in build_tag.h

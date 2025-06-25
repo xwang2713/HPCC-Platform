@@ -21,9 +21,12 @@
  */
 
 #ifdef _USE_CPPUNIT
-#include <memory>
-#include <chrono>
 #include <algorithm>
+#include <chrono>
+#include <memory>
+#include <random>
+#include <vector>
+
 #include "jsem.hpp"
 #include "jfile.hpp"
 #include "jdebug.hpp"
@@ -41,8 +44,6 @@
 
 #include "unittests.hpp"
 
-#define CPPUNIT_ASSERT_EQUAL_STR(x, y) CPPUNIT_ASSERT_EQUAL(std::string(x ? x : ""),std::string(y ? y : ""))
-
 static const unsigned oneMinute = 60000; // msec
 
 class JlibTraceTest : public CppUnit::TestFixture
@@ -57,6 +58,7 @@ public:
         CPPUNIT_TEST(testTraceConfig);
         CPPUNIT_TEST(testRootServerSpan);
         CPPUNIT_TEST(testPropegatedServerSpan);
+        CPPUNIT_TEST(testGeneratedGlobalID);
         CPPUNIT_TEST(testInvalidPropegatedServerSpan);
         CPPUNIT_TEST(testInternalSpan);
         CPPUNIT_TEST(testMultiNestedSpanTraceOutput);
@@ -66,7 +68,10 @@ public:
         CPPUNIT_TEST(manualTestsEventsOutput);
         CPPUNIT_TEST(manualTestsDeclaredFailures);
         CPPUNIT_TEST(manualTestScopeEnd);
-
+        CPPUNIT_TEST(manualTestBackdatedSpan);
+        CPPUNIT_TEST(testActiveSpans);
+        CPPUNIT_TEST(testSpanFetchMethods);
+        CPPUNIT_TEST(testSpanIsValid);
         //CPPUNIT_TEST(testJTraceJLOGExporterprintResources);
         //CPPUNIT_TEST(testJTraceJLOGExporterprintAttributes);
         CPPUNIT_TEST(manualTestsDeclaredSpanStartTime);
@@ -197,7 +202,7 @@ protected:
     {
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("spanWithEventsNoAtts", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("spanWithEventsNoAtts", emptyMockHTTPHeaders);
             Owned<IProperties> emptyEventAtts = createProperties();
             serverSpan->addSpanEvent("event1", emptyEventAtts);
         }
@@ -207,12 +212,12 @@ protected:
         twoEventAtt->setProp("key2", "");
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("spanWithEvent1Att", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("spanWithEvent1Att", emptyMockHTTPHeaders);
             serverSpan->addSpanEvent("event2", twoEventAtt);
         }//{ "type": "span", "name": "spanWithEvents1Att", "trace_id": "3b9f55aaf8fab51fb0d73a32db7d704f", "span_id": "2a25a44ae0b3abe0", "start": 1709696036335278770, "duration": 3363911469, "events":[ { "name": "event2", "time_stamp": 1709696038413023245, "attributes": {"key": "value" } } ] }
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("spanWith2Events", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("spanWith2Events", emptyMockHTTPHeaders);
             serverSpan->addSpanEvent("event1", twoEventAtt);
             serverSpan->addSpanEvent("event2", twoEventAtt);
         }//{ "type": "span", "name": "spanWith2Events", "trace_id": "ff5c5919b9c5f85913652b77f289bf0b", "span_id": "82f91ca1f9d469c1", "start": 1709698012480805016, "duration": 2811601377, "events":[ { "name": "event1", "time_stamp": 1709698013294323139, "attributes": {"key": "value" } },{ "name": "event2", "time_stamp": 1709698014500350802, "attributes": {"key": "value" } } ] }
@@ -222,14 +227,20 @@ protected:
     {
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
         SpanTimeStamp declaredSpanStartTime;
-        declaredSpanStartTime.now(); // must be initialized via now(), or setMSTickTime
+        declaredSpanStartTime.setNow(); // must be initialized via setNow(), or setMSTickTime
         MilliSleep(125);
 
         {
             //duration should be at least 125 milliseconds
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("declaredSpanStartTime", emptyMockHTTPHeaders, &declaredSpanStartTime);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("declaredSpanStartTime", emptyMockHTTPHeaders, &declaredSpanStartTime);
             //{ "type": "span", "name": "declaredSpanStartTime", "trace_id": "0a2eff24e1996540056745aaeb2f5824", "span_id": "46d0faf8b4da893e",
             //"start": 1702672311203213259, "duration": 125311051 }
+
+            SpanTimeStamp clientSpanTimeStamp(true);
+            MilliSleep(20);
+            OwnedActiveSpanScope clientSpan = serverSpan->createClientSpan("clientSpanStartTime", &clientSpanTimeStamp);
+            //{ "type": "span", "name": "clientSpanStartTime", "trace_id": "f73b171fdcd120f88ca5b656866befee", "span_id": "7c798125d10ee0ec",
+            //"start": 1727200325699918374, "duration": 20256156, "parent_span_id": "b79fe15b7d727fca" }
         }
 
         auto reqStartMSTick = msTick();
@@ -242,10 +253,17 @@ protected:
         MilliSleep(50);
 
         {
-            SpanTimeStamp nowTimeStamp; //not used, printed out as "start" time for manual comparison
-            nowTimeStamp.now();
+            SpanTimeStamp nowTimeStamp(true); //not used, printed out as "start" time for manual comparison
             {
-                OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("msTickOffsetStartTime", emptyMockHTTPHeaders, &msTickOffsetTimeStamp);
+                OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("msTickOffsetStartTime", emptyMockHTTPHeaders, &msTickOffsetTimeStamp);
+
+                unsigned clientStartMS = msTick();
+                MilliSleep(20);
+                SpanTimeStamp clientSpanTimeStamp;
+                clientSpanTimeStamp.setMSTickTime(clientStartMS);
+                OwnedActiveSpanScope clientSpan = serverSpan->createClientSpan("clientSpanOffsetTime", &clientSpanTimeStamp);
+                //{ "type": "span", "name": "clientSpanOffsetTime", "trace_id": "9a41723ddc0048d854ab34b79340e749", "span_id": "11af70aa6a6dbee3",
+                //"start": 1727200325770619773, "duration": 20015542, "parent_span_id": "531ad336071f453b" }
             }
 
             DBGLOG("MsTickOffset span actual start-time timestamp: %lld", (long long)(nowTimeStamp.systemClockTime).count());
@@ -261,7 +279,7 @@ protected:
         CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected initialized spanTimeStamp", true, uninitializedTS.systemClockTime == std::chrono::nanoseconds::zero());
         CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected initialized spanTimeStamp", true, uninitializedTS.steadyClockTime == std::chrono::nanoseconds::zero());
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("uninitializeddeclaredSpanStartTime", emptyMockHTTPHeaders, &uninitializedTS);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("uninitializeddeclaredSpanStartTime", emptyMockHTTPHeaders, &uninitializedTS);
             //sleep for 75 milliseconds after span creation, expect at least 75 milliseconds duration output
             MilliSleep(75);
 
@@ -276,43 +294,43 @@ protected:
     {
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("defaultErrorSpan", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("defaultErrorSpan", emptyMockHTTPHeaders);
             serverSpan->recordError();
         }//{ "type": "span", "name": "defaultErrorSpan", "trace_id": "209b5d8cea0aec9785d2dfa3117e37ad", "span_id": "ab72e76c2f2466c2", "start": 1709675278129335702, "duration": 188292867932, "status": "Error", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675465508149013, "attributes": {"escaped": 0 } } ] }
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("defaultErrorSpanStruct", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("defaultErrorSpanStruct", emptyMockHTTPHeaders);
             SpanError error;
             serverSpan->recordError(error);
         }//{ "type": "span", "name": "defaultErrorSpanStruct", "trace_id": "19803a446b971f2e0bdddc9c00db50fe", "span_id": "04c93a91ab8785a2", "start": 1709675487767044352, "duration": 2287497219, "status": "Error", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675489216412154, "attributes": {"escaped": 0 } } ] }
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("failedErrorSpanEscaped", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("failedErrorSpanEscaped", emptyMockHTTPHeaders);
             serverSpan->recordError(SpanError("hello", -1, true, true)); //error message hello, no error code, error caused failure, and error caused escape
         }//{ "type": "span", "name": "failedErrorSpanEscaped", "trace_id": "634f386c18a6140544c980e0d5a15905", "span_id": "e2f59c48f63a8f82", "start": 1709675508231168974, "duration": 7731717678, "status": "Error", "kind": "Server", "description": "hello", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675512164430668, "attributes": {"escaped": 1,"message": "hello" } } ] }
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("failedErrEscapedMsgErrCode", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("failedErrEscapedMsgErrCode", emptyMockHTTPHeaders);
             serverSpan->recordError(SpanError("hello", 34, true, true)); //error message hello, error code 34, error caused failure, and error caused escape
         }//failedErrEscapedMsgErrCode
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("containsErrorAndMessageSpan", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("containsErrorAndMessageSpan", emptyMockHTTPHeaders);
             serverSpan->recordError(SpanError("Error Message!!"));
         }//{ "type": "span", "name": "containsErrorAndMessageSpan", "trace_id": "9a6e00ea309bc0427733f9b2d452f9e2", "span_id": "de63e9c69b64e411", "start": 1709675552302360510, "duration": 5233037523, "status": "Error", "kind": "Server", "description": "Error Message!!", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675555149852711, "attributes": {"escaped": 0,"message": "Error Message!!" } }
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("containsErrorAndMessageFailedNotEscapedSpan", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("containsErrorAndMessageFailedNotEscapedSpan", emptyMockHTTPHeaders);
             serverSpan->recordError(SpanError("Error Message!!", 23, true, false)); 
         }//{ "type": "span", "name": "containsErrorAndMessageFailedNotEscapedSpan", "trace_id": "02f4b2d215f8230b15063862f8a91e41", "span_id": "c665ec371d6db147", "start": 1709675573581678954, "duration": 3467489486, "status": "Error", "kind": "Server", "description": "Error Message!!", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675576145074240, "attributes": {"code": 23,"escaped": 0,"message": "Error Message!!" } } ] }
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("mockExceptionSpanNotFailedNotEscaped", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("mockExceptionSpanNotFailedNotEscaped", emptyMockHTTPHeaders);
             serverSpan->recordException( makeStringExceptionV(76,"Mock exception"), false, false);
         }//{ "type": "span", "name": "mockExceptionSpanNotFailedNotEscaped", "trace_id": "e01766474db05ce9085943fa3955cd73", "span_id": "7da620e96e10e42c", "start": 1709675595987480704, "duration": 2609091267, "status": "Unset", "kind": "Server", "instrumented_library": "unittests", "events":[ { "name": "Exception", "time_stamp": 1709675597728975355, "attributes": {"code": 76,"escaped": 0,"message": "Mock exception" } } ] 
 
         {
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("thrownExceptionSpan", emptyMockHTTPHeaders);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("thrownExceptionSpan", emptyMockHTTPHeaders);
             try
             {
                 throw makeStringExceptionV( 356, "Mock thrown exception");
@@ -331,7 +349,7 @@ protected:
         {
             SpanFlags flags = SpanFlags::EnsureTraceId;
             Owned<IProperties> emptyMockHTTPHeaders = createProperties();
-            OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("mySpan", emptyMockHTTPHeaders, flags);
+            OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("mySpan", emptyMockHTTPHeaders, flags);
             DBGLOG("mySpan is alive");
             savedSpan.set(serverSpan);
         }//{ "type": "span", "name": "mySpan", "trace_id": "fe266416e7d588113a5131394d913ab4", "span_id": "7ac62328b04442c5", "start": 1709824793826023368, "duration": 16952 }
@@ -347,6 +365,16 @@ protected:
         savedSpan.clear();
     }
 
+    void nullSpanTest()
+    {
+        Owned<ISpan> nullSpan = getNullSpan();
+        CPPUNIT_ASSERT(nullSpan->queryTraceId() != nullptr);
+        CPPUNIT_ASSERT(nullSpan->querySpanId() != nullptr);
+        CPPUNIT_ASSERT(nullSpan->queryGlobalId() != nullptr);
+        CPPUNIT_ASSERT(nullSpan->queryCallerId() != nullptr);
+        CPPUNIT_ASSERT(nullSpan->queryLocalId() != nullptr);
+    }
+
     void testTraceDisableConfig()
     {
         Owned<IPropertyTree> testTree = createPTreeFromYAMLString(disableTracingYaml, ipt_none, ptr_ignoreWhiteSpace, nullptr);
@@ -360,7 +388,7 @@ protected:
     {
         SpanFlags flags = SpanFlags::EnsureTraceId;
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("noRemoteParentEnsureTraceID", emptyMockHTTPHeaders, flags);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("noRemoteParentEnsureTraceID", emptyMockHTTPHeaders, flags);
 
         Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
         serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
@@ -369,12 +397,121 @@ protected:
         CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(retrievedSpanCtxAttributes->queryProp("spanID")));
     }
 
+    void testSpanIsValid()
+    {
+        OwnedActiveSpanScope nullSpan = getNullSpan();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullptr nullspan detected", true, nullSpan != nullptr);
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected valid nullspan detected", false, nullSpan->isValid());
+
+        const char * nullSpanTraceID = nullSpan->queryTraceId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan TraceID==nullptr", false, nullSpanTraceID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan TraceID length", strlen("00000000000000000000000000000000"), strlen(nullSpanTraceID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan TraceID value", 0, strcmp("00000000000000000000000000000000", nullSpanTraceID));
+
+        const char * nullSpanSpanID = nullSpan->querySpanId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan SpanID==nullptr", false, nullSpanSpanID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan SpanID length", strlen("0000000000000000"), strlen(nullSpanSpanID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan SpanID value", 0, strcmp("0000000000000000", nullSpanSpanID));
+
+        const char * nullSpanGlobalID = nullSpan->queryGlobalId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan GlobalID==nullptr", false, nullSpanGlobalID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan GlobalID length", strlen("11111111111111111111111"), strlen(nullSpanGlobalID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan GlobalID value", 0, strcmp("11111111111111111111111", nullSpanGlobalID));
+
+        const char * nullSpanCallerID = nullSpan->queryCallerId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan CallerID==nullptr", false, nullSpanCallerID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan CallerID length", strlen(""), strlen(nullSpanCallerID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan CallerID value", 0, strcmp("", nullSpanCallerID));
+
+        const char * nullSpanLocalID = nullSpan->queryLocalId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan LocalID==nullptr", false, nullSpanLocalID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan LocalID length", strlen("11111111111111111111111"), strlen(nullSpanLocalID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspan LocalID value", 0, strcmp("11111111111111111111111", nullSpanLocalID));
+
+        OwnedActiveSpanScope nullSpanChild = nullSpan->createClientSpan("nullSpanChild");
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullptr nullSpanChild detected", true, nullSpanChild != nullptr);
+
+        const char * nullSpanChildTraceID = nullSpanChild->queryTraceId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild TraceID==nullptr", false, nullSpanChildTraceID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild TraceID length", strlen("00000000000000000000000000000000"), strlen(nullSpanChildTraceID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild TraceID value", 0, strcmp("00000000000000000000000000000000", nullSpanChildTraceID));
+
+        const char * nullSpanChildSpanID = nullSpanChild->querySpanId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild SpanID==nullptr", false, nullSpanChildSpanID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild SpanID length", strlen("0000000000000000"), strlen(nullSpanChildSpanID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild SpanID value", 0, strcmp("0000000000000000", nullSpanChildSpanID));
+
+        const char * nullSpanChildGlobalID = nullSpanChild->queryGlobalId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild GlobalID==nullptr", false, nullSpanGlobalID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild GlobalID length", strlen("11111111111111111111111"), strlen(nullSpanChildGlobalID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild GlobalID value", 0, strcmp("11111111111111111111111", nullSpanChildGlobalID));
+
+        const char * nullSpanChildCallerID = nullSpanChild->queryCallerId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild CallerID==nullptr", false, nullSpanChildCallerID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild CallerID length", strlen(""), strlen(nullSpanChildCallerID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild CallerID value", 0, strcmp("", nullSpanChildCallerID));
+
+        const char * nullSpanChildLocalID = nullSpanChild->queryLocalId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild LocalID==nullptr", false, nullSpanChildLocalID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild LocalID length", strlen("11111111111111111111111"), strlen(nullSpanChildLocalID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullspanChild LocalID value", 0, strcmp("11111111111111111111111", nullSpanChildLocalID));
+
+
+        Owned<IProperties> mockHTTPHeaders = createProperties();
+        createMockHTTPHeaders(mockHTTPHeaders, true);
+
+        OwnedActiveSpanScope validSpan = queryTraceManager().createServerSpan("validSpan", mockHTTPHeaders);
+
+        const char * validSpanTraceID = validSpan->queryTraceId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan TraceID==nullptr", false, validSpanTraceID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan TraceID length", strlen("00000000000000000000000000000000"), strlen(validSpanTraceID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan TraceID value", true, strcmp("00000000000000000000000000000000", validSpanTraceID)!=0);
+
+        const char * validSpanSpanID = validSpan->querySpanId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID==nullptr", false, validSpanSpanID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID length", strlen("0000000000000000"), strlen(validSpanSpanID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID value", true, strcmp("0000000000000000", validSpanSpanID)!=0);
+
+        const char * validSpanGlobalID = validSpan->queryGlobalId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan GlobalID==nullptr", false, validSpanGlobalID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan GlobalID value", true, strcmp("11111111111111111111111", validSpanGlobalID)!=0);
+
+        const char * validSpanCallerID = validSpan->queryCallerId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID==nullptr", false, validSpanCallerID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID value", true, strcmp("", validSpanCallerID)!=0);
+
+        const char * validSpanLocalID = validSpan->queryLocalId();
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID==nullptr", false, validSpanLocalID==nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected validSpan SpanID value", true, strcmp("11111111111111111111111", validSpanLocalID)!=0);
+
+    }
+
+    void testSpanFetchMethods()
+    {
+        SpanFlags flags = SpanFlags::EnsureTraceId;
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("noRemoteParentEnsureTraceID", emptyMockHTTPHeaders, flags);
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getSpanContext(retrievedSpanCtxAttributes.get());
+
+        const char * traceID = retrievedSpanCtxAttributes->queryProp("traceID");
+        const char * spanID = retrievedSpanCtxAttributes->queryProp("spanID");
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty TraceID detected", false, isEmptyString(traceID));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty SpanID detected", false, isEmptyString(spanID));
+
+        CPPUNIT_ASSERT_MESSAGE("Queried traceID mismatch vs traceID from attributes",  strsame(serverSpan->queryTraceId(), traceID));
+        CPPUNIT_ASSERT_MESSAGE("Queried spanID mismatch vs spanID from attributes",  strsame(serverSpan->querySpanId(), spanID));
+}
+
     void testIDPropegation()
     {
         Owned<IProperties> mockHTTPHeaders = createProperties();
         createMockHTTPHeaders(mockHTTPHeaders, true);
 
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
         //at this point the serverSpan should have the following context attributes
         //traceID, spanID, remoteParentSpanID, traceFlags, traceState, globalID, callerID
 
@@ -426,7 +563,7 @@ protected:
             return;
         }
 
-        OwnedSpanScope nullSpan = getNullSpan();
+        OwnedActiveSpanScope nullSpan = getNullSpan();
         CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullptr nullspan detected", true, nullSpan != nullptr);
 
         {
@@ -434,15 +571,14 @@ protected:
             nullSpan->getClientHeaders(headers);
         }
 
-        OwnedSpanScope nullSpanChild = nullSpan->createClientSpan("nullSpanChild");
+        OwnedActiveSpanScope nullSpanChild = nullSpan->createClientSpan("nullSpanChild");
         CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected nullptr nullSpanChild detected", true, nullSpanChild != nullptr);
     }
 
     void testClientSpan()
     {
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
-
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
         Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
         serverSpan->getSpanContext(retrievedSpanCtxAttributes);
 
@@ -452,13 +588,11 @@ protected:
         const char * serverTraceID = retrievedSpanCtxAttributes->queryProp("traceID");
 
         {
-            OwnedSpanScope internalSpan = serverSpan->createClientSpan("clientSpan");
-
+            OwnedActiveSpanScope internalSpan = serverSpan->createClientSpan("clientSpan");
             //retrieve clientSpan context with the intent to propogate otel and HPCC context
             {
                 Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
                 internalSpan->getSpanContext(retrievedSpanCtxAttributes);
-
                 CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing localParentSpanID detected", true,
                  retrievedSpanCtxAttributes->hasProp("localParentSpanID"));
 
@@ -488,7 +622,7 @@ protected:
     void testInternalSpan()
     {
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
 
         Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
         serverSpan->getSpanContext(retrievedSpanCtxAttributes);
@@ -499,7 +633,7 @@ protected:
         const char * serverTraceID = retrievedSpanCtxAttributes->queryProp("traceID");
 
         {
-            OwnedSpanScope internalSpan = serverSpan->createInternalSpan("internalSpan");
+            OwnedActiveSpanScope internalSpan = serverSpan->createInternalSpan("internalSpan");
 
             //retrieve internalSpan context with the intent to interrogate attributes
             {
@@ -530,10 +664,29 @@ protected:
         }
     }
 
+    //not able to programmatically test yet, but can visually inspect trace output
+    void manualTestBackdatedSpan()
+    {
+        Owned<IProperties> emptyMockHTTPHeaders = createProperties();
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
+
+        Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
+        serverSpan->getSpanContext(retrievedSpanCtxAttributes);
+
+        {
+            OwnedActiveSpanScope internalSpan = createBackdatedInternalSpan("internalSpan", 1'000'000'000);
+            DBGLOG("Now = %llu", (__uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+        }
+        //Now = 1747317725729197367
+        //{ "type": "span", "name": "internalSpan", "trace_id": "c15305e4d2a6c20a87a49bd20449d996", "span_id": "4d2d7e5de8d008f5", "start": 1747317724729151340, "duration": 1000059222, "parent_span_id": "bfb21030afbf51ac" }
+        //NOTE: The start time should be 1,000,000,000ns before now, and the duration should be at least 1,000,000,000
+    }
+
+
     void testRootServerSpan()
     {
         Owned<IProperties> emptyMockHTTPHeaders = createProperties();
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", emptyMockHTTPHeaders);
 
         //retrieve serverSpan context with the intent to propagate it to a remote child span
         {
@@ -567,11 +720,76 @@ protected:
         }
     }
 
+    void testActiveSpans()
+    {
+        {
+            Owned<IProperties> spanContext = createProperties();
+            ISpan * activeSpan =  queryThreadedActiveSpan();
+            
+            CPPUNIT_ASSERT_MESSAGE("Threaded Active Span == nullptr!", activeSpan != nullptr);
+
+            activeSpan->getSpanContext(spanContext);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected TraceID detected when no active trace/span expected", false, spanContext->hasProp("traceID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected SpanID detected when no active trace/span expected", false, spanContext->hasProp("spanID"));
+        }
+
+        {
+            Owned<IProperties> mockHTTPHeaders = createProperties();
+            createMockHTTPHeaders(mockHTTPHeaders, false);
+            ISpan * notActiveSpan = queryTraceManager().createServerSpan("notActiveSpan", mockHTTPHeaders);
+
+            CPPUNIT_ASSERT_MESSAGE("Not Active Span == nullptr!", notActiveSpan != nullptr);
+            Owned<IProperties> spanContext = createProperties();
+            notActiveSpan->getSpanContext(spanContext);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing TraceID detected", true, spanContext->hasProp("traceID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing SpanID detected", true, spanContext->hasProp("spanID"));
+
+            ISpan * activeSpan2 =  queryThreadedActiveSpan();
+
+            CPPUNIT_ASSERT_MESSAGE("Threaded Active Span == nullptr!", activeSpan2 != nullptr);
+
+            Owned<IProperties> spanContext2 = createProperties();
+            activeSpan2->getSpanContext(spanContext2);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected TraceID detected when no active trace/span expected", false, spanContext2->hasProp("traceID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected SpanID detected when no active trace/span expected", false, spanContext2->hasProp("spanID"));
+        }
+
+        {
+            Owned<IProperties> mockHTTPHeaders = createProperties();
+            createMockHTTPHeaders(mockHTTPHeaders, false);
+            OwnedActiveSpanScope currentSpanScope = queryTraceManager().createServerSpan("currentSpanScope", mockHTTPHeaders);
+
+            CPPUNIT_ASSERT_MESSAGE("currentSpanScope Span == nullptr!", currentSpanScope != nullptr);
+
+            Owned<IProperties> currentSpanContext = createProperties();
+            currentSpanScope->getSpanContext(currentSpanContext);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing TraceID detected when active trace/span expected", true, currentSpanContext->hasProp("traceID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing SpanID detected when active trace/span expected", true, currentSpanContext->hasProp("spanID"));
+
+            ISpan * activeSpan =  queryThreadedActiveSpan();
+
+            CPPUNIT_ASSERT_MESSAGE("Threaded Active Span == nullptr!", activeSpan != nullptr);
+
+            Owned<IProperties> activeSpanContext = createProperties();
+            activeSpan->getSpanContext(activeSpanContext);
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing TraceID detected when active trace/span expected", true, activeSpanContext->hasProp("traceID"));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected missing SpanID detected when active trace/span expected", true, activeSpanContext->hasProp("spanID"));
+
+            DBGLOG("This log entry should report traceID: '%s' and spanID: '%s'", currentSpanContext->queryProp("traceID"), currentSpanContext->queryProp("spanID"));
+            //15:07:56.490232  3788 720009f32a9db04f68f2b6545717ebe5 a7ef8749b5926acf This log entry should report traceID: '720009f32a9db04f68f2b6545717ebe5' and spanID: 'a7ef8749b5926acf'
+        }
+    }
+    
     void testInvalidPropegatedServerSpan()
     {
         Owned<IProperties> mockHTTPHeaders = createProperties();
         createMockHTTPHeaders(mockHTTPHeaders, false);
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("invalidPropegatedServerSpan", mockHTTPHeaders);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("invalidPropegatedServerSpan", mockHTTPHeaders);
 
         Owned<IProperties> retrievedSpanCtxAttributes = createProperties();
         serverSpan->getClientHeaders(retrievedSpanCtxAttributes.get());
@@ -592,7 +810,7 @@ protected:
         Owned<IProperties> mockHTTPHeaders = createProperties();
         createMockHTTPHeaders(mockHTTPHeaders, true);
 
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
         //at this point the serverSpan should have the following context attributes
         //remoteParentSpanID, globalID, callerID
 
@@ -613,10 +831,10 @@ protected:
         Owned<IProperties> mockHTTPHeaders = createProperties();
         createMockHTTPHeaders(mockHTTPHeaders, true);
 
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
-        OwnedSpanScope clientSpan = serverSpan->createClientSpan("clientSpan");
-        OwnedSpanScope internalSpan = clientSpan->createInternalSpan("internalSpan");
-        OwnedSpanScope internalSpan2 = internalSpan->createInternalSpan("internalSpan2");
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedActiveSpanScope clientSpan = serverSpan->createClientSpan("clientSpan");
+        OwnedActiveSpanScope internalSpan = clientSpan->createInternalSpan("internalSpan");
+        OwnedActiveSpanScope internalSpan2 = internalSpan->createInternalSpan("internalSpan2");
 
         StringBuffer out;
         out.set("{");
@@ -651,8 +869,8 @@ protected:
         Owned<IProperties> mockHTTPHeaders = createProperties();
         createMockHTTPHeaders(mockHTTPHeaders, true); //includes global ID
 
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
-        OwnedSpanScope clientSpan = serverSpan->createClientSpan("clientSpanWithGlobalID");
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedActiveSpanScope clientSpan = serverSpan->createClientSpan("clientSpanWithGlobalID");
 
         //retrieve serverSpan context with the intent to interrogate attributes
         {
@@ -674,7 +892,7 @@ protected:
         Owned<IProperties> mockHTTPHeaders = createProperties();
         createMockHTTPHeaders(mockHTTPHeaders, true);
 
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("propegatedServerSpan", mockHTTPHeaders);
         //at this point the serverSpan should have the following context attributes
         //traceID, spanID, remoteParentSpanID, traceFlags, traceState, globalID, callerID
 
@@ -710,9 +928,28 @@ protected:
         }
     }
 
+    void testGeneratedGlobalID()
+    {
+        StringArray emptyHeadersContainer;
+
+        OwnedActiveSpanScope serverSpan1 = queryTraceManager().createServerSpan("StringArrayPropegatedServerSpan1", emptyHeadersContainer, SpanFlags::EnsureGlobalId);
+        Owned<IProperties> retrievedSpanCtxAttributes1 = createProperties();
+        serverSpan1->getSpanContext(retrievedSpanCtxAttributes1.get());
+        const char * guid1 = retrievedSpanCtxAttributes1->queryProp(kGlobalIdHttpHeaderName);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty GlobalID detected", false, isEmptyString(guid1));
+
+        OwnedActiveSpanScope serverSpan2 = queryTraceManager().createServerSpan("StringArrayPropegatedServerSpan2", emptyHeadersContainer, SpanFlags::EnsureGlobalId);
+        Owned<IProperties> retrievedSpanCtxAttributes2 = createProperties();
+        serverSpan2->getSpanContext(retrievedSpanCtxAttributes2.get());
+        const char * guid2 = retrievedSpanCtxAttributes2->queryProp(kGlobalIdHttpHeaderName);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected empty GlobalID detected", false, isEmptyString(guid2));
+
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("Unexpected duplicate GlobalID value detected", false, strsame(guid1, guid2));
+    }
+
     void testStringArrayPropegatedServerSpan()
     {
-         StringArray mockHTTPHeadersSA;
+        StringArray mockHTTPHeadersSA;
         //mock opentel traceparent context 
         mockHTTPHeadersSA.append("traceparent:00-beca49ca8f3138a2842e5cf21402bfff-4b960b3e4647da3f-01");
         //mock opentel tracestate https://www.w3.org/TR/trace-context/#trace-context-http-headers-format
@@ -720,7 +957,7 @@ protected:
         mockHTTPHeadersSA.append("HPCC-Global-Id:someGlobalID");
         mockHTTPHeadersSA.append("HPCC-Caller-Id:IncomingCID");
 
-        OwnedSpanScope serverSpan = queryTraceManager().createServerSpan("StringArrayPropegatedServerSpan", mockHTTPHeadersSA);
+        OwnedActiveSpanScope serverSpan = queryTraceManager().createServerSpan("StringArrayPropegatedServerSpan", mockHTTPHeadersSA);
         //at this point the serverSpan should have the following context attributes
         //traceID, spanID, remoteParentSpanID, traceFlags, traceState, globalID, callerID
 
@@ -743,6 +980,159 @@ protected:
 CPPUNIT_TEST_SUITE_REGISTRATION( JlibTraceTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibTraceTest, "JlibTraceTest" );
 
+class JlibStringTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(JlibStringTest);
+        CPPUNIT_TEST(testEncodeCSVColumn);
+        CPPUNIT_TEST(testReplaceString);
+    CPPUNIT_TEST_SUITE_END();
+
+protected:
+void testEncodeCSVColumn()
+    {
+        const char * csvCol1 = "hello,world";
+        StringBuffer encodedCSV;
+        encodeCSVColumn(encodedCSV, csvCol1);
+        CPPUNIT_ASSERT_EQUAL_STR(encodedCSV.str(), "\"hello,world\"");
+
+        const char * csvCol2 = "hello world, \"how are you?\"";
+        encodedCSV.clear();
+        encodeCSVColumn(encodedCSV, csvCol2);
+        CPPUNIT_ASSERT_EQUAL_STR(encodedCSV.str(), "\"hello world, \"\"how are you?\"\"\"");
+    }
+
+    void testReplaceString()
+    {
+        // Match string at the end of the source
+        StringBuffer source("aaaaaaaaab");
+        source.replaceString("aaab", "x");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaaax", source.str());
+
+        // Match string at the end of the source and newStr is same length as oldStr
+        source.set("aaaaaaaaab");
+        source.replaceString("aaab", "xxxx");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaaaxxxx", source.str());
+
+        // Single char match at beginning of source
+        source.set("baaaaaaaaa");
+        source.replaceString("b", "x");
+        CPPUNIT_ASSERT_EQUAL_STR("xaaaaaaaaa", source.str());
+
+        // Single char match at beginning of source and newStr is shorter
+        source.set("baaaaaaaaa");
+        source.replaceString("b", "");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaaaaaa", source.str());
+
+        // Single char match at end of source
+        source.set("aaaaaaaaab");
+        source.replaceString("b", "x");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaaaaaax", source.str());
+
+        // Match string at the start of the source
+        source.set("abababab");
+        source.replaceString("aba", "xxx");
+        CPPUNIT_ASSERT_EQUAL_STR("xxxbxxxb", source.str());
+
+        // Match string at the start of the source and new string is shorter
+        source.set("abababab");
+        source.replaceString("aba", "x");
+        CPPUNIT_ASSERT_EQUAL_STR("xbxb", source.str());
+
+        // Match string at the start of the source and new string is longer
+        source.set("abababab");
+        source.replaceString("aba", "xxxx");
+        CPPUNIT_ASSERT_EQUAL_STR("xxxxbxxxxb", source.str());
+
+        // Match not found
+        source.set("aaaaa");
+        source.replaceString("bb", "xxx");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaa", source.str());
+
+        // Match not found and new string is same length as old string (Different code path)
+        source.set("aaaaa");
+        source.replaceString("bb", "xx");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaa", source.str());
+
+        // Replace string is empty
+        source.set("aabaa");
+        source.replaceString("aa", "");
+        CPPUNIT_ASSERT_EQUAL_STR("b", source.str());
+
+        // New string is empty and every character is replaced
+        source.set("aaaaa");
+        source.replaceString("a", "");
+        CPPUNIT_ASSERT_EQUAL_STR("", source.str());
+
+        // Search string is empty
+        source.set("aaaaaa");
+        source.replaceString("", "b");
+        CPPUNIT_ASSERT_EQUAL_STR("aaaaaa", source.str());
+
+        // Source string is empty
+        source.set("");
+        source.replaceString("a", "b");
+        CPPUNIT_ASSERT_EQUAL_STR("", source.str());
+
+        // Search string is longer than source string
+        source.set("a");
+        source.replaceString("aa", "b");
+        CPPUNIT_ASSERT_EQUAL_STR("a", source.str());
+
+        // Replace every character
+        source.set("aaaaa");
+        source.replaceString("a", "b");
+        CPPUNIT_ASSERT_EQUAL_STR("bbbbb", source.str());
+
+        // Replace string is longer than search string
+        source.set("abbabab");
+        source.replaceString("ab", "xxx");
+        CPPUNIT_ASSERT_EQUAL_STR("xxxbxxxxxx", source.str());
+
+        // Search string has same length as source string and matches
+        source.set("ababab");
+        source.replaceString("ababab", "xxxxxx");
+        CPPUNIT_ASSERT_EQUAL_STR("xxxxxx", source.str());
+
+        // Search string has same length as source string and replace is smaller than source
+        source.set("ababab");
+        source.replaceString("ababab", "xxx");
+        CPPUNIT_ASSERT_EQUAL_STR("xxx", source.str());
+
+        // Search string has same length as source string and replace is larger than source
+        source.set("ababab");
+        source.replaceString("ababab", "xxxxxxxxx");
+        CPPUNIT_ASSERT_EQUAL_STR("xxxxxxxxx", source.str());
+
+        // Search string has same length as source string and does not match
+        source.set("ababab");
+        source.replaceString("ababac", "xxxxxx");
+        CPPUNIT_ASSERT_EQUAL_STR("ababab", source.str());
+
+        // Search string has many matches where new string is shorter than the old string
+        source.set("abbabaabaaaababaababababaaabababababbabbbbabbabbbbbbaa");
+        source.replaceString("abab", "x");
+        CPPUNIT_ASSERT_EQUAL_STR("abbabaabaaaxaxxaaxxabbabbbbabbabbbbbbaa", source.str());
+
+        // Search string has many matches where new string is the same length as the old string
+        source.set("abbabaabaaaababaababababaaabababababbabbbbabbabbbbbbaa");
+        source.replaceString("abab", "xxxx");
+        CPPUNIT_ASSERT_EQUAL_STR("abbabaabaaaxxxxaxxxxxxxxaaxxxxxxxxabbabbbbabbabbbbbbaa", source.str());
+
+        // Search string has many matches where new string is empty
+        source.set("abbabaabaaaababaababababaaabababababbabbbbabbabbbbbbaa");
+        source.replaceString("abab", "");
+        CPPUNIT_ASSERT_EQUAL_STR("abbabaabaaaaaaabbabbbbabbabbbbbbaa", source.str());
+
+        // HPCC-32795
+        source.set("ou=roxieuser,ou=hpccinternal,ou=files,ou=dataland_ecl");
+        source.replaceString("ou=files,ou=dataland_ecl", nullptr);
+        CPPUNIT_ASSERT_EQUAL_STR("ou=roxieuser,ou=hpccinternal,", source.str());
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JlibStringTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibStringTest, "JlibStringTest" );
 
 class JlibSemTest : public CppUnit::TestFixture
 {
@@ -1002,7 +1392,7 @@ protected:
         CppUnit::Exception *cppunitException;
     public:
         CBitThread(IBitSet &_bitSet, unsigned _startBit, unsigned _numBits, bool _initial)
-            : threaded("CBitThread", this), bitSet(_bitSet), startBit(_startBit), numBits(_numBits), initial(_initial)
+            : bitSet(_bitSet), startBit(_startBit), numBits(_numBits), initial(_initial), threaded("CBitThread", this)
         {
             cppunitException = NULL;
             setValue = !initial;
@@ -1638,7 +2028,7 @@ class JlibReaderWriterTestTiming : public CppUnit::TestFixture
     {
     public:
         Reader(IRowQueue & _source, Semaphore & _doneSem, unsigned _workScale)
-            : Thread("Reader"), source(_source), doneSem(_doneSem), workScale(_workScale), work(0)
+            : Thread("Reader"), source(_source), doneSem(_doneSem), work(0), workScale(_workScale)
         {
         }
 
@@ -1671,7 +2061,7 @@ class JlibReaderWriterTestTiming : public CppUnit::TestFixture
     {
     public:
         WriterBase(IRowQueue & _target, size_t _len, byte * _buffer, Semaphore & _startSem, Semaphore & _doneSem, unsigned _workScale)
-            : Thread("Writer"), target(_target), len(_len), buffer(_buffer), startSem(_startSem), doneSem(_doneSem), workScale(_workScale), work(0)
+            : Thread("Writer"), len(_len), buffer(_buffer), target(_target), startSem(_startSem), doneSem(_doneSem), work(0), workScale(_workScale)
         {
         }
 
@@ -3010,11 +3400,87 @@ CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(JlibIPTTest, "JlibIPTTest");
 
 #include "jdebug.hpp"
 #include "jmutex.hpp"
+#include <shared_mutex>
 
-
-class AtomicTimingTest : public CppUnit::TestFixture
+class SReadWriteLock
 {
-    CPPUNIT_TEST_SUITE(AtomicTimingTest);
+public:
+    void lockRead()         { mutex.lock_shared(); }
+    void lockWrite()        { mutex.lock(); writelocked = true; }
+    bool lockRead(unsigned timeout);
+    bool lockWrite(unsigned timeout);
+    void unlock()           { if (writelocked) unlockWrite(); else unlockRead(); }
+    void unlockRead()       { mutex.unlock_shared(); }
+    void unlockWrite()      { writelocked = false; mutex.unlock(); }
+    bool queryWriteLocked() { return writelocked; };
+
+protected:
+    std::shared_mutex mutex;
+    bool writelocked = false;
+};
+
+bool SReadWriteLock::lockRead(unsigned timeout)
+{
+    if (timeout == (unsigned)-1)
+    {
+        lockRead();
+        return true;
+    }
+//    std::chrono::milliseconds ms(timeout);
+    return false;//mutex.try_lock_shared_for(ms);
+}
+
+bool SReadWriteLock::lockWrite(unsigned timeout)
+{
+    if (timeout == (unsigned)-1)
+    {
+        lockWrite();
+        return true;
+    }
+    return false;
+  //  std::chrono::milliseconds ms(timeout);
+    //return mutex.try_lock_for(ms);
+}
+
+class SReadLockBlock
+{
+    SReadWriteLock *lock;
+public:
+    SReadLockBlock(SReadWriteLock &l) : lock(&l)      { lock->lockRead(); }
+    ~SReadLockBlock()                                { if (lock) lock->unlockRead(); }
+    void clear()
+    {
+        if (lock)
+        {
+            lock->unlockRead();
+            lock = NULL;
+        }
+    }
+};
+
+class SWriteLockBlock
+{
+    SReadWriteLock *lock;
+public:
+    SWriteLockBlock(SReadWriteLock &l) : lock(&l)     { lock->lockWrite(); }
+    ~SWriteLockBlock()                               { if (lock) lock->unlockWrite(); }
+    void clear()
+    {
+        if (lock)
+        {
+            lock->unlockWrite();
+            lock = NULL;
+        }
+    }
+};
+
+#define ReadWriteLock SReadWriteLock
+#define ReadLockBlock SReadLockBlock
+#define WriteLockBlock SWriteLockBlock
+
+class AtomicTimingStressTest : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(AtomicTimingStressTest);
         CPPUNIT_TEST(runAllTests);
     CPPUNIT_TEST_SUITE_END();
 
@@ -3059,8 +3525,8 @@ public:
         public:
             LockTestThread(Semaphore & _startSem, Semaphore & _endSem, LOCK & _lock1, COUNTER & _value1, LOCK & _lock2, COUNTER * _extraValues, unsigned _numIterations)
                 : startSem(_startSem), endSem(_endSem),
-                  lock1(_lock1), value1(_value1),
-                  lock2(_lock2), extraValues(_extraValues),
+                  lock1(_lock1), lock2(_lock2), 
+                  value1(_value1), extraValues(_extraValues),
                   numIterations(_numIterations)
             {
             }
@@ -3108,7 +3574,7 @@ public:
         unsigned __int64 run(const char * title, unsigned numThreads, unsigned numIterations)
         {
             value1 = 0;
-            for (unsigned ix = 1; ix < NUMVALUES; ix++)
+            for (unsigned ix = 0; ix < NUMVALUES; ix++)
                 extraValues[ix] = 0;
             for (unsigned i = 0; i < numThreads; i++)
             {
@@ -3172,6 +3638,18 @@ public:
         DO_TEST(CriticalSection, CriticalBlock, unsigned __int64, 2, 1);
         DO_TEST(CriticalSection, CriticalBlock, unsigned __int64, 5, 1);
         DO_TEST(CriticalSection, CriticalBlock, unsigned __int64, 1, 2);
+        DO_TEST(Mutex, synchronized, unsigned __int64, 1, 1);
+        DO_TEST(Mutex, synchronized, unsigned __int64, 2, 1);
+        DO_TEST(Mutex, synchronized, unsigned __int64, 5, 1);
+        DO_TEST(Mutex, synchronized, unsigned __int64, 1, 2);
+        DO_TEST(SimpleMutex, MutexBlock<SimpleMutex>, unsigned __int64, 1, 1);
+        DO_TEST(SimpleMutex, MutexBlock<SimpleMutex>, unsigned __int64, 2, 1);
+        DO_TEST(SimpleMutex, MutexBlock<SimpleMutex>, unsigned __int64, 5, 1);
+        DO_TEST(SimpleMutex, MutexBlock<SimpleMutex>, unsigned __int64, 1, 2);
+        DO_TEST(TimedMutex, TimedMutexBlock, unsigned __int64, 1, 1);
+        DO_TEST(TimedMutex, TimedMutexBlock, unsigned __int64, 2, 1);
+        DO_TEST(TimedMutex, TimedMutexBlock, unsigned __int64, 5, 1);
+        DO_TEST(TimedMutex, TimedMutexBlock, unsigned __int64, 1, 2);
         DO_TEST(SpinLock, SpinBlock, unsigned __int64, 1, 1);
         DO_TEST(SpinLock, SpinBlock, unsigned __int64, 2, 1);
         DO_TEST(SpinLock, SpinBlock, unsigned __int64, 5, 1);
@@ -3207,10 +3685,10 @@ public:
 
     void summariseTimings(const char * option, UInt64Array & times)
     {
-        DBGLOG("%11s 1x: cs(%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)   "
-                    "5x: cs(%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)", option,
-                    times.item(0), times.item(4), times.item(8), times.item(12), times.item(14), times.item(19), times.item(23),
-                    times.item(2), times.item(6), times.item(10), times.item(13), times.item(15), times.item(21), times.item(25));
+        DBGLOG("%11s 1x: cs(%3" I64F "u) mutex (%3" I64F "u) smutex (%3" I64F "u) tmutex (%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)", option,
+                         times.item(0), times.item(4), times.item(8), times.item(12), times.item(16), times.item(20), times.item(24), times.item(26), times.item(31), times.item(35));
+        DBGLOG("%11s 5x: cs(%3" I64F "u) mutex (%3" I64F "u) smutex (%3" I64F "u) tmutex (%3" I64F "u) spin(%3" I64F "u) atomic(%3" I64F "u) ratomic(%3" I64F "u) cas(%3" I64F "u) rd(%3" I64F "u) wr(%3" I64F "u)", "",
+                         times.item(2), times.item(6), times.item(10), times.item(14), times.item(18), times.item(22), times.item(25), times.item(27), times.item(33), times.item(37));
     }
 
 private:
@@ -3220,8 +3698,8 @@ private:
     UInt64Array contendedTimes;
 };
 
-CPPUNIT_TEST_SUITE_REGISTRATION(AtomicTimingTest);
-CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(AtomicTimingTest, "AtomicTimingStressTest");
+CPPUNIT_TEST_SUITE_REGISTRATION(AtomicTimingStressTest);
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(AtomicTimingStressTest, "AtomicTimingStressTest");
 
 
 //=====================================================================================================================
@@ -3280,6 +3758,7 @@ public:
                 DBGLOG(" Process: User(%u) System(%u) Total(%u) %u%% Ctx(%" I64F "u)",
                         (unsigned)(deltaProcess.getUserNs() / 1000000), (unsigned)(deltaProcess.getSystemNs() / 1000000), (unsigned)(deltaProcess.getTotalNs() / 1000000),
                         (unsigned)((deltaProcess.getUserNs() * 100) / deltaSystem.getTotalNs()), deltaProcess.getNumContextSwitches());
+                DBGLOG(" Throttled: Periods(%llu/%llu) TimeNs(%llu)", deltaSystem.getNumThrottledPeriods(), deltaSystem.getNumPeriods(), deltaSystem.getTimeThrottledNs());
             }
 
             for (unsigned j=0; j < i*100000000; j++)
@@ -3293,6 +3772,130 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(MachineInfoTimingTest);
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(MachineInfoTimingTest, "MachineInfoTimingTest");
 
+class RWLockStressTest : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(RWLockStressTest);
+        CPPUNIT_TEST(runAllTests);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+
+    class RWLockReadTestThread : public Thread
+    {
+    public:
+        RWLockReadTestThread(Semaphore & _startSem, Semaphore & _endSem, ReadWriteLock & _lock, unsigned __int64 &_value, unsigned _numIterations)
+                : startSem(_startSem), endSem(_endSem),
+                  lock(_lock),
+                  value(_value),
+                  numIterations(_numIterations)
+        {
+        }
+
+        virtual void execute()
+        {
+            {
+                ReadLockBlock block(lock);
+                value++;
+            }
+        }
+
+        virtual int run()
+        {
+            startSem.wait();
+            for (unsigned i = 0; i < numIterations; i++)
+                execute();
+            endSem.signal();
+            return 0;
+        }
+
+    protected:
+        Semaphore & startSem;
+        Semaphore & endSem;
+        ReadWriteLock &lock;
+        unsigned __int64 & value;
+        const unsigned numIterations;
+    };
+
+    class RWLockWriteTestThread : public Thread
+    {
+    public:
+        RWLockWriteTestThread(bool &_finished, ReadWriteLock & _lock, unsigned __int64 &_value)
+                : lock(_lock),
+                  value(_value),
+                  finished (_finished)
+        {
+        }
+
+        virtual void execute()
+        {
+            {
+                WriteLockBlock block(lock);
+                value -= 5;
+
+            }
+        }
+        virtual int run()
+        {
+            while (!finished)
+                execute();
+            return 0;
+        }
+
+    protected:
+        ReadWriteLock &lock;
+        unsigned __int64 & value;
+        bool &finished;
+    };
+
+    unsigned __int64 run(const char * title, unsigned numThreads, unsigned numWriteThreads, unsigned numIterations)
+    {
+        IArrayOf<Thread> threads;
+        Semaphore startSem;
+        Semaphore endSem;
+        ReadWriteLock lock;
+        unsigned __int64 value;
+
+        value = 0;
+        bool finished = false;
+        for (unsigned i = 0; i < numThreads; i++)
+        {
+            RWLockReadTestThread * next = new RWLockReadTestThread(startSem, endSem, lock, value, numIterations);
+            threads.append(*next);
+            next->start(false);
+        }
+        for (unsigned i = 0; i < numWriteThreads; i++)
+        {
+            RWLockWriteTestThread * next = new RWLockWriteTestThread(finished, lock, value);
+            threads.append(*next);
+            next->start(false);
+        }
+        cycle_t startCycles = get_cycles_now();
+        startSem.signal(numThreads);
+        for (unsigned i2 = 0; i2 < numThreads; i2++)
+            endSem.wait();
+        cycle_t endCycles = get_cycles_now();
+        finished = true;
+        unsigned __int64 expected = (unsigned __int64)numIterations * numThreads;
+        unsigned __int64 averageTime = cycle_to_nanosec(endCycles - startCycles) / (numIterations * numThreads);
+        DBGLOG("%s@%u/%u threads(%u) %" I64F "uns/iteration lost(%" I64F "d)", title, 1, 1, numThreads, averageTime, expected - value);
+        for (unsigned i3 = 0; i3 < numThreads+numWriteThreads; i3++)
+            threads.item(i3).join();
+        return averageTime;
+    }
+
+    const unsigned numIterations = 100000;
+    const unsigned numCores = std::max(getAffinityCpus(), 16U);
+    void runAllTests()
+    {
+        run("10:1", 10, 1, numIterations);
+        run("20:1", 20, 1, numIterations);
+        run("10:10", 10, 10, numIterations);
+    }
+
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(RWLockStressTest);
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(RWLockStressTest, "RWLockStressTest");
 
 
 
@@ -3353,92 +3956,44 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(JlibIOTest);
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION(JlibIOTest, "JlibIOTest");
 
+//--------------------------------------------------------------------------------------------------------------------
 
-class JlibCompressionTestsStress : public CppUnit::TestFixture
+class JlibCompressionTestBase : public CppUnit::TestFixture
 {
-    CPPUNIT_TEST_SUITE(JlibCompressionTestsStress);
-        CPPUNIT_TEST(test);
-    CPPUNIT_TEST_SUITE_END();
-
+protected:
     static constexpr size32_t sz = 100*0x100000; // 100MB
-    enum CompressOpt { RowCompress, AllRowCompress, BlockCompress, CompressToBuffer };
+    static constexpr const char *aesKey = "012345678901234567890123";
+    enum CompressOpt { RowCompress, AllRowCompress, BlockCompress, CompressToBuffer, FixedBlockCompress };
 public:
-    void test()
+    void initCompressionBuffer(MemoryBuffer & src, size32_t & rowSz)
     {
-        try
-        {
-            MemoryBuffer src;
-            src.ensureCapacity(sz);
-            const char *aesKey = "012345678901234567890123";
-            Owned<ICompressHandlerIterator> iter = getCompressHandlerIterator();
+        src.ensureCapacity(sz);
 
-            StringBuffer tmp;
-            unsigned card = 0;
-            size32_t rowSz = 0;
-            while (true)
+        StringBuffer tmp;
+        unsigned card = 0;
+        while (true)
+        {
+            size32_t cLen = src.length();
+            if (cLen > sz)
+                break;
+            src.append(cLen);
+            tmp.clear().appendf("%10u", cLen);
+            src.append(tmp.length(), tmp.str());
+            src.append(++card % 52);
+            src.append(crc32((const char *)&cLen, sizeof(cLen), 0));
+            unsigned ccrc = crc32((const char *)&card, sizeof(card), 0);
+            tmp.clear().appendf("%10u", ccrc);
+            src.append(tmp.length(), tmp.str());
+            tmp.clear().appendf("%20u", (++card % 10));
+            src.append(tmp.length(), tmp.str());
+            if (0 == rowSz)
+                rowSz = src.length();
+            else
             {
-                size32_t cLen = src.length();
-                if (cLen > sz)
-                    break;
-                src.append(cLen);
-                tmp.clear().appendf("%10u", cLen);
-                src.append(tmp.length(), tmp.str());
-                src.append(++card % 52);
-                src.append(crc32((const char *)&cLen, sizeof(cLen), 0));
-                unsigned ccrc = crc32((const char *)&card, sizeof(card), 0);
-                tmp.clear().appendf("%10u", ccrc);
-                src.append(tmp.length(), tmp.str());
-                tmp.clear().appendf("%20u", (++card % 10));
-                src.append(tmp.length(), tmp.str());
-                if (0 == rowSz)
-                    rowSz = src.length();
-                else
-                {
-                    dbgassertex(0 == (src.length() % rowSz));
-                }
+                dbgassertex(0 == (src.length() % rowSz));
             }
-
-            DBGLOG("Algorithm(options)  || Comp(ms) || Deco(ms) || 200MB/s (w,r)   || 1GB/s (w,r)     || 5GB/s (w,r)     || Ratio [cLen]");
-            DBGLOG("                    ||          ||          || 2Gb/s           || 10Gb/s          || 50Gb/s          ||");
-
-            unsigned time200MBs = transferTimeMs(sz, 200000000);
-            unsigned time1GBs = transferTimeMs(sz, 1000000000);
-            unsigned time5GBs = transferTimeMs(sz, 5000000000);
-            DBGLOG("%19s || %8u || %8u || %4u(%4u,%4u) || %4u(%4u,%4u) || %4u(%4u,%4u) || %5.2f [%u]", "uncompressed", 0, 0,
-                time200MBs, time200MBs, time200MBs, time1GBs, time1GBs, time1GBs, time5GBs, time5GBs, time5GBs, 1.0, sz);
-            ForEach(*iter)
-            {
-                ICompressHandler &handler = iter->query();
-                const char * type = handler.queryType();
-                //Ignore unusual compressors with no expanders...
-                if (strieq(type, "randrow"))
-                    continue;
-                const char * options = streq("AES", handler.queryType()) ? aesKey: "";
-                if (streq(type, "LZ4HC"))
-                {
-                    testCompressor(handler, "hclevel=3", rowSz, src.length(), src.bytes(), RowCompress);
-                    testCompressor(handler, "hclevel=4", rowSz, src.length(), src.bytes(), RowCompress);
-                    testCompressor(handler, "hclevel=5", rowSz, src.length(), src.bytes(), RowCompress);
-                    testCompressor(handler, "hclevel=6", rowSz, src.length(), src.bytes(), RowCompress);
-                    testCompressor(handler, "hclevel=8", rowSz, src.length(), src.bytes(), RowCompress);
-                    testCompressor(handler, "hclevel=10", rowSz, src.length(), src.bytes(), RowCompress);
-                }
-                testCompressor(handler, options, rowSz, src.length(), src.bytes(), RowCompress);
-                testCompressor(handler, options, rowSz, src.length(), src.bytes(), CompressToBuffer);
-                if (streq(type, "LZ4"))
-                {
-                    testCompressor(handler, "allrow", rowSz, src.length(), src.bytes(), AllRowCompress); // block doesn't affect the compressor, just tracing
-                    testCompressor(handler, "block", rowSz, src.length(), src.bytes(), BlockCompress); // block doesn't affect the compressor, just tracing
-                }
-           }
-        }
-        catch (IException *e)
-        {
-            EXCLOG(e, nullptr);
-            throw;
         }
     }
-
     unsigned transferTimeMs(__int64 size, __int64 bytesPerSecond)
     {
         return (unsigned)((size * 1000) / bytesPerSecond);
@@ -3449,6 +4004,7 @@ public:
         Owned<ICompressor> compressor = handler.getCompressor(options);
 
         MemoryBuffer compressed;
+        UnsignedArray sizes;
         CCycleTimer timer;
         const byte * ptr = src;
         switch (opt)
@@ -3465,6 +4021,18 @@ public:
                 }
                 compressor->commitblock();
                 compressor->close();
+                try
+                {
+                    //Test that calling close again doesn't cause any problems
+                    compressor->close();
+                }
+                catch (IException * e)
+                {
+                    //In debug mode it is ok to throw an unexpected error, in release it should be ignored.
+                    if (!isDebugBuild() || e->errorCode() != 9999)
+                        CPPUNIT_FAIL("Unexpected exception from second call to compressor->close()");
+                    e->Release();
+                }
                 break;
             }
             case AllRowCompress:
@@ -3488,6 +4056,35 @@ public:
                 compressToBuffer(compressed, srcLen, ptr, handler.queryMethod(), options);
                 break;
             }
+            case FixedBlockCompress:
+            {
+                static constexpr size32_t blocksize = 32768;
+                MemoryAttr buffer(blocksize);
+
+                compressor->open(buffer.bufferBase(), blocksize);
+                const byte *ptrEnd = ptr + srcLen;
+                while (ptr != ptrEnd)
+                {
+                    size32_t written = compressor->write(ptr, rowSz);
+                    if (written != rowSz)
+                    {
+                        compressor->close();
+                        size32_t size = compressor->buflen();
+                        sizes.append(size);
+                        compressed.append(size, buffer.bufferBase());
+                        compressor->open(buffer.bufferBase(), blocksize);
+                        size32_t next = compressor->write(ptr+written, rowSz-written);
+                        assertex(next == rowSz - written);
+                    }
+
+                    ptr += rowSz;
+                }
+                compressor->close();
+                size32_t size = compressor->buflen();
+                sizes.append(size);
+                compressed.append(size, buffer.bufferBase());
+                break;
+            }
         }
 
         cycle_t compressCycles = timer.elapsedCycles();
@@ -3497,6 +4094,18 @@ public:
         if (opt==CompressToBuffer)
         {
             decompressToBuffer(tgt, compressed, options);
+        }
+        else if (opt == FixedBlockCompress)
+        {
+            const byte * cur = compressed.bytes();
+            ForEachItemIn(i, sizes)
+            {
+                size32_t size = sizes.item(i);
+                size32_t required = expander->init(cur);
+                void * target = tgt.reserve(required);
+                expander->expand(target);
+                cur += size;
+            }
         }
         else
         {
@@ -3512,6 +4121,8 @@ public:
         StringBuffer name(handler.queryType());
         if (opt == CompressToBuffer)
             name.append("-c2b");
+        else if (opt == FixedBlockCompress)
+            name.append("-fb");
         if (options && *options)
             name.append("-").append(options);
 
@@ -3539,8 +4150,157 @@ public:
     }
 };
 
+
+class JlibCompressionStandardTest : public JlibCompressionTestBase
+{
+    CPPUNIT_TEST_SUITE(JlibCompressionStandardTest);
+        CPPUNIT_TEST(testSingle);
+        CPPUNIT_TEST(test);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+    void test()
+    {
+        try
+        {
+            MemoryBuffer src;
+            size32_t rowSz = 0;
+            initCompressionBuffer(src, rowSz);
+
+
+            DBGLOG("Algorithm(options)  || Comp(ms) || Deco(ms) || 200MB/s (w,r)   || 1GB/s (w,r)     || 5GB/s (w,r)     || Ratio [cLen]");
+            DBGLOG("                    ||          ||          || 2Gb/s           || 10Gb/s          || 50Gb/s          ||");
+
+            unsigned time200MBs = transferTimeMs(sz, 200000000);
+            unsigned time1GBs = transferTimeMs(sz, 1000000000);
+            unsigned time5GBs = transferTimeMs(sz, 5000000000);
+            DBGLOG("%19s || %8u || %8u || %4u(%4u,%4u) || %4u(%4u,%4u) || %4u(%4u,%4u) || %5.2f [%u]", "uncompressed", 0, 0,
+                time200MBs, time200MBs, time200MBs, time1GBs, time1GBs, time1GBs, time5GBs, time5GBs, time5GBs, 1.0, sz);
+
+            Owned<ICompressHandlerIterator> iter = getCompressHandlerIterator();
+            ForEach(*iter)
+            {
+                ICompressHandler &handler = iter->query();
+                const char * type = handler.queryType();
+                const char * options = streq("AES", handler.queryType()) ? aesKey: "";
+                //Ignore unusual compressors with no expanders...
+                if (strieq(type, "diff"))
+                    continue;
+                if (strieq(type, "randrow"))
+                    continue;
+                if (strieq(type, "lz4s") || strieq(type, "lz4shc") || strieq(type, "zstds"))
+                {
+                    testCompressor(handler, options, rowSz, src.length(), src.bytes(), FixedBlockCompress);
+                    continue;
+                }
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), RowCompress);
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), CompressToBuffer);
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), FixedBlockCompress);
+           }
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            e->errorMessage(msg);
+            EXCLOG(e, nullptr);
+            ::Release(e);
+            CPPUNIT_FAIL(msg.str());
+        }
+    }
+
+    void testSingle()
+    {
+        MemoryBuffer src;
+        size32_t rowSz = 0;
+        initCompressionBuffer(src, rowSz);
+
+        const char * compression = "zstds";
+        const char * options = nullptr;
+        ICompressHandler * handler = queryCompressHandler(compression);
+        CPPUNIT_ASSERT_MESSAGE("Unknown compression type", handler);
+
+        testCompressor(*handler, options, rowSz, src.length(), src.bytes(), FixedBlockCompress);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( JlibCompressionStandardTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibCompressionStandardTest, "JlibCompressionStandardTest" );
+
+
+class JlibCompressionTestsStress : public JlibCompressionTestBase
+{
+    CPPUNIT_TEST_SUITE(JlibCompressionTestsStress);
+        CPPUNIT_TEST(test);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+    void test()
+    {
+        try
+        {
+            MemoryBuffer src;
+            size32_t rowSz = 0;
+            initCompressionBuffer(src, rowSz);
+
+            DBGLOG("Algorithm(options)  || Comp(ms) || Deco(ms) || 200MB/s (w,r)   || 1GB/s (w,r)     || 5GB/s (w,r)     || Ratio [cLen]");
+            DBGLOG("                    ||          ||          || 2Gb/s           || 10Gb/s          || 50Gb/s          ||");
+
+            unsigned time200MBs = transferTimeMs(sz, 200000000);
+            unsigned time1GBs = transferTimeMs(sz, 1000000000);
+            unsigned time5GBs = transferTimeMs(sz, 5000000000);
+            DBGLOG("%19s || %8u || %8u || %4u(%4u,%4u) || %4u(%4u,%4u) || %4u(%4u,%4u) || %5.2f [%u]", "uncompressed", 0, 0,
+                time200MBs, time200MBs, time200MBs, time1GBs, time1GBs, time1GBs, time5GBs, time5GBs, time5GBs, 1.0, sz);
+
+            Owned<ICompressHandlerIterator> iter = getCompressHandlerIterator();
+            ForEach(*iter)
+            {
+                ICompressHandler &handler = iter->query();
+                const char * type = handler.queryType();
+                //Ignore unusual compressors with no expanders...
+                if (strieq(type, "randrow"))
+                    continue;
+                const char * options = streq("AES", handler.queryType()) ? aesKey: "";
+                if (streq(type, "LZ4HC"))
+                {
+                    testCompressor(handler, "hclevel=3", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=4", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=5", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=6", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=8", rowSz, src.length(), src.bytes(), RowCompress);
+                    testCompressor(handler, "hclevel=10", rowSz, src.length(), src.bytes(), RowCompress);
+                }
+                if (strieq(type, "lz4s") || strieq(type, "lz4shc") || strieq(type, "zstds"))
+                {
+                    testCompressor(handler, options, rowSz, src.length(), src.bytes(), FixedBlockCompress);
+                    continue;
+                }
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), RowCompress);
+                testCompressor(handler, options, rowSz, src.length(), src.bytes(), CompressToBuffer);
+                if (streq(type, "LZ4"))
+                {
+                    testCompressor(handler, "allrow", rowSz, src.length(), src.bytes(), AllRowCompress); // block doesn't affect the compressor, just tracing
+                    testCompressor(handler, "block", rowSz, src.length(), src.bytes(), BlockCompress); // block doesn't affect the compressor, just tracing
+                }
+           }
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            e->errorMessage(msg);
+            EXCLOG(e, nullptr);
+            ::Release(e);
+            CPPUNIT_FAIL(msg.str());
+        }
+    }
+
+};
+
 CPPUNIT_TEST_SUITE_REGISTRATION( JlibCompressionTestsStress );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JlibCompressionTestsStress, "JlibCompressionTestsStress" );
+
+
+//--------------------------------------------------------------------------------------------------------------------
+
 
 class JlibFriendlySizeTest : public CppUnit::TestFixture
 {
@@ -3669,6 +4429,7 @@ class BlockedTimingTests : public CppUnit::TestFixture
         CPPUNIT_TEST(testStandard3);
         CPPUNIT_TEST(testLightweight);
         CPPUNIT_TEST(testLightweight2);
+        CPPUNIT_TEST(testConcurrent);
     CPPUNIT_TEST_SUITE_END();
 
     void testStandard()
@@ -3784,6 +4545,53 @@ class BlockedTimingTests : public CppUnit::TestFixture
         CPPUNIT_ASSERT(postBlockTime - blockTime <= 1000000);
         if (trace)
             DBGLOG("%" I64F "u %" I64F "u", blockTime-expected, postBlockTime-blockTime);
+    }
+
+    inline bool within10Percent(__uint64 expected, __uint64 actual)
+    {
+        __uint64 threshold = expected / 10;
+        return (actual >= expected - threshold) && (actual <= expected + threshold);
+    }
+
+    void testConcurrent()
+    {
+        BlockedTimeTracker serverLoadTracker;
+        BlockedTimeTracker workerLoadTracker;
+        OverlapTimeInfo serverStartInfo;
+        OverlapTimeInfo workerStartInfo;
+        OverlapTimeInfo serverFinishInfo;
+        OverlapTimeInfo workerFinishInfo;
+        OverlapTimeInfo dummyInfo;
+
+        serverLoadTracker.extractOverlapInfo(serverStartInfo, true);
+        workerLoadTracker.extractOverlapInfo(workerStartInfo, true);
+        cycle_t startCycles = serverLoadTracker.noteWaiting();
+
+        MilliSleep(100);
+        serverLoadTracker.noteWaiting();  // 2nd query starts          Q1 Q2
+        workerLoadTracker.noteWaiting();  // worker thread starts      Q1 Q2 W1
+        MilliSleep(100);
+        workerLoadTracker.noteComplete(); // worker thread finishes    Q1 Q2
+        serverLoadTracker.noteWaiting();  // 3rd query starts          Q1 Q2 Q3
+        MilliSleep(100);
+        serverLoadTracker.noteComplete(); // 2nd query finishes        Q1 Q3
+        workerLoadTracker.noteWaiting();  // worker thread starts      Q1 Q3 W2
+        MilliSleep(100);
+        workerLoadTracker.noteComplete(); // worker thread finishes    Q1 Q3
+        MilliSleep(100);
+
+        cycle_t endCycles = serverLoadTracker.noteComplete(); //       Q3
+        workerLoadTracker.extractOverlapInfo(workerFinishInfo, false);
+        serverLoadTracker.extractOverlapInfo(serverFinishInfo, false);
+
+        CPPUNIT_ASSERT_EQUAL(2U, workerFinishInfo.count - workerStartInfo.count);
+        CPPUNIT_ASSERT_EQUAL(true, within10Percent(200'000'000, workerFinishInfo.elapsedNs - workerStartInfo.elapsedNs));
+
+        CPPUNIT_ASSERT_EQUAL(3U, serverFinishInfo.count - serverStartInfo.count);
+
+        // This query for 500, second query for 200, 3rd query for 300
+        CPPUNIT_ASSERT_EQUAL(true, within10Percent(1000'000'000, serverFinishInfo.elapsedNs - serverStartInfo.elapsedNs));
+        CPPUNIT_ASSERT_EQUAL(true, within10Percent(500'000'000, cycle_to_nanosec(endCycles - startCycles)));
     }
 };
 
@@ -3976,6 +4784,7 @@ protected:
                 E->Release();
             }
         }        
+    // Note: Using OpenTelemetry null span 
     }
 
     void test()
@@ -3999,6 +4808,118 @@ protected:
 CPPUNIT_TEST_SUITE_REGISTRATION( JLibOpensslAESTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibOpensslAESTest, "JLibOpensslAESTest" );
 #endif
+
+class TopNStressTest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(TopNStressTest);
+        CPPUNIT_TEST(testTop5a);
+        CPPUNIT_TEST(testTop5b);
+    CPPUNIT_TEST_SUITE_END();
+
+    struct x
+    {
+    static constexpr const unsigned MaxSlowActivities = 5;
+    mutable unsigned slowActivityIds[MaxSlowActivities] = {};
+    mutable stat_type slowActivityTimes[MaxSlowActivities] = {};
+    unsigned cnt = 0;
+
+        __attribute__((noinline))
+        void noteTime(unsigned activityId, stat_type localTime)
+        {
+            if (localTime > slowActivityTimes[MaxSlowActivities-1])
+            {
+                unsigned pos = MaxSlowActivities-1;
+                while (pos > 0)
+                {
+                    if (localTime <= slowActivityTimes[pos-1])
+                        break;
+                    slowActivityIds[pos] = slowActivityIds[pos-1];
+                    slowActivityTimes[pos] = slowActivityTimes[pos-1];
+                    pos--;
+                }
+                slowActivityIds[pos] = activityId;
+                slowActivityTimes[pos] = localTime;
+                cnt++;
+            }
+        }
+        __attribute__((noinline))
+        void noteTime2(unsigned activityId, stat_type localTime)
+        {
+            if (localTime > slowActivityTimes[0])
+            {
+                unsigned pos = 1;
+                while (pos < MaxSlowActivities)
+                {
+                    if (localTime <= slowActivityTimes[pos])
+                        break;
+                    slowActivityIds[pos-1] = slowActivityIds[pos];
+                    slowActivityTimes[pos-1] = slowActivityTimes[pos];
+                    pos++;
+                }
+                slowActivityIds[pos-1] = activityId;
+                slowActivityTimes[pos-1] = localTime;
+                cnt++;
+            }
+        }
+        void report(__uint64 elapsedNs)
+        {
+            StringBuffer ids, times;
+            for (unsigned i=0; i < MaxSlowActivities; i++)
+            {
+                if (!slowActivityIds[i])
+                    break;
+
+                if (i)
+                {
+                    ids.append(",");
+                    times.append(",");
+                }
+                ids.append(slowActivityIds[i]);
+                formatStatistic(times, cycle_to_nanosec(slowActivityTimes[i]), SMeasureTimeNs);
+            }
+            DBGLOG("SlowActivities={ ids=[%s] times=[%s] } in %llu (x%u)", ids.str(), times.str(), elapsedNs, cnt);
+
+        }
+    };
+
+    static constexpr const unsigned NumIters = 5000;
+
+    void testTop5a()
+    {
+        CCycleTimer timer;
+        stat_type value = 0;
+        x tally;
+        for (unsigned activityId = 1; activityId <= NumIters; activityId++)
+        {
+            //coverity[overflow_const : SUPPRESS] - deliberate overflow use case
+            value = value * 0x100000001b3ULL + 99;
+            tally.noteTime(activityId, value);
+        }
+
+        __uint64 elapsedNs = timer.elapsedNs();
+        tally.report(elapsedNs);
+    }
+    void testTop5b()
+    {
+        CCycleTimer timer;
+        stat_type value = 0;
+        x tally;
+        for (unsigned activityId = 1; activityId <= NumIters; activityId++)
+        {
+            //coverity[overflow_const : SUPPRESS] - deliberate overflow use case
+            value = value * 0x100000001b3ULL + 99;
+            tally.noteTime2(activityId, value);
+        }
+
+        __uint64 elapsedNs = timer.elapsedNs();
+        tally.report(elapsedNs);
+    }
+
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( TopNStressTest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( TopNStressTest, "TopNStressTest" );
 
 class JLibSecretsTest : public CppUnit::TestFixture
 {
@@ -4325,13 +5246,13 @@ protected:
 CPPUNIT_TEST_SUITE_REGISTRATION( JLibSecretsTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibSecretsTest, "JLibSecretsTest" );
 
-
-
 class JLibStringTest : public CppUnit::TestFixture
 {
 public:
     CPPUNIT_TEST_SUITE(JLibStringTest);
         CPPUNIT_TEST(testStristr);
+        CPPUNIT_TEST(testMemMem);
+        CPPUNIT_TEST(testProcessOptions);
     CPPUNIT_TEST_SUITE_END();
 
     void testStristr()
@@ -4349,9 +5270,452 @@ public:
         CPPUNIT_ASSERT_EQUAL_STR(stristr("", "ABC"), "");
         CPPUNIT_ASSERT_EQUAL_STR(stristr("ABC", ""), "");
     }
+
+    void testMemMem()
+    {
+        constexpr const char * haystack = "abcdefghijklmnopqrstuvwxyz";
+        CPPUNIT_ASSERT_EQUAL((const void*)(haystack), jmemmem(10, haystack, 0, nullptr));
+        CPPUNIT_ASSERT_EQUAL((const void*)(haystack), jmemmem(10, haystack, 3, "abc"));
+        CPPUNIT_ASSERT_EQUAL((const void*)(haystack), jmemmem(3, haystack, 3, "abc"));
+        CPPUNIT_ASSERT_EQUAL((const void*)nullptr, jmemmem(2, haystack, 3, "abc"));
+        CPPUNIT_ASSERT_EQUAL((const void*)(haystack+7), jmemmem(10, haystack, 3, "hij"));
+        CPPUNIT_ASSERT_EQUAL((const void*)nullptr, jmemmem(10, haystack, 3, "ijk"));
+        CPPUNIT_ASSERT_EQUAL((const void*)(haystack+8), jmemmem(10, haystack, 1, "i"));
+        CPPUNIT_ASSERT_EQUAL((const void*)(nullptr), jmemmem(8, haystack, 1, "i"));
+        CPPUNIT_ASSERT_EQUAL((const void*)(nullptr), jmemmem(9, haystack, 2, "ij"));
+        CPPUNIT_ASSERT_EQUAL((const void*)(haystack+8), jmemmem(10, haystack, 2, "ij"));
+    }
+
+    void testOption(const char * text, const std::initializer_list<std::pair<const char *, const char *>> & expected)
+    {
+        StringArray options;
+        StringArray values;
+
+        auto processOption = [this,&options,&values](const char * option, const char * value)
+        {
+            options.append(option);
+            values.append(value);
+        };
+
+        processOptionString(text, processOption);
+
+        CPPUNIT_ASSERT_EQUAL(options.ordinality(), (unsigned)expected.size());
+        ForEachItemIn(i, options)
+        {
+            CPPUNIT_ASSERT_EQUAL(std::string(expected.begin()[i].first), std::string(options.item(i)));
+            CPPUNIT_ASSERT_EQUAL(std::string(expected.begin()[i].second), std::string(values.item(i)));
+        }
+    }
+
+    void testProcessOptions()
+    {
+        testOption("name=boris", {{"name", "boris"}});
+        testOption("name(boris)", {{"name", "boris"}});
+        testOption("name=boris,age(99)", {{"name", "boris"}, {"age", "99"}});
+        testOption("name=boris", {{"name", "boris"}});
+        testOption("option1=value1,option2(value2),option3,option4(nested=value,nested(value))",
+                    {{"option1", "value1"}, {"option2", "value2"}, {"option3", "1"}, {"option4", "nested=value,nested(value)"}});
+        testOption("one,two,three", {{"one", "1"}, {"two", "1"}, {"three", "1"}});
+    }
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION( JLibStringTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( JLibStringTest, "JLibStringTest" );
+
+// ========================================
+
+class CAddrThreadArgs : public CInterface, implements IInterface
+{
+public:
+    IMPLEMENT_IINTERFACE;
+    StringAttr name;
+    unsigned timeoutms;
+    bool logIt = true;
+
+    CAddrThreadArgs(const char *_name, unsigned _timeoutms) : name(_name), timeoutms(_timeoutms)
+    {
+    }
+
+    CAddrThreadArgs(const char *_name, unsigned _timeoutms, bool _logIt) : name(_name), timeoutms(_timeoutms), logIt(_logIt)
+    {
+    }
+};
+
+class CAddrPoolFactory : public CInterface, public IThreadFactory
+{
+    class CAddrPoolHandler : public CInterface, implements IPooledThread
+    {
+    public:
+        IMPLEMENT_IINTERFACE;
+
+        CAddrThreadArgs *args;
+
+        virtual void init(void *param) override
+        {
+            args = (CAddrThreadArgs *)param;
+        }
+
+        virtual void threadmain() override
+        {
+            StringBuffer name(args->name);
+            unsigned timeoutms = args->timeoutms;
+
+            SocketEndpoint ep;
+            CCycleTimer timer;
+            int srtn = ep.ipset(name.str(), timeoutms);
+            unsigned lookupTimeMS = timer.elapsedMs();
+
+            StringBuffer ipstr;
+            if (args->logIt && srtn)
+                ep.getIpText(ipstr);
+            else if (!srtn)
+                ipstr.append("failed");
+            if ((args->logIt && srtn) || (!srtn))
+            {
+                DBGLOG("%s (%d) -> %s (%u ms)", name.str(), (int)timeoutms, ipstr.str(), lookupTimeMS);
+                fflush(NULL);
+            }
+        }
+
+        virtual bool stop() override
+        {
+            return true;
+        }
+
+        virtual bool canReuse() const override
+        {
+            return true;
+        }
+    };
+
+public:
+    IMPLEMENT_IINTERFACE;
+
+    IPooledThread *createNew()
+    {
+        return new CAddrPoolHandler();
+    }
+};
+
+class getaddrinfotest : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(getaddrinfotest);
+        CPPUNIT_TEST(testaddr);
+    CPPUNIT_TEST_SUITE_END();
+
+/*
+ *  can change settings with:
+ *
+ *  <Software>
+ *    <Globals disableDNSTimeout="true" maxDNSThreads="100">
+ *
+ *  global:
+ *    expert:
+ *      disableDNSTimeout: true
+ *      maxDNSThreads: 100
+ */
+
+    void testaddr1(const char *_name, unsigned timeoutms, bool logIt=true)
+    {
+        StringBuffer name(_name);
+
+        SocketEndpoint ep;
+        CCycleTimer timer;
+        int srtn = ep.ipset(name.str(), timeoutms);
+        unsigned lookupTimeMS = timer.elapsedMs();
+
+        StringBuffer ipstr;
+        if (logIt && srtn)
+            ep.getIpText(ipstr);
+        else if (!srtn)
+            ipstr.append("failed");
+        if ((logIt && srtn) || (!srtn))
+        {
+            DBGLOG("%s (%d) -> %s (%u ms)", name.str(), (int)timeoutms, ipstr.str(), lookupTimeMS);
+            fflush(NULL);
+        }
+    }
+
+    void testaddr()
+    {
+        fflush(NULL);
+        DBGLOG(" "); // to get past the "." ...
+        fflush(NULL);
+
+        testaddr1("google.com", 3);
+        testaddr1("google.com", 500);
+
+        Owned<CAddrPoolFactory> threadFactory = new CAddrPoolFactory();
+        Owned<IThreadPool> threadPool = createThreadPool("GetAddrThreadPool", threadFactory, true, nullptr, 60);
+
+        // -----------------
+
+        Owned<CAddrThreadArgs> t1a = new CAddrThreadArgs("mck1.com", 5);
+        Owned<CAddrThreadArgs> t2a = new CAddrThreadArgs("mck1.com", 5000);
+        Owned<CAddrThreadArgs> t3a = new CAddrThreadArgs("mck1.com", INFINITE);
+
+        Owned<CAddrThreadArgs> t1b = new CAddrThreadArgs("mck101.com", 5);
+        Owned<CAddrThreadArgs> t2b = new CAddrThreadArgs("mck101.com", 5000);
+        Owned<CAddrThreadArgs> t3b = new CAddrThreadArgs("mck101.com", INFINITE);
+
+        Owned<CAddrThreadArgs> t1c = new CAddrThreadArgs("google.com", 3);
+        Owned<CAddrThreadArgs> t2c = new CAddrThreadArgs("google.com", 500);
+        Owned<CAddrThreadArgs> t3c = new CAddrThreadArgs("google.com", 10000);
+
+        Owned<CAddrThreadArgs> t1d = new CAddrThreadArgs("localhost", 3);
+        Owned<CAddrThreadArgs> t2d = new CAddrThreadArgs("localhost", 500);
+        Owned<CAddrThreadArgs> t3d = new CAddrThreadArgs("localhost", 1000);
+
+        Owned<CAddrThreadArgs> t1e = new CAddrThreadArgs("127.0.0.1", 2000);
+        Owned<CAddrThreadArgs> t2e = new CAddrThreadArgs("1.2.3.4", 2000);
+
+        Owned<CAddrThreadArgs> t1f = new CAddrThreadArgs("mck2.com", INFINITE);
+
+        Owned<CAddrThreadArgs> t1g = new CAddrThreadArgs("mck103.com", INFINITE);
+
+        Owned<CAddrThreadArgs> t1h = new CAddrThreadArgs("*bogus+", INFINITE);
+
+        // -----------------
+
+        threadPool->startNoBlock(t1a);
+        threadPool->startNoBlock(t2a);
+        threadPool->startNoBlock(t3a);
+
+        threadPool->startNoBlock(t1b);
+        threadPool->startNoBlock(t2b);
+        threadPool->startNoBlock(t3b);
+
+        threadPool->startNoBlock(t1c);
+        threadPool->startNoBlock(t2c);
+        threadPool->startNoBlock(t3c);
+
+        threadPool->startNoBlock(t1d);
+        threadPool->startNoBlock(t2d);
+        threadPool->startNoBlock(t3d);
+
+        threadPool->startNoBlock(t1e);
+        threadPool->startNoBlock(t2e);
+
+        threadPool->startNoBlock(t1f);
+
+        threadPool->startNoBlock(t1g);
+
+        threadPool->startNoBlock(t1h);
+
+        threadPool->joinAll();
+
+        fflush(NULL);
+
+        threadPool->startNoBlock(t1c);
+        threadPool->startNoBlock(t2c);
+        threadPool->startNoBlock(t3c);
+
+        threadPool->joinAll(true);
+
+        fflush(NULL);
+
+        // ---------------
+
+        CCycleTimer timer;
+        for (int i=0; i<10000; i++)
+        {
+            testaddr1("google.com", 500, false);
+        }
+        unsigned lookupTimeMS = timer.elapsedMs();
+        DBGLOG("10k lookups (same thread) time = %u ms", lookupTimeMS);
+        fflush(NULL);
+
+        Owned<IThreadPool> threadPool1 = createThreadPool("GetAddrThreadPool1", threadFactory, true, nullptr, 1);
+
+        timer.reset();
+        Owned<CAddrThreadArgs> t10a = new CAddrThreadArgs("google.com", 500, false);
+        for (int i=0; i<10000; i++)
+        {
+            threadPool1->start(t10a, "threadpool-test", 99999999);
+        }
+
+        threadPool1->joinAll(true);
+
+        lookupTimeMS = timer.elapsedMs();
+        fflush(NULL);
+        DBGLOG("10k lookups (threadpool of 1) time = %u ms", lookupTimeMS);
+
+        fflush(NULL);
+        DBGLOG("testaddr complete");
+        fflush(NULL);
+        Sleep(7000);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( getaddrinfotest );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( getaddrinfotest, "getaddrinfotest" );
+
+class HashFuncTests : public CppUnit::TestFixture
+{
+public:
+    virtual void setUp() override
+    {
+        generateFixedRandomNullTermiantedStrings();
+    }
+
+    CPPUNIT_TEST_SUITE(HashFuncTests);
+        CPPUNIT_TEST(fnvTests);
+    CPPUNIT_TEST_SUITE_END();
+
+protected:
+    static constexpr unsigned maxCalls = 10'000'000;
+    static constexpr unsigned minLen = 5, maxLen = 100;
+    static constexpr unsigned lenRange = maxLen - minLen + 1;
+    static constexpr unsigned randomSeed = 42;
+    static constexpr size_t testBufferSize = 1'000'000;
+    CCycleTimer timer;
+    std::vector<unsigned char> buffer;
+
+    unsigned getOffsetLenHash(unsigned offset, unsigned hash)
+    {
+        hash ^= (offset * 0x27D4EB2D); // use MurMurHash3 multiplier to introduce more randomness
+        hash *= fnvPrime32;
+        return hash;
+    }
+    void generateFixedRandomNullTermiantedStrings()
+    {
+        buffer.resize(testBufferSize);
+        std::mt19937 rng(randomSeed);
+        std::uniform_int_distribution<unsigned char> dist(1, 255);
+
+        unsigned offset = 0;
+        unsigned lenHash = fnvInitialHash32;
+        while (offset < testBufferSize)
+        {
+            // create str lengths between min and max based on offset,
+            // so that we can predictably read them back
+            lenHash = getOffsetLenHash(offset, lenHash);
+            unsigned len = (lenHash % lenRange) + minLen;
+
+            if (offset + len + 1 >= testBufferSize)
+                break;
+
+            for (unsigned i=0; i<len; i++)
+                buffer[offset + i] = dist(rng);
+            buffer[offset + len] = '\0';
+
+            offset += len + 1;
+        }
+    }
+    template <unsigned (*HASHCFUNC)(const unsigned char *, unsigned, unsigned)>
+    void testHashc()
+    {
+        unsigned hashResult = fnvInitialHash32;
+
+        unsigned offset = 0;
+        for (unsigned i=0; i<maxCalls; i++)
+        {
+            unsigned len = (i % 100) + 5;
+            if (offset + len > buffer.size())
+                offset = 0;
+
+            hashResult ^= HASHCFUNC(&buffer[offset], len, hashResult);
+            offset += len;
+        }
+        CPPUNIT_ASSERT(hashResult != 0);
+    }
+    template <unsigned (*HASHCZFUNC)(const unsigned char *, unsigned)>
+    void testHashcz()
+    {
+        unsigned hashResult = fnvInitialHash32;
+
+        unsigned lenHash = fnvInitialHash32;
+        unsigned offset = 0;
+        for (unsigned i=0; i<maxCalls; i++)
+        {
+            // get next length, as populated by generate function
+            lenHash = getOffsetLenHash(offset, lenHash);
+            unsigned len = (lenHash % lenRange) + minLen;
+
+            if (offset + (len + 1) > buffer.size())
+            {
+                offset = 0;
+                lenHash = getOffsetLenHash(offset, fnvInitialHash32);
+                len = (lenHash % lenRange) + minLen;
+            }
+            dbgassertex(len == strlen((const char *)&buffer[offset]));
+            hashResult ^= HASHCZFUNC(&buffer[offset], hashResult);
+            offset += len + 1;
+        }
+        CPPUNIT_ASSERT(hashResult != 0);
+    }
+    void measure(const char *funcName, const std::function<void(void)> &func)
+    {
+        timer.reset();
+        func();
+        unsigned elapsed = timer.elapsedMs();
+        double throughput = static_cast<double>(maxCalls) / elapsed * 1000;
+        PROGLOG("%s: %u calls took %u ms (%.2f hashes/sec)", funcName, maxCalls, elapsed, throughput);
+    }
+    void fnvTests()
+    {
+        measure("deprecatedHashc (fnv1)", [this]() { testHashc<deprecatedHashc>(); });
+        measure("deprecatedHashcz (fnv1)", [this]() { testHashcz<deprecatedHashcz>(); });
+        measure("hashc (fnv1)", [this]() { testHashc<hashc>(); });
+        measure("hashcz (fnv1)", [this]() { testHashcz<hashcz>(); });
+        measure("hashc_fnv1a", [this]() { testHashc<hashc_fnv1a>(); });
+        measure("hashcz_fnv1a", [this]() { testHashcz<hashcz_fnv1a>(); });
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( HashFuncTests );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( HashFuncTests, "HashFuncTests" );
+
+//---------------------------------------------------------------------------------------------------------------------
+
+class SleepTests : public CppUnit::TestFixture
+{
+public:
+    CPPUNIT_TEST_SUITE(SleepTests);
+        CPPUNIT_TEST(testSleep);
+    CPPUNIT_TEST_SUITE_END();
+
+protected:
+    void testSleep()
+    {
+        //Sanity check that the sleep functions do not sleep too long or too short
+        {
+            __uint64 start = nsTick();
+            MilliSleep(10);
+            __uint64 elapsed = nsTick() - start;
+            CPPUNIT_ASSERT(elapsed > 10 * 1000 * 1000);
+            CPPUNIT_ASSERT(elapsed < 12 * 1000 * 1000);
+        }
+
+        {
+            __uint64 start = nsTick();
+            NanoSleep(10'000'000);
+            __uint64 elapsed = nsTick() - start;
+            CPPUNIT_ASSERT(elapsed > 10 * 1000 * 1000);
+            CPPUNIT_ASSERT(elapsed < 12 * 1000 * 1000);
+        }
+
+        {
+            __uint64 start = nsTick();
+            NanoSleep(10'000);
+            __uint64 elapsed = nsTick() - start;
+            CPPUNIT_ASSERT(elapsed > 10 * 1000);
+            CPPUNIT_ASSERT(elapsed < 1000 * 1000);
+        }
+
+        //Check case > 1 second
+        {
+            __uint64 start = nsTick();
+            NanoSleep(3'000'000'000);
+            __uint64 elapsed = nsTick() - start;
+            CPPUNIT_ASSERT(elapsed > 3'000'000'000);
+            CPPUNIT_ASSERT(elapsed < 3'100'000'000);
+        }
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( SleepTests );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( SleepTests, "SleepTests" );
 
 #endif // _USE_CPPUNIT

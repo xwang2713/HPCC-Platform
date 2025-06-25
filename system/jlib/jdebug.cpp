@@ -83,21 +83,21 @@ PU (%) is the percentage CPU in use (unchanged from previously).
 
 MU (%) is what percentage of total (all processes) memory is in use
 (ram + swap) or in 32 bit is the percentage of 3GB (address space)
-used (whichever larger). 
+used (whichever larger).
 
 MAL is total memory in use (i.e malloced and not freed ) by this
-process  (= MMP+SBK) 
+process  (= MMP+SBK)
 
 MMP is the sum of memory mapped (large) blocks in use by this process
 (which will be  returned to OS when freed).
 
 SBK is the sbrk'ed memory i.e. smaller blocks allocated from the
 arena. (note this memory is unlikely to be returned to OS while the
-process is still running). 
+process is still running).
 
 TOT (K) is an indication of the memory footprint of the process.
 This is the 'arena' size (which is how much reserved by sbrk) plus the
-mmap memory size (MMP). 
+mmap memory size (MMP).
 
 RAM (K) is how much real memory is in use by all processes - it is
 the same as what would be reported by the 'free' command after the
@@ -140,27 +140,27 @@ inline offset_t readHexNum(const char *&s)
     for (;;) {
         switch (*s) {
             case '0':
-            case '1': 
-            case '2': 
-            case '3': 
+            case '1':
+            case '2':
+            case '3':
             case '4':
-            case '5': 
-            case '6': 
-            case '7': 
+            case '5':
+            case '6':
+            case '7':
             case '8':
-            case '9': ret = ret*16+(*s-'0'); 
+            case '9': ret = ret*16+(*s-'0');
                  break;
-            case 'A': 
-            case 'B': 
-            case 'C': 
-            case 'D': 
+            case 'A':
+            case 'B':
+            case 'C':
+            case 'D':
             case 'E':
             case 'F': ret = ret*16+(*s-'A'+10);
                  break;
-            case 'a': 
-            case 'b': 
-            case 'c': 
-            case 'd': 
+            case 'a':
+            case 'b':
+            case 'c':
+            case 'd':
             case 'e':
             case 'f': ret = ret*16+(*s-'a'+10);
                  break;
@@ -178,15 +178,15 @@ inline offset_t readDecNum(const char *&s)
     for (;;) {
         switch (*s) {
             case '0':
-            case '1': 
-            case '2': 
-            case '3': 
+            case '1':
+            case '2':
+            case '3':
             case '4':
-            case '5': 
-            case '6': 
-            case '7': 
+            case '5':
+            case '6':
+            case '7':
             case '8':
-            case '9': ret = ret*10+(*s-'0'); 
+            case '9': ret = ret*10+(*s-'0');
                  break;
         default:
             return ret;
@@ -199,22 +199,22 @@ inline offset_t readDecNum(const char *&s)
 
 #if defined(_WIN32)
 
-static __int64 numCyclesNTicks; 
+static __int64 numCyclesNTicks;
 static __int64 ticksPerSec;
 static __int64 numScaleTicks;
 static bool useRDTSC = _USE_RDTSC;
-static double cycleToNanoScale; 
+static double cycleToNanoScale;
 
-static void calibrate_timing()
+static bool calibrate_timing()
 {
 #ifndef _AMD64_
-    if (useRDTSC) 
+    if (useRDTSC)
     {
         unsigned long r;
-        __asm { 
-             mov eax, 1 ;  
-             cpuid ; 
-             mov r, edx 
+        __asm {
+             mov eax, 1 ;
+             cpuid ;
+             mov r, edx
         }
         if ((r&0x10)==0)
             useRDTSC = false;
@@ -234,7 +234,7 @@ static void calibrate_timing()
             if (numPerUS>0)
             {
                 cycleToNanoScale = 1000.0 / numPerUS;
-                return;
+                return true;
             }
         }
         DBGLOG("calibrate_timing failed using RDTSC");
@@ -257,6 +257,7 @@ static void calibrate_timing()
     cycle_t a2 = getTSC();
     numCyclesNTicks = (a2 - a1);
     cycleToNanoScale = ((double)numScaleTicks * 1000000000.0) / ((double)numCyclesNTicks * ticksPerSec);
+    return true;
 }
 
 __int64 cycle_to_nanosec(cycle_t cycles)
@@ -304,12 +305,12 @@ static double cycleToNanoScale;
 static double cycleToMicroScale;
 static double cycleToMilliScale;
 
-void calibrate_timing()
+static bool calibrate_timing()
 {
 #if defined(_ARCH_X86_) || defined(_ARCH_X86_64_)
     if (useRDTSC) {
         unsigned long eax;
-        unsigned long ebx; 
+        unsigned long ebx;
         unsigned long ecx;
         unsigned long edx;
 #if defined(_ARCH_X86_64_)
@@ -317,10 +318,10 @@ void calibrate_timing()
 
 #else
 // NB PIC code and ebx usage don't mix well
-        asm volatile("pushl %%ebx      \n\t" 
+        asm volatile("pushl %%ebx      \n\t"
                      "cpuid            \n\t"
-                     "movl %%ebx, %1   \n\t" 
-                     "popl %%ebx       \n\t" 
+                     "movl %%ebx, %1   \n\t"
+                     "popl %%ebx       \n\t"
                      : "=a"(eax), "=r"(ebx), "=c"(ecx), "=d"(edx)
                  : "a"(1)
                  : "cc");
@@ -347,16 +348,24 @@ void calibrate_timing()
                 cycleToNanoScale = 1000.0 / numPerUS;
                 cycleToMicroScale = 1.0 / numPerUS;
                 cycleToMilliScale = 0.001 / numPerUS;
-                return;
+                return true;
             }
         }
         IERRLOG("calibrate_timing failed using RDTSC");
         useRDTSC = false;
     }
 #endif
+#if defined (__APPLE__)
+    verifyex(mach_timebase_info(&timebase_info) == KERN_SUCCESS);
+    cycleToNanoScale = static_cast<double>(timebase_info.numer)/timebase_info.denom;
+    cycleToMicroScale = cycleToNanoScale/1000.0;
+    cycleToMilliScale = cycleToNanoScale/1000000.0;
+#else
     cycleToNanoScale = 1.0;
-    cycleToMicroScale = 1.0;
-    cycleToMilliScale = 1.0;
+    cycleToMicroScale = cycleToNanoScale/1000.0;
+    cycleToMilliScale = cycleToNanoScale/1000000.0;
+#endif
+    return true;
 }
 
 
@@ -376,14 +385,14 @@ cycle_t jlib_decl get_cycles_now()
     if (!use_gettimeofday) {
         timespec tm;
         if (clock_gettime(CLOCK_MONOTONIC, &tm)>=0)
-            return ((cycle_t)tm.tv_sec)*1000000000L+(tm.tv_nsec);   
+            return ((cycle_t)tm.tv_sec)*1000000000L+(tm.tv_nsec);
         use_gettimeofday = true;
         fprintf(stderr,"clock_gettime CLOCK_MONOTONIC returns %d",errno);   // don't use PROGLOG
     }
 #endif
     struct timeval tm;
     gettimeofday(&tm,NULL);
-    return ((cycle_t)tm.tv_sec)*1000000000L+(cycle_t)tm.tv_usec*1000L; 
+    return ((cycle_t)tm.tv_sec)*1000000000L+(cycle_t)tm.tv_usec*1000L;
 }
 #endif
 
@@ -405,7 +414,11 @@ __int64 jlib_decl cycle_to_microsec(cycle_t cycles)
     if (useRDTSC)
         return (__int64)((double)cycles * cycleToMicroScale);
 #endif
+#ifdef __APPLE__
+    return cycles * (uint64_t) timebase_info.numer / ((uint64_t)timebase_info.denom*1000);
+#else
     return cycles / 1000;
+#endif
 }
 
 __int64 jlib_decl cycle_to_millisec(cycle_t cycles)
@@ -414,7 +427,11 @@ __int64 jlib_decl cycle_to_millisec(cycle_t cycles)
     if (useRDTSC)
         return (__int64)((double)cycles * cycleToMilliScale);
 #endif
+#ifdef __APPLE__
+    return cycles * (uint64_t) timebase_info.numer / ((uint64_t)timebase_info.denom*1000000);
+#else
     return cycles / 1000000;
+#endif
 }
 
 cycle_t nanosec_to_cycle(__int64 ns)
@@ -423,7 +440,11 @@ cycle_t nanosec_to_cycle(__int64 ns)
     if (useRDTSC)
         return (__int64)((double)ns / cycleToNanoScale);
 #endif
+#ifdef __APPLE__
+    return ns * (uint64_t) timebase_info.denom / ((uint64_t)timebase_info.numer);
+#else
     return ns;
+#endif
 }
 
 double getCycleToNanoScale()
@@ -470,7 +491,7 @@ MTimeSection::~MTimeSection()
         display_time(scope, end_time-start_time);
 }
 
-class TimeSectionInfo : public MappingBase 
+class TimeSectionInfo : public MappingBase
 {
 public:
     TimeSectionInfo(const char * _scope, __int64 _cycles) : scope(_scope), totalcycles(_cycles), maxcycles(_cycles), count(1) {};
@@ -483,8 +504,8 @@ public:
     unsigned getCount() const { return count; }
 
     StringAttr  scope;
-    __int64 totalcycles;
-    __int64 maxcycles;
+    cycle_t totalcycles;
+    cycle_t maxcycles;
     unsigned count;
 };
 
@@ -505,11 +526,11 @@ class DefaultTimeReporter : implements ITimeReporter, public CInterface
     }
 public:
     IMPLEMENT_IINTERFACE
-    DefaultTimeReporter() 
+    DefaultTimeReporter()
     {
         sections = new StringMapOf<TimeSectionInfo>(true);
     }
-    ~DefaultTimeReporter() 
+    ~DefaultTimeReporter()
     {
 //      printTimings();                     // Must explicitly call printTimings - no automatic print (too late here!)
         delete sections;
@@ -628,14 +649,7 @@ ITimeReporter * queryActiveTimer()
 
 ITimeReporter *createStdTimeReporter() { return new DefaultTimeReporter(); }
 
-cycle_t oneSecInCycles;
-MODULE_INIT(INIT_PRIORITY_JDEBUG1)
-{
-    // perform v. early in process startup, ideally this would grab process exclusively for the 2 100ths of a sec it performs calc.
-    calibrate_timing();
-    oneSecInCycles = nanosec_to_cycle(1000000000);
-    return 1;
-}
+cycle_t oneSecInCycles = calibrate_timing() ?  nanosec_to_cycle(1000000000) : 0;
 
 MODULE_INIT(INIT_PRIORITY_JDEBUG2)
 {
@@ -653,18 +667,43 @@ MODULE_EXIT()
 //===========================================================================
 
 
-void BlockedTimeTracker::noteWaiting()
+//Calculate how much time has elapsed total - with the given number of threads still active
+__uint64 BlockedTimeTracker::calcActiveTime(cycle_t tally, unsigned active) const
 {
-    CriticalBlock block(cs);
-    numWaiting++;
-    timeStampTally -= get_cycles_now();
+    if (active != 0)
+    {
+        cycle_t now = get_cycles_now();
+        tally += active * now;
+    }
+
+    return cycle_to_nanosec(tally);
 }
 
-void BlockedTimeTracker::noteComplete()
+cycle_t BlockedTimeTracker::noteWaiting()
 {
+    cycle_t now = get_cycles_now();
     CriticalBlock block(cs);
-    numWaiting--;
-    timeStampTally += get_cycles_now();
+    numStarted++;
+    timeStampTally -= now;
+    return now;
+}
+
+cycle_t BlockedTimeTracker::noteWaiting(unsigned numWaiting)
+{
+    cycle_t now = get_cycles_now();
+    CriticalBlock block(cs);
+    numStarted += numWaiting;
+    timeStampTally -= now * numWaiting;
+    return now;
+}
+
+cycle_t BlockedTimeTracker::noteComplete()
+{
+    cycle_t now = get_cycles_now();
+    CriticalBlock block(cs);
+    numFinished++;
+    timeStampTally += now;
+    return now;
 }
 
 __uint64 BlockedTimeTracker::getWaitingNs() const
@@ -673,17 +712,36 @@ __uint64 BlockedTimeTracker::getWaitingNs() const
     cycle_t tally;
     {
         CriticalBlock block(cs);
-        active = numWaiting;
+        active = numStarted - numFinished;
         tally = timeStampTally;
     }
 
-    if (active != 0)
+    return calcActiveTime(tally, active);
+}
+
+
+unsigned BlockedTimeTracker::numInFlight() const
+{
+    CriticalBlock block(cs);
+    return numStarted - numFinished;
+}
+
+void BlockedTimeTracker::extractOverlapInfo(OverlapTimeInfo & info, bool isStart) const
+{
+    unsigned started;
+    unsigned finished;
+    cycle_t tally;
+
     {
-        cycle_t now = get_cycles_now();
-        tally += active * now;
+        CriticalBlock block(cs);
+        started = numStarted;
+        finished = numFinished;
+        tally = timeStampTally;
     }
 
-    return cycle_to_nanosec(tally);
+    //Record so that when counts are subtracted, the total count will include all jobs that overlapped in any part
+    info.count = isStart ? finished : started;
+    info.elapsedNs = calcActiveTime(tally, started - finished);
 }
 
 
@@ -778,7 +836,7 @@ struct KERNEL_USER_TIMES {
     __int64 ExitTime;
     __int64 KernelTime;
     __int64 UserTime;
-    //__int64 EllapsedTime; 
+    //__int64 EllapsedTime;
 };
 
 
@@ -816,6 +874,54 @@ static struct CNtKernelInformation
 } NtKernelFunctions;
 #endif
 
+//===========================================================================
+
+#ifndef _WIN32
+
+static std::atomic<bool> gatheredGroup{false};
+static StringAttr cgroup;
+static CriticalSection csgroupCs;
+static const char * queryCGroup()
+{
+    if (!gatheredGroup)
+    {
+        CriticalBlock block(csgroupCs);
+        if (!gatheredGroup)
+        {
+            StringBuffer contents;
+            if (loadBinaryFile(contents, "/proc/self/cgroup", false))
+            {
+                auto processLine = [](size_t len, const char * ln)
+                {
+                    //Note ln points at the start of the line, but the line is not null terminated
+                    switch (*ln)
+                    {
+                    case '0':
+                        if (strncmp(ln, "0::/", 4) == 0)
+                        {
+                            //Format is 0::/<cgroup>
+                            //If not running in a container the "cgroup" may be something like user.slice/user-1000.slice/user@1000.service/....
+                            //If so ignore because it is not a real cgroup
+                            if (!memchr(ln+4, '/', len-4))
+                                cgroup.set(ln+4, len-4);
+                        }
+                        break;
+                    }
+                    //Some systems with version 1 cgroups have <n>:cpu,cpuacct:/<cgroup>
+                    const char  * match = (const char *)jmemmem(len, ln, 14, ":cpu,cpuacct:/");
+                    if (match)
+                        cgroup.set(match+14, (ln + len) - (match + 14));
+                };
+
+                processLines(contents, processLine);
+            }
+            gatheredGroup = true;
+        }
+    }
+    return cgroup.get();
+}
+
+#endif
 
 //===========================================================================
 
@@ -893,6 +999,9 @@ SystemProcessInfo SystemProcessInfo::operator - (const SystemProcessInfo & rhs) 
     result.activeDataMemory = activeDataMemory - rhs.activeDataMemory;
     result.majorFaults = majorFaults - rhs.majorFaults;
     result.numThreads = numThreads - rhs.numThreads;
+    result.numPeriods = numPeriods - rhs.numPeriods;
+    result.numThrottledPeriods = numThrottledPeriods - rhs.numThrottledPeriods;
+    result.timeThrottledNs = timeThrottledNs - rhs.timeThrottledNs;
     return result;
 }
 
@@ -995,7 +1104,7 @@ bool ProcessInfo::update(unsigned flags)
         if (loadBinaryFile(contents, "/proc/self/status", false))
         {
             contextSwitches = 0;
-            auto processLine = [this](const char * cur)
+            auto processLine = [this](size_t len, const char * cur)
             {
                 __uint64 value;
                 switch (*cur)
@@ -1070,7 +1179,7 @@ bool SystemInfo::update(unsigned flags)
     StringBuffer contents;
     if (loadBinaryFile(contents, "/proc/stat", false))
     {
-        auto processLine = [this](const char * ln)
+        auto processLine = [this](size_t len, const char * ln)
         {
             switch (*ln)
             {
@@ -1104,6 +1213,52 @@ bool SystemInfo::update(unsigned flags)
 
         processLines(contents, processLine);
     }
+
+    auto processLine = [this](size_t len, const char * ln)
+    {
+        switch (*ln)
+        {
+        case 'n':
+            if (strncmp(ln, "nr_periods ", 11) == 0)
+                numPeriods = strtod(ln+11, nullptr);
+            else if (strncmp(ln, "nr_throttled ", 13) == 0)
+                numThrottledPeriods = strtod(ln+13, nullptr);
+            break;
+        case 't':
+            if (strncmp(ln, "throttled_usec ", 15) == 0)
+                timeThrottledNs = strtod(ln+15, nullptr) * 1000;
+            else if (strncmp(ln, "throttled_time ", 15) == 0)
+                timeThrottledNs = strtod(ln+15, nullptr);
+            break;
+        }
+    };
+
+    bool done = false;
+    const char * cgroup = queryCGroup();
+    if (cgroup)
+    {
+        //Version 2 of cgroups has the information in cgroup/<cgroup>
+        VStringBuffer filename("/sys/fs/cgroup/%s/cpu.stat", cgroup);
+        if (loadBinaryFile(contents.clear(), filename.str(), false))
+        {
+            processLines(contents, processLine);
+            done = true;
+        }
+        else
+        {
+            //Some systems with version 1 cgroups have the information in /sys/fs/cgroup/cpu/<cgroup>/cpu.stat
+            filename.clear().appendf("/sys/fs/cgroup/cpu/%s/cpu.stat", cgroup);
+            if (loadBinaryFile(contents.clear(), filename.str(), false))
+            {
+                processLines(contents, processLine);
+                done = true;
+            }
+        }
+    }
+
+    //If the version 2 file was not found look for ther version 1 information in cgroup/cpu
+    if (!done && loadBinaryFile(contents.clear(), "/sys/fs/cgroup/cpu/cpu.stat", false))
+        processLines(contents, processLine);
 
     return true;
 #endif
@@ -1185,12 +1340,12 @@ void getSystemProcessInfo(unsigned &numCPUs, unsigned &CPUSpeed)
         DBGLOG("RegQueryValueEx() failed to get CPU speed - errorCode=%d", lRet);
         RegCloseKey(hKey);
     }
-    else 
+    else
     {
         CPUSpeed = keyValue;
         RegCloseKey(hKey);
     }
-    
+
 
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);
@@ -1326,9 +1481,9 @@ void getSystemProcessInfo(unsigned &numCPUs, unsigned &CPUSpeed)
     const char *bufptr;
     while ((bufptr = fgets(line, 1000, cpufp)) != NULL)
     {
-        if (strncmp(cpuNumTag, bufptr, strlen(cpuNumTag))==0) 
+        if (strncmp(cpuNumTag, bufptr, strlen(cpuNumTag))==0)
             numCPUs++;
-        else if (strncmp(cpuSpeedTag, bufptr, strlen(cpuSpeedTag))==0) 
+        else if (strncmp(cpuSpeedTag, bufptr, strlen(cpuSpeedTag))==0)
             CPUSpeed = (unsigned)strtol(bufptr+strlen(cpuSpeedTag), &tail, 10);
     }
 
@@ -1357,7 +1512,7 @@ void getSystemProcessInfo(unsigned &numCPUs, unsigned &CPUSpeed)
 
 static unsigned evalAffinityCpus()
 {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(EMSCRIPTEN)
     // MORE - could do better
 #else
     cpu_set_t cpuset;
@@ -1383,7 +1538,7 @@ static unsigned evalAffinityCpus()
 
 // Note - values are returned in Kb
 
-static void getMemUsage(unsigned &inuse,unsigned &active,unsigned &total,unsigned &swaptotal,unsigned &swapinuse) 
+static void getMemUsage(unsigned &inuse,unsigned &active,unsigned &total,unsigned &swaptotal,unsigned &swapinuse)
 {
 #ifdef __APPLE__
     active = 0;
@@ -1431,33 +1586,69 @@ static void getMemUsage(unsigned &inuse,unsigned &active,unsigned &total,unsigne
     unsigned swapcached = 0;
     unsigned cached = 0;
     while (bufptr&&i) {
-        if (*bufptr =='\n') 
+        if (*bufptr =='\n')
             bufptr++;
         i--;
-        if (strncmp("MemTotal:", bufptr, 9)==0) 
+        if (strncmp("MemTotal:", bufptr, 9)==0)
             total = (unsigned)strtol(bufptr+9, &tail, 10);
-        else if (strncmp("SwapTotal:", bufptr, 10)==0) 
+        else if (strncmp("SwapTotal:", bufptr, 10)==0)
             swaptotal = (unsigned)strtol(bufptr+10, &tail, 10);
-        else if (strncmp("MemFree:", bufptr, 8)==0) 
+        else if (strncmp("MemFree:", bufptr, 8)==0)
             free = (unsigned)strtol(bufptr+8, &tail, 10);
-        else if (strncmp("Active:", bufptr, 7)==0) 
+        else if (strncmp("Active:", bufptr, 7)==0)
             active = (unsigned)strtol(bufptr+7, &tail, 10);
-        else if (strncmp("SwapFree:", bufptr, 9)==0) 
+        else if (strncmp("SwapFree:", bufptr, 9)==0)
             swapfree = (unsigned)strtol(bufptr+9, &tail, 10);
-        else if (strncmp("Cached:", bufptr, 7)==0) 
+        else if (strncmp("Cached:", bufptr, 7)==0)
             cached = (unsigned)strtol(bufptr+7, &tail, 10);
-        else if (strncmp("SwapCached:", bufptr, 11)==0) 
+        else if (strncmp("SwapCached:", bufptr, 11)==0)
             swapcached = (unsigned)strtol(bufptr+11, &tail, 10);
-        else 
+        else
             i++;
         bufptr = strchr(bufptr, '\n');
     }
     inuse = total-free-cached;
-    swapinuse = swaptotal-swapfree-swapcached;
+
+    // swapinuse = swaptotal-swapfree-swapcached;
+
+    // sometimes in containers [under mem pressure ?] we see from /proc/meminfo -
+
+    // SwapCached:            0 kB
+    // SwapTotal:             0 kB
+    // SwapFree:       18446744073709551496 kB
+    // or -
+    // SwapCached:            0 kB
+    // SwapTotal:             0 kB
+    // SwapFree:            120 kB
+
+    // and from free cmd -
+
+    // free -m
+    //               total        used        free      shared  buff/cache   available
+    // Mem:          43008       17616        5375           0       20015       25391
+    // Swap:             0 18014398509481984           0
+
+    // if swapfree > 0 when swaptotal == 0 -
+    // *might* indicate kernel is pushing exe/mmapped pages out of memory to make room
+    // for other things and this can affect performance
+
+    // not sure why SwapFree value is not always valid/accurate
+    // vmstat shows more reasonable swpd value, but walks all /proc/<pid>/stat files
+
+    // SwapCached: Memory that is present within main memory, but also in the swapfile
+
+    if ((swapfree + swapcached) > swaptotal)
+    {
+        swapinuse = swapfree + swapcached;
+        if (swapinuse > total)
+            swapinuse = active; // something more reasonable ...
+    }
+    else
+        swapinuse = swaptotal-swapfree-swapcached;
 #endif
 }
 
-class CInt64fix 
+class CInt64fix
 {
     __int64 val;
 public:
@@ -1465,10 +1656,10 @@ public:
     {
         val = 0;
     }
-    void set(int v) 
+    void set(int v)
     {
         __int64 ret = (unsigned)v;
-        while (val-ret>0x80000000LL) 
+        while (val-ret>0x80000000LL)
             ret += 0x100000000LL;
         val = ret;
     }
@@ -1478,7 +1669,7 @@ public:
         return val;
     }
 };
-    
+
 
 
 void getMemStats(StringBuffer &out, unsigned &memused, unsigned &memtot)
@@ -1505,10 +1696,10 @@ void getMemStats(StringBuffer &out, unsigned &memused, unsigned &memtot)
         muval = 100; // !
 
 
-    out.appendf("MU=%3u%% MAL=%" I64F "d MMP=%" I64F "d SBK=%" I64F "d TOT=%uK RAM=%uK SWP=%uK", 
-        muval, total, mmapmem, sbrkmem, (unsigned)(virttot/1024), mu, su);
+    out.appendf("MU=%3u%% MAL=%" I64F "d MMP=%" I64F "d SBK=%" I64F "d TOT=%uK RAM=%uK SWP=%uK FLT=%" I64F "u CTX=%" I64F "u",
+        muval, total, mmapmem, sbrkmem, (unsigned)(virttot/1024), mu, su, processInfo.getMajorFaults(), processInfo.getNumContextSwitches());
 #ifdef _USE_MALLOC_HOOK
-    if (totalMem) 
+    if (totalMem)
         out.appendf(" TM=%" I64F "d",totalMem);
 #endif
     memused = mu+su;
@@ -1731,7 +1922,7 @@ struct CProcInfo: extends CInterface
             return false;
 
         active = true;
-        if (first) 
+        if (first)
             first = false;
         else {
             delta.system = info.time.system-prev.system;
@@ -1793,7 +1984,7 @@ public:
         tot_time = 0;
         ForEachItemInRev(i3,processes) {
             CProcInfo &pi = processes.item(i3);
-            if (pi.active) 
+            if (pi.active)
                 tot_time += pi.delta.system+pi.delta.user;
             else
                 processes.remove(i3);
@@ -1824,7 +2015,7 @@ public:
     {
         if (pc>90) {
             scan();
-            if (busy) 
+            if (busy)
                 print(3,str); // print top 3
             else
                 busy = true;
@@ -2360,7 +2551,7 @@ class CExtendedStats  // Disk network and cpu stats
     }
 
 
-    inline double perSec(double v,double deltams) 
+    inline double perSec(double v,double deltams)
     {
         return 1000.0*v/deltams;
     }
@@ -2466,9 +2657,16 @@ public:
         }
         if (totalcpu)
         {
-            if (out.length()&&(out.charAt(out.length()-1)!=' '))
-                out.append(' ');
+            ensureSeparator(out, ' ');
             out.appendf("CPU: usr=%d sys=%d iow=%d idle=%d", deltacpu.getUserPercent(), deltacpu.getSystemPercent(), deltacpu.getIoWaitPercent(), deltacpu.getIdlePercent());
+
+            __uint64 periods = deltacpu.getNumPeriods();
+            if (periods)
+            {
+                unsigned throttling = deltacpu.getNumThrottledPeriods() * 100 / periods;
+                __uint64 timeThrottledNs = deltacpu.getTimeThrottledNs();
+                out.appendf(" thr=%u%% thrns=%llu", throttling, timeThrottledNs);
+            }
         }
         return true;
     }
@@ -2765,8 +2963,14 @@ public:
         hook.set(_hook);
         term = false;
         latestCPU = 0;
+
         // UDP stats reported unless explicitly disabled
-        if (queryEnvironmentConf().getPropBool("udp_stats", true))
+        if (isContainerized())
+        {
+            if (getConfigBool("expert/@udpStats", true))
+                traceMode |= PerfMonUDP;
+        }
+        else if (queryEnvironmentConf().getPropBool("udp_stats", true))
             traceMode |= PerfMonUDP;
 #ifdef _WIN32
         primaryfs.append("C:");
@@ -3070,7 +3274,7 @@ void getProcessTime(UserSystemTime_t & result)
 
 void getSystemTraceInfo(StringBuffer &str, PerfMonMode mode)
 {
-    if (!MemoryUsageReporter) 
+    if (!MemoryUsageReporter)
         MemoryUsageReporter = new CMemoryUsageReporter(1000, mode, 0, false);
     MemoryUsageReporter->getSystemTraceInfo(str, mode);
 }
@@ -3151,7 +3355,7 @@ void getHardwareInfo(HardwareInfo &hdwInfo, const char *primDiskPath, const char
     // MORE: Find win32 call for NIC speed
 
 #else  // linux
-    unsigned memUsed, memActive, memSwap, memSwapUsed; 
+    unsigned memUsed, memActive, memSwap, memSwapUsed;
     getMemUsage(memUsed, memActive, hdwInfo.totalMemory, memSwap, memSwapUsed);
     hdwInfo.totalMemory /= 1024; // in MB
 
@@ -3179,12 +3383,12 @@ void getHardwareInfo(HardwareInfo &hdwInfo, const char *primDiskPath, const char
 //===========================================================================
 
 
-enum SegTypes { 
+enum SegTypes {
         segtype_free,         //
         segtype_heap,         // rw-p named [heap]
         segtype_data,         // rw-p unnamed
         segtype_guard,        // ---p unnamed/named
-        segtype_stack,        // rwxp 
+        segtype_stack,        // rwxp
         segtype_qlibcode,     // r-xp  named */lib200
         segtype_qlibdata,     // rw-p  named */lib200
         segtype_libcode,      // r-xp  named *
@@ -3203,7 +3407,7 @@ struct SegTypeRec
 
 
 
-const char *PROCMAPHEADER = 
+const char *PROCMAPHEADER =
     "FREE,NFREE,MAXFREE,HEAP,STACK,NSTACKS,DATA,NDATA,MAXDATA,LIBDATA,QUERYDATA,MAXQUERYDATA,LIBCODE,QUERYCODE,MAXQLIBCODE";
 
 
@@ -3765,7 +3969,7 @@ void printAllocationSummary()
     {
         _CrtMemBlockHeader * display = locations[i2];
         //char tempBuffer[16];
-        //unsigned len = dumpMemory(sizeof(tempBuffer), tempBuffer, display->nDataSize, 
+        //unsigned len = dumpMemory(sizeof(tempBuffer), tempBuffer, display->nDataSize,
 
         PROGLOG("%s(%d) %d:%d {%ld} = %d", display->szFileName ? display->szFileName : "<unknown>", display->nLine, display->nDataSize, counts[i2], display->lRequest, display->nDataSize * counts[i2]);
     }
@@ -4104,7 +4308,7 @@ class UserMetricMsgHandler : public CInterface, implements ILogMsgHandler, imple
     Owned<ILogMsgFilter> regexFilter;
 public:
     virtual void Link(void) const { CInterface::Link(); }
-    virtual bool Release(void) const    
+    virtual bool Release(void) const
     {
         if (CInterface::Release())
             return true;
@@ -4122,22 +4326,23 @@ public:
     }
 
     // interface ILogMsgHandler
-    virtual void handleMessage(const LogMsg & msg __attribute__((unused))) { counter++; }
-    virtual bool needsPrep() const { return false; }
-    virtual void prep() {}
-    virtual unsigned queryMessageFields() const { return MSGFIELD_detail; }
-    virtual void setMessageFields(unsigned _fields __attribute__((unused)) = MSGFIELD_all) {}
-    virtual void addToPTree(IPropertyTree * parent __attribute__((unused))) const {}
-    virtual int flush() { return 0; }
-    virtual bool getLogName(StringBuffer &name __attribute__((unused))) const { return false; }
-    virtual offset_t getLogPosition(StringBuffer &logFileName __attribute__((unused))) const { return 0; };
+    virtual void handleMessage(const LogMsg & msg __attribute__((unused))) override { counter++; }
+    virtual bool needsPrep() const override { return false; }
+    virtual void prep() override {}
+    virtual unsigned queryMessageFields() const override { return MSGFIELD_detail; }
+    virtual void setMessageFields(unsigned _fields __attribute__((unused)) = MSGFIELD_all) override {}
+    virtual void addToPTree(IPropertyTree * parent __attribute__((unused))) const override {}
+    virtual int flush() override { return 0; }
+    virtual bool getLogName(StringBuffer &name __attribute__((unused))) const override { return false; }
+    virtual offset_t getLogPosition(StringBuffer &logFileName __attribute__((unused))) const override { return 0; };
+    virtual LogHandlerFormat queryFormatType() const override { return LOGFORMAT_undefined; };
 
     // interface IUserMetric
-    virtual unsigned __int64 queryCount() const { return counter; }
-    virtual const char *queryName() const { return metricName; }
-    virtual const char *queryMatchString() const { return regex; }
-    virtual void inc() { counter++; }
-    virtual void reset() { counter = 0; }
+    virtual unsigned __int64 queryCount() const override { return counter; }
+    virtual const char *queryName() const override { return metricName; }
+    virtual const char *queryMatchString() const override { return regex; }
+    virtual void inc() override { counter++; }
+    virtual void reset() override { counter = 0; }
 };
 
 jlib_decl IUserMetric *createUserMetric(const char *name, const char *matchString)

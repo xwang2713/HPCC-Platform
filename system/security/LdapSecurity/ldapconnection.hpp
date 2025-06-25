@@ -287,9 +287,9 @@ interface ILdapClient : extends IInterface
     virtual void setResourceBasedn(const char* rbasedn, SecResourceType rtype = RT_DEFAULT) = 0;
     virtual ILdapConfig* getLdapConfig() = 0;
     virtual bool userInGroup(const char* userdn, const char* groupdn) = 0;
-    virtual bool updateUserPassword(ISecUser& user, const char* newPassword, const char* currPassword = 0) = 0;
+    virtual bool updateUserPassword(ISecUser& user, const char* newPassword, const char* currPassword = 0, LDAP* ld = nullptr) = 0;
     virtual bool updateUser(const char* type, ISecUser& user) = 0;
-    virtual bool updateUserPassword(const char* username, const char* newPassword) = 0;
+    virtual bool updateUserPassword(const char* username, const char* newPassword, LDAP* ld = nullptr) = 0;
     virtual bool getResources(SecResourceType rtype, const char * basedn, const char* prefix, const char* searchstr, IArrayOf<ISecResource>& resources) = 0;
     virtual IPropertyTreeIterator* getResourceIterator(SecResourceType rtype, const char * basedn, const char* prefix,
         const char* resourceName, unsigned extraNameFilter) = 0;
@@ -335,8 +335,9 @@ interface ILdapClient : extends IInterface
     virtual void queryViewMembers(const char * viewName, StringArray & viewUsers, StringArray & viewGroups) = 0;
     virtual bool userInView(const char * user, const char* viewName) = 0;
     virtual void createLdapBasedn(ISecUser* user, const char* basedn, SecPermissionType ptype, const char* description) = 0;
-    virtual const bool organizationalUnitExists(const char * ou) const = 0;
+    virtual bool organizationalUnitExists(const char * ou) const = 0;
     virtual bool addUser(ISecUser & user, const char* basedn) = 0;
+    virtual void setUseLegacySuperUserStatusCheck(bool value) = 0;
 };
 
 ILdapClient* createLdapClient(IPropertyTree* cfg);

@@ -150,6 +150,8 @@ public:
     virtual bool allowAccess(const char * category, bool isSigned) override { return true; }
     virtual IHqlExpression *lookupDFSlayout(const char *filename, IErrorReceiver &errs, const ECLlocation &location, bool isOpt) const override { return nullptr; }
     virtual unsigned lookupClusterSize() const override { return 0; }
+    virtual IInterface * getGitUpdateLock(const char * key) override { return nullptr; }
+
     virtual void getTargetPlatform(StringBuffer & result) override
     {
         workunit->getDebugValue("targetClusterType", StringBufferAdaptor(result));
@@ -161,16 +163,15 @@ protected:
 class HqlDllGenerator : implements IHqlExprDllGenerator, implements IAbortRequestCallback, public CInterface
 {
 public:
-    HqlDllGenerator(IErrorReceiver * _errs, const char * _wuname, const char * _targetdir, IWorkUnit * _wu, ClusterType _targetClusterType, ICodegenContextCallback * _ctxCallback, bool _checkForLocalFileUploads, bool _okToAbort) :
-        errs(_errs), wuname(_wuname), targetDir(_targetdir), wu(_wu), targetClusterType(_targetClusterType), ctxCallback(_ctxCallback), checkForLocalFileUploads(_checkForLocalFileUploads), okToAbort(_okToAbort)
+    HqlDllGenerator(IErrorReceiver * _errs, const char * _wuname, const char * _targetdir, IWorkUnit * _wu, ClusterType _targetClusterType, ICodegenContextCallback * _ctxCallback, bool _checkForLocalFileUploads, bool _okToAbort, CompilerType _compilerType) :
+        errs(_errs), wuname(_wuname), targetDir(_targetdir), wu(_wu), targetClusterType(_targetClusterType), ctxCallback(_ctxCallback), checkForLocalFileUploads(_checkForLocalFileUploads), okToAbort(_okToAbort), compilerType(_compilerType)
     {
         if (!ctxCallback)
             ctxCallback.setown(new NullContextCallback(_wu));
         noOutput = true;
         defaultMaxCompileThreads = 1;
         generateTarget = EclGenerateNone;
-        code.setown(createCppInstance(wu, wuname));
-        deleteGenerated = false;
+        code.setown(createCppInstance(wu, wuname, compilerType));
         totalGeneratedSize = 0;
     }
     IMPLEMENT_IINTERFACE
@@ -184,7 +185,7 @@ public:
     virtual void addManifest(const char *filename) override { code->addManifest(filename, ctxCallback); }
     virtual void addManifestsFromArchive(IPropertyTree *archive) override { code->addManifestsFromArchive(archive, ctxCallback); }
     virtual void addWebServiceInfo(IPropertyTree *wsinfo) override { code->addWebServiceInfo(wsinfo); }
-    virtual void setSaveGeneratedFiles(bool value) override { deleteGenerated = !value; }
+    virtual void setSaveGeneratedFiles(bool save, bool publish) override { deleteGenerated = !save; publishGenerated = publish; }
 
     double getECLcomplexity(IHqlExpression * exprs);
 
@@ -225,8 +226,10 @@ protected:
     bool checkForLocalFileUploads;
     bool noOutput;
     EclGenerateTarget generateTarget;
-    bool deleteGenerated;
+    bool deleteGenerated = false;
+    bool publishGenerated = false;
     bool okToAbort;
+    CompilerType compilerType;
 };
 
 
@@ -308,7 +311,7 @@ void HqlDllGenerator::expandCode(StringBuffer & filename, const char * codeTempl
     addDirectoryPrefix(fullname, targetDir).append(filename);
 
     Owned<IFile> out = createIFile(fullname.str());
-    Owned<ITemplateExpander> expander = createTemplateExpander(out, codeTemplate);
+    Owned<ITemplateExpander> expander = createTemplateExpander(codeTemplate);
 
     Owned<ISectionWriter> writer = createCppWriter(*code, compiler);
     Owned<IProperties> props = createProperties(true);
@@ -322,11 +325,11 @@ void HqlDllGenerator::expandCode(StringBuffer & filename, const char * codeTempl
     props->setProp("headerName", headerName.str());
     props->setProp("outputName", fullname.str());
 
-    expander->generate(*writer, pass, props);
+    expander->generate(*writer, out, pass, props);
 
     totalGeneratedSize += out->size();
 
-    if (!deleteGenerated)
+    if (publishGenerated)
     {
         unsigned minActivity, maxActivity;
         code->getActivityRange(pass, minActivity, maxActivity);
@@ -417,7 +420,7 @@ IPropertyTree * HqlDllGenerator::generateSingleFieldUsageStatistics(IHqlExpressi
 //    Owned<IWorkUnit> localWu = createLocalWorkUnit();
     IWorkUnit * localWu = wu;
     //Generate the code into a new instance each time so it doesn't hang around eating memory
-    Owned<IHqlCppInstance> localCode = createCppInstance(localWu, wuname);
+    Owned<IHqlCppInstance> localCode = createCppInstance(localWu, wuname, compilerType);
 
 
     HqlQueryContext query;
@@ -579,7 +582,7 @@ bool HqlDllGenerator::generateCode(HqlQueryContext & query)
         }
 
         if (wu->getDebugValueBool("saveEclTempFiles", false) || wu->getDebugValueBool("saveCppTempFiles", false) || wu->getDebugValueBool("saveCpp", false))
-            setSaveGeneratedFiles(true);
+            setSaveGeneratedFiles(true, true);
 
         doExpand(translator);
         unsigned __int64 elapsed = cycle_to_nanosec(get_cycles_now() - startCycles);
@@ -779,7 +782,7 @@ void HqlDllGenerator::setWuState(bool ok)
 
 double HqlDllGenerator::getECLcomplexity(IHqlExpression * exprs)
 {
-    Owned<IHqlCppInstance> code = createCppInstance(wu, NULL);
+    Owned<IHqlCppInstance> code = createCppInstance(wu, NULL, compilerType);
 
     HqlCppTranslator translator(errs, "temp", code, targetClusterType, NULL);
 
@@ -797,14 +800,14 @@ offset_t HqlDllGenerator::getGeneratedSize() const
 
 extern HQLCPP_API double getECLcomplexity(IHqlExpression * exprs, IErrorReceiver * errs, IWorkUnit *wu, ClusterType targetClusterType)
 {
-    HqlDllGenerator generator(errs, "unknown", NULL, wu, targetClusterType, NULL, false, false);
+    HqlDllGenerator generator(errs, "unknown", NULL, wu, targetClusterType, NULL, false, false, DEFAULT_COMPILER);
     return generator.getECLcomplexity(exprs);
 }
 
 
-extern HQLCPP_API IHqlExprDllGenerator * createDllGenerator(IErrorReceiver * errs, const char *wuname, const char * targetdir, IWorkUnit *wu, ClusterType targetClusterType, ICodegenContextCallback *ctxCallback, bool checkForLocalFileUploads, bool okToAbort)
+extern HQLCPP_API IHqlExprDllGenerator * createDllGenerator(IErrorReceiver * errs, const char *wuname, const char * targetdir, IWorkUnit *wu, ClusterType targetClusterType, ICodegenContextCallback *ctxCallback, bool checkForLocalFileUploads, bool okToAbort, CompilerType compilerType)
 {
-    return new HqlDllGenerator(errs, wuname, targetdir, wu, targetClusterType, ctxCallback, checkForLocalFileUploads, okToAbort);
+    return new HqlDllGenerator(errs, wuname, targetdir, wu, targetClusterType, ctxCallback, checkForLocalFileUploads, okToAbort, compilerType);
 }
 
 /*
@@ -895,9 +898,7 @@ void recordQueueFilePrefixes(IWorkUnit * wu, IPropertyTree * configuration)
     {
         IPropertyTree & cur = iter->query();
         const char * name = cur.queryProp("@name");
-        const char * prefix = cur.queryProp("@prefix");
-        if (!prefix)
-            prefix = "";
+        const char * prefix = cur.queryProp("@prefix", "");
         wu->setApplicationValue("prefix", name, prefix, true);
     }
 }

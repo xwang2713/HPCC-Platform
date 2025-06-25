@@ -75,7 +75,9 @@ unsigned numRequestArrayThreads = 5;
 bool blockedLocalAgent = true;
 bool acknowledgeAllRequests = true;
 unsigned packetAcknowledgeTimeout = 100;
-unsigned headRegionSize;
+cycle_t dynPriorityAdjustCycles = 0;   // default off (0)
+bool traceThreadStartDelay = true;
+int adjustBGThreadNiceValue = 5;
 unsigned ccdMulticastPort;
 bool enableHeartBeat = true;
 unsigned parallelLoopFlowLimit = 100;
@@ -103,7 +105,7 @@ unsigned defaultTraceLimit = 10;
 unsigned watchActivityId = 0;
 unsigned testAgentFailure = 0;
 RelaxedAtomic<unsigned> restarts;
-RecordTranslationMode fieldTranslationEnabled = RecordTranslationMode::Payload;
+RecordTranslationMode fieldTranslationEnabled = RecordTranslationMode::PayloadRemoveOnly;
 bool mergeAgentStatistics = true;
 PTreeReaderOptions defaultXmlReadFlags = ptr_ignoreWhiteSpace;
 bool runOnce = false;
@@ -166,6 +168,7 @@ unsigned memoryStatsInterval = 0;
 memsize_t defaultMemoryLimit;
 unsigned defaultTimeLimit[3] = {0, 0, 0};
 unsigned defaultWarnTimeLimit[3] = {0, 5000, 5000};
+unsigned defaultMinTimeLimit[3] = {0, 0, 0};
 unsigned defaultThorConnectTimeout;
 
 unsigned defaultParallelJoinPreload = 0;
@@ -183,7 +186,6 @@ unsigned defaultHeapFlags = roxiemem::RHFnone;
 
 unsigned agentQueryReleaseDelaySeconds = 60;
 unsigned coresPerQuery = 0;
-unsigned pingInterval = 60;
 
 unsigned logQueueLen;
 unsigned logQueueDrop;
@@ -203,11 +205,13 @@ unsigned maxGraphLoopIterations;
 bool steppingEnabled = true;
 bool simpleLocalKeyedJoins = true;
 bool adhocRoxie = false;
+bool limitWaitingWorkers = false;
 
 unsigned __int64 minFreeDiskSpace = 1024 * 0x100000;  // default to 1 GB
 unsigned socketCheckInterval = 5000;
 
 unsigned cacheReportPeriodSeconds = 5*60;
+stat_type minimumInterestingActivityCycles;
 
 StringBuffer logDirectory;
 StringBuffer pluginDirectory;
@@ -219,7 +223,7 @@ StringBuffer tempDirectory;
 ClientCertificate clientCert;
 bool useHardLink;
 
-unsigned maxFileAge[2] = {0xffffffff, 60*60*1000}; // local files don't expire, remote expire in 1 hour, by default
+unsigned __int64 maxFileAgeNS[2] = {0xffffffffffffffffULL, 60*60*1000*1000000ULL}; // local files don't expire, remote expire in 1 hour, by default
 unsigned minFilesOpen[2] = {2000, 500};
 unsigned maxFilesOpen[2] = {4000, 1000};
 
@@ -609,6 +613,12 @@ void readStaticTopology()
 }
 #endif
 
+static bool roxieAbortHandler()
+{
+    (void)stopRoxieEventRecording(nullptr);
+    return true;
+}
+
 int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
 {
     if (!checkCreateDaemon(argc, argv))
@@ -699,6 +709,8 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
     codeDirectory.set(currentDirectory);
     addNonEmptyPathSepChar(codeDirectory);
     PerfTracer startupTracer;
+    addAbortHandler(roxieAbortHandler);
+
     try
     {
         Owned<IFile> sentinelFile = createSentinelTarget();
@@ -887,6 +899,12 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         udpTraceLevel = topology->getPropInt("@udpTraceLevel", runOnce ? 0 : 1);
         roxiemem::setMemTraceLevel(topology->getPropInt("@memTraceLevel", runOnce ? 0 : 1));
         soapTraceLevel = topology->getPropInt("@soapTraceLevel", runOnce ? 0 : 1);
+        if (topology->hasProp("@soapLogSepString"))
+        {
+            StringBuffer tmpSepString;
+            topology->getProp("@soapLogSepString", tmpSepString);
+            setSoapSepString(tmpSepString.str());
+        }
         miscDebugTraceLevel = topology->getPropInt("@miscDebugTraceLevel", 0);
         traceRemoteFiles = topology->getPropBool("@traceRemoteFiles", false);
         testAgentFailure = topology->getPropInt("expert/@testAgentFailure", testAgentFailure);
@@ -998,8 +1016,16 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         minPayloadSize = topology->getPropInt("@minPayloadSize", minPayloadSize);
         blockedLocalAgent = topology->getPropBool("@blockedLocalAgent", blockedLocalAgent);
         acknowledgeAllRequests = topology->getPropBool("@acknowledgeAllRequests", acknowledgeAllRequests);
-        headRegionSize = topology->getPropInt("@headRegionSize", 0);
         packetAcknowledgeTimeout = topology->getPropInt("@packetAcknowledgeTimeout", packetAcknowledgeTimeout);
+        unsigned dynAdjustMsec = topology->getPropInt("@dynPriorityAdjustTime", 0);
+        if (dynAdjustMsec)
+            dynPriorityAdjustCycles = dynAdjustMsec * (queryOneSecCycles() / 1000ULL);
+        traceThreadStartDelay = topology->getPropBool("@traceThreadStartDelay", traceThreadStartDelay);
+        adjustBGThreadNiceValue = topology->getPropInt("@adjustBGThreadNiceValue", adjustBGThreadNiceValue);
+        if (adjustBGThreadNiceValue < 0)
+            adjustBGThreadNiceValue = 0;
+        if (adjustBGThreadNiceValue > 19)
+            adjustBGThreadNiceValue = 19;
         ccdMulticastPort = topology->getPropInt("@multicastPort", CCD_MULTICAST_PORT);
         statsExpiryTime = topology->getPropInt("@statsExpiryTime", 3600);
         roxiemem::setMemTraceSizeLimit((memsize_t) topology->getPropInt64("@memTraceSizeLimit", 0));
@@ -1145,6 +1171,24 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         else
             multicastTTL = ttlTmp;
 
+        bool recordStartupEvents = topology->getPropBool("expert/@recordStartupEvents", false);
+        if (topology->getPropBool("expert/@recordAllEvents", false) || recordStartupEvents)
+        {
+            const char * recordEventOptions = topology->queryProp("expert/@recordEventOptions");
+            const char * optRecordEventFilename = topology->queryProp("expert/@recordEventFilename");
+            try
+            {
+                startRoxieEventRecording(recordEventOptions, optRecordEventFilename);
+            }
+            catch (IException *E)
+            {
+                OERRLOG(E);
+                E->Release();
+            }
+        }
+
+        workunitGraphCacheEnabled = topology->getPropBool("expert/@workunitGraphCacheEnabled", workunitGraphCacheEnabled);
+
         indexReadChunkSize = topology->getPropInt("@indexReadChunkSize", 60000);
         numAgentThreads = topology->getPropInt("@agentThreads", topology->getPropInt("@slaveThreads", 30));  // legacy name
         numServerThreads = topology->getPropInt("@serverThreads", 30);
@@ -1163,6 +1207,9 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         defaultWarnTimeLimit[0] = (unsigned) topology->getPropInt64("@defaultLowPriorityTimeWarning", 0);
         defaultWarnTimeLimit[1] = (unsigned) topology->getPropInt64("@defaultHighPriorityTimeWarning", 0);
         defaultWarnTimeLimit[2] = (unsigned) topology->getPropInt64("@defaultSLAPriorityTimeWarning", 0);
+        defaultMinTimeLimit[0] = (unsigned) topology->getPropInt64("@defaultLowPriorityTimeMinimum", 0);
+        defaultMinTimeLimit[1] = (unsigned) topology->getPropInt64("@defaultHighPriorityTimeMinimum", 0);
+        defaultMinTimeLimit[2] = (unsigned) topology->getPropInt64("@defaultSLAPriorityTimeMinimum", 0);
         defaultThorConnectTimeout = (unsigned) topology->getPropInt64("@defaultThorConnectTimeout", 60);
         continuationCompressThreshold = (unsigned) topology->getPropInt64("@continuationCompressThreshold", 1024);
 
@@ -1181,7 +1228,7 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         agentQueryReleaseDelaySeconds = topology->getPropInt("@agentQueryReleaseDelaySeconds", topology->getPropInt("@slaveQueryReleaseDelaySeconds", 60));  // legacy name
         coresPerQuery = topology->getPropInt("@coresPerQuery", 0);
 
-        fieldTranslationEnabled = RecordTranslationMode::Payload;
+        fieldTranslationEnabled = RecordTranslationMode::PayloadRemoveOnly;
         const char *val = topology->queryProp("@fieldTranslationEnabled");
         if (val)
             fieldTranslationEnabled = getTranslationMode(val, false);
@@ -1189,7 +1236,6 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         pretendAllOpt = topology->getPropBool("@ignoreMissingFiles", false);
         memoryStatsInterval = topology->getPropInt("@memoryStatsInterval", 60);
         roxiemem::setMemoryStatsInterval(memoryStatsInterval);
-        pingInterval = topology->getPropInt("@pingInterval", pingInterval);
         socketCheckInterval = topology->getPropInt("@socketCheckInterval", runOnce ? 0 : 5000);
         const char *totalMemoryString = topology->queryProp("@totalMemoryLimit");
         memsize_t totalMemoryLimit = totalMemoryString ? friendlyStringToSize(totalMemoryString) : 0;
@@ -1238,12 +1284,24 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         clientCert.privateKey.set(topology->queryProp("@privateKeyFileName"));
         clientCert.passphrase.set(topology->queryProp("@passphrase"));
         useHardLink = topology->getPropBool("@useHardLink", false);
-        maxFileAge[false] = topology->getPropInt("@localFilesExpire", (unsigned) -1);
-        maxFileAge[true] = topology->getPropInt("@remoteFilesExpire", 60*60*1000);
-        minFilesOpen[false] = topology->getPropInt("@minLocalFilesOpen", 2000);
-        minFilesOpen[true] = topology->getPropInt("@minRemoteFilesOpen", 500);
-        maxFilesOpen[false] = topology->getPropInt("@maxLocalFilesOpen", 4000);
+        unsigned temp = topology->getPropInt("@localFilesExpire", (unsigned) -1);
+        if (temp && temp != (unsigned) -1)
+            maxFileAgeNS[false] = milliToNano(temp);
+        else
+            maxFileAgeNS[false] = (unsigned __int64) -1;
+        temp = topology->getPropInt("@remoteFilesExpire", 60*60*1000);
+        if (temp && temp != (unsigned) -1)
+            maxFileAgeNS[true] = milliToNano(temp);
+        else
+            maxFileAgeNS[true] = (unsigned __int64) -1;
+        maxFilesOpen[false] = topology->getPropInt("@maxLocalFilesOpen", 20000);
         maxFilesOpen[true] = topology->getPropInt("@maxRemoteFilesOpen", 1000);
+        minFilesOpen[false] = topology->getPropInt("@minLocalFilesOpen", maxFilesOpen[false]/2);
+        if (minFilesOpen[false] >= maxFilesOpen[false])
+           throw MakeStringException(MSGAUD_operator, ROXIE_INVALID_TOPOLOGY, "Invalid settings - minLocalFilesOpen should be less than maxLocalFilesOpen");
+        minFilesOpen[true] = topology->getPropInt("@minRemoteFilesOpen", maxFilesOpen[true]/2);
+        if (minFilesOpen[true] >= maxFilesOpen[true])
+           throw MakeStringException(MSGAUD_operator, ROXIE_INVALID_TOPOLOGY, "Invalid settings - minRemoteFilesOpen should be less than maxRemoteFilesOpen");
         dafilesrvLookupTimeout = topology->getPropInt("@dafilesrvLookupTimeout", 10000);
         setRemoteFileTimeouts(dafilesrvLookupTimeout, 0);
         trapTooManyActiveQueries = topology->getPropBool("@trapTooManyActiveQueries", true);
@@ -1264,6 +1322,8 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         const char *sinkModeText = topology->queryProp("@sinkMode");
         if (sinkModeText)
             defaultSinkMode = getSinkMode(sinkModeText);
+        limitWaitingWorkers = topology->getPropBool("@limitWaitingWorkers", limitWaitingWorkers);
+        setDynamicPayloadExpansion(topology->getPropBool("@compressPayloadInMemory", false));
 
         cacheReportPeriodSeconds = topology->getPropInt("@cacheReportPeriodSeconds", 5*60);
         setLegacyAES(topology->getPropBool("expert/@useLegacyAES", false));
@@ -1292,17 +1352,20 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
 
         setKeyIndexCacheSize((unsigned)-1); // unbound
         nodeCacheMB = topology->getPropInt("@nodeCacheMem", 100); 
-        setNodeCacheMem(nodeCacheMB * 0x100000);
+        setNodeCacheMem(nodeCacheMB * 0x100000ULL);
         leafCacheMB = topology->getPropInt("@leafCacheMem", 50);
-        setLeafCacheMem(leafCacheMB * 0x100000);
+        setLeafCacheMem(leafCacheMB * 0x100000ULL);
         blobCacheMB = topology->getPropInt("@blobCacheMem", 0);
-        setBlobCacheMem(blobCacheMB * 0x100000);
+        setBlobCacheMem(blobCacheMB * 0x100000ULL);
         if (topology->hasProp("@nodeFetchThresholdNs"))
             setNodeFetchThresholdNs(topology->getPropInt64("@nodeFetchThresholdNs"));
         setIndexWarningThresholds(topology);
 
         unsigned __int64 affinity = topology->getPropInt64("@affinity", 0);
         updateAffinity(affinity);
+
+        unsigned __int64 minimumInterestingActivityMs = topology->getPropInt64("@minimumInterestingActivityMs", 10);
+        minimumInterestingActivityCycles = nanosec_to_cycle(minimumInterestingActivityMs * 1'000'000);
 
         minFreeDiskSpace = topology->getPropInt64("@minFreeDiskSpace", (1024 * 0x100000)); // default to 1 GB
         mtu_size = topology->getPropInt("@mtuPayload", 0);
@@ -1430,7 +1493,6 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
             DBGLOG("Loading all packages took %ums", loadPackageTimer.elapsedMs());
 
         ROQ = createOutputQueueManager(numAgentThreads, encryptInTransit);
-        ROQ->setHeadRegionSize(headRegionSize);
         ROQ->start();
         Owned<IPacketDiscarder> packetDiscarder = createPacketDiscarder();
 #if defined(WIN32) && defined(_DEBUG) && defined(_DEBUG_HEAP_FULL)
@@ -1440,7 +1502,7 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
 #endif
 
         //MORE: I'm not sure where this should go, or how it fits in.  Possibly the function needs to be split in two.
-        initializeStorageGroups(false);
+        initializeStoragePlanes(false, true);
 
         EnableSEHtoExceptionMapping();
         setSEHtoExceptionHandler(&abortHandler);
@@ -1537,22 +1599,29 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
                     if (!numThreads)
                         numThreads = numServerThreads;
                     unsigned port = roxieFarm.getPropInt("@port", roxieFarm.getPropInt("@servicePort", ROXIE_SERVER_PORT));
+                    const char *protocol = roxieFarm.queryProp("@protocol");
+                    bool serviceTLS = roxieFarm.getPropBool("@tls") || (protocol && streq(protocol, "ssl"));
                     //unsigned requestArrayThreads = roxieFarm.getPropInt("@requestArrayThreads", 5);
                     // NOTE: farmer name [@name=] is not copied into topology
                     const IpAddress ip = myNode.getIpAddress();
                     if (!roxiePort)
                     {
                         roxiePort = port;
-                        if (roxieFarm.getPropBool("@tls"))
-                            roxiePortTlsClientConfig = createIssuerTlsConfig(roxieFarm.queryProp("@issuer"), nullptr, true, roxieFarm.getPropBool("@selfSigned"), true, false);
+                        if (serviceTLS)
+                        {
+#ifdef _USE_OPENSSL
+                            const char *certIssuer = roxieFarm.queryProp("@issuer");
+                            if (isEmptyString(certIssuer))
+                                certIssuer = roxieFarm.getPropBool("@public", true) ? "public" : "local";
+                            roxiePortTlsClientConfig = createIssuerTlsConfig(certIssuer, nullptr, true, roxieFarm.getPropBool("@selfSigned"), true, false);
+#endif
+                        }
                         debugEndpoint.set(roxiePort, ip);
                     }
                     bool suspended = roxieFarm.getPropBool("@suspended", false);
                     Owned <IHpccProtocolListener> roxieServer;
                     if (port)
                     {
-                        const char *protocol = roxieFarm.queryProp("@protocol");
-                        bool serviceTLS  = roxieFarm.getPropBool("@tls") || (protocol && streq(protocol, "ssl"));
                         StringBuffer certFileName;
                         StringBuffer keyFileName;
                         StringBuffer passPhraseStr;
@@ -1597,7 +1666,7 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
                                 if (!checkFileExists(keyFileName.str()))
                                     throw MakeStringException(ROXIE_FILE_ERROR, "Roxie SSL Farm Listener on port %d missing privateKeyFile (%s)", port, keyFileName.str());
 
-                                Owned<IPropertyTree> staticConfig = createSecureSocketConfig(certFileName, keyFileName, passPhraseStr);
+                                Owned<IPropertyTree> staticConfig = createSecureSocketConfig(certFileName, keyFileName, passPhraseStr, false);
                                 tlsConfig.setown(createSyncedPropertyTree(staticConfig));
                             }
                             else
@@ -1656,6 +1725,9 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
                 writeSentinelFile(sentinelFile);
 #endif
                 DBGLOG("Startup completed - LPT=%u APT=%u", queryNumLocalTrees(), queryNumAtomTrees());
+                if (recordStartupEvents)
+                    stopRoxieEventRecording(nullptr);
+
                 if (topology->getPropBool("expert/@profileStartup", false))
                 {
                     const char *fname = topology->queryProp("expert/@profileStartupFileName");
@@ -1681,8 +1753,6 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
                     }
                 }
                 DBGLOG("Waiting for queries");
-                if (pingInterval)
-                    startPingTimer();
                 LocalIAbortHandler abortHandler(waiter);
                 waiter.wait();
             }
@@ -1699,8 +1769,6 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
         stopTopoThread();
         ::Release(globalPackageSetManager);
         globalPackageSetManager = NULL;
-        if (pingInterval)
-            stopPingTimer();
         setSEHtoExceptionHandler(NULL);
         while (socketListeners.isItem(0))
         {
@@ -1730,6 +1798,7 @@ int CCD_API roxie_main(int argc, const char *argv[], const char * defaultYaml)
 #ifndef _CONTAINERIZED
     stopPerformanceMonitor();
 #endif
+    stopRoxieEventRecording(nullptr);
     cleanupPlugins();
     unloadHpccProtocolPlugin();
     closeMulticastSockets();

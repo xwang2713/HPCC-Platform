@@ -446,11 +446,8 @@ EspHttpBinding::EspHttpBinding(IPropertyTree* tree, const char *bindname, const 
                         m_feature_authmap.setown(m_secmgr->createFeatureMap(authcfg));
                         m_setting_authmap.setown(m_secmgr->createSettingMap(authcfg));
                     }
-                    else if(stricmp(m_authmethod.str(), "Local") == 0)
-                    {
-                        m_secmgr.setown(SecLoader::loadSecManager("Local", "EspHttpBinding", NULL));
-                        m_authmap.setown(m_secmgr->createAuthMap(authcfg));
-                    }
+                    else if(strieq(m_authmethod.str(), "Local") || strieq(m_authmethod.str(), "Default"))
+                        throw makeStringExceptionV(-1, "obsolete auth method %s; update configuration", m_authmethod.str());
                     IRestartManager* restartManager = dynamic_cast<IRestartManager*>(m_secmgr.get());
                     if(restartManager!=NULL)
                     {
@@ -1125,8 +1122,6 @@ void EspHttpBinding::handleHttpPost(CHttpRequest *request, CHttpResponse *respon
     IEspCache *cacheClient = nullptr;
     IEspContext &context = *request->queryContext();
 
-    request->annotateSpan("http.request.method", "POST");
-
     IEspContainer *espContainer = getESPContainer();
     if (espContainer->hasCacheClient() && (cacheMethods > 0)
         && queryCacheSeconds(request->queryServiceMethod(), cacheSeconds)) //ESP cache is needed for this method
@@ -1193,7 +1188,6 @@ int EspHttpBinding::onGet(CHttpRequest* request, CHttpResponse* response)
 {
     IEspContext& context = *request->queryContext();
 
-    request->annotateSpan("http.request.method", "GET");
     // At this time, the request is already received and fully passed, and
     // the user authenticated
     LogLevel level = getEspLogLevel(&context);
@@ -1767,7 +1761,9 @@ void  EspHttpBinding::getServiceSchema(IEspContext& context, CHttpRequest* reque
     StringBuffer xmlFilename;
     if (!getServiceXmlFilename(xmlFilename))
     {
-        throw MakeStringException(-1, "Unable to get service XML filename");
+        // Allow subclassed specialized implementation that doesn't use ESDL
+        getSchema(schema, context, request, serviceQName, methodQName, true);
+        return;
     }
 
     StringBuffer nstr;
@@ -1844,8 +1840,7 @@ int EspHttpBinding::getServiceWsdlOrXsd(IEspContext &context, CHttpRequest* requ
     }
 
     StringBuffer schema;
-    getServiceSchema(context, request, serviceQName, methodQName,
-                     version, isWsdl, false, schema);
+    getServiceSchema(context, request, serviceQName, methodQName, version, isWsdl, false, schema);
 
     response->setContent(schema.length(), schema.str());
     response->setContentType(HTTP_TYPE_APPLICATION_XML_UTF8);
@@ -1940,7 +1935,7 @@ void EspHttpBinding::generateSampleXml(bool isRequest, IEspContext &context, CHt
         content.appendf("<Error>generateSampleXml schema error: %s::%s</Error>", serv, method);
         return;
     }
-
+    
     getServiceSchema(context, request, serviceQName, methodQName, getVersion(context), false, false, schemaXml);
 
     Owned<IXmlSchema> schema;

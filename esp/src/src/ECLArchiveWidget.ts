@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-unsafe-declaration-merging */
+import * as declare from "dojo/_base/declare";
 import { ECLEditor } from "@hpcc-js/codemirror";
 import { extent, Palette } from "@hpcc-js/common";
-import { Workunit } from "@hpcc-js/comms";
+import { Workunit, WsWorkunits } from "@hpcc-js/comms";
 import { Table } from "@hpcc-js/dgrid";
 import { SplitPanel } from "@hpcc-js/phosphor";
 import { DirectoryTree } from "@hpcc-js/tree";
-import { xml2json } from "@hpcc-js/util";
+import { RecursivePartial, xml2json } from "@hpcc-js/util";
 import "dijit/form/Button";
 import "dijit/layout/BorderContainer";
 import "dijit/layout/ContentPane";
@@ -14,70 +14,61 @@ import "dijit/Toolbar";
 import "dijit/ToolbarSeparator";
 import nlsHPCC from "./nlsHPCC";
 import { themeIsDark } from "./Utility";
-// @ts-ignore
+// @ts-expect-error
 import * as template from "dojo/text!hpcc/templates/ECLArchiveWidget.html";
-// @ts-ignore
+// @ts-expect-error
 import * as _Widget from "hpcc/_Widget";
-import { declareDecorator } from "./DeclareDecorator";
 
 const TIME_NAMES = ["TimeMaxLocalExecute", "TimeAvgLocalExecute", "TimeLocalExecute"];
 
 class DirectoryTreeEx extends DirectoryTree {
-    calcWidth() {
+    calcWidth(): number {
         return this.calcRequiredWidth();
     }
 }
 
-type _Widget = {
-    id: string;
-    widget: any;
-    params: { [key: string]: any };
-    inherited(args: any);
-    setDisabled(id: string, disabled: boolean, icon?: string, disabledIcon?: string);
-};
+export const ECLArchiveWidget = declare("ECLArchiveWidget", [_Widget], {
 
-export interface ECLArchiveWidget extends _Widget {
-}
+    templateString: template,
+    i18n: nlsHPCC,
 
-@declareDecorator("ECLArchiveWidget", _Widget)
-export class ECLArchiveWidget {
-    protected templateString = template;
-    static baseClass = "ECLArchiveWidget";
-    protected i18n = nlsHPCC;
+    borderContainer: null,
+    editor: null as ECLEditor | null,
+    leftPanel: undefined as SplitPanel | undefined,
+    summaryTable: undefined as Table | undefined,
+    archiveViewer: undefined as SplitPanel | undefined,
+    directoryTree: undefined as DirectoryTreeEx | undefined,
+    selectedMarker: undefined as number | undefined,
 
-    private borderContainer = null;
-    private editor: ECLEditor = null;
-    private leftPanel: SplitPanel;
-    private summaryTable: Table;
-    private archiveViewer: SplitPanel;
-    private directoryTree: DirectoryTreeEx;
-    private selectedMarker: number;
+    buildRendering: function buildRendering(args?: any): void {
+        this.inherited(buildRendering, arguments);
+    },
 
-    buildRendering(args) {
-        this.inherited(arguments);
-    }
-
-    setEditorTheme() {
-        if (themeIsDark()) {
-            this.editor.option("theme", "darcula");
-        } else {
-            this.editor.option("theme", "default");
+    setEditorTheme(): void {
+        if (this.editor) {
+            if (themeIsDark()) {
+                this.editor.option("theme", "darcula");
+            } else {
+                this.editor.option("theme", "default");
+            }
         }
-    }
+    },
 
-    postCreate(args) {
-        this.inherited(arguments);
+    postCreate: function postCreate(args?: any): void {
+        this.inherited(postCreate, arguments);
         this.borderContainer = registry.byId(this.id + "BorderContainer");
-    }
+    },
 
-    startup(args) {
-        this.inherited(arguments);
-    }
+    startup: function startup(args?: any): void {
+        this.inherited(startup, arguments);
+    },
 
-    resize(args) {
-        this.inherited(arguments);
-        this.borderContainer.resize();
-        if (this.archiveViewer) {
+    resize: function resize(args?: any): void {
+        this.inherited(resize, arguments);
+        if (this.borderContainer) {
+            this.borderContainer.resize();
+        }
+        if (this.archiveViewer && this.directoryTree && this.borderContainer) {
             const rw = this.directoryTree.calcWidth() + 20;
             const pw = this.borderContainer._contentBox.w;
             const ratio = rw / pw;
@@ -87,11 +78,11 @@ export class ECLArchiveWidget {
                 .render()
                 ;
         }
-    }
+    },
 
     //  Plugin wrapper  ---
-    init(params) {
-        if (this.inherited(arguments))
+    init: function init(params: { Wuid: string }): void {
+        if (this.inherited(init, arguments))
             return;
         const context = this;
         this.directoryTree = new DirectoryTreeEx()
@@ -168,7 +159,7 @@ export class ECLArchiveWidget {
                     .relativeSizes([0.2, 0.8])
                     .lazyRender()
                     ;
-                const scopesOptions = {
+                const scopesOptions: RecursivePartial<WsWorkunits.WUDetails> = {
                     ScopeFilter: {
                         MaxDepth: 999999,
                         ScopeTypes: ["graph"]
@@ -713,4 +704,5 @@ export class ECLArchiveWidget {
             }
         }
     }
-}
+
+});

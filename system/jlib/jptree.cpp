@@ -1,3 +1,4 @@
+
 /*##############################################################################
 
     HPCC SYSTEMS software Copyright (C) 2012 HPCC Systems®.
@@ -57,6 +58,7 @@
 #define PTREE_COMPRESS_THRESHOLD (4*1024)    // i.e. only use compress if > threshold
 #define PTREE_COMPRESS_BOTHER_PECENTAGE (80) // i.e. if it doesn't compress to <80 % of original size don't bother
 
+constexpr CompressionMethod defaultBinaryCompressionMethod = COMPRESS_METHOD_LZW_LITTLE_ENDIAN;
 
 class NullPTreeIterator final : implements IPropertyTreeIterator
 {
@@ -1008,10 +1010,10 @@ private:
 
 ///////////////////
 
-CPTValue::CPTValue(size32_t size, const void *data, bool binary, bool raw, bool _compressed)
+CPTValue::CPTValue(size32_t size, const void *data, bool binary, CompressionMethod currentCompressType, CompressionMethod preferredCompressType)
 {
-    compressed = _compressed;
-    if (!raw && binary && size > PTREE_COMPRESS_THRESHOLD)
+    compressType = currentCompressType;
+    if (binary && (currentCompressType == COMPRESS_METHOD_NONE) && (preferredCompressType != COMPRESS_METHOD_NONE) && (size > PTREE_COMPRESS_THRESHOLD))
     {
         unsigned newSize = size * PTREE_COMPRESS_BOTHER_PECENTAGE / 100;
         void *newData = NULL;
@@ -1019,14 +1021,16 @@ CPTValue::CPTValue(size32_t size, const void *data, bool binary, bool raw, bool 
         try
         {
             newData = malloc(sizeof(size32_t) + newSize);
-            compressor = createLZWCompressor();
+            CompressionMethod compressMethod = (preferredCompressType != COMPRESS_METHOD_DEFAULT) ? preferredCompressType : defaultBinaryCompressionMethod;
+            ICompressHandler * handler = queryCompressHandler(compressMethod);
+            compressor = handler->getCompressor();
             compressor->open(((char *)newData) + sizeof(size32_t), newSize);
             if (compressor->write(data, size)==size)
             {
                 compressor->close();
                 memcpy(newData, &size, sizeof(size32_t));
                 newSize = sizeof(size32_t) + compressor->buflen();
-                compressed = true;
+                compressType = compressMethod;
                 set(newSize, newData);
             }
             free(newData);
@@ -1041,19 +1045,24 @@ CPTValue::CPTValue(size32_t size, const void *data, bool binary, bool raw, bool 
             throw;
         }
     }
-    if (raw || !compressed)
+    if (size && !get())
         set(size, data);
 }
 
-static void *uncompress(const void *src, size32_t &sz)
+static void *uncompress(const void *src, size32_t &sz, byte compressType)
 {
+    dbgassertex(compressType != COMPRESS_METHOD_LZWLEGACY);
+    if (compressType == COMPRESS_METHOD_LZWLEGACY)
+        compressType = COMPRESS_METHOD_LZW_LITTLE_ENDIAN;
     IExpander *expander = NULL;
     void *uncompressedValue = NULL;
     try
     {
         memcpy(&sz, src, sizeof(size32_t));
         assertex(sz);
-        expander = createLZWExpander();
+
+        ICompressHandler * handler = queryCompressHandler((CompressionMethod)compressType);
+        expander = handler->getExpander();
         src = ((const char *)src) + sizeof(size32_t);
         uncompressedValue = malloc(sz);
         assertex(uncompressedValue);
@@ -1073,12 +1082,12 @@ static void *uncompress(const void *src, size32_t &sz)
 
 const void *CPTValue::queryValue() const
 {
-    if (compressed)
+    if (compressType)
     {
         size32_t sz;
-        void *uncompressedValue = uncompress(get(), sz);
+        void *uncompressedValue = uncompress(get(), sz, compressType);
         ((MemoryAttr *)this)->setOwn(sz, uncompressedValue);
-        compressed = false;
+        compressType = COMPRESS_METHOD_NONE;
     }
     return get();
 }
@@ -1090,7 +1099,7 @@ void CPTValue::serialize(MemoryBuffer &tgt)
     tgt.append(serialLen);
     if (serialLen)
     {
-        tgt.append(compressed);
+        tgt.append(compressType);
         tgt.append(serialLen, get());
     }
 }
@@ -1101,22 +1110,24 @@ void CPTValue::deserialize(MemoryBuffer &src)
     src.read(sz);
     if (sz)
     {
-        src.read(compressed);
+        src.read(compressType);
+        if (compressType == COMPRESS_METHOD_LZWLEGACY)
+            compressType = COMPRESS_METHOD_LZW_LITTLE_ENDIAN;
         set(sz, src.readDirect(sz));
     }
     else
     {
-        compressed = false;
+        compressType = COMPRESS_METHOD_NONE;
         clear();
     }
 }
 
 MemoryBuffer &CPTValue::getValue(MemoryBuffer &tgt, bool binary) const
 {
-    if (compressed)
+    if (compressType)
     {
         size32_t sz;
-        void *uncompressedValue = uncompress(get(), sz);
+        void *uncompressedValue = uncompress(get(), sz, compressType);
         if (!binary) sz -= 1;
         tgt.append(sz, uncompressedValue);
         if (uncompressedValue)
@@ -1135,13 +1146,13 @@ MemoryBuffer &CPTValue::getValue(MemoryBuffer &tgt, bool binary) const
 
 StringBuffer &CPTValue::getValue(StringBuffer &tgt, bool binary) const
 {
-    if (compressed)
+    if (compressType)
     {
         size32_t sz;
         void *uncompressedValue = NULL;
         try
         {
-            uncompressedValue = uncompress(get(), sz);
+            uncompressedValue = uncompress(get(), sz, compressType);
             if (!binary) sz -= 1;
             tgt.append(sz, (const char *)uncompressedValue);
             free(uncompressedValue);
@@ -1165,7 +1176,7 @@ StringBuffer &CPTValue::getValue(StringBuffer &tgt, bool binary) const
 
 size32_t CPTValue::queryValueSize() const
 {
-    if (compressed)
+    if (compressType)
     {
         size32_t sz;
         memcpy(&sz, get(), sizeof(size32_t));
@@ -1304,11 +1315,11 @@ ChildMap *PTree::checkChildren() const
     return children;
 }
 
-void PTree::setLocal(size32_t l, const void *data, bool _binary)
+void PTree::setLocal(size32_t l, const void *data, bool _binary, CompressionMethod compressType)
 {
     if (value) delete value;
     if (l)
-        value = new CPTValue(l, data, _binary);
+        value = new CPTValue(l, data, _binary, COMPRESS_METHOD_NONE, compressType);
     else
         value = NULL;
     if (_binary)
@@ -1333,7 +1344,7 @@ void PTree::appendLocal(size32_t l, const void *data, bool binary)
         data = mb.toByteArray();
     }
     if (l)
-        value = new CPTValue(l, data, binary);
+        value = new CPTValue(l, data, binary, COMPRESS_METHOD_NONE, COMPRESS_METHOD_DEFAULT);
     else
         value = NULL;
     if (binary)
@@ -1369,22 +1380,21 @@ bool PTree::hasProp(const char * xpath) const
     }
     else
     {
-        IPropertyTreeIterator *iter = getElements(xpath);
+        Owned<IPropertyTreeIterator> iter = getElements(xpath);
         bool res = iter->first();
-        iter->Release();
         return res;
     }
 }
 
-const char *PTree::queryProp(const char *xpath) const
+const char *PTree::queryProp(const char *xpath, const char * dft) const
 {
     if (!xpath)
     {
-        if (!value) return NULL;
+        if (!value) return dft;
         return (const char *) value->queryValue();
     }
     else if (isAttribute(xpath))
-        return getAttributeValue(xpath);
+        return getAttributeValue(xpath, dft);
     else
     {
         const char *prop = splitXPathX(xpath);
@@ -1392,14 +1402,14 @@ const char *PTree::queryProp(const char *xpath) const
         {
             MAKE_LSTRING(path, xpath, prop-xpath);
             IPropertyTree *branch = queryPropTree(path);
-            if (!branch) return NULL;
-            return branch->queryProp(prop);
+            if (!branch) return dft;
+            return branch->queryProp(prop, dft);
         }
         else
         {
             IPropertyTree *branch = queryPropTree(xpath);
-            if (!branch) return NULL;
-            return branch->queryProp(NULL);
+            if (!branch) return dft;
+            return branch->queryProp(NULL, dft);
         }
     }
 }
@@ -1414,7 +1424,7 @@ bool PTree::getProp(const char *xpath, StringBuffer &ret) const
     }
     else if (isAttribute(xpath))
     {
-        const char *value = getAttributeValue(xpath);
+        const char *value = getAttributeValue(xpath, nullptr);
         if (!value) return false;
         ret.append(value);
         return true;
@@ -1456,7 +1466,7 @@ void PTree::setProp(const char *xpath, const char *val)
                 value = NULL;
             }
             else
-                setLocal(l+1, val);
+                setLocal(l+1, val, false, COMPRESS_METHOD_NONE);
         }
     }
     else if (isAttribute(xpath))
@@ -1685,7 +1695,8 @@ __int64 PTree::getPropInt64(const char *xpath, __int64 dft) const
     }
     else if (isAttribute(xpath))
     {
-        const char *v = getAttributeValue(xpath);
+        // NOTE: Passing null rather than dft is deliberate - to deterimine if attribute exists
+        const char *v = getAttributeValue(xpath, nullptr);
         if (!v || !*v) // intentional return dft if attribute equals ""
             return dft;
         return _atoi64(v);
@@ -1715,7 +1726,7 @@ void PTree::setPropInt64(const char * xpath, __int64 val)
     {
         char buf[23];
         numtostr(buf, val);
-        setLocal((size32_t)strlen(buf)+1, buf);
+        setLocal((size32_t)strlen(buf)+1, buf, false, COMPRESS_METHOD_NONE);
     }
     else if (isAttribute(xpath))
     {
@@ -1780,7 +1791,7 @@ void PTree::setPropReal(const char * xpath, double val)
     if (!xpath || '\0' == *xpath)
     {
         std::string s = std::to_string(val);
-        setLocal((size32_t)s.length()+1, s.c_str());
+        setLocal((size32_t)s.length()+1, s.c_str(), false, COMPRESS_METHOD_NONE);
     }
     else if (isAttribute(xpath))
     {
@@ -1874,6 +1885,11 @@ bool PTree::isCompressed(const char *xpath) const
         }
     }
     return false;
+}
+
+CompressionMethod PTree::getCompressionType() const
+{
+    return value ? value->getCompressionType() : COMPRESS_METHOD_NONE;
 }
 
 bool PTree::isBinary(const char *xpath) const
@@ -1980,21 +1996,21 @@ bool PTree::getPropBin(const char *xpath, MemoryBuffer &ret) const
     }
 }
 
-void PTree::setPropBin(const char * xpath, size32_t size, const void *data)
+void PTree::setPropBin(const char * xpath, size32_t size, const void *data, CompressionMethod preferredCompression)
 {
     CHECK_ATTRIBUTE(xpath);
     if (!xpath || '\0' == *xpath)
-        setLocal(size, data, true);
+        setLocal(size, data, true, preferredCompression);
     else
     {
         const char *prop;
         IPropertyTree *branch = splitBranchProp(xpath, prop, true);
         if (isAttribute(prop))
-            branch->setPropBin(prop, size, data);
+            branch->setPropBin(prop, size, data, preferredCompression);
         else
         {
             IPropertyTree *propBranch = queryCreateBranch(branch, prop);
-            propBranch->setPropBin(NULL, size, data);
+            propBranch->setPropBin(NULL, size, data, preferredCompression);
         }
     }
 }
@@ -2021,7 +2037,7 @@ void PTree::addPropBin(const char *xpath, size32_t size, const void *data)
         else if (child)
             child->addPropBin(qualifier, size, data);
         else
-            setPropBin(path, size, data);
+            setPropBin(path, size, data, COMPRESS_METHOD_DEFAULT);
     }
 }
 
@@ -2047,7 +2063,7 @@ void PTree::appendPropBin(const char *xpath, size32_t size, const void *data)
         else if (child)
             child->appendPropBin(qualifier, size, data);
         else
-            setPropBin(path, size, data);
+            setPropBin(path, size, data, COMPRESS_METHOD_DEFAULT);
     }
 }
 
@@ -3070,46 +3086,47 @@ void PTree::deserializeSelf(MemoryBuffer &src)
     else value = NULL;
 }
 
-IPropertyTree *PTree::clone(IPropertyTree &srcTree, bool self, bool sub)
+IPropertyTree *PTree::clone(const IPropertyTree &srcTree, bool sub)
 {
-    IPropertyTree *_dstTree = self ? this : create(srcTree.queryName());
-    PTree *dstTree = QUERYINTERFACE(_dstTree, PTree);
-    dbgassertex(dstTree);
-    if (self)
-        dstTree->setName(srcTree.queryName());
-    clone(srcTree, *dstTree, sub);
-    return _dstTree;
+    Owned<IPropertyTree> _dstTree = create(srcTree.queryName());
+    PTree *dstTree = static_cast<PTree *>(_dstTree.get());
+    dstTree->cloneContents(srcTree, sub);
+    return _dstTree.getClear();
 }
 
-void PTree::clone(IPropertyTree &srcTree, IPropertyTree &dstTree, bool sub)
+void PTree::cloneIntoSelf(const IPropertyTree &srcTree, bool sub)
 {
-    PTree *_dstTree = QUERYINTERFACE((&dstTree), PTree); assertex(_dstTree); //JCSMORE
-    flags = _dstTree->flags;
-    if (srcTree.isBinary(NULL))
-    {
-        MemoryBuffer mb;
-        verifyex(srcTree.getPropBin(NULL, mb));
-        dstTree.setPropBin(NULL, mb.length(), mb.toByteArray());
-    }
-    else if (srcTree.isCompressed(NULL))
-    {
-        StringBuffer s;
-        verifyex(srcTree.getProp(NULL, s));
-        dstTree.setProp(NULL, s.str());
-    }
-    else
-        dstTree.setProp(NULL, srcTree.queryProp(NULL));
+    setName(srcTree.queryName());
+    cloneContents(srcTree, sub);
+}
 
-    IAttributeIterator *attrs = srcTree.getAttributes();
+IPTArrayValue * PTree::cloneValue() const
+{
+    IPTArrayValue *v = queryValue();
+    if (!v)
+        return nullptr;
+    return new CPTValue(v->queryValueRawSize(), v->queryValueRaw(), isBinary(nullptr), v->getCompressionType(), COMPRESS_METHOD_NONE);
+}
+
+
+void PTree::cloneContents(const IPropertyTree &srcTree, bool sub)
+{
+    //MORE: Should any flags be cloned from the srcTree?
+
+    bool srcBinary = srcTree.isBinary(NULL);
+    //All implementations of IPropertyTree have PTree as a base class, therefore static cast is ok.
+    IPTArrayValue *v = static_cast<const PTree &>(srcTree).cloneValue();
+    setValue(v, srcBinary);
+
+    Owned<IAttributeIterator> attrs = srcTree.getAttributes();
     if (attrs->first())
     {
         do
         {
-            dstTree.setProp(attrs->queryName(), attrs->queryValue());
+            setProp(attrs->queryName(), attrs->queryValue());
         }
         while (attrs->next());
     }
-    attrs->Release();
 
     if (sub)
     {
@@ -3119,8 +3136,8 @@ void PTree::clone(IPropertyTree &srcTree, IPropertyTree &dstTree, bool sub)
             do
             {
                 IPropertyTree &child = iter->query();
-                IPropertyTree *newChild = clone(child, false, sub);
-                dstTree.addPropTree(newChild->queryName(), newChild);
+                IPropertyTree *newChild = clone(child, sub);
+                addPropTree(newChild->queryName(), newChild);
             }
             while (iter->next());
         }
@@ -3131,7 +3148,7 @@ IPropertyTree *PTree::ownPTree(IPropertyTree *tree)
 {
     if (!isEquivalent(tree) || tree->IsShared() || isCaseInsensitive() != tree->isCaseInsensitive())
     {
-        IPropertyTree *newTree = clone(*tree);
+        IPropertyTree *newTree = clone(*tree, true);
         tree->Release();
         return newTree;
     }
@@ -3215,7 +3232,7 @@ IPropertyTree *createPropBranch(IPropertyTree *tree, const char *xpath, bool cre
 void PTree::addLocal(size32_t l, const void *data, bool _binary, int pos)
 {
     if (!l) return; // right thing to do on addProp("x", NULL) ?
-    IPTArrayValue *newValue = new CPTValue(l, data, _binary);
+    IPTArrayValue *newValue = new CPTValue(l, data, _binary, COMPRESS_METHOD_NONE, COMPRESS_METHOD_DEFAULT);
     Owned<IPropertyTree> tree = create(queryName(), newValue);
     PTree *_tree = QUERYINTERFACE(tree.get(), PTree); assertex(_tree);
 
@@ -3588,12 +3605,12 @@ AttrValue *PTree::findAttribute(const char *key) const
     return nullptr;
 }
 
-const char *PTree::getAttributeValue(const char *key) const
+const char *PTree::getAttributeValue(const char *key, const char * dft) const
 {
     AttrValue *e = findAttribute(key);
     if (e)
         return e->value.get();
-    return nullptr;
+    return dft;
 }
 
 unsigned PTree::getAttributeCount() const
@@ -3849,7 +3866,7 @@ unsigned CAtomPTree::queryHash() const
     {
         const char *_name = name.get();
         size32_t nl = strlen(_name);
-        return isnocase() ? hashnc((const byte *) _name, nl, 0): hashc((const byte *) _name, nl, 0);
+        return isnocase() ? hashnc_fnv1a((const byte *) _name, nl, fnvInitialHash32): hashc_fnv1a((const byte *) _name, nl, fnvInitialHash32);
     }
 }
 
@@ -4379,7 +4396,7 @@ IPropertyTree *createPTree(MemoryBuffer &src, byte flags)
 IPropertyTree *createPTreeFromIPT(const IPropertyTree *srcTree, ipt_flags flags)
 {
     Owned<PTree> tree = (PTree *)createPTree(NULL, flags);
-    return tree->clone(*srcTree->queryBranch(NULL));
+    return tree->clone(*srcTree->queryBranch(NULL), true);
 }
 
 void mergePTree(IPropertyTree *target, IPropertyTree *toMerge)
@@ -4462,7 +4479,7 @@ void _synchronizePTree(IPropertyTree *target, const IPropertyTree *source, bool 
     if (!equal)
     {
         if (target->isBinary())
-            target->setPropBin(NULL, srcMb.length(), srcMb.toByteArray());
+            target->setPropBin(NULL, srcMb.length(), srcMb.toByteArray(), COMPRESS_METHOD_DEFAULT);
         else
             target->setProp(NULL, src);
     }
@@ -6333,6 +6350,7 @@ void saveXML(IFile &ifile, const IPropertyTree *tree, unsigned indent, unsigned 
     if (!ifileio)
         throw MakeStringException(0, "saveXML: could not find %s to open", ifile.queryFilename());
     saveXML(*ifileio, tree, indent, flags);
+    ifileio->close(); // Ensure errors are reported
 }
 
 void saveXML(IFileIO &ifileio, const IPropertyTree *tree, unsigned indent, unsigned flags)
@@ -8582,7 +8600,7 @@ static void applyCommandLineOption(IPropertyTree * config, const char * option, 
         {
             config = config->queryPropTree(elemName);
             if (!config)
-                throw makeStringExceptionV(99, "Cannot overriding scalar configuration element %s with structure", elemName.get());
+                throw makeStringExceptionV(99, "Cannot override scalar configuration element %s with structure", elemName.get());
         }
         option = tail+1;
     }
@@ -8631,6 +8649,7 @@ static void applyCommandLineOption(IPropertyTree * config, const char * option, 
 static CriticalSection configCS;
 static Owned<IPropertyTree> componentConfiguration;
 static Owned<IPropertyTree> globalConfiguration;
+static Owned<IPropertyTree> nullConfiguration;
 static StringBuffer componentName;
 
 MODULE_INIT(INIT_PRIORITY_STANDARD)
@@ -8647,7 +8666,15 @@ IPropertyTree * getComponentConfig()
 {
     CriticalBlock b(configCS);
     if (!componentConfiguration)
-        throw makeStringException(99, "Configuration file has not yet been processed");
+    {
+        if (!nullConfiguration)
+        {
+            PrintStackReport(); // deliberately emitting here, so only reported once per process
+            nullConfiguration.setown(createPTree());
+        }
+        IERRLOG(99, "getComponentConfig() called - configuration file has not yet been processed");
+        return nullConfiguration.getLink();
+    }
     return componentConfiguration.getLink();
 }
 
@@ -8655,8 +8682,27 @@ IPropertyTree * getGlobalConfig()
 {
     CriticalBlock b(configCS);
     if (!globalConfiguration)
-        throw makeStringException(99, "Configuration file has not yet been processed");
+    {
+        if (!nullConfiguration)
+        {
+            PrintStackReport(); // deliberately emitting here, so only reported once per process
+            nullConfiguration.setown(createPTree());
+        }
+        IERRLOG(99, "getGlobalConfig() called - configuration file has not yet been processed");
+        return nullConfiguration.getLink();
+    }
     return globalConfiguration.getLink();
+}
+
+void initNullConfiguration()
+{
+    CriticalBlock b(configCS);
+    if (componentConfiguration || globalConfiguration)
+        throw makeStringException(99, "Configuration has already been initialised");
+    if (!nullConfiguration)
+        nullConfiguration.setown(createPTree());
+    componentConfiguration.set(nullConfiguration);
+    globalConfiguration.set(nullConfiguration);
 }
 
 Owned<IPropertyTree> getComponentConfigSP()
@@ -8667,6 +8713,35 @@ Owned<IPropertyTree> getComponentConfigSP()
 Owned<IPropertyTree> getGlobalConfigSP()
 {
     return getGlobalConfig();
+}
+
+template <typename T>
+static T getConfigValue(const char *xpath, T defaultValue, T (IPropertyTree::*getPropFunc)(const char *, T) const)
+{
+    return (getComponentConfigSP()->*getPropFunc)(xpath, (getGlobalConfigSP()->*getPropFunc)(xpath, defaultValue));
+}
+
+bool getConfigBool(const char *xpath, bool defaultValue)
+{
+    return getConfigValue(xpath, defaultValue, &IPropertyTree::getPropBool);
+}
+
+__int64 getConfigInt64(const char *xpath, __int64 defaultValue)
+{
+    return getConfigValue(xpath, defaultValue, &IPropertyTree::getPropInt64);
+}
+
+double getConfigReal(const char *xpath, double defaultValue)
+{
+    return getConfigValue(xpath, defaultValue, &IPropertyTree::getPropReal);
+}
+
+bool getConfigString(const char *xpath, StringBuffer &result)
+{
+    if (getComponentConfigSP()->getProp(xpath, result))
+        return true;
+    else
+        return getGlobalConfigSP()->getProp(xpath, result);
 }
 
 const char * queryComponentName()
@@ -8696,22 +8771,22 @@ static void holdLoop()
 }
 #endif
 
-static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfiguration(IPropertyTree *componentDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute);
+static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfiguration(IPropertyTree *componentDefault, IPropertyTree *globalDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute);
 
 class CConfigUpdater : public CInterface
 {
     StringAttr absoluteConfigFilename;
     StringAttr configFilename;
-    Linked<IPropertyTree> componentDefault;
+    Linked<IPropertyTree> componentDefault, globalDefault;
     StringArray args;
     StringAttr componentTag, envPrefix, legacyFilename;
     IPropertyTree * (*mapper)(IPropertyTree *);
     StringAttr altNameAttribute;
-    Owned<IFileEventWatcher> fileWatcher;
+    Owned<IFileEventWatcher> fileWatcher; // null if updates to the config file are not allowed
     CriticalSection notifyFuncCS;
     unsigned notifyFuncId = 0;
     std::unordered_map<unsigned, ConfigUpdateFunc> notifyConfigUpdates;
-    std::vector<unsigned> pendingInitializeFuncIds;
+    std::unordered_map<unsigned, ConfigModifyFunc> modifyConfigUpdates;
 
 public:
     CConfigUpdater()
@@ -8721,11 +8796,11 @@ public:
     {
         return args.ordinality(); // NB: null terminated, so always >=1 if initialized
     }
-    void init(const char *_absoluteConfigFilename, IPropertyTree *_componentDefault, const char * * argv, const char * _componentTag, const char * _envPrefix, const char *_legacyFilename, IPropertyTree * (_mapper)(IPropertyTree *), const char *_altNameAttribute)
+    void init(IPropertyTree *_componentDefault, IPropertyTree *_globalDefault, const char * * argv, const char * _componentTag, const char * _envPrefix, const char *_legacyFilename, IPropertyTree * (_mapper)(IPropertyTree *), const char *_altNameAttribute)
     {
         dbgassertex(!isInitialized());
-        absoluteConfigFilename.set(_absoluteConfigFilename);
         componentDefault.set(_componentDefault);
+        globalDefault.set(_globalDefault);
         componentTag.set(_componentTag);
         envPrefix.set(_envPrefix);
         legacyFilename.set(_legacyFilename);
@@ -8735,65 +8810,115 @@ public:
             args.append(arg);
         args.append(nullptr);
 
-        Owned<IPropertyTree> config = getComponentConfig();
-        Owned<IPropertyTree> global = getGlobalConfig();
-        while (pendingInitializeFuncIds.size())
-        {
-            unsigned notifyFuncId = pendingInitializeFuncIds.back();
-            pendingInitializeFuncIds.pop_back();
-            ConfigUpdateFunc notifyFunc = notifyConfigUpdates[notifyFuncId];
-            notifyFunc(config, global);
-        }
+        refreshConfiguration(true, true);
     }
     bool startMonitoring()
     {
 #if !defined(__linux__) // file moinitoring only supported in Linux (because createFileEventWatcher only implemented in Linux at the moment)
         return false;
 #endif
-        if (0 == absoluteConfigFilename.length() || (nullptr != fileWatcher.get()))
+        if (absoluteConfigFilename.isEmpty() || (nullptr != fileWatcher.get()))
             return false;
+
         auto updateFunc = [&](const char *filename, FileWatchEvents events)
         {
             bool changed = containsFileWatchEvents(events, FileWatchEvents::closedWrite) && streq(filename, configFilename);
-#ifdef _CONTAINERIZED
+
             // NB: in k8s, it's a little strange, the config file is in a linked dir, a new dir is created and swapped in.
-            changed = changed | containsFileWatchEvents(events, FileWatchEvents::movedTo) && streq(filename, "..data");
-#endif
+            if (isContainerized())
+                changed = changed | containsFileWatchEvents(events, FileWatchEvents::movedTo) && streq(filename, "..data");
+
             if (changed)
-            {
-                auto result = doLoadConfiguration(componentDefault, args.getArray(), componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
-
-                // NB: block calls to get*Config*() until callbacks notified and new swapped in
-                CriticalBlock b(configCS);
-                Owned<IPropertyTree> oldComponentConfiguration = componentConfiguration.getClear();
-                Owned<IPropertyTree> oldGlobalConfiguration = globalConfiguration.getClear();
-
-                /* swapin before callbacks called, but before releasing crit.
-                 * That way the CB can see the old/diffs and act on them, but any
-                 * code calling e.g. getComponentConfig() will see new.
-                 */
-                componentConfiguration.setown(std::get<1>(result));
-                globalConfiguration.setown(std::get<2>(result));
-                if (!componentName)
-                    componentConfiguration->getProp("@name", componentName);
-
-                /* NB: we are still holding 'configCS' at this point, blocking all other thread access.
-                   However code in callbacks may call e.g. getComponentConfig() and re-enter the crit */
-                executeCallbacks(oldComponentConfiguration, oldGlobalConfiguration);
-                absoluteConfigFilename.set(std::get<0>(result).c_str());
-            }
+                refreshConfiguration(false, false);
         };
-        fileWatcher.setown(createFileEventWatcher(updateFunc));
 
-        // watch the path, not the filename, because the filename might not be seen if directories are moved, softlinks are changed..
-        StringBuffer path, filename;
-        splitFilename(absoluteConfigFilename, nullptr, &path, &filename, &filename);
-        configFilename.set(filename);
-        fileWatcher->add(path, FileWatchEvents::anyChange);
-        fileWatcher->start();
+        try
+        {
+            fileWatcher.setown(createFileEventWatcher(updateFunc));
+
+            // watch the path, not the filename, because the filename might not be seen if directories are moved, softlinks are changed..
+            StringBuffer path, filename;
+            splitFilename(absoluteConfigFilename, nullptr, &path, &filename, &filename);
+            configFilename.set(filename);
+            fileWatcher->add(path, FileWatchEvents::anyChange);
+            fileWatcher->start();
+        }
+        catch (IException * e)
+        {
+            OERRLOG(e, "Failed to start file watcher");
+            e->Release();
+        }
         return true;
     }
-    void executeCallbacks(IPropertyTree *oldComponentConfiguration, IPropertyTree *oldGlobalConfiguration)
+
+    void refreshConfiguration(IPropertyTree * newComponentConfiguration, IPropertyTree * newGlobalConfiguration)
+    {
+        CriticalBlock b(notifyFuncCS);
+        //Ensure all modifications to the config take place before the config is updated, and the monitoring/caching functions are called.
+        executeModifyCallbacks(newComponentConfiguration, newGlobalConfiguration);
+
+        // NB: block calls to get*Config*() from other threads until callbacks notified and new swapped in, destroy old config outside the critical section
+        Owned<IPropertyTree> oldComponentConfiguration;
+        Owned<IPropertyTree> oldGlobalConfiguration;
+        {
+            CriticalBlock b(configCS);
+            oldComponentConfiguration.setown(componentConfiguration.getClear());
+            oldGlobalConfiguration.setown(globalConfiguration.getClear());
+
+            /* swapin before callbacks called, but before releasing crit.
+            * That way the CB can see the old/diffs and act on them, but any
+            * code calling e.g. getComponentConfig() will see new.
+            */
+            componentConfiguration.set(newComponentConfiguration);
+            globalConfiguration.set(newGlobalConfiguration);
+
+            /* NB: we are still holding 'configCS' at this point, blocking all other thread access.
+            However code in callbacks may call e.g. getComponentConfig() and re-enter the crit */
+            executeNotifyCallbacks(oldComponentConfiguration, oldGlobalConfiguration);
+        }
+    }
+
+    void refreshConfiguration(bool firstTime, bool avoidClone)
+    {
+        if (firstTime || fileWatcher)
+        {
+            auto result = doLoadConfiguration(componentDefault, globalDefault, args.getArray(), componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
+            IPropertyTree * newComponentConfiguration = std::get<1>(result);
+            IPropertyTree * newGlobalConfiguration = std::get<2>(result);
+            refreshConfiguration(newComponentConfiguration, newGlobalConfiguration);
+
+            if (firstTime)
+            {
+                absoluteConfigFilename.set(std::get<0>(result).c_str());
+                newGlobalConfiguration->getProp("@name", componentName);
+            }
+        }
+        else if (avoidClone)
+        {
+            //This is added during the initialiation phase, so no danger of other threads accesing the global information
+            //while it is updated.  Thor currently relies on the pointer not changing.
+            Owned<IPropertyTree> newComponentConfiguration = getComponentConfigSP();
+            Owned<IPropertyTree> newGlobalConfiguration = getGlobalConfigSP();
+            refreshConfiguration(newComponentConfiguration, newGlobalConfiguration);
+        }
+        else
+        {
+            // File monitor is disabled - no updates to the configuration files are supported.
+            //So clone the existing configuration and use that to refresh the config - update fucntions may perform differently.
+            Owned<IPropertyTree> newComponentConfiguration = createPTreeFromIPT(getComponentConfigSP());
+            Owned<IPropertyTree> newGlobalConfiguration = createPTreeFromIPT(getGlobalConfigSP());
+            refreshConfiguration(newComponentConfiguration, newGlobalConfiguration);
+        }
+    }
+
+    void executeNotifyCallbacks()
+    {
+        CriticalBlock notifyBlock(notifyFuncCS);
+        CriticalBlock configBlock(configCS);
+        executeNotifyCallbacks(componentConfiguration, globalConfiguration);
+    }
+
+    void executeNotifyCallbacks(IPropertyTree *oldComponentConfiguration, IPropertyTree *oldGlobalConfiguration)
     {
         for (const auto &item: notifyConfigUpdates)
         {
@@ -8808,6 +8933,23 @@ public:
             }
         }
     }
+
+    void executeModifyCallbacks(IPropertyTree * newComponentConfiguration, IPropertyTree * newGlobalConfiguration)
+    {
+        for (auto & modifyFunc : modifyConfigUpdates)
+        {
+            try
+            {
+                modifyFunc.second(newComponentConfiguration, newGlobalConfiguration);
+            }
+            catch (IException *e)
+            {
+                EXCLOG(e, "CConfigUpdater callback");
+                e->Release();
+            }
+        }
+    }
+
     unsigned addNotifyFunc(ConfigUpdateFunc notifyFunc, bool callWhenInstalled)
     {
         CriticalBlock b(notifyFuncCS);
@@ -8817,29 +8959,36 @@ public:
         {
             if (isInitialized())
                 notifyFunc(getComponentConfigSP(), getGlobalConfigSP());
-            else
-            {
-                // If the configuration is not yet be loaded, track notify callbacks that
-                // want to be initialized on install, and call during CConfigUpdater::init.
-                pendingInitializeFuncIds.push_back(notifyFuncId);
-            }
+        }
+        return notifyFuncId;
+    }
+    unsigned addModifyFunc(ConfigModifyFunc notifyFunc, bool threadSafe)
+    {
+        CriticalBlock b(notifyFuncCS);
+        notifyFuncId++;
+        modifyConfigUpdates[notifyFuncId] = notifyFunc;
+        if (isInitialized())
+        {
+            //Force all cached values to be recalculated, do not reload the config
+            //This is only legal if no other threads are accessing the config yet - otherwise the reading thread
+            //could crash when the global configuration is updated.
+            refreshConfiguration(false, threadSafe);
+            DBGLOG("Modify functions should be registered before the configuration is loaded");
         }
         return notifyFuncId;
     }
     bool removeNotifyFunc(unsigned funcId)
     {
         CriticalBlock b(notifyFuncCS);
+        if (modifyConfigUpdates.erase(funcId) != 0)
+            return true;
+
         auto it = notifyConfigUpdates.find(funcId);
         if (it == notifyConfigUpdates.end())
             return false;
 
         ConfigUpdateFunc notifyFunc = it->second;
         notifyConfigUpdates.erase(it);
-        if (!isInitialized())
-        {
-           auto it = std::remove(pendingInitializeFuncIds.begin(), pendingInitializeFuncIds.end(), funcId);
-           pendingInitializeFuncIds.erase(it, pendingInitializeFuncIds.end());
-        }
         return true;
     }
 };
@@ -8864,6 +9013,13 @@ unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc, bool callWhenInsta
     return configFileUpdater->addNotifyFunc(notifyFunc, callWhenInstalled);
 }
 
+jlib_decl unsigned installConfigUpdateHook(ConfigModifyFunc notifyFunc, bool threadSafe)  // This function must be called before the configuration is loaded.
+{
+    if (!configFileUpdater) // NB: installConfigUpdateHook should always be called after configFileUpdater is initialized
+        return 0;
+    return configFileUpdater->addModifyFunc(notifyFunc, threadSafe);
+}
+
 void removeConfigUpdateHook(unsigned notifyFuncId)
 {
     if (0 == notifyFuncId)
@@ -8874,11 +9030,11 @@ void removeConfigUpdateHook(unsigned notifyFuncId)
         WARNLOG("removeConfigUpdateHook(): notifyFuncId %u not installed", notifyFuncId);
 }
 
-void executeConfigUpdaterCallbacks()
+void refreshConfiguration()
 {
-    if (!configFileUpdater) // NB: executeConfigUpdaterCallbacks should always be called after configFileUpdater is initialized
+    if (!configFileUpdater) // NB: refreshConfiguration() should always be called after configFileUpdater is initialized
         return;
-    configFileUpdater->executeCallbacks(componentConfiguration, globalConfiguration);
+    configFileUpdater->refreshConfiguration(false, false);
 }
 
 void CConfigUpdateHook::clear()
@@ -8905,10 +9061,26 @@ void CConfigUpdateHook::installOnce(ConfigUpdateFunc callbackFunc, bool callWhen
 }
 
 
-static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfiguration(IPropertyTree *componentDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute)
+void CConfigUpdateHook::installModifierOnce(ConfigModifyFunc callbackFunc, bool threadSafe)
+{
+    unsigned id = configCBId.load(std::memory_order_acquire);
+    if ((unsigned)-1 == id) // avoid CS in common case
+    {
+        CriticalBlock b(crit);
+        // check again now in CS
+        id = configCBId.load(std::memory_order_acquire);
+        if ((unsigned)-1 == id)
+        {
+            id = installConfigUpdateHook(callbackFunc, threadSafe);
+            configCBId.store(id, std::memory_order_release);
+        }
+    }
+}
+
+static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfiguration(IPropertyTree *componentDefault, IPropertyTree *globalDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute)
 {
     Owned<IPropertyTree> newComponentConfig = createPTreeFromIPT(componentDefault);
-    Owned<IPropertyTree> newGlobalConfig;
+    Linked<IPropertyTree> newGlobalConfig = globalDefault ? createPTreeFromIPT(globalDefault) : nullptr;
     StringBuffer absConfigFilename;
     const char * optConfig = nullptr;
     bool outputConfig = false;
@@ -8971,6 +9143,7 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
     }
     absConfigFilename.append(config);
 
+    Owned<IPropertyTree> configGlobal;
     Owned<IPropertyTree> delta;
     if (optConfig)
     {
@@ -8981,7 +9154,7 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
         if (!isEmptyString(optConfig))
         {
             delta.setown(loadConfiguration(absConfigFilename, componentTag, true, altNameAttribute));
-            newGlobalConfig.setown(loadConfiguration(absConfigFilename, "global", false, altNameAttribute));
+            configGlobal.setown(loadConfiguration(absConfigFilename, "global", false, altNameAttribute));
         }
     }
     else
@@ -8989,11 +9162,19 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
         if (legacyFilename && checkFileExists(legacyFilename))
         {
             delta.setown(createPTreeFromXMLFile(legacyFilename, ipt_caseInsensitive));
-            newGlobalConfig.set(delta->queryPropTree("global"));
+            configGlobal.set(delta->queryPropTree("global"));
         }
 
         if (delta && mapper)
             delta.setown(mapper(delta));
+    }
+
+    if (configGlobal)
+    {
+        if (newGlobalConfig)
+            mergeConfiguration(*newGlobalConfig, *configGlobal);
+        else
+            newGlobalConfig.setown(configGlobal.getClear());
     }
 
     if (delta)
@@ -9029,7 +9210,10 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
 #ifdef _DEBUG
     // NB: don't re-hold, if CLI --hold already held.
     if (!held && newComponentConfig->getPropBool("@hold"))
+    {
         holdLoop();
+        held = true;
+    }
 #endif
 
     unsigned ptreeMappingThreshold = newGlobalConfig->getPropInt("@ptreeMappingThreshold", defaultSiblingMapThreshold);
@@ -9038,16 +9222,11 @@ static std::tuple<std::string, IPropertyTree *, IPropertyTree *> doLoadConfigura
     return std::make_tuple(std::string(absConfigFilename.str()), newComponentConfig.getClear(), newGlobalConfig.getClear());
 }
 
-jlib_decl IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute, bool monitor)
+IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, IPropertyTree *globalDefault, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute, bool monitor)
 {
     assertex(configFileUpdater); // NB: loadConfiguration should always be called after configFileUpdater is initialized
     if (configFileUpdater->isInitialized())
         throw makeStringExceptionV(99, "Configuration for component %s has already been initialised", componentTag);
-
-    auto result = doLoadConfiguration(componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
-
-    componentConfiguration.setown(std::get<1>(result));
-    globalConfiguration.setown(std::get<2>(result));
 
     /* In k8s, pods auto-restart by default on monitored ConfigMap settings/areas
      * ConfigMap settings/areas deliberately not monitored will rely on this config updater mechanism,
@@ -9064,7 +9243,7 @@ jlib_decl IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, con
      * installed config hooks to be called when an environment change is detected e.g when pushed to Dali)
      */
 
-    configFileUpdater->init(std::get<0>(result).c_str(), componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
+    configFileUpdater->init(componentDefault, globalDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute);
     if (monitor)
         configFileUpdater->startMonitoring();
 
@@ -9072,42 +9251,33 @@ jlib_decl IPropertyTree * loadConfiguration(IPropertyTree *componentDefault, con
     return componentConfiguration.getLink();
 }
 
-jlib_decl IPropertyTree * loadConfiguration(const char * defaultYaml, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute, bool monitor)
+IPropertyTree * loadConfiguration(const char * defaultYaml, const char * * argv, const char * componentTag, const char * envPrefix, const char * legacyFilename, IPropertyTree * (mapper)(IPropertyTree *), const char *altNameAttribute, bool monitor)
 {
     if (componentConfiguration)
         throw makeStringExceptionV(99, "Configuration for component %s has already been initialised", componentTag);
 
     Owned<IPropertyTree> componentDefault;
+    Owned<IPropertyTree> defaultGlobalConfig;
     if (defaultYaml)
     {
         Owned<IPropertyTree> defaultConfig = createPTreeFromYAML(defaultYaml);
         componentDefault.set(defaultConfig->queryPropTree(componentTag));
         if (!componentDefault)
             throw makeStringExceptionV(99, "Default configuration does not contain the tag %s", componentTag);
+        defaultGlobalConfig.set(defaultConfig->queryPropTree("global"));
     }
     else
         componentDefault.setown(createPTree(componentTag));
 
-    return loadConfiguration(componentDefault, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute, monitor);
+    return loadConfiguration(componentDefault, defaultGlobalConfig, argv, componentTag, envPrefix, legacyFilename, mapper, altNameAttribute, monitor);
 }
 
 void replaceComponentConfig(IPropertyTree *newComponentConfig, IPropertyTree *newGlobalConfig)
 {
-    {
-        CriticalBlock b(configCS);
-        componentConfiguration.set(newComponentConfig);
-        globalConfiguration.set(newGlobalConfig);
-    }
-    executeConfigUpdaterCallbacks();
+    assertex (configFileUpdater); // NB: replaceComponentConfig should always be called after configFileUpdater is initialized
+    configFileUpdater->refreshConfiguration(newComponentConfig, newGlobalConfig);
 }
 
-void initNullConfiguration()
-{
-    if (componentConfiguration || globalConfiguration)
-        throw makeStringException(99, "Configuration has already been initialised");
-    componentConfiguration.setown(createPTree());
-    globalConfiguration.setown(createPTree());
-}
 
 class CYAMLBufferReader : public CInterfaceOf<IPTreeReader>
 {
@@ -9685,6 +9855,7 @@ void saveYAML(IFile &ifile, const IPropertyTree *tree, unsigned indent, unsigned
     if (!ifileio)
         throw MakeStringException(0, "saveXML: could not find %s to open", ifile.queryFilename());
     saveYAML(*ifileio, tree, indent, flags);
+    ifileio->close();
 }
 
 void saveYAML(IFileIO &ifileio, const IPropertyTree *tree, unsigned indent, unsigned flags)
@@ -9699,10 +9870,6 @@ void saveYAML(IIOStream &stream, const IPropertyTree *tree, unsigned indent, uns
     toYAML(tree, stream, indent, flags);
 }
 
-jlib_decl IPropertyTree * getCostsConfiguration()
-{
-    return getComponentConfigSP()->getPropTree("cost");
-}
 
 void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropertyTree & source, const char * sourceName)
 {
@@ -9712,10 +9879,26 @@ void copyPropIfMissing(IPropertyTree & target, const char * targetName, IPropert
         {
             MemoryBuffer value;
             source.getPropBin(sourceName, value);
-            target.setPropBin(targetName, value.length(), value.toByteArray());
+            //MORE: Avoid decompression?
+            target.setPropBin(targetName, value.length(), value.toByteArray(), COMPRESS_METHOD_DEFAULT);
         }
         else
             target.setProp(targetName, source.queryProp(sourceName));
+    }
+}
+
+void copyProp(IPropertyTree & target, IPropertyTree & source, const char * name)
+{
+    if (source.hasProp(name))
+    {
+        if (source.isBinary(name))
+        {
+            MemoryBuffer value;
+            source.getPropBin(name, value);
+            target.setPropBin(name, value.length(), value.toByteArray(), COMPRESS_METHOD_DEFAULT);
+        }
+        else
+            target.setProp(name, source.queryProp(name));
     }
 }
 

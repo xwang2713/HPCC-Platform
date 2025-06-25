@@ -23,20 +23,32 @@
 #include "opentelemetry/sdk/trace/tracer_context_factory.h" //opentelemetry::sdk::trace::TracerContextFactory::Create(std::move(processors));
 #include "opentelemetry/sdk/trace/simple_processor_factory.h"
 #include "opentelemetry/sdk/trace/batch_span_processor_factory.h"
+#include <opentelemetry/sdk/trace/samplers/always_on_factory.h>
+#include <opentelemetry/sdk/trace/samplers/always_off_factory.h>
+#include <opentelemetry/sdk/trace/samplers/trace_id_ratio_factory.h>
+#include <opentelemetry/sdk/trace/samplers/trace_id_ratio.h>
+#include <opentelemetry/sdk/trace/samplers/always_off.h>
+#include <opentelemetry/sdk/trace/samplers/parent.h>
 #include "opentelemetry/exporters/ostream/span_exporter_factory.h"// auto exporter = opentelemetry::exporter::trace::OStreamSpanExporterFactory::Create();
 #include "opentelemetry/exporters/ostream/common_utils.h"
 #include "opentelemetry/exporters/memory/in_memory_span_exporter_factory.h"
 #include "opentelemetry/trace/propagation/http_trace_context.h" //opentel_trace::propagation::kTraceParent
 #include "opentelemetry/trace/provider.h" //StartSpanOptions
+#ifdef USE_OPENTEL_GRPC
 #include "opentelemetry/exporters/otlp/otlp_grpc_exporter.h"
-
 #include "opentelemetry/exporters/otlp/otlp_grpc_exporter_factory.h"
+#else
+#include <random>
+#endif
+
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_factory.h"
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_options.h"
 #include "opentelemetry/exporters/memory/in_memory_span_data.h"
 
 #include "opentelemetry/sdk/trace/exporter.h"
 #include "opentelemetry/sdk/trace/span_data.h"
+
+#include "opentelemetry/sdk/common/global_log_handler.h"
 
 // NB: undefine after opentelemetry includes, and before HPCC includes where we define.
 #undef ForEach //opentelemetry defines ForEach
@@ -58,6 +70,200 @@ namespace nostd       = opentelemetry::nostd;
 namespace opentel_trace = opentelemetry::trace;
 
 using namespace ln_uid;
+
+/**
+ * @class JTraceRandomGenerator
+ * @brief A random number generator class for generating random data using the xorshift128p algorithm.
+ *
+ * This class provides functionality to generate random 64-bit integers and fill a buffer with random bytes.
+ * It uses the xorshift128p algorithm for random number generation, which is fast and suitable for non-cryptographic purposes.
+ * 
+ * This class is based on OpenTelemetry's TlsRandomNumberGenerator, FastRandomNumberGenerator, and Random
+ * and is customized here to avoid a critical issue reported here: https://github.com/open-telemetry/opentelemetry-cpp/issues/2408
+ * 
+ * OpenTelemetry's licensing can be found here:
+ * https://raw.githubusercontent.com/open-telemetry/opentelemetry-cpp/bc36c69209d5e7d268ff80b0a3a1b4e573b484fd/LICENSE
+ */
+class JTraceRandomGenerator
+{
+public:
+    /**
+     * @brief Constructor for JTraceRandomGenerator.
+     *
+     * Initializes the random number generator with a seed sequence generated from multiple random device values.
+     * This ensures that the generator is seeded with high-quality entropy.
+     */
+    JTraceRandomGenerator() noexcept
+    {
+        std::random_device randomDevice;
+        std::seed_seq seedSequence{randomDevice(), randomDevice(), randomDevice(), randomDevice()};
+        seed(seedSequence);
+    }
+
+    /**
+     * @brief Fills the provided buffer with random bytes.
+     *
+     * This method generates random 64-bit integers and copies them into the provided buffer.
+     * If the buffer size is not a multiple of 64 bits, the remaining bytes are filled with a partial random value.
+     *
+     * @param buffer A span of bytes to be filled with random data.
+     */
+    void GenerateRandomBuffer(opentelemetry::nostd::span<uint8_t> buffer) noexcept
+    {
+        auto bufferSize = buffer.size();
+        for (size_t i = 0; i < bufferSize; i += sizeof(uint64_t))
+        {
+            uint64_t value = generateRandom64();
+            if (i + sizeof(uint64_t) <= bufferSize)
+            {
+                memcpy(&buffer[i], &value, sizeof(uint64_t));
+            }
+            else
+            {
+                memcpy(&buffer[i], &value, bufferSize - i);
+            }
+        }
+    }
+
+    /**
+     * @brief Seeds the random number generator with a given seed sequence.
+     *
+     * This method initializes the internal state of the generator using the provided seed sequence.
+     *
+     * @param seedSequence A seed sequence used to initialize the generator's state.
+     */
+    void seed(std::seed_seq &seedSequence) noexcept
+    {
+        seedSequence.generate(reinterpret_cast<uint32_t *>(randomBase.data()),
+                            reinterpret_cast<uint32_t *>(randomBase.data() + randomBase.size()));
+    }
+
+    /**
+     * @brief Generates a random 64-bit integer.
+     *
+     * This method uses the xorshift128p algorithm to produce a random 64-bit integer.
+     * The algorithm is based on bitwise operations and is efficient for generating random numbers.
+     *
+     * @return A random 64-bit integer.
+     */
+    uint64_t generateRandom64() noexcept
+    {
+        // Uses the xorshift128p random number generation algorithm described in
+        // https://en.wikipedia.org/wiki/Xorshift
+        auto &state_a = randomBase[0];
+        auto &state_b = randomBase[1];
+        auto t        = state_a;
+        auto s        = state_b;
+        state_a       = s;
+        t ^= t << 23;        // a
+        t ^= t >> 17;        // b
+        t ^= s ^ (s >> 26);  // c
+        state_b = t;
+        return t + s;
+    }
+
+private:
+    std::array<uint64_t, 2> randomBase{};
+};
+
+class CustomIdGenerator : public opentelemetry::sdk::trace::IdGenerator
+{
+public:
+    CustomIdGenerator() : IdGenerator(true) {}
+
+    opentelemetry::trace::SpanId GenerateSpanId() noexcept override
+    {
+        uint8_t spanIdBuffer[trace_api::SpanId::kSize];
+        randomGenerator.GenerateRandomBuffer(spanIdBuffer);
+        return trace_api::SpanId(spanIdBuffer);
+    }
+    
+    opentelemetry::trace::TraceId GenerateTraceId() noexcept override
+    {
+        uint8_t traceIdBuffer[trace_api::TraceId::kSize];
+        randomGenerator.GenerateRandomBuffer(traceIdBuffer);
+        return trace_api::TraceId(traceIdBuffer);
+    }
+
+private:
+    inline static thread_local JTraceRandomGenerator randomGenerator;
+};
+class MeteredExporter final : public opentelemetry::sdk::trace::SpanExporter {
+private:
+    std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> exporter;
+
+public:
+    MeteredExporter() = delete;
+    MeteredExporter(std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> && _exporter) : exporter(std::move(_exporter)) {}
+
+    opentelemetry::sdk::common::ExportResult Export(const nostd::span<std::unique_ptr<opentelemetry::sdk::trace::Recordable> > & spans) noexcept override
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        opentelemetry::v1::sdk::common::ExportResult result = exporter->Export(spans);
+        //int64_t duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+        std::chrono::duration<signed long, std::nano> duration = std::chrono::high_resolution_clock::now() - start;
+
+        //mimicking metric jlog output for now.
+        LOG(MCmonitorMetric, "{ \"type\": \"metric\", \"name\": \"trace.export.latency.ns\",\"status\":\"%s\", \"duration_ms\":%ld, \"span_count\":%lu}", result == opentelemetry::v1::sdk::common::ExportResult::kSuccess ? "success" : "failure", duration.count(), spans.size());
+
+        return result;
+    }
+
+    virtual std::unique_ptr<opentelemetry::sdk::trace::Recordable> MakeRecordable() noexcept override
+    {
+        return exporter->MakeRecordable();
+    }
+
+    virtual bool Shutdown(std::chrono::microseconds timeout = std::chrono::microseconds::max()) noexcept override
+    {
+        return exporter->Shutdown(timeout);
+    }
+
+    //Required starting opentelemetry_version 1.20.0 (HPCC v. 9.12.0+)
+    //If targeting older OTel version, this needs to be removed
+    virtual bool ForceFlush(std::chrono::microseconds timeout = std::chrono::microseconds::max()) noexcept override
+    {
+        return exporter->ForceFlush(timeout);     
+    }
+};
+
+class MeteredExporterFactory
+{
+public:
+    static std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> Create(std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> && exporter)
+    {
+        return std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(new MeteredExporter(std::move(exporter)));
+    }
+};
+
+class CustomOTELLogHandler : public opentelemetry::sdk::common::internal_log::LogHandler
+{
+    void Handle(opentelemetry::sdk::common::internal_log::LogLevel level,const char * file, int line, const char * msg,
+                const opentelemetry::sdk::common::AttributeMap &attributes) noexcept override
+    {
+        if (!isEmptyString(msg))
+        {
+            const LogMsgCategory * logCategory = nullptr;
+            switch(level)
+            {
+                case opentelemetry::sdk::common::internal_log::LogLevel::Error:
+                    logCategory = &MCoperatorError;
+                    break;
+                case opentelemetry::sdk::common::internal_log::LogLevel::Warning:
+                    logCategory = &MCoperatorWarning;
+                    break;
+                case opentelemetry::sdk::common::internal_log::LogLevel::Info:
+                    logCategory = &MCoperatorInfo;
+                    break;
+                case opentelemetry::sdk::common::internal_log::LogLevel::Debug:
+                default:
+                    logCategory = &MCdebugInfo;
+                    break;
+            }
+            LOG(*logCategory, "JTrace: %s", msg);
+        }
+    }
+};
 
 /*
 NoopSpanExporter is a SpanExporter that does not do anything.
@@ -86,6 +292,18 @@ public:
       const nostd::span<std::unique_ptr<opentelemetry::sdk::trace::Recordable>> &recordables) noexcept override
     {
         return opentelemetry::sdk::common::ExportResult::kSuccess;
+    }
+
+   /**
+   * Export all spans that have been exported.
+   * @param timeout an optional timeout, the default timeout means that no
+   * timeout is applied.
+   * @return return true when all data are exported, and false when timeout
+   */
+    virtual bool ForceFlush(
+        std::chrono::microseconds timeout = (std::chrono::microseconds::max)()) noexcept override
+    {
+        return true;
     }
 
    /**
@@ -165,7 +383,14 @@ static const char * spanKindToString(opentelemetry::trace::SpanKind spanKind)
 class JLogSpanExporter final : public opentelemetry::sdk::trace::SpanExporter
 {
 public:
-    JLogSpanExporter(SpanLogFlags spanLogFlags) : logFlags(spanLogFlags), shutDown(false) {}
+    JLogSpanExporter(SpanLogFlags spanLogFlags, const IPropertyTree * config) :
+        logFlags(spanLogFlags), shutDown(false)
+    {
+        if (config)
+        {
+            debugDelayMs = config->getPropInt("debug/@delayMs", 0); // An option to allow this exporter to model slow behaviour
+        }
+    }
 
     /**
     * @return Returns a unique pointer to an empty recordable object
@@ -255,6 +480,11 @@ public:
                     LOG(MCmonitorEvent, "%s",out.str());
                 }
             }
+            if (debugDelayMs)
+            {
+                LOG(MCdebugInfo, "Delaying for %dms after exporting %u items", debugDelayMs, (unsigned)recordables.size());
+                MilliSleep(debugDelayMs);
+            }
             return opentelemetry::sdk::common::ExportResult::kSuccess;
         }
         catch (IException * e)
@@ -263,6 +493,18 @@ public:
             e->Release();
             return opentelemetry::sdk::common::ExportResult::kFailure;
         }
+    }
+
+   /**
+   * Export all spans that have been exported.
+   * @param timeout an optional timeout, the default timeout means that no
+   * timeout is applied.
+   * @return return true when all data are exported, and false when timeout
+   */
+    virtual bool ForceFlush(
+      std::chrono::microseconds timeout = (std::chrono::microseconds::max)()) noexcept override
+    {
+        return true;
     }
 
    /**
@@ -416,6 +658,7 @@ public:
 private:
     SpanLogFlags logFlags = SpanLogFlags::LogNone;
     std::atomic_bool shutDown;
+    unsigned debugDelayMs = 0;
 };
 
 /*#ifdef _USE_CPPUNIT
@@ -436,10 +679,10 @@ public:
     /**
     * Create a JLogSpanExporter.
     */
-    static std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> Create(SpanLogFlags logFlags)
+    static std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> Create(SpanLogFlags logFlags, const IPropertyTree * config)
     {
         return std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
-            new JLogSpanExporter(logFlags));
+            new JLogSpanExporter(logFlags, config));
     }
 };
 
@@ -486,7 +729,7 @@ private:
 };
 
 //---------------------------------------------------------------------------------------------------------------------
-
+using namespace opentelemetry::v1::context::propagation;
 class CTraceManager : implements ITraceManager, public CInterface
 {
 private:
@@ -499,7 +742,7 @@ private:
     void initTracerProviderAndGlobalInternals(const IPropertyTree * traceConfig);
     void initTracer(const IPropertyTree * traceConfig);
     void cleanupTracer();
-    std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> createExporter(const IPropertyTree * exportConfig);
+    std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> createExporter(const IPropertyTree * exportConfig, bool & shouldBatch);
     std::unique_ptr<opentelemetry::sdk::trace::SpanProcessor> createProcessor(const IPropertyTree * exportConfig);
 
 public:
@@ -535,6 +778,12 @@ public:
 
 static Singleton<CTraceManager> theTraceManager;
 
+// thePropagator can be used be regardless of whether tracing is enabled or not.
+// Can be used to inject context into or extract it from carriers that travel in-band
+// across process boundaries. Encoding is expected to conform to the HTTP Header Field semantics.
+// Reference this propagator rather than fetching globalpropagator
+static nostd::shared_ptr<TextMapPropagator> thePropagator = nostd::shared_ptr<TextMapPropagator>(new opentelemetry::trace::propagation::HttpTraceContext());
+
 //What is the global trace manager?  Only valid to call within this module from spans
 //Which can only be created if the trace manager has been initialized
 static inline CTraceManager & queryInternalTraceManager() { return *theTraceManager.query(); }
@@ -557,8 +806,8 @@ public:
         return spanID.get();
     }
 
-    ISpan * createClientSpan(const char * name) override;
-    ISpan * createInternalSpan(const char * name) override;
+    ISpan * createClientSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp = nullptr) override;
+    ISpan * createInternalSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp = nullptr) override;
 
     virtual void endSpan() final override
     {
@@ -636,13 +885,11 @@ public:
     {
         assertex(carrier);
 
-        auto propagator = opentelemetry::context::propagation::GlobalTextMapPropagator::GetGlobalPropagator();
-
         opentelemetry::context::Context emptyCtx;
         auto spanCtx = SetSpan(emptyCtx, span);
 
         //and have the propagator inject the ctx into carrier
-        propagator->Inject(*carrier, spanCtx);
+        thePropagator->Inject(*carrier, spanCtx);
 
         if (!isEmptyString(queryGlobalId()))
             carrier->Set(kGlobalIdHttpHeaderName, queryGlobalId());
@@ -753,6 +1000,15 @@ public:
         return span ? span->IsRecording() : false;
     }
 
+    virtual bool isValid() const override
+    {
+        if (span == nullptr)
+            return false;
+
+        auto spanCtx = span->GetContext();
+        return spanCtx.IsValid();
+    }
+
     virtual void setSpanStatusSuccess(bool spanSucceeded, const char * statusMessage)
     {
         if (span != nullptr)
@@ -790,6 +1046,16 @@ public:
         e->errorMessage(msg);
         recordError(SpanError(msg.str(), e->errorCode(), spanFailed, escapedScope));
     };
+
+    virtual const char * queryTraceId() const override
+    {
+        return traceID.get(); 
+    }
+
+    virtual const char * querySpanId() const override
+    {
+        return spanID.get();
+    }
 
 protected:
     CSpan(const char * spanName)
@@ -896,17 +1162,22 @@ public:
     virtual void toString(StringBuffer & out) const override {}
     virtual void getLogPrefix(StringBuffer & out) const override {}
     virtual bool isRecording() const { return false; }
+    virtual bool isValid() const { return false; }
 
     virtual void recordException(IException * e, bool spanFailed, bool escapedScope) override {}
     virtual void recordError(const SpanError & error) override {};
     virtual void setSpanStatusSuccess(bool spanSucceeded, const char * statusMessage) override {}
 
-    virtual const char* queryGlobalId() const override { return nullptr; }
-    virtual const char* queryCallerId() const override { return nullptr; }
-    virtual const char* queryLocalId() const override { return nullptr; }
+    virtual const char * queryTraceId() const override { return "00000000000000000000000000000000"; }
+    virtual const char * querySpanId() const override { return "0000000000000000"; }
 
-    virtual ISpan * createClientSpan(const char * name) override { return getNullSpan(); }
-    virtual ISpan * createInternalSpan(const char * name) override { return getNullSpan(); }
+    // Note: GlobalID & LocalID are created from lnuid, which creates 23 char UIDs (16 rand bytes in base58), and uses "1" for zeroes
+    virtual const char* queryGlobalId() const override { return "11111111111111111111111"; }
+    virtual const char* queryCallerId() const override { return ""; }
+    virtual const char* queryLocalId() const override { return "11111111111111111111111"; }
+
+    virtual ISpan * createClientSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp = nullptr) override { return getNullSpan(); }
+    virtual ISpan * createInternalSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp = nullptr) override { return getNullSpan(); }
 
 private:
     CNullSpan(const CNullSpan&) = delete;
@@ -917,9 +1188,14 @@ private:
 class CChildSpan : public CSpan
 {
 protected:
-    CChildSpan(const char * spanName, CSpan * parent)
+    CChildSpan(const char * spanName, CSpan * parent, const SpanTimeStamp *spanStartTimeStamp = nullptr)
     : CSpan(spanName), localParentSpan(parent)
     {
+        if (spanStartTimeStamp && spanStartTimeStamp->isInitialized())
+        {
+            opts.start_system_time = opentelemetry::common::SystemTimestamp(spanStartTimeStamp->systemClockTime);
+            opts.start_steady_time = opentelemetry::common::SteadyTimestamp(spanStartTimeStamp->steadyClockTime);
+        }
         injectlocalParentSpan(localParentSpan);
     }
 
@@ -971,8 +1247,8 @@ protected:
 class CInternalSpan : public CChildSpan
 {
 public:
-    CInternalSpan(const char * spanName, CSpan * parent)
-    : CChildSpan(spanName, parent)
+    CInternalSpan(const char * spanName, CSpan * parent, const SpanTimeStamp * spanStartTimeStamp = nullptr)
+    : CChildSpan(spanName, parent, spanStartTimeStamp)
     {
         opts.kind = opentelemetry::trace::SpanKind::kInternal;
         init(SpanFlags::None);
@@ -988,8 +1264,8 @@ public:
 class CClientSpan : public CChildSpan
 {
 public:
-    CClientSpan(const char * spanName, CSpan * parent)
-    : CChildSpan(spanName, parent)
+    CClientSpan(const char * spanName, CSpan * parent, const SpanTimeStamp * spanStartTimeStamp = nullptr)
+    : CChildSpan(spanName, parent, spanStartTimeStamp)
     {
         opts.kind = opentelemetry::trace::SpanKind::kClient;
         init(SpanFlags::None);
@@ -1002,14 +1278,14 @@ public:
     }
 };
 
-ISpan * CSpan::createClientSpan(const char * name)
+ISpan * CSpan::createClientSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp)
 {
-    return new CClientSpan(name, this);
+    return new CClientSpan(name, this, spanStartTimeStamp);
 }
 
-ISpan * CSpan::createInternalSpan(const char * name)
+ISpan * CSpan::createInternalSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp)
 {
-    return new CInternalSpan(name, this);
+    return new CInternalSpan(name, this, spanStartTimeStamp);
 }
 
 class CServerSpan : public CSpan
@@ -1042,18 +1318,16 @@ private:
                 hpccCallerId.set(httpHeaders->queryProp(kLegacyCallerIdHttpHeaderName));
 
             const CHPCCHttpTextMapCarrier carrier(httpHeaders);
-            auto globalPropegator = context::propagation::GlobalTextMapPropagator::GetGlobalPropagator();
             //avoiding getCurrent: https://github.com/open-telemetry/opentelemetry-cpp/issues/1467
             opentelemetry::context::Context empty;
             auto wrappedSpanCtx = SetSpan(empty, span);
-            opentelemetry::v1::context::Context runtimeCtx = globalPropegator->Extract(carrier, wrappedSpanCtx);
+            opentelemetry::v1::context::Context runtimeCtx = thePropagator->Extract(carrier, wrappedSpanCtx);
             opentelemetry::v1::nostd::shared_ptr<opentelemetry::v1::trace::Span> remoteParentSpan = opentelemetry::trace::GetSpan(runtimeCtx);
 
             if (remoteParentSpan != nullptr && remoteParentSpan->GetContext().IsValid())
             {
                 remoteParentSpanCtx = remoteParentSpan->GetContext();
                 opts.parent = remoteParentSpanCtx;
-
             }
         }
     }
@@ -1164,10 +1438,11 @@ IProperties * getSpanContext(const ISpan * span)
 
 //---------------------------------------------------------------------------------------------------------------------
 
-std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createExporter(const IPropertyTree * exportConfig)
+std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createExporter(const IPropertyTree * exportConfig, bool & shouldBatch)
 {
     assertex(exportConfig);
 
+    shouldBatch = true;
     StringBuffer exportType;
     exportConfig->getProp("@type", exportType);
 
@@ -1177,6 +1452,7 @@ std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createEx
         if (stricmp(exportType.str(), "OS")==0) //To stdout/err
         {
             LOG(MCoperatorInfo, "Tracing exporter set OS");
+            shouldBatch = false;
             return opentelemetry::exporter::trace::OStreamSpanExporterFactory::Create();
         }
         else if (stricmp(exportType.str(), "OTLP")==0 || stricmp(exportType.str(), "OTLP-HTTP")==0)
@@ -1195,6 +1471,7 @@ std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createEx
             LOG(MCoperatorInfo,"Tracing exporter set to OTLP/HTTP to: (%s)", trace_opts.url.c_str());
             return opentelemetry::exporter::otlp::OtlpHttpExporterFactory::Create(trace_opts);
         }
+#ifdef USE_OPENTEL_GRPC
         else if (stricmp(exportType.str(), "OTLP-GRPC")==0)
         {
             namespace otlp = opentelemetry::exporter::otlp;
@@ -1220,6 +1497,7 @@ std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createEx
             LOG(MCoperatorInfo, "Tracing exporter set to OTLP/GRPC to: (%s)", opts.endpoint.c_str());
             return otlp::OtlpGrpcExporterFactory::Create(opts);
         }
+#endif
         else if (stricmp(exportType.str(), "JLOG")==0)
         {
             StringBuffer logFlagsStr;
@@ -1260,8 +1538,10 @@ std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createEx
             if (logFlags == SpanLogFlags::LogNone)
                 logFlags = DEFAULT_SPAN_LOG_FLAGS;
 
+
+            shouldBatch = false;
             LOG(MCoperatorInfo, "Tracing exporter set to JLog: logFlags( LogAttributes LogParentInfo %s)", logFlagsStr.str());
-            return JLogSpanExporterFactory::Create(logFlags);
+            return JLogSpanExporterFactory::Create(logFlags, exportConfig);
         }
         else
             LOG(MCoperatorWarning, "Tracing exporter type not supported: '%s'", exportType.str());
@@ -1273,35 +1553,138 @@ std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> CTraceManager::createEx
 
 std::unique_ptr<opentelemetry::sdk::trace::SpanProcessor> CTraceManager::createProcessor(const IPropertyTree * exportConfig)
 {
-    auto exporter = createExporter(exportConfig);
+    bool batchDefault; //to be determined by the createExporter function
+    std::unique_ptr<opentelemetry::v1::sdk::trace::SpanExporter> exporter;
+    try
+    {
+        exporter = createExporter(exportConfig, batchDefault);
+
+        if (exportConfig->getPropBool("@metered", false))
+        {
+            exporter = MeteredExporterFactory::Create(std::move(exporter));
+        }
+    }
+    catch(const std::exception& e) //polymorphic type std::exception
+    {
+        LOG(MCoperatorError, "JTRACE: Error creating Tracing exporter: %s", e.what());
+    }
+    catch (...)
+    {
+        LOG(MCoperatorError, "JTRACE: Unknown error creating Tracing exporter");
+    }
+
     if (!exporter)
         return nullptr;
 
-    if (exportConfig->getPropBool("batch/@enabled", false))
+    if (exportConfig->getPropBool("batch/@enabled", batchDefault))
     {
         //Groups several spans together, before sending them to an exporter.
-        //MORE: These options should be configurable from batch/@option
-        opentelemetry::v1::sdk::trace::BatchSpanProcessorOptions options; //size_t max_queue_size = 2048;
-                                                                        //The time interval between two consecutive exports
-                                                                        //std::chrono::milliseconds(5000);
-                                                                        //The maximum batch size of every export. It must be smaller or
-                                                                        //equal to max_queue_size.
-                                                                        //size_t max_export_batch_size = 512
+        opentelemetry::v1::sdk::trace::BatchSpanProcessorOptions options;
+        /**
+         * The maximum buffer/queue size. After the size is reached, spans are
+         * dropped.
+         */
+        options.max_queue_size = exportConfig->getPropInt("batch/@maxQueueSize", 2048);
+
+        /* The time interval between two consecutive exports. */
+        options.schedule_delay_millis = std::chrono::milliseconds(exportConfig->getPropInt("batch/@scheduledDelayMillis", 5000));
+
+        /**
+         * The maximum batch size of every export. It must be smaller or
+         * equal to max_queue_size.
+         */
+        options.max_export_batch_size = exportConfig->getPropInt("batch/@maxExportBatchSize", 512);
+
         return opentelemetry::sdk::trace::BatchSpanProcessorFactory::Create(std::move(exporter), options);
     }
 
     return opentelemetry::sdk::trace::SimpleSpanProcessorFactory::Create(std::move(exporter));
 }
 
+static std::unique_ptr<opentelemetry::sdk::trace::Sampler> createSampler(IPropertyTree * samplerTree)
+{
+    std::unique_ptr<opentelemetry::sdk::trace::Sampler> sampler;
+
+    if (samplerTree)
+    {
+        const char * samplerType = samplerTree->queryProp("@type");
+        if (!isEmptyString(samplerType))
+        {
+            if (streq(samplerType, "AlwaysOff"))
+            {
+                sampler.reset(new opentelemetry::sdk::trace::AlwaysOffSampler());
+            }
+            else if (streq(samplerType, "AlwaysOn"))
+            {
+                sampler.reset(new opentelemetry::sdk::trace::AlwaysOnSampler());
+            }
+            else if (streq(samplerType,"Ratio"))
+            {
+                double ratio = samplerTree->getPropReal("@ratio", -1.0);
+                if (ratio >= 0.0 && ratio <= 1.0)
+                {
+                    sampler.reset(new opentelemetry::sdk::trace::TraceIdRatioBasedSampler(ratio));
+                }
+                else
+                {
+                    OERRLOG("JTrace invalid ratio sampling configuration. Ratio must be between 0.0 and 1.0");
+                }
+            }
+            else
+            {
+                WARNLOG("JTrace initialization: Invalid sampling type configured: '%s'", samplerType);
+            }
+
+            if (sampler && samplerTree->getPropBool("@parentBased", true))
+            {
+                return std::unique_ptr<opentelemetry::sdk::trace::ParentBasedSampler>(new opentelemetry::sdk::trace::ParentBasedSampler(std::move(sampler)));
+            }
+        }
+    }
+
+    return sampler;
+}
+
 void CTraceManager::initTracerProviderAndGlobalInternals(const IPropertyTree * traceConfig)
 {
+    /*
+    Service related resourceAttributes supported by otel:
+
+        service.instance.id string	The string ID of the service instance.
+        service.name        string	Logical name of the service.
+        service.namespace   string	A namespace for service.name.
+        service.version     string	The version string of the service API or implementation.
+    */
+    opentelemetry::sdk::resource::ResourceAttributes resourceAtts =
+        {
+            {"service.name", moduleName.get()},
+            {"service.version", hpccBuildInfo.buildVersion}
+        };
+
     std::vector<std::unique_ptr<opentelemetry::sdk::trace::SpanProcessor>> processors;
+    std::unique_ptr<opentelemetry::sdk::trace::Sampler> sampler;
+
+    bool enableOTELDebugLogging = false;
 
     //By default trace spans to the logs in debug builds - so that developers get used to seeing them.
     //Default off for release builds to avoid flooding the logs, and because they are likely to use OTLP
     bool enableDefaultLogExporter = isDebugBuild();
     if (traceConfig)
     {
+        sampler = createSampler(traceConfig->queryPropTree("sampling"));
+
+        IPropertyTree * resourceAttributesTree = traceConfig->queryPropTree("resourceAttributes");
+        if (resourceAttributesTree)
+        {
+            const char * depEnv = resourceAttributesTree->queryProp("@deploymentEnvironment");
+            if (depEnv)
+                resourceAtts.SetAttribute("deployment.environment", depEnv);
+
+            const char * servNS = resourceAttributesTree->queryProp("@serviceNamespace");
+            if (servNS)
+                resourceAtts.SetAttribute("service.namespace", servNS);
+        }
+
         //Administrators can choose to export trace data to a different backend by specifying the exporter type
         Owned<IPropertyTreeIterator> iter = traceConfig->getElements("exporters");
         ForEach(*iter)
@@ -1312,27 +1695,42 @@ void CTraceManager::initTracerProviderAndGlobalInternals(const IPropertyTree * t
                 processors.push_back(std::move(processor));
         }
 
-        enableDefaultLogExporter = traceConfig->getPropBool("enableDefaultLogExporter", enableDefaultLogExporter);
+        enableOTELDebugLogging = traceConfig->getPropBool("@enableOTELDebugLogging");
+        enableDefaultLogExporter = traceConfig->getPropBool("@enableDefaultLogExporter", enableDefaultLogExporter);
+    }
+
+    if (!sampler) 
+    {
+        sampler = std::unique_ptr<opentelemetry::sdk::trace::AlwaysOnSampler>(new opentelemetry::sdk::trace::AlwaysOnSampler);
     }
 
     if (enableDefaultLogExporter)
     {
         //Simple option to create logging to the log file - primarily to aid developers.
-        std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> exporter = JLogSpanExporterFactory::Create(DEFAULT_SPAN_LOG_FLAGS);
+        std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> exporter = MeteredExporterFactory::Create(JLogSpanExporterFactory::Create(DEFAULT_SPAN_LOG_FLAGS, nullptr));
         processors.push_back(opentelemetry::sdk::trace::SimpleSpanProcessorFactory::Create(std::move(exporter)));
     }
 
-    opentelemetry::sdk::resource::ResourceAttributes resourceAtts = {{"service.name", moduleName.get()}};
+    auto idGenerator = std::unique_ptr<opentelemetry::sdk::trace::IdGenerator>(new CustomIdGenerator());
     auto jtraceResource = opentelemetry::sdk::resource::Resource::Create(resourceAtts);
 
-    // Default is an always-on sampler.
     std::unique_ptr<opentelemetry::sdk::trace::TracerContext> context =
-        opentelemetry::sdk::trace::TracerContextFactory::Create(std::move(processors), jtraceResource);
+        opentelemetry::sdk::trace::TracerContextFactory::Create(std::move(processors), jtraceResource, std::move(sampler), std::move(idGenerator));
+
     std::shared_ptr<opentelemetry::trace::TracerProvider> provider =
         opentelemetry::sdk::trace::TracerProviderFactory::Create(std::move(context));
 
     // Set the global trace provider
     opentelemetry::trace::Provider::SetTracerProvider(provider);
+
+    //capture OTEL logs
+    opentelemetry::v1::nostd::shared_ptr<opentelemetry::v1::sdk::common::internal_log::LogHandler> logHandler(new CustomOTELLogHandler);
+    opentelemetry::sdk::common::internal_log::GlobalLogHandler::SetLogHandler(logHandler);
+    opentelemetry::sdk::common::internal_log::GlobalLogHandler::SetLogLevel(
+        enableOTELDebugLogging ?
+        opentelemetry::sdk::common::internal_log::LogLevel::Debug :
+        opentelemetry::sdk::common::internal_log::LogLevel::Warning
+    );
 }
 
 /*
@@ -1342,9 +1740,14 @@ global:
         disabled: true                  #optional - disable OTel tracing
         alwaysCreateGlobalIds : false   #optional - should global ids always be created?
         alwaysCreateTraceIds            #optional - should trace ids always be created?
-        exporters:                       #optional - Controls how trace data is exported/reported
-        -   type: OTLP                    #OS|OTLP|Prometheus|JLOG
-            endpoint: "localhost:4317"    #exporter specific key/value pairs
+        sampling:                       #optional - controls how traces are either suppressed or sampled
+          type:                         #"AlwaysOff" | "AlwaysOn" | "Ratio"
+          ratio:                        #optional - Required if Ratio sampling used, represents the sampling ratio [0.0 - 1.0]
+          parentBased:                  #optional - Sets OTel's parentbased sampling option as defined here:
+                                        #           https://opentelemetry.io/docs/languages/erlang/sampling/#parentbasedsampler
+        exporters:                      #optional - Controls how trace data is exported/reported
+        -   type: OTLP                  #OS|OTLP|Prometheus|JLOG
+            endpoint: "localhost:4317"  #exporter specific key/value pairs
             useSslCredentials: true
             sslCredentialsCACcert: "ssl-certificate"
             batch:                        #optional - Controls span processing style
@@ -1361,6 +1764,8 @@ void CTraceManager::initTracer(const IPropertyTree * traceConfig)
             const char * simulatedGlobalYaml = R"!!(global:
   tracing:
     disabled: false
+    resourceAttributes: # used to declare OTEL Resource Attribute config values
+      deploymentEnvironment: testing
     processor:
       type: simple
     exporter:
@@ -1403,15 +1808,6 @@ void CTraceManager::initTracer(const IPropertyTree * traceConfig)
             optAlwaysCreateGlobalIds = traceConfig->getPropBool("@alwaysCreateGlobalIds", optAlwaysCreateGlobalIds);
             optAlwaysCreateTraceIds = traceConfig->getPropBool("@alwaysCreateTraceIds", optAlwaysCreateTraceIds);
         }
-
-        // The global propagator should be set regardless of whether tracing is enabled or not.
-        // Injects Context into and extracts it from carriers that travel in-band
-        // across process boundaries. Encoding is expected to conform to the HTTP
-        // Header Field semantics.
-        // Values are often encoded as RPC/HTTP request headers.
-        opentelemetry::context::propagation::GlobalTextMapPropagator::SetGlobalPropagator(
-            opentelemetry::nostd::shared_ptr<opentelemetry::context::propagation::TextMapPropagator>(
-                new opentelemetry::trace::propagation::HttpTraceContext()));
 
     }
     catch (IException * e)
@@ -1461,15 +1857,49 @@ ISpan * CTraceManager::createServerSpan(const char * name, const IProperties * h
     return new CServerSpan(name, httpHeaders, flags, spanStartTimeStamp);
 }
 
+ISpan * createBackdatedInternalSpan(const char * name, stat_type elapsedNs)
+{
+    SpanTimeStamp spanStartTimeStamp;
+    spanStartTimeStamp.setNow();
+    spanStartTimeStamp.adjust(std::chrono::nanoseconds(-elapsedNs));
+    return queryThreadedActiveSpan()->createInternalSpan(name, &spanStartTimeStamp);
+}
+
 //---------------------------------------------------------------------------------------------------------------------
 
-OwnedSpanScope::OwnedSpanScope(ISpan * _ptr) : span(_ptr)
+ActiveSpanScope::ActiveSpanScope(ISpan * _ptr) : ActiveSpanScope(_ptr, queryThreadedActiveSpan()) {}
+ActiveSpanScope::ActiveSpanScope(ISpan * _ptr, ISpan * _prev) : span(_ptr), prevSpan(_prev)
+{
+    if (span == nullptr)
+        span = queryNullSpan();
+
+    setThreadedActiveSpan(span);
+}
+
+ActiveSpanScope::~ActiveSpanScope()
+{
+    ISpan* current = queryThreadedActiveSpan();
+    if (current != span)
+    {
+        const char* currSpanID = current->querySpanId();
+        const char* expectedSpanID = span != nullptr ? span->querySpanId() : "0000000000000000";
+
+        IERRLOG("~ActiveSpanScope: threadActiveSpan has changed unexpectedly, expected: %s actual: %s", expectedSpanID, currSpanID);
+        return;
+    }
+
+    setThreadedActiveSpan(prevSpan);
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+
+OwnedActiveSpanScope::OwnedActiveSpanScope(ISpan * _ptr) : span(_ptr)
 {
     if (_ptr)
         prevSpan = setThreadedActiveSpan(_ptr);
 }
 
-void OwnedSpanScope::setown(ISpan * _span)
+void OwnedActiveSpanScope::setown(ISpan * _span)
 {
     assertex(_span);
     //Just in case the span is already set, ensure it is ended and that the previous span is restored.
@@ -1478,22 +1908,50 @@ void OwnedSpanScope::setown(ISpan * _span)
     prevSpan = setThreadedActiveSpan(_span);
 }
 
-void OwnedSpanScope::set(ISpan * _span)
+void OwnedActiveSpanScope::set(ISpan * _span)
 {
     setown(LINK(_span));
 }
 
-void OwnedSpanScope::clear()
+void OwnedActiveSpanScope::clear()
 {
     if (span)
     {
+        span->endSpan();
         setThreadedActiveSpan(prevSpan);
+        span.clear();
+    }
+}
+
+OwnedActiveSpanScope::~OwnedActiveSpanScope()
+{
+    clear();
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+
+void OwnedSpanLifetime::setown(ISpan * _span)
+{
+    assertex(_span);
+    clear();
+    span.setown(_span);
+}
+
+void OwnedSpanLifetime::set(ISpan * _span)
+{
+    setown(LINK(_span));
+}
+
+void OwnedSpanLifetime::clear()
+{
+    if (span)
+    {
         span->endSpan();
         span.clear();
     }
 }
 
-OwnedSpanScope::~OwnedSpanScope()
+OwnedSpanLifetime::~OwnedSpanLifetime()
 {
     clear();
 }

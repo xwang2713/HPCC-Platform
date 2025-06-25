@@ -32,10 +32,12 @@
 #ifdef _WIN32
 #include "psapi.h"
 #include <eh.h>
-#elif defined (__linux__) || defined(__FreeBSD__)  || defined(__APPLE__)
+#elif defined (__linux__) || defined(__FreeBSD__)  || defined(__APPLE__) || defined(EMSCRIPTEN)
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <stddef.h>
+#include <time.h>
+#include <signal.h>
 #include <errno.h>
 #ifdef __linux__
 #include <execinfo.h> // comment out if not present
@@ -301,8 +303,13 @@ public:
         return str;
     }
 protected:
-    Linked<IException> exception;
+    Owned<IException> exception;
 };
+
+IException *makeWrappedException(IException *e, int code, const char *why)
+{
+    return new WrappedException(e, code, why);
+}
 
 IException *makeWrappedExceptionVA(IException *e, int code, const char *format, va_list args)
 {
@@ -1300,11 +1307,40 @@ void jlib_decl setProcessAborted(bool _abortVal)
     processAborted = _abortVal;
 }
 
+static constexpr unsigned SIGNAL_RAISE_DELAY_SECONDS = 20;
+
+#if defined(__linux__)
+  static timer_t killTimerId;
+  static std::atomic<bool> killTimerCreated { false };
+  static CriticalSection killTimerCS;
+#endif
+
+static void raiseKillSigInFuture(unsigned timeoutSec)
+{
+#if defined(__linux__)
+    if (killTimerCreated.load())
+    {
+        struct itimerspec itSpec;
+
+        itSpec.it_value.tv_sec = timeoutSec;
+        itSpec.it_value.tv_nsec = 0;
+        itSpec.it_interval.tv_sec = 0;
+        itSpec.it_interval.tv_nsec = 0;
+
+        timer_settime(killTimerId, 0, &itSpec, 0);
+    }
+#endif
+}
+
 NO_SANITIZE("alignment") void excsighandler(int signum, siginfo_t *info, void *extra)
 {
     static byte nested=0;
     if (nested++)
         return;
+
+    // If the program is aborting because of a corruption in the memory manager,
+    // ensure that it really exits, rather than deadlocking on a memory manager mutex
+    raiseKillSigInFuture(SIGNAL_RAISE_DELAY_SECONDS);
 
     //If the program is terminating then do not try and trace
     if (!queryLogMsgManager())
@@ -1607,6 +1643,25 @@ void jlib_decl enableSEHtoExceptionMapping()
 #endif
     if (SEHnested++)
         return; // already done
+
+#if defined(__linux__)
+    {
+        CriticalBlock block(killTimerCS);
+        if (!killTimerCreated.load())
+        {
+            struct sigevent sigev;
+            sigev.sigev_notify = SIGEV_SIGNAL;
+            sigev.sigev_signo = SIGKILL;
+            sigev.sigev_value.sival_ptr = &killTimerId;
+            sigev.sigev_notify_function = nullptr;
+            sigev.sigev_notify_attributes = NULL;
+            int srtn = timer_create(CLOCK_MONOTONIC, &sigev, &killTimerId);
+            if (srtn == 0)
+                killTimerCreated = true;
+        }
+    }
+#endif
+
 #ifdef _WIN32
     enableThreadSEH();
     SEHrestore = EnableSEHtranslation();
@@ -1663,6 +1718,30 @@ void  jlib_decl disableSEHtoExceptionMapping()
 #endif
 }
 
+void jlib_decl raiseSignalInFuture(int signo, unsigned timeoutSec)
+{
+#if defined(__linux__)
+    int ret;
+    timer_t timerId;
+    struct sigevent sigev;
+    struct itimerspec itSpec;
+
+    sigev.sigev_notify = SIGEV_SIGNAL;
+    sigev.sigev_signo = signo;
+    sigev.sigev_value.sival_ptr = &timerId;
+    sigev.sigev_notify_function = nullptr;
+    sigev.sigev_notify_attributes = NULL;
+
+    itSpec.it_value.tv_sec = timeoutSec;
+    itSpec.it_value.tv_nsec = 0;
+    itSpec.it_interval.tv_sec = 0;
+    itSpec.it_interval.tv_nsec = 0;
+
+    ret = timer_create(CLOCK_MONOTONIC, &sigev, &timerId);
+    if (!ret)
+        timer_settime(timerId, 0, &itSpec, 0);
+#endif
+}
 
 StringBuffer & formatSystemError(StringBuffer & out, unsigned errcode)
 {
@@ -1784,7 +1863,9 @@ bool getDebuggerGetStacksCmd(StringBuffer &output)
         output.append("Unable to capture stacks");
         return false;
     }
-    return output.appendf("gdb --batch -n -ex 'thread apply all bt' %s %u", exePath, GetCurrentProcessId());
+
+    output.appendf("gdb --batch -ix %s/.gdbinit -x %s/post-mortem-gdb %s %u", hpccBuildInfo.execDir, hpccBuildInfo.execDir, exePath, GetCurrentProcessId());
+    return true;
 }
 
 bool getAllStacks(StringBuffer &output)
@@ -1930,14 +2011,16 @@ void IErrorReceiver::throwStringExceptionV(int code,const char *format, ...) con
 void IErrorReceiver::reportError(int errNo, const char *msg, const char *filename, int lineno, int column, int position)
 {
     Owned<IError> err = createError(errNo,msg,filename,lineno,column,position);
-    report(err);
+    Owned<IError> mapped = mapError(err);
+    report(mapped);
 }
 
 void IErrorReceiver::reportWarning(WarnErrorCategory category, int warnNo, const char *msg, const char *filename, int lineno, int column, int position)
 {
     ErrorSeverity severity = queryDefaultSeverity(category);
     Owned<IError> warn = createError(category, severity,warnNo,msg,filename,lineno,column,position);
-    report(warn);
+    Owned<IError> mapped = mapError(warn);
+    report(mapped);
 }
 
 const LogMsgCategory & mapToLogMsgCategory(ErrorSeverity severity, MessageAudience aud)

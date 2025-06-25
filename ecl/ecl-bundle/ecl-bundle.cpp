@@ -750,6 +750,7 @@ public:
         VStringBuffer redirect("IMPORT %s.%s.%s.%s as _%s; EXPORT %s := _%s;", VERSION_SUBDIR, name, version, name, name, name, name);
         Owned<IFileIO> rfile = redirector->open(IFOcreate);
         rfile->write(0, redirect.length(), redirect.str());
+        rfile->close();
         bundle->setActive(true);
     }
     virtual void setActive(const char *version)
@@ -1034,25 +1035,7 @@ protected:
         if (optTmpDir)
             dir.set(optTmpDir);
         else
-        {
-    #ifdef _WIN32
-            char path[_MAX_PATH+1];
-            if(GetTempPath(sizeof(path),path))
-                dir.append(path);
-            else
-            {
-                dir.append(getenv("TEMP"));
-                if (!dir.length())
-                    dir.append(getenv("TMP"));
-                if (!dir.length())
-                    dir.append(".");
-            }
-    #else
-            dir.append(getenv("TMPDIR"));
-            if (!dir.length())
-                dir.append("/tmp");
-    #endif
-        }
+            getSystemTempDir(dir);
         if (!dir.length() || !checkDirExists(dir))
             throw makeStringExceptionV(0, "FATAL: Invalid temporary directory '%s' - try --tmpdir option", dir.str());
         return dir;
@@ -1099,7 +1082,6 @@ protected:
             if (optVerbose)
                 printf("mkdir %s\n", tmp.str());
 
-            const char *ext = pathExtension(url);
             if (isGitUrl(url))
             {
                 fetchedLocation.append(tmp).append(PATHSEPCHAR);

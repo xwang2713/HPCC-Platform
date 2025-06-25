@@ -1,10 +1,11 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Image, Link, ScrollablePane, Sticky } from "@fluentui/react";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Image, Link } from "@fluentui/react";
 import * as Utility from "src/Utility";
 import { QuerySortItem } from "src/store/Store";
 import nlsHPCC from "src/nlsHPCC";
 import { useWorkunitSourceFiles } from "../hooks/workunit";
 import { pushParams } from "../util/history";
+import { HolyGrail } from "../layouts/HolyGrail";
 import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
@@ -25,7 +26,7 @@ interface SourceFilesProps {
 }
 
 const emptyFilter: { [id: string]: any } = {};
-const defaultSort = { attribute: "Name", descending: false };
+const defaultSort = { attribute: undefined, descending: false };
 
 export const SourceFiles: React.FunctionComponent<SourceFilesProps> = ({
     wuid,
@@ -52,7 +53,7 @@ export const SourceFiles: React.FunctionComponent<SourceFilesProps> = ({
                 selectorType: "checkbox"
             },
             Name: {
-                label: "Name", sortable: true,
+                label: "Name", width: 400, sortable: true,
                 formatter: (Name, row) => {
                     let fileUrl = `#/files/${Name}`;
                     if (row?.FileCluster) {
@@ -65,11 +66,8 @@ export const SourceFiles: React.FunctionComponent<SourceFilesProps> = ({
                     </>;
                 }
             },
-            FileCluster: { label: nlsHPCC.FileCluster, width: 300, sortable: false },
-            Count: {
-                label: nlsHPCC.Usage, width: 72, sortable: true,
-                justify: "right"
-            }
+            FileCluster: { label: nlsHPCC.FileCluster, width: 200, sortable: false },
+            Count: { label: nlsHPCC.Usage, width: 72, sortable: true, justify: "right" }
         };
     }, []);
 
@@ -134,20 +132,22 @@ export const SourceFiles: React.FunctionComponent<SourceFilesProps> = ({
         setData(files);
     }, [filter, sourceFiles]);
 
-    return <ScrollablePane>
-        <Sticky>
-            <CommandBar items={buttons} farItems={copyButtons} />
-        </Sticky>
-        <FluentGrid
-            data={data}
-            primaryID={"Name"}
-            alphaNumColumns={{ Name: true, Value: true }}
-            sort={sort}
-            columns={columns}
-            setSelection={setSelection}
-            setTotal={setTotal}
-            refresh={refreshTable}
-        ></FluentGrid>
-        <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
-    </ScrollablePane>;
+    return <HolyGrail
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
+        main={
+            <div style={{ position: "relative", height: "100%" }}>
+                <FluentGrid
+                    data={data}
+                    primaryID={"Name"}
+                    alphaNumColumns={{ Value: true }}
+                    sort={sort}
+                    columns={columns}
+                    setSelection={setSelection}
+                    setTotal={setTotal}
+                    refresh={refreshTable}
+                ></FluentGrid>
+                <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
+            </div>
+        }
+    />;
 };

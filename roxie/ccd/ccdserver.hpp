@@ -89,8 +89,6 @@ interface IRoxieServerContext;
 interface IRoxieAgentContext;
 interface IStrandJunction;
 
-class ClusterWriteHandler;
-
 enum class RoxieSourceCharacteristics : byte
 {
     none = 0,
@@ -198,12 +196,13 @@ interface IRoxieServerActivity : extends IActivityBase
     virtual ThorActivityKind getKind() const = 0;
     virtual const IRoxieContextLogger &queryLogCtx() const = 0;
     virtual void mergeStats(MemoryBuffer &stats) = 0;
-    virtual void mergeStats(const CRuntimeStatisticCollection & childStats) = 0;
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection & childStats) = 0;
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) = 0;
     virtual IEngineRowAllocator * createRowAllocator(IOutputMetaData * metadata) = 0;
     virtual void gatherStatistics(IStatisticGatherer * statsBuilder) const = 0;
     virtual void noteStatistic(StatisticKind kind, unsigned __int64 value) const = 0;
     virtual void noteLibrary(IQueryFactory *library) = 0;
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption) = 0;
 };
 
 interface IRoxieServerActivityFactory : extends IActivityFactory

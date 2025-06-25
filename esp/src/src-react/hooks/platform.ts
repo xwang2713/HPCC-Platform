@@ -2,12 +2,16 @@ import * as React from "react";
 import { Octokit } from "octokit";
 import { useConst } from "@fluentui/react-hooks";
 import { scopedLogger } from "@hpcc-js/util";
-import { Topology, WsTopology, WorkunitsServiceEx } from "@hpcc-js/comms";
+import { LogaccessService, Topology, WsLogaccess, WsTopology, WorkunitsServiceEx } from "@hpcc-js/comms";
+import nlsHPCC from "src/nlsHPCC";
 import { getBuildInfo, BuildInfo, fetchModernMode } from "src/Session";
 import { cmake_build_type, containerized, ModernMode } from "src/BuildInfo";
 import { sessionKeyValStore, userKeyValStore } from "src/KeyValStore";
+import { Palette } from "@hpcc-js/common";
 
 const logger = scopedLogger("src-react/hooks/platform.ts");
+
+export const service = new LogaccessService({ baseUrl: "" });
 
 declare const dojoConfig;
 
@@ -36,14 +40,18 @@ export function useBuildInfo(): [BuildInfo, { isContainer: boolean, currencyCode
     return [buildInfo, { isContainer, currencyCode, opsCategory }];
 }
 
+let g_targetCluster: Promise<WsTopology.TpLogicalCluster[]>;
 export function useLogicalClusters(): [WsTopology.TpLogicalCluster[] | undefined, WsTopology.TpLogicalCluster | undefined] {
     const [targetClusters, setTargetClusters] = React.useState<WsTopology.TpLogicalCluster[]>();
     const [defaultCluster, setDefaultCluster] = React.useState<WsTopology.TpLogicalCluster>();
 
     React.useEffect(() => {
-        const topology = Topology.attach({ baseUrl: "" });
+        if (!g_targetCluster) {
+            const topology = Topology.attach({ baseUrl: "" });
+            g_targetCluster = topology.fetchLogicalClusters();
+        }
         let active = true;
-        topology.fetchLogicalClusters().then(response => {
+        g_targetCluster.then(response => {
             if (active) {
                 setTargetClusters(response);
                 let firstRow: WsTopology.TpLogicalCluster;
@@ -68,6 +76,22 @@ export function useLogicalClusters(): [WsTopology.TpLogicalCluster[] | undefined
     }, []);
 
     return [targetClusters, defaultCluster];
+}
+
+export function useLogicalClustersPalette(): [WsTopology.TpLogicalCluster[] | undefined, WsTopology.TpLogicalCluster | undefined, Palette.OrdinalPaletteFunc] {
+    const [targetClusters, defaultCluster] = useLogicalClusters();
+
+    const palette = useConst(() => Palette.ordinal("workunits", ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]));
+
+    React.useEffect(() => {
+        if (targetClusters) {
+            targetClusters.forEach(cluster => {
+                palette(cluster.Name);
+            });
+        }
+    }, [palette, targetClusters]);
+
+    return [targetClusters, defaultCluster, palette];
 }
 
 let wuCheckFeaturesPromise;
@@ -116,8 +140,14 @@ export function useCheckFeatures(): Features {
         timestamp
     };
 }
-
-const fetchReleases = () => {
+interface OctokitRelease {
+    id: number;
+    draft: boolean;
+    prerelease: boolean;
+    tag_name: string;
+    html_url: string;
+}
+const fetchReleases = (): Promise<{ data: OctokitRelease[] }> => {
     const octokit = new Octokit({});
     return octokit.request("GET /repos/{owner}/{repo}/releases", {
         owner: "hpcc-systems",
@@ -128,16 +158,12 @@ const fetchReleases = () => {
         }
     });
 };
-type ReleasesPromise = ReturnType<typeof fetchReleases>;
-type ReleasesResponse = Awaited<ReleasesPromise>;
-type Releases = ReleasesResponse["data"];
-type Release = Releases[number];
 
-const _fetchLatestReleases = (): Promise<Releases> => {
+const _fetchLatestReleases = (): Promise<OctokitRelease[]> => {
     return fetchReleases().then(response => {
-        const latest: { [id: string]: Release } = response.data
+        const latest: { [releaseID: string]: OctokitRelease } = response.data
             .filter(release => !release.draft || !release.prerelease)
-            .reduce((prev, curr: Release) => {
+            .reduce((prev, curr: OctokitRelease) => {
                 const versionParts = curr.tag_name.split(".");
                 versionParts.length = 2;
                 const partialVersion = versionParts.join(".");
@@ -146,14 +172,14 @@ const _fetchLatestReleases = (): Promise<Releases> => {
                 }
                 return prev;
             }, {});
-        return Object.values(latest) as Releases;
+        return Object.values(latest);
     }).catch(err => {
         logger.error(err);
-        return [] as Releases;
+        return [];
     });
 };
-let releasesPromise: Promise<Releases> | undefined;
-export const fetchLatestReleases = (): Promise<Releases> => {
+let releasesPromise: Promise<any> | undefined;
+export const fetchLatestReleases = (): Promise<OctokitRelease[]> => {
     if (!releasesPromise) {
         releasesPromise = _fetchLatestReleases();
     }
@@ -182,4 +208,46 @@ export function useModernMode(): {
     }, [modernMode, sessionStore, userStore]);
 
     return { modernMode, setModernMode };
-} 
+}
+
+interface LogAccessInfo {
+    logsEnabled: boolean;
+    logsManagerType: string;
+    logsColumns: WsLogaccess.Column[];
+    logsStatusMessage: string;
+}
+
+export function useLogAccessInfo(): LogAccessInfo {
+    const [logsEnabled, setLogsEnabled] = React.useState(false);
+    const [logsManagerType, setLogsManagerType] = React.useState("");
+    const [logsColumns, setLogsColumns] = React.useState<WsLogaccess.Column[]>();
+    const [logsStatusMessage, setLogsStatusMessage] = React.useState("");
+
+    React.useEffect(() => {
+        Promise.all([service.GetLogAccessInfo({}), service.GetHealthReport({})]).then(([accessResponse, healthReportResponse]) => {
+            const healthReportStatusCode: string = healthReportResponse?.Status?.Code?.toString() ?? "";
+            const healthReportMessages = healthReportResponse?.Status?.MessageArray?.Item ?? [];
+            if (accessResponse?.Exceptions) {
+                setLogsStatusMessage(accessResponse?.Exceptions?.Exception[0]?.Message ?? nlsHPCC.LogAccess_GenericException);
+                setLogsEnabled(false);
+            } else if (healthReportStatusCode === "Fail" && healthReportMessages.length > 0) {
+                setLogsStatusMessage(healthReportMessages[healthReportMessages.length - 1]);
+                setLogsEnabled(false);
+            } else {
+                if (accessResponse.RemoteLogManagerType === null) {
+                    setLogsStatusMessage(nlsHPCC.LogAccess_LoggingNotConfigured);
+                    setLogsEnabled(false);
+                } else {
+                    setLogsEnabled(true);
+                    setLogsManagerType(accessResponse.RemoteLogManagerType);
+                    setLogsColumns(accessResponse?.Columns?.Column);
+                }
+            }
+        }).catch(e => {
+            setLogsStatusMessage(nlsHPCC.LogAccess_GenericException);
+            setLogsEnabled(false);
+        });
+    }, []);
+
+    return { logsEnabled, logsManagerType, logsColumns, logsStatusMessage };
+}

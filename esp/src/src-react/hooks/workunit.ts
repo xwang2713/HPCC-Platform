@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useConst } from "@fluentui/react-hooks";
-import { Workunit, DFUWorkunit, Result, WUDetails, WUStateID, WUInfo, WorkunitsService } from "@hpcc-js/comms";
+import { Workunit, DFUWorkunit, Result, WsWorkunits, WUStateID, WorkunitsService } from "@hpcc-js/comms";
 import { scopedLogger } from "@hpcc-js/util";
 import nlsHPCC from "src/nlsHPCC";
 import * as Utility from "src/Utility";
@@ -16,7 +16,7 @@ export function useWorkunit(wuid: string, full: boolean = false): [Workunit, WUS
     const [retVal, setRetVal] = React.useState<{ workunit: Workunit, state: number, lastUpdate: number, isComplete: boolean, refresh: RefreshFunc }>();
 
     React.useEffect(() => {
-        if (wuid === undefined || wuid === null) {
+        if (!wuid) {
             setRetVal({ workunit: undefined, state: WUStateID.NotFound, lastUpdate: Date.now(), isComplete: undefined, refresh: (full?: boolean) => Promise.resolve(undefined) });
             return;
         }
@@ -53,7 +53,12 @@ export function useWorkunitResults(wuid: string): [Result[], Workunit, WUStateID
         if (workunit) {
             const fetchResults = singletonDebounce(workunit, "fetchResults");
             fetchResults().then(results => {
-                setResults(results);
+                if (workunit?.ResultsDesc) {
+                    setResults([]);
+                    logger.error(workunit?.ResultsDesc);
+                } else {
+                    setResults(results);
+                }
             }).catch(err => logger.error(err));
         }
     }, [workunit, state, count]);
@@ -122,7 +127,7 @@ export function useWorkunitVariables(wuid: string): [Variable[], Workunit, WUSta
     return [variables, workunit, state, inc];
 }
 
-export interface SourceFile extends WUInfo.ECLSourceFile {
+export interface SourceFile extends WsWorkunits.ECLSourceFile {
     __hpcc_parentName: string;
 }
 
@@ -131,6 +136,21 @@ export function useWorkunitSourceFiles(wuid: string): [SourceFile[], Workunit, W
     const [workunit, state] = useWorkunit(wuid);
     const [sourceFiles, setSourceFiles] = React.useState<SourceFile[]>([]);
     const [count, inc] = useCounter();
+
+    // sorts the WU source files alphabetically by parent name, then name
+    // with children immediately following parents
+    const sortFiles = React.useCallback(files => {
+        const sortedFiles = [];
+        const temp = files.sort((a, b) => a.Name.localeCompare(b.Name));
+
+        temp.filter(item => item.__hpcc_parentName === "").forEach(parent => {
+            sortedFiles.push(parent);
+            const relatedChildren = temp.filter(child => child.__hpcc_parentName === parent.Name);
+            sortedFiles.push(...relatedChildren);
+        });
+
+        return sortedFiles;
+    }, []);
 
     React.useEffect(() => {
         if (workunit) {
@@ -151,18 +171,18 @@ export function useWorkunitSourceFiles(wuid: string): [SourceFile[], Workunit, W
                         });
                     });
                 });
-                setSourceFiles(sourceFiles);
+                setSourceFiles(sortFiles(sourceFiles));
             }).catch(err => logger.error(err));
         }
-    }, [workunit, state, count]);
+    }, [count, sortFiles, state, workunit]);
 
     return [sourceFiles, workunit, state, inc];
 }
 
-export function useWorkunitWorkflows(wuid: string): [WUInfo.ECLWorkflow[], Workunit, () => void] {
+export function useWorkunitWorkflows(wuid: string): [WsWorkunits.ECLWorkflow[], Workunit, () => void] {
 
     const [workunit, state] = useWorkunit(wuid);
-    const [workflows, setWorkflows] = React.useState<WUInfo.ECLWorkflow[]>([]);
+    const [workflows, setWorkflows] = React.useState<WsWorkunits.ECLWorkflow[]>([]);
     const [count, increment] = useCounter();
 
     React.useEffect(() => {
@@ -179,6 +199,26 @@ export function useWorkunitWorkflows(wuid: string): [WUInfo.ECLWorkflow[], Worku
     return [workflows, workunit, increment];
 }
 
+export function useWorkunitProcesses(wuid: string): [WsWorkunits.ECLWUProcess[], Workunit, () => void] {
+
+    const [workunit, state] = useWorkunit(wuid);
+    const [processes, setProcesses] = React.useState<WsWorkunits.ECLWUProcess[]>([]);
+    const [count, increment] = useCounter();
+
+    React.useEffect(() => {
+        if (workunit) {
+            const fetchInfo = singletonDebounce(workunit, "fetchInfo");
+            fetchInfo({
+                IncludeProcesses: true
+            }).then(response => {
+                setProcesses(response?.Workunit?.ECLWUProcessList?.ECLWUProcess || []);
+            }).catch(err => logger.error(err));
+        }
+    }, [workunit, state, count]);
+
+    return [processes, workunit, increment];
+}
+
 export function useWorkunitXML(wuid: string): [string] {
 
     const service = useConst(() => new WorkunitsService({ baseUrl: "" }));
@@ -186,7 +226,7 @@ export function useWorkunitXML(wuid: string): [string] {
     const [xml, setXML] = React.useState("");
 
     React.useEffect(() => {
-        service.WUFile({
+        service.WUFileEx({
             Wuid: wuid,
             Type: "XML"
         }).then(response => {
@@ -197,10 +237,10 @@ export function useWorkunitXML(wuid: string): [string] {
     return [xml];
 }
 
-export function useWorkunitExceptions(wuid: string): [WUInfo.ECLException[], Workunit, () => void] {
+export function useWorkunitExceptions(wuid: string): [WsWorkunits.ECLException[], Workunit, () => void] {
 
     const [workunit, state] = useWorkunit(wuid);
-    const [exceptions, setExceptions] = React.useState<WUInfo.ECLException[]>([]);
+    const [exceptions, setExceptions] = React.useState<WsWorkunits.ECLException[]>([]);
     const [count, increment] = useCounter();
 
     React.useEffect(() => {
@@ -278,6 +318,8 @@ export function useWorkunitArchive(wuid: string): [string, Workunit, WUStateID, 
 
 export interface HelperRow {
     id: string;
+    Name?: string;
+    Path?: string;
     Type: string;
     Description?: string;
     FileSize?: number;
@@ -285,11 +327,16 @@ export interface HelperRow {
     workunit: Workunit;
 }
 
-function mapHelpers(workunit: Workunit, helpers: WUInfo.ECLHelpFile[] = []): HelperRow[] {
+function mapHelpers(workunit: Workunit, helpers: WsWorkunits.ECLHelpFile[] = []): HelperRow[] {
     return helpers.map((helper, i): HelperRow => {
+        const _path = helper.Name.split("\\").join("/").split("/");
+        _path.pop();
+        const helperPath = _path.join("/");
         return {
             id: "H:" + i,
+            Name: helper.Name,
             Type: helper.Type,
+            Path: helperPath,
             Description: Utility.pathTail(helper.Name),
             FileSize: helper.FileSize,
             Orig: helper,
@@ -298,7 +345,7 @@ function mapHelpers(workunit: Workunit, helpers: WUInfo.ECLHelpFile[] = []): Hel
     });
 }
 
-function mapThorLogInfo(workunit: Workunit, thorLogInfo: WUInfo.ThorLogInfo[] = []): HelperRow[] {
+function mapThorLogInfo(workunit: Workunit, thorLogInfo: WsWorkunits.ThorLogInfo[] = []): HelperRow[] {
     const retVal: HelperRow[] = [];
     for (let i = 0; i < thorLogInfo.length; ++i) {
         for (let j = 0; j < thorLogInfo[i].NumberSlaves; ++j) {
@@ -352,9 +399,9 @@ export function useWorkunitHelpers(wuid: string): [HelperRow[], () => void] {
     return [helpers, incCounter];
 }
 
-export function useGlobalWorkunitNotes(): [WUDetails.Note[]] {
+export function useGlobalWorkunitNotes(): [WsWorkunits.Note[]] {
 
-    const [notes, setNotes] = React.useState<WUDetails.Note[]>([]);
+    const [notes, setNotes] = React.useState<WsWorkunits.Note[]>([]);
 
     React.useEffect(() => {
         const workunit = Workunit.attach({ baseUrl: "" }, "");
@@ -372,7 +419,6 @@ export function useGlobalWorkunitNotes(): [WUDetails.Note[]] {
 
 export function useDfuWorkunit(wuid: string, full: boolean = false): [DFUWorkunit, WUStateID, number, boolean, (full?: boolean) => Promise<DFUWorkunit>] {
 
-    // eslint-disable-next-line func-call-spacing
     const [retVal, setRetVal] = React.useState<{ workunit: DFUWorkunit, state: number, lastUpdate: number, isComplete: boolean, refresh: (full?: boolean) => Promise<DFUWorkunit> }>();
 
     React.useEffect(() => {

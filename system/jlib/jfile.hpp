@@ -29,6 +29,7 @@
 #include "jtime.hpp"
 #include "jsocket.hpp"
 #include "jstatcodes.h"
+#include "jstream.hpp"
 
 interface IFile;
 interface IFileIO;
@@ -45,8 +46,8 @@ enum IFOmode { IFOcreate, IFOread, IFOwrite, IFOreadwrite, IFOcreaterw };    // 
 enum IFSHmode { IFSHnone, IFSHread=0x8, IFSHfull=0x10};   // sharing modes
 enum IFSmode { IFScurrent = FILE_CURRENT, IFSend = FILE_END, IFSbegin = FILE_BEGIN };    // seek mode
 enum CFPmode { CFPcontinue, CFPcancel, CFPstop };    // modes for ICopyFileProgress::onProgress return
-enum IFEflags { IFEnone=0x0, IFEnocache=0x1, IFEcache=0x2, IFEsync=0x4 };    // mask
-constexpr offset_t unknownFileSize = -1;
+enum IFEflags { IFEnone=0x0, IFEnocache=0x1, IFEcache=0x2, IFEsync=0x4, IFEsyncAtClose=0x8 }; // mask
+constexpr offset_t unknownFileSize = (offset_t)-1;
 
 class CDateTime;
 
@@ -221,6 +222,7 @@ interface IFileIOStream : extends IIOStream
     virtual offset_t size() = 0;
     virtual offset_t tell() = 0;
     virtual unsigned __int64 getStatistic(StatisticKind kind) = 0;
+    virtual void close() = 0;
 };
 
 interface IDiscretionaryLock: extends IInterface
@@ -272,7 +274,7 @@ extern jlib_decl IFile * createIFile(const char * filename);
 extern jlib_decl IFile * createIFile(MemoryBuffer & buffer);
 extern jlib_decl void touchFile(const char *filename);
 extern jlib_decl void touchFile(IFile *file);
-extern jlib_decl IFileIO * createIFileIO(HANDLE handle,IFOmode mode,IFEflags extraFlags=IFEnone);
+extern jlib_decl IFileIO * createIFileIO(IFile * creator, HANDLE handle,IFOmode mode,IFEflags extraFlags=IFEnone);
 extern jlib_decl IDirectoryIterator * createDirectoryIterator(const char * path = NULL, const char * wildcard = NULL, bool sub = false, bool includedirs = true);
 extern jlib_decl IDirectoryIterator * createNullDirectoryIterator();
 extern jlib_decl IFileIO * createIORange(IFileIO * file, offset_t header, offset_t length);     // restricts input/output to a section of a file.
@@ -294,14 +296,6 @@ extern jlib_decl IFileIO * createIFileIO(MemoryBuffer & buffer);
 
 //-- Creation of routines to implement other interfaces on the interfaces above.
 
-interface IReadSeq;
-interface IWriteSeq;
-
-// NB the following are unbuffered 
-extern jlib_decl IReadSeq *createReadSeq(IFileIOStream * stream, offset_t _offset, size32_t size); // no buffering
-extern jlib_decl IWriteSeq *createWriteSeq(IFileIOStream * stream, size32_t size);                 // no buffering
-
-
 extern jlib_decl IDiscretionaryLock *createDiscretionaryLock(IFile *file);
 extern jlib_decl IDiscretionaryLock *createDiscretionaryLock(IFileIO *fileio);
 
@@ -309,56 +303,13 @@ extern jlib_decl IDiscretionaryLock *createDiscretionaryLock(IFileIO *fileio);
 
 
 // useful stream based reader 
-interface ISerialStream: extends IInterface
-{
-    virtual const void * peek(size32_t wanted,size32_t &got) = 0;   // try and ensure wanted bytes are available. 
-                                                                    // if got<wanted then approaching eof
-                                                                    // if got>wanted then got is size available in buffer
 
-    virtual void get(size32_t len, void * ptr) = 0;                 // exception if no data available
-    virtual bool eos() = 0;                                         // no more data
-    virtual void skip(size32_t sz) = 0;
-    virtual offset_t tell() const = 0;
-    virtual void reset(offset_t _offset,offset_t _flen=(offset_t)-1) = 0;       // input stream has changed - restart reading
-};
-
-/* example of reading a nul terminated string using ISerialStream peek and skip
-{
-    for (;;) {
-        const char *s = peek(1,got);
-        if (!s)
-            break;  // eof before nul detected;
-        const char *p = s;
-        const char *e = p+got;
-        while (p!=e) {
-            if (!*p) {
-                out.append(p-s,s);
-                skip(p-s+1); // include nul
-                return;
-            }
-            p++;
-        }
-        out.append(got,s);
-        skip(got);
-    }
-}
-*/
-
-
-
-interface IFileSerialStreamCallback  // used for CRC tallying
-{
-    virtual void process(offset_t ofs, size32_t sz, const void *buf) = 0;
-};
-
-
-extern jlib_decl ISerialStream *createSimpleSerialStream(ISimpleReadStream * in, size32_t bufsize = (size32_t)-1, IFileSerialStreamCallback *callback=NULL);
-extern jlib_decl ISerialStream *createSocketSerialStream(ISocket * in, unsigned timeoutms, size32_t bufsize = (size32_t)-1, IFileSerialStreamCallback *callback=NULL);
-extern jlib_decl ISerialStream *createFileSerialStream(IFileIOStream * in, size32_t bufsize = (size32_t)-1, IFileSerialStreamCallback *callback=NULL);
-extern jlib_decl ISerialStream *createFileSerialStream(IFileIO *fileio, offset_t ofs=0, offset_t flen=(offset_t)-1,size32_t bufsize = (size32_t)-1, IFileSerialStreamCallback *callback=NULL);
-extern jlib_decl ISerialStream *createFileSerialStream(IMemoryMappedFile *mmapfile, offset_t ofs=0, offset_t flen=(offset_t)-1, IFileSerialStreamCallback *callback=NULL);
-extern jlib_decl ISerialStream *createMemorySerialStream(const void *buffer, memsize_t len, IFileSerialStreamCallback *callback=NULL);
-extern jlib_decl ISerialStream *createMemoryBufferSerialStream(MemoryBuffer & buffer, IFileSerialStreamCallback *callback=NULL);
+extern jlib_decl ISerialInputStream *createSocketSerialStream(ISocket * in, unsigned timeoutms);
+extern jlib_decl IBufferedSerialInputStream *createSimpleSerialStream(ISimpleReadStream * in, size32_t bufsize = (size32_t)-1);
+extern jlib_decl IBufferedSerialInputStream *createFileSerialStream(IFileIO *fileio, offset_t ofs=0, offset_t flen=(offset_t)-1,size32_t bufsize = (size32_t)-1);
+extern jlib_decl IBufferedSerialInputStream *createFileSerialStream(IMemoryMappedFile *mmapfile, offset_t ofs=0, offset_t flen=(offset_t)-1);
+extern jlib_decl IBufferedSerialInputStream *createMemorySerialStream(const void *buffer, memsize_t len);
+extern jlib_decl IBufferedSerialInputStream *createMemoryBufferSerialStream(MemoryBuffer & buffer);
 
 
 typedef Linked<IFile> IFileAttr;
@@ -786,7 +737,26 @@ extern jlib_decl IPropertyTreeIterator * getRemoteStoragesIterator();
 extern jlib_decl IPropertyTreeIterator * getPlanesIterator(const char * category, const char *name);
 
 extern jlib_decl IFileIO *createBlockedIO(IFileIO *base, size32_t blockSize);
+//MORE: Should use enum class to avoid potential symbol clashes
+enum PlaneAttributeType // remember to update planeAttributeInfo in jfile.cpp
+{
+    BlockedSequentialIO,
+    BlockedRandomIO,
+    FileSyncWriteClose,
+    ConcurrentWriteSupport,
+    WriteSyncMarginMs,
+    PlaneAttributeCount
+};
+extern jlib_decl const char *getPlaneAttributeString(PlaneAttributeType attr);
+extern jlib_decl unsigned __int64 getPlaneAttributeValue(const char *planeName, PlaneAttributeType planeAttrType, unsigned __int64 defaultValue);
+extern jlib_decl const char *findPlaneFromPath(const char *filePath, StringBuffer &result);
+//returns true if plane exists, fills resultValue with defaultValue if attribute is unset
+extern jlib_decl bool findPlaneAttrFromPath(const char *filePath, PlaneAttributeType planeAttrType, unsigned __int64 defaultValue, unsigned __int64 &resultValue);
 extern jlib_decl size32_t getBlockedFileIOSize(const char *planeName, size32_t defaultSize=0);
+extern jlib_decl size32_t getBlockedRandomIOSize(const char *planeName, size32_t defaultSize=0);
+extern jlib_decl bool getFileSyncWriteCloseEnabled(const char *planeName);
+extern jlib_decl bool getConcurrentWriteSupported(const char *planeName);
+extern jlib_decl unsigned getWriteSyncMarginMs(const char * planeName);
 
 //---- Pluggable file type related functions ----------------------------------------------
 

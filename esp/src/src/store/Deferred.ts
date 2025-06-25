@@ -56,19 +56,19 @@ export class Deferred<T> implements Thenable<T> {
     }
 
     isRejected() {
-        this._isRejected;
+        return this._isRejected;
     }
 
     isFulfilled() {
-        this._isResolved || this._isRejected || this._isCanceled;
+        return this._isResolved || this._isRejected || this._isCanceled;
     }
 
     isCanceled() {
-        this._isCanceled;
+        return this._isCanceled;
     }
 }
 
-export class DeferredResponse<T> extends Deferred<T[]>  {
+export class DeferredResponse<T> extends Deferred<T[]> {
 
     //  --- Legacy Dojo Support (fake QeuryResults) ---
     forEach(callback) {

@@ -37,6 +37,8 @@ set (    SRCS
          remotetests.cpp
          dalitests.cpp
          jlibtests.cpp
+         jlibtests2.cpp
+         jstreamtests.cpp
          cryptotests.cpp
          hqltests.cpp
          esdltests.cpp
@@ -44,10 +46,18 @@ set (    SRCS
          txSummarytests.cpp
          accessmaptests.cpp
          fxpptests.cpp
+         espapicmdtests.cpp
+         filetests.cpp
+         wutests.cpp
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/fxpp/FragmentedXmlPullParser.cpp
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp/fxpp/FragmentedXmlAssistant.cpp
          ${CMAKE_BINARY_DIR}/generated/ws_loggingservice_esp.cpp
          datamaskingtests.cpp
+         ${HPCC_SOURCE_DIR}/tools/esp-api/espapi.cpp
+         ${HPCC_SOURCE_DIR}/tools/esp-api/espshell.cpp
+         ${HPCC_SOURCE_DIR}/tools/esp-api/espservice.cpp
+         commonJsonWriterTests.cpp
+         rtlxmltests.cpp
     )
 
 if (NOT CONTAINERIZED)
@@ -72,6 +82,7 @@ include_directories (
          ./../../dali/base
          ./../../system/security/shared
          ./../../common/deftype
+         ./../../common/workunit
          ./../../system/security/cryptohelper
          ./../../configuration/configmgr/configmgrlib
          ${HPCC_SOURCE_DIR}/system/masking/include
@@ -79,6 +90,8 @@ include_directories (
          ${HPCC_SOURCE_DIR}/rtl/eclrtl
          ${HPCC_SOURCE_DIR}/rtl/include
          ${HPCC_SOURCE_DIR}/common/dllserver
+         ${HPCC_SOURCE_DIR}/common/eventconsumption
+         ${HPCC_SOURCE_DIR}/common/workunit
          ${HPCC_SOURCE_DIR}/ecl/hql
          ${HPCC_SOURCE_DIR}/esp/bindings
          ${HPCC_SOURCE_DIR}/esp/bindings/SOAP/xpp
@@ -90,9 +103,11 @@ include_directories (
          ${HPCC_SOURCE_DIR}/esp/platform
          ${HPCC_SOURCE_DIR}/esp/services/common
          ${HPCC_SOURCE_DIR}/tools/hidl
+         ${HPCC_SOURCE_DIR}/tools/esp-api
          ${CMAKE_BINARY_DIR}/generated
          ${CMAKE_BINARY_DIR}
          ${CMAKE_BINARY_DIR}/oss
+         ${HPCC_SOURCE_DIR}/esp/bindings/http/client
     )
 
 ADD_DEFINITIONS( -D_CONSOLE )
@@ -110,7 +125,9 @@ target_link_libraries ( unittests
          esphttp
          esdllib
          logginglib
-         ${CPPUNIT_LIBRARIES}
+         workunit
+         eventconsumption
+         ${CppUnit_LIBRARIES}
     )
 
 if (NOT CONTAINERIZED)

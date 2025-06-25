@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-declaration-merging */
+import * as declare from "dojo/_base/declare";
 import * as dom from "dojo/dom";
 import * as domClass from "dojo/dom-class";
 import * as domForm from "dojo/dom-form";
@@ -12,12 +12,12 @@ import { DPWorkunit } from "./DataPatterns/DPWorkunit";
 import { Report } from "./DataPatterns/Report";
 import { getStateIconClass } from "./ESPWorkunit";
 
-// @ts-ignore
+// @ts-expect-error
 import * as _TabContainerWidget from "hpcc/_TabContainerWidget";
-// @ts-ignore
+// @ts-expect-error
 import * as DelayLoadWidget from "hpcc/DelayLoadWidget";
 
-// @ts-ignore
+// @ts-expect-error
 import * as template from "dojo/text!hpcc/templates/DataPatternsWidget.html";
 
 import "dijit/Fieldset";
@@ -34,58 +34,35 @@ import "dijit/TooltipDialog";
 import "hpcc/TableContainer";
 import "hpcc/TargetSelectWidget";
 
-import { declareDecorator } from "./DeclareDecorator";
 import { WUStatus } from "./WUStatus";
-
-type _TabContainerWidget = {
-    id: string;
-    widget: any;
-    params: { [key: string]: any };
-    inherited(args: any);
-    setDisabled(id: string, disabled: boolean, icon?: string, disabledIcon?: string);
-    getSelectedChild(): any;
-    createChildTabID(id: string): string;
-    addChild(tabItem: any, pos: number);
-};
 
 export const supportedFileType = (contentType: string): boolean => ["flat", "csv", "thor"].indexOf((contentType || "").toLowerCase()) >= 0;
 
-export interface DataPatternsWidget extends _TabContainerWidget {
-}
+export const DataPatternsWidget = declare("DataPatternsWidget", [_TabContainerWidget], {
+    templateString: template,
+    i18n: nlsHPCC,
 
-@declareDecorator("DataPatternsWidget", _TabContainerWidget)
-export class DataPatternsWidget {
-    templateString = template;
-    static baseClass = "DataPatternsWidget";
-    i18n = nlsHPCC;
+    summaryWidget: undefined,
+    rawDataWidget: undefined,
+    workunitWidget: undefined,
+    centerContainer: undefined,
+    targetSelectWidget: undefined,
+    optimizeForm: undefined,
+    optimizeTargetSelect: undefined,
+    optimizeTarget: undefined,
 
-    summaryWidget;
-    rawDataWidget;
-    workunitWidget;
-    centerContainer;
-    targetSelectWidget;
-    optimizeForm;
-    optimizeTargetSelect;
-    optimizeTarget;
+    wuStatus: undefined as WUStatus | undefined,
+    dpReport: undefined as Report | undefined,
 
-    wuStatus: WUStatus;
-    dpReport: Report;
+    _wu: undefined as Workunit | undefined,
+    _dpWu: undefined as DPWorkunit | undefined,
 
-    _wu: Workunit;
-    _dpWu: DPWorkunit;
+    buildRendering: function buildRendering(args) {
+        this.inherited(buildRendering, arguments);
+    },
 
-    constructor() {
-    }
-
-    //  Data ---
-    //  --- ---
-
-    buildRendering(args) {
-        this.inherited(arguments);
-    }
-
-    postCreate(args) {
-        this.inherited(arguments);
+    postCreate: function postCreate(args) {
+        this.inherited(postCreate, arguments);
 
         this.summaryWidget = registry.byId(this.id + "_Summary");
         this.rawDataWidget = registry.byId(this.id + "_RawData");
@@ -114,35 +91,35 @@ export class DataPatternsWidget {
             .baseUrl("")
             ;
         this.dpReport = new Report();
-    }
+    },
 
-    startup(args) {
-        this.inherited(arguments);
-    }
+    startup: function startup(args) {
+        this.inherited(startup, arguments);
+    },
 
-    resize(s) {
-        this.inherited(arguments);
-    }
+    resize: function resize(s) {
+        this.inherited(resize, arguments);
+    },
 
-    layout(args) {
-        this.inherited(arguments);
-    }
+    layout: function layout(args) {
+        this.inherited(layout, arguments);
+    },
 
-    destroy(args) {
-        this.inherited(arguments);
-    }
+    destroy: function destroy(args) {
+        this.inherited(destroy, arguments);
+    },
 
     //  Implementation  ---
     _onRefresh() {
         this.refreshData(true);
-    }
+    },
 
     _onAnalyze() {
         const target = this.targetSelectWidget.get("value");
         this._dpWu.create(target).then(() => {
             this.refreshData();
         });
-    }
+    },
 
     _onOptimizeOk() {
         if (this.optimizeForm.validate()) {
@@ -152,7 +129,7 @@ export class DataPatternsWidget {
             });
         }
         registry.byId(this.id + "OptimizeDropDown").closeDropDown();
-    }
+    },
 
     _onDelete() {
         this._dpWu.delete().then(() => {
@@ -160,10 +137,10 @@ export class DataPatternsWidget {
             this.workunitWidget.reset();
             this.refreshData();
         });
-    }
+    },
 
-    init(params) {
-        if (this.inherited(arguments))
+    init: function init(params) {
+        if (this.inherited(init, arguments))
             return;
 
         this.targetSelectWidget.init({});
@@ -176,7 +153,7 @@ export class DataPatternsWidget {
         this.dpReport.target(this.id + "DPReport");
 
         this.refreshData();
-    }
+    },
 
     initTab() {
         const currSel = this.getSelectedChild();
@@ -199,7 +176,7 @@ export class DataPatternsWidget {
                 currSel.init(currSel.params);
             }
         }
-    }
+    },
 
     ensureWUPane(wuid: string) {
         const id = this.createChildTabID(wuid);
@@ -215,7 +192,7 @@ export class DataPatternsWidget {
             this.addChild(retVal, 3);
         }
         return retVal;
-    }
+    },
 
     refreshData(full: boolean = false) {
         if (full) {
@@ -254,7 +231,7 @@ export class DataPatternsWidget {
             }
             this.refreshActionState();
         });
-    }
+    },
 
     refreshActionState() {
         const isComplete = this._wu && this._wu.isComplete();
@@ -295,4 +272,4 @@ export class DataPatternsWidget {
             .remove()
             ;
     }
-}
+});

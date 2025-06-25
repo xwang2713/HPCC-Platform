@@ -78,7 +78,16 @@ void setMulticastEndpoints(unsigned numChannels);
 #define ROXIE_SLA_PRIORITY 0x40000000    // mask in activityId indicating it goes SLA priority queue
 #define ROXIE_HIGH_PRIORITY 0x80000000   // mask in activityId indicating it goes on the fast queue
 #define ROXIE_LOW_PRIORITY 0x00000000    // mask in activityId indicating it goes on the slow queue (= default)
+// background priority queue is when both ROXIE_SLA_PRIORITY and ROXIE_HIGH_PRIORITY are set
+#define ROXIE_BG_PRIORITY 0xc0000000     // mask in activityId indicating it goes on the bg queue
 #define ROXIE_PRIORITY_MASK (ROXIE_SLA_PRIORITY | ROXIE_HIGH_PRIORITY | ROXIE_LOW_PRIORITY)
+
+#define QUERY_BG_PRIORITY_VALUE  -1
+#define QUERY_LOW_PRIORITY_VALUE  0
+#define QUERY_HIGH_PRIORITY_VALUE 1
+#define QUERY_SLA_PRIORITY_VALUE  2
+static constexpr int queryMinPriorityValue = QUERY_BG_PRIORITY_VALUE;
+static constexpr int queryMaxPriorityValue = QUERY_SLA_PRIORITY_VALUE;
 
 #define ROXIE_ACTIVITY_FETCH 0x20000000    // or'ed into activityId for fetch part of full keyed join activities
 
@@ -88,7 +97,6 @@ void setMulticastEndpoints(unsigned numChannels);
 #define ROXIE_UNLOAD 0x3ffffff6u
 #define ROXIE_DEBUGREQUEST 0x3ffffff7u
 #define ROXIE_DEBUGCALLBACK 0x3ffffff8u
-#define ROXIE_PING 0x3ffffff9u
 #define ROXIE_TRACEINFO 0x3ffffffau
 #define ROXIE_FILECALLBACK 0x3ffffffbu
 #define ROXIE_ALIVE 0x3ffffffcu
@@ -159,7 +167,7 @@ public:
     unsigned activityId = 0;            // identifies the helper factory to be used (activityId in graph)
     hash64_t queryHash = 0;             // identifies the query
 
-    ruid_t uid = 0;                     // unique id
+    std::atomic<ruid_t> uid = 0;        // unique id
     ServerIdentifier serverId;
 #ifdef SUBCHANNELS_IN_HEADER
     ServerIdentifier subChannels[MAX_SUBCHANNEL];
@@ -173,12 +181,13 @@ public:
 
     static unsigned getSubChannelMask(unsigned subChannel);
     unsigned priorityHash() const;
+    void clear();
     void copy(const RoxiePacketHeader &oh);
     bool matchPacket(const RoxiePacketHeader &oh) const;
     void init(const RemoteActivityId &_remoteId, ruid_t _uid, unsigned _channel, unsigned _overflowSequence);
     StringBuffer &toString(StringBuffer &ret) const;
     bool allChannelsFailed();
-    bool retry(bool ack);
+    bool retry();
     void setException(unsigned subChannel);
     unsigned thisChannelRetries(unsigned subChannel);
 
@@ -265,8 +274,9 @@ interface IRoxieQueryPacket : extends IInterface
 
     virtual void noteTimeSent() = 0;
     virtual void setAcknowledged() = 0;
+    virtual void clearAcknowledged() = 0;
     virtual bool isAcknowledged() const = 0;
-    virtual bool resendNeeded(unsigned timeout, unsigned now) const = 0;
+    virtual bool resendNeeded(unsigned now) = 0;
 };
 
 interface IQueryDll;
@@ -294,7 +304,6 @@ extern unsigned callbackTimeout;
 extern unsigned lowTimeout;
 extern unsigned highTimeout;
 extern unsigned slaTimeout;
-extern unsigned headRegionSize;
 extern unsigned ccdMulticastPort;
 extern IPropertyTree *topology;
 extern MapStringTo<int> *preferredClusters;
@@ -303,6 +312,9 @@ extern StringArray allQuerySetNames;
 extern bool blockedLocalAgent;
 extern bool acknowledgeAllRequests;
 extern unsigned packetAcknowledgeTimeout;
+extern cycle_t dynPriorityAdjustCycles;
+extern bool traceThreadStartDelay;
+extern int adjustBGThreadNiceValue;
 extern bool alwaysTrustFormatCrcs;
 extern bool allFilesDynamic;
 extern bool lockSuperFiles;
@@ -329,16 +341,16 @@ extern unsigned maxLockAttempts;
 extern bool enableHeartBeat;
 extern bool checkVersion;
 extern unsigned memoryStatsInterval;
-extern unsigned pingInterval;
 extern unsigned socketCheckInterval;
 extern memsize_t defaultMemoryLimit;
 extern unsigned defaultTimeLimit[3];
 extern unsigned defaultWarnTimeLimit[3];
+extern unsigned defaultMinTimeLimit[3];
 extern unsigned defaultThorConnectTimeout;
 extern bool pretendAllOpt;
 extern ClientCertificate clientCert;
 extern bool useHardLink;
-extern unsigned maxFileAge[2];
+extern unsigned __int64 maxFileAgeNS[2];
 extern unsigned minFilesOpen[2];
 extern unsigned maxFilesOpen[2];
 extern RelaxedAtomic<unsigned> restarts;
@@ -388,6 +400,7 @@ extern bool ignoreFileDateMismatches;
 extern bool ignoreFileSizeMismatches;
 extern int fileTimeFuzzySeconds;
 extern SinkMode defaultSinkMode;
+extern bool limitWaitingWorkers;
 
 #if defined(_CONTAINERIZED) || defined(SUBCHANNELS_IN_HEADER)
 static constexpr bool roxieMulticastEnabled = false;
@@ -451,6 +464,8 @@ extern unsigned agentQueryReleaseDelaySeconds;
 extern unsigned coresPerQuery;
 
 extern unsigned cacheReportPeriodSeconds;
+extern stat_type minimumInterestingActivityCycles;
+
 
 extern StringBuffer logDirectory;
 extern StringBuffer pluginDirectory;
@@ -479,6 +494,8 @@ inline unsigned getBondedChannel(unsigned partNo)
 {
     return ((partNo - 1) % numChannels) + 1;
 }
+
+extern unsigned getPriorityMask(int priority);
 
 extern void FatalError(const char *format, ...)  __attribute__((format(printf, 1, 2)));
 extern unsigned getNextInstanceId();
@@ -591,6 +608,9 @@ public: // Not very clean but I don't care
     bool blind;
     mutable bool aborted;
     mutable CIArrayOf<LogItem> log;
+    static constexpr const unsigned MaxSlowActivities = 5;
+    mutable unsigned slowestActivityIds[MaxSlowActivities] = {};
+    mutable stat_type slowestActivityTimes[MaxSlowActivities] = {};
 private:
     Owned<ISpan> activeSpan = getNullSpan();
     ContextLogger(const ContextLogger &);  // Disable copy constructor
@@ -692,11 +712,7 @@ public:
         ctxTraceLevel = _level;
     }
 
-    StringBuffer &getStats(StringBuffer &s) const
-    {
-        CriticalBlock block(statsCrit);
-        return stats.toStr(s);
-    }
+    StringBuffer &getStats(StringBuffer &s) const;
 
     virtual bool isIntercepted() const
     {
@@ -720,18 +736,8 @@ public:
         stats.setStatistic(kind, value);
     }
 
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const
-    {
-        if (from.isThreadSafeMergeSource())
-        {
-            stats.merge(from);
-        }
-        else
-        {
-            CriticalBlock block(statsCrit);
-            stats.merge(from);
-        }
-    }
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const;
+
     virtual void gatherStats(CRuntimeStatisticCollection & merged) const override
     {
         merged.merge(stats);

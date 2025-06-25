@@ -25,7 +25,9 @@ ESPenum LogAccessType : int
     BySourceInstance(5, "BySourceInstance"),
     BySourceNode(6, "BySourceNode"),
     ByFieldName(7, "ByFieldName"),
-    ByPod(8, "ByPod")
+    ByPod(8, "ByPod"),
+    ByTraceID(9, "ByTraceID"),
+    BySpanID(10, "BySpanID")
 };
 
 ESPenum LogAccessLogFormat : int
@@ -33,7 +35,7 @@ ESPenum LogAccessLogFormat : int
     XML(0, "XML"),
     JSON(1, "JSON"),
     CSV(2, "CSV")
-} ;
+};
 
 ESPenum LogSelectColumnMode : int
 {
@@ -67,7 +69,9 @@ ESPenum LogColumnType : string
     processid("processid"),
     threadid("threadid"),
     timestamp("timestamp"),
-    pod("pod")
+    pod("pod"),
+    traceid("traceid"),
+    spanid("spanid")
 };
 
 ESPenum LogColumnValueType : string
@@ -75,7 +79,8 @@ ESPenum LogColumnValueType : string
     str("string"),
     numeric("numeric"),
     datetime("datetime"),
-    enum("enum")
+    enum("enum"),
+    epoch("epoch")
 };
 
 ESPStruct [nil_remove] LogColumn
@@ -87,7 +92,7 @@ ESPStruct [nil_remove] LogColumn
     ESPenum LogColumnValueType ColumnType;
 };
 
-ESPResponse GetLogAccessInfoResponse
+ESPResponse [exceptions_inline] GetLogAccessInfoResponse
 {
     [min_ver("1.04")] ESParray<ESPstruct LogColumn, Column> Columns;
     string RemoteLogManagerType;
@@ -191,7 +196,9 @@ ESPenum SortColumType : int
     BySourceInstance(5, "BySourceInstance"),
     BySourceNode(6, "BySourceNode"),
     ByFieldName(7, "ByFieldName"),
-    ByPod(8, "ByPod")
+    ByPod(8, "ByPod"),
+    ByTraceID(9, "ByTraceID"),
+    BySpanID(10, "BySpanID")
 };
 
 ESPStruct SortCondition
@@ -211,21 +218,60 @@ ESPRequest GetLogsRequest
     int64 LogLineStartFrom(0);
     [min_ver("1.01")] ESPenum LogSelectColumnMode SelectColumnMode(1);
     ESParray<string> Columns;
-    LogAccessLogFormat Format("JSON");
+    //LogAccessLogFormat Format("JSON"); 
+    //Above line replaced by below line to avoid downstream issues due to missing
+    //ESPenum qualifier. This field has been treated as string by legacy users
+    string Format("JSON");
     [min_ver("1.03")] ESParray<ESPstruct SortCondition> SortBy;
 };
 
-ESPResponse GetLogsResponse
+ESPResponse [exceptions_inline] GetLogsResponse
 {
     string LogLines;
     [min_ver("1.02")] unsigned int LogLineCount;
     [min_ver("1.02")] unsigned int TotalLogLinesAvailable;
 };
 
-ESPservice [auth_feature("WsLogAccess:READ"), version("1.05"), default_client_version("1.05"), exceptions_inline("xslt/exceptions.xslt")] ws_logaccess
+ESPRequest GetHealthReportRequest
+{
+    bool IncludeConfiguration(false);
+    bool IncludeDebugReport(false);
+    bool IncludeSampleQuery(false);
+};
+
+ESPenum LogAccessStatusCode : int
+{
+    Success(0, "Success"),
+    Warning(1, "Warning"),
+    Fail(2, "Fail")
+};
+
+ESPStruct LogAccessStatus
+{
+    LogAccessStatusCode Code;
+    [min_ver("1.08")] ESParray<string> MessageArray;
+    [max_ver("1.07")] LogAccessStatusCode Messages;
+};
+
+ESPStruct LogAccessDebugReport
+{
+    string SampleQueryReport;
+    string PluginDebugReport;
+    string ServerDebugReport;
+};
+
+ESPResponse [exceptions_inline] GetHealthReportResponse
+{
+    ESPStruct LogAccessStatus Status;
+    ESPStruct LogAccessDebugReport DebugReport;
+    string Configuration;
+};
+
+ESPservice [auth_feature("WsLogAccess:READ"), version("1.08"), default_client_version("1.08"), exceptions_inline("xslt/exceptions.xslt")] ws_logaccess
 {
     ESPmethod GetLogAccessInfo(GetLogAccessInfoRequest, GetLogAccessInfoResponse);
     ESPmethod GetLogs(GetLogsRequest, GetLogsResponse);
+    ESPmethod [min_ver("1.07")] GetHealthReport(GetHealthReportRequest, GetHealthReportResponse);
 };
 
 SCMexportdef(ws_logaccess);

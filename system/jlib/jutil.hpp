@@ -42,7 +42,9 @@ bool jlib_decl getEnvVar(const char * varName, StringBuffer & varValue);
 interface IPropertyTree;
 interface IProperties;
 
-void jlib_decl MilliSleep(unsigned milli);
+extern jlib_decl void MilliSleep(unsigned milli);
+extern jlib_decl void NanoSleep(__uint64 ns);
+
 long jlib_decl atolong_l(const char * s,int l);
 int  jlib_decl atoi_l(const char * s,int l);
 __int64 jlib_decl atoi64_l(const char * s,int l);
@@ -343,15 +345,12 @@ inline unsigned hex2num(char next)
     return 0;
 }
 
-extern jlib_decl void initThreadLocal(int len, void* val);
-extern jlib_decl void* getThreadLocalVal();
-extern jlib_decl void clearThreadLocal();
 
 
 extern jlib_decl bool matchesMask(const char *fn, const char *mask, unsigned p, unsigned n);
 extern jlib_decl StringBuffer &expandMask(StringBuffer &buf, const char *mask, unsigned p, unsigned n);
 extern jlib_decl bool constructMask(StringAttr &attr, const char *fn, unsigned p, unsigned n);
-extern jlib_decl bool deduceMask(const char *fn, bool expandN, StringAttr &mask, unsigned &p, unsigned &n); // p is 0 based in these routines
+extern jlib_decl bool deduceMask(const char *fn, bool expandN, StringAttr &mask, unsigned &p, unsigned &n, unsigned &filenameLen); // p is 0 based in these routines
 
 class HashKeyElement;
 class jlib_decl NamedCount
@@ -373,17 +372,7 @@ public:
 
 extern jlib_decl StringBuffer &dumpNamedCounts(StringBuffer &str);
 
-
-interface IAuthenticatedUser: extends IInterface
-{
-    virtual bool login(const char *user, const char *passwd) = 0;
-    virtual void impersonate()=0;
-    virtual void revert()=0;
-    virtual const char *username()=0;
-};
-
 interface IAtom;
-extern jlib_decl IAuthenticatedUser *createAuthenticatedUser();
 extern jlib_decl void serializeAtom(MemoryBuffer & target, IAtom * name);
 extern jlib_decl IAtom * deserializeAtom(MemoryBuffer & source);
 
@@ -495,6 +484,7 @@ extern jlib_decl StringBuffer &getTempFilePath(StringBuffer & target, const char
 extern jlib_decl StringBuffer &getSpillFilePath(StringBuffer & target, const char * component, IPropertyTree * pTree);
 extern jlib_decl StringBuffer &createUniqueTempDirectoryName(StringBuffer & ret);
 extern jlib_decl IFile *createUniqueTempDirectory();
+extern jlib_decl StringBuffer &getSystemTempDir(StringBuffer &ret);
 
 interface jlib_thrown_decl ICorruptDllException: extends IException
 {
@@ -654,14 +644,16 @@ struct HPCCBuildInfo
 extern jlib_decl HPCCBuildInfo hpccBuildInfo;
 extern jlib_decl bool checkCreateDaemon(unsigned argc, const char * * argv);
 
+extern jlib_decl unsigned readDigits(char const * & str, unsigned numDigits, bool throwOnFailure = true);
+
 //Createpassword of specified length, containing UpperCaseAlphas, LowercaseAlphas, numerics and symbols
 extern jlib_decl const char * generatePassword(StringBuffer &pwd, int pwdLen);
 
-#ifdef _CONTAINERIZED
 extern jlib_decl bool getDefaultPlane(StringBuffer &ret, const char * componentOption, const char * category);
-#endif
 
 extern jlib_decl void getResourceFromJfrog(StringBuffer &localPath, IPropertyTree &item);
+
+extern jlib_decl void hold(const char *msg);
 
 #endif
 

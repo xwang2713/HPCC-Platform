@@ -22,6 +22,7 @@
 
 #include <assert.h>
 #include <atomic>
+#include <mutex>
 #include <functional>
 #include "jiface.hpp"
 #include "jsem.hpp"
@@ -46,10 +47,11 @@ extern jlib_decl void spinUntilReady(std::atomic_uint &value);
 #endif
 
 #ifdef _WIN32
-class jlib_decl Mutex
+class jlib_decl LegacyMutex
 {
+friend class Monitor;
 protected:
-    Mutex(const char *name)
+    LegacyMutex(const char *name)
     {
         mutex = CreateMutex(NULL, FALSE, name);
         assertex(mutex);
@@ -57,13 +59,13 @@ protected:
         owner = 0;
     }
 public:
-    Mutex()
+    LegacyMutex()
     {
         mutex = CreateMutex(NULL, FALSE, NULL);
         lockcount = 0;
         owner = 0;
     }
-    ~Mutex()
+    ~LegacyMutex()
     {
         if (owner != 0)
             printf("Warning - Owned mutex destroyed"); // can't use DBGLOG here!
@@ -123,25 +125,14 @@ private:
     int lockcount;
 };
 
-class jlib_decl NamedMutex: public Mutex
-{
-public:
-    NamedMutex(const char *name)
-        : Mutex(name)
-    {
-    }   
-};
-
-
-
 #else // posix
 
-class jlib_decl Mutex
+class jlib_decl LegacyMutex
 {
+    friend class Monitor;
 public:
-    Mutex();
-//  Mutex(const char *name);    //not supported
-    ~Mutex();
+    LegacyMutex();
+    ~LegacyMutex();
     void lock();
     bool lockWait(unsigned timeout);
     void unlock();
@@ -154,7 +145,35 @@ private:
     int lockcount;
     pthread_cond_t lock_free;
 };
+#endif
 
+class jlib_decl SimpleMutex
+{
+public:
+    void lock() { mutex.lock(); };
+    void unlock() { mutex.unlock(); };
+private:
+    std::mutex mutex;
+};
+
+class jlib_decl Mutex
+{
+public:
+    void lock() { mutex.lock(); };
+    void unlock() { mutex.unlock(); };
+private:
+    std::recursive_mutex mutex;
+};
+
+class jlib_decl TimedMutex
+{
+public:
+    void lock() { mutex.lock(); };
+    bool lockWait(unsigned timeout);
+    void unlock() { mutex.unlock(); };
+private:
+    std::recursive_timed_mutex mutex;
+};
 
 class jlib_decl NamedMutex
 {
@@ -165,23 +184,30 @@ public:
     bool lockWait(unsigned timeout);
     void unlock();
 private:
-    Mutex threadmutex;
+    TimedMutex threadmutex;
     char *mutexfname;
 };
 
-
-
-#endif
-
-class jlib_decl synchronized
+template<class T> class jlib_decl MutexBlock
 {
 private:
-    Mutex &mutex;
+    T &mutex;
+public:
+    MutexBlock(T &m) : mutex(m) { mutex.lock(); };
+    ~MutexBlock() { mutex.unlock(); };
+};
+
+typedef MutexBlock<Mutex> synchronized;
+
+class jlib_decl TimedMutexBlock
+{
+private:
+    TimedMutex &mutex;
     void throwLockException(unsigned timeout);
 public:
-    synchronized(Mutex &m) : mutex(m) { mutex.lock(); };
-    synchronized(Mutex &m,unsigned timeout) : mutex(m) { if(!mutex.lockWait(timeout)) throwLockException(timeout);  }
-    inline ~synchronized() { mutex.unlock(); };
+    TimedMutexBlock(TimedMutex &m) : mutex(m) { mutex.lock(); };
+    TimedMutexBlock(TimedMutex &m, unsigned timeout) : mutex(m) { if(!mutex.lockWait(timeout)) throwLockException(timeout);  }
+    inline ~TimedMutexBlock() { mutex.unlock(); };
 };
 
 #ifdef _WIN32
@@ -561,14 +587,16 @@ public:
 
 
 
-class jlib_decl Monitor: public Mutex
+class jlib_decl Monitor
 {
     // Like a java object - you can synchronize on it for a block, wait for a notify on it, or notify on it
+    friend class MonitorBlock;
     Semaphore *sem;
     int waiting;
     void *last;
+    LegacyMutex mutex;
 public:
-    Monitor() : Mutex() { sem = new Semaphore(); waiting = 0; last = NULL; }
+    Monitor() { sem = new Semaphore(); waiting = 0; last = NULL; }
 //  Monitor(const char *name) : Mutex(name) { sem = new Semaphore(name); waiting = 0; last = NULL; } // not supported
     ~Monitor() {delete sem;};
 
@@ -576,6 +604,16 @@ public:
     void notify();      // only called when locked
     void notifyAll();   // only called when locked -- notifys for all waiting threads
 };
+
+class jlib_decl MonitorBlock
+{
+private:
+    Monitor &monitor;
+public:
+    MonitorBlock(Monitor &m) : monitor(m) { monitor.mutex.lock(); };
+    inline ~MonitorBlock() { monitor.mutex.unlock(); };
+};
+
 
 //--------------------------------------------------------------------------------------------------------------------
 
@@ -838,7 +876,7 @@ public:
 #define USECHECKEDCRITICALSECTIONS
 #ifdef USECHECKEDCRITICALSECTIONS
 
-typedef Mutex CheckedCriticalSection;
+typedef TimedMutex CheckedCriticalSection;
 void jlib_decl checkedCritEnter(CheckedCriticalSection &crit, unsigned timeout, const char *fname, unsigned lnum);
 void jlib_decl checkedCritLeave(CheckedCriticalSection &crit);
 class  jlib_decl CheckedCriticalBlock
@@ -1040,6 +1078,120 @@ private:
     std::atomic<X *> singleton = {nullptr};
     std::atomic<bool> initialized = {false};
     CriticalSection cs;
+};
+
+// Similar to class Shared<X>, but thread safe versions of the functions (avoid the need for critical sections)
+// Optional atomic query(std::function<CLASS *()> factoryFunc, CriticalSection & cs) allows for a singleton initialization.
+template <class CLASS> class AtomicShared
+{
+public:
+    inline AtomicShared()                              { ptr.store(nullptr, std::memory_order_relaxed); }
+    inline AtomicShared(CLASS * _ptr, bool owned)      { ptr.store(_ptr, std::memory_order_relaxed); if (!owned && _ptr) _ptr->Link(); }
+    inline AtomicShared(const AtomicShared & other)    { ptr.store(other.getLinkNonAtomic(), std::memory_order_relaxed); }
+#if defined(__cplusplus) && __cplusplus >= 201100
+    inline AtomicShared(AtomicShared && other)         { ptr.store(other.getClear(), std::memory_order_relaxed); }
+#endif
+    inline ~AtomicShared()                             { ::Release(ptr.load(std::memory_order_relaxed)); }
+    inline AtomicShared<CLASS> & operator = (const AtomicShared<CLASS> & other) { this->setown(other.getLinkNonAtomic()); return *this;  }
+
+    inline void clear()                                { ::Release(getClear()); }
+    inline CLASS * getClear()
+    {
+        return ptr.exchange(nullptr);
+    }
+    inline CLASS * getClearNonAtomic()
+    {
+        CLASS * result = ptr.load();
+        ptr.store(nullptr);
+        return result;
+    }
+
+    //The getLink() function cannot be implemented in a thread safe way - e.g. if clear is called concurrently
+    //then temp will point to a freed object.  (Might be possible with support for transactional memory...)
+    inline CLASS * getLinkNonAtomic() const
+    {
+        CLASS * temp = ptr;
+        if (temp)
+            temp->Link();
+        return temp;
+    }
+    inline CLASS * query() const
+    {
+        return ptr.load(std::memory_order_acquire);
+    }
+    template <typename FUNC>
+    inline CLASS * query(FUNC factoryFunc, CriticalSection & cs)
+    {
+        CLASS * result = ptr.load(std::memory_order_acquire);
+        if (result)
+            return result;
+        CriticalBlock block(cs);
+        if (ptr.load(std::memory_order_acquire))
+            return ptr.load(std::memory_order_acquire);
+        result = factoryFunc();
+        ptr.store(result, std::memory_order_release);
+        return result;
+    }
+    inline bool isSet() const                 { return ptr != nullptr; }
+    inline void set(CLASS * _ptr)
+    {
+        if (ptr != _ptr)
+        {
+            LINK(_ptr);
+            this->setown(_ptr);
+        }
+    }
+    inline bool setownIfNull(CLASS * _ptr)
+    {
+        if (!_ptr)
+            return false;
+
+        CLASS * expected = nullptr;
+        if (ptr.compare_exchange_strong(expected, _ptr))
+            return true;
+        _ptr->Release();
+        return false;
+    }
+    inline bool setIfNull(CLASS * _ptr)
+    {
+        if (!_ptr)
+            return false;
+
+        CLASS * expected = nullptr;
+        if (ptr.compare_exchange_strong(expected, _ptr))
+        {
+            _ptr->Link();
+            return true;
+        }
+        return false;
+    }
+    inline void setown(CLASS * _ptr)
+    {
+        CLASS * temp = ptr.exchange(_ptr);
+        ::Release(temp);
+    }
+    inline CLASS * swap(CLASS * _ptr)
+    {
+        return ptr.exchange(_ptr);
+    }
+    //swap - this will only update this once, but other can temporarily have a null value
+    inline void swap(AtomicShared<CLASS> & other)
+    {
+        CLASS * temp = other.getClear();
+        temp = this->swap(temp);
+        temp = other.swap(temp);
+        ::Release(temp);
+    }
+
+protected:
+    inline AtomicShared(CLASS * _ptr)                  { ptr = _ptr; } // deliberately protected
+
+private:
+    inline void setown(const AtomicShared<CLASS> &other); // illegal - going to cause a -ve leak
+    inline AtomicShared<CLASS> & operator = (const CLASS * other);
+
+private:
+    std::atomic<CLASS *> ptr;
 };
 
 #endif

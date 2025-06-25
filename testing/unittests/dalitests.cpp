@@ -31,12 +31,18 @@
 #include "dasds.hpp"
 #include "danqs.hpp"
 #include "dautils.hpp"
+#include "dastats.hpp"
+
+#include "wujobq.hpp"
 
 #include <vector>
 #include <future>
 #include <math.h>
 
+#include "jthread.hpp"
+
 #include "unittests.hpp"
+#include "sysinfologger.hpp"
 
 //#define COMPAT
 
@@ -477,8 +483,9 @@ public:
         Owned<IGroup> grp = createIGroup("10.150.10.1-3");
         RemoteFilename rfn;
         for (unsigned i=0;i<3;i++)
-            for (unsigned ic=0;ic<mspec.defaultCopies;ic++) {
-                constructPartFilename(grp,i+1,3,(i==1)?"test.txt":NULL,"test._$P$_of_$N$","/c$/thordata/test",ic,mspec,rfn);
+            for (unsigned ic=0;ic<mspec.defaultCopies;ic++)
+            {
+                constructPartFilename(grp,i+1,ic,3,0,0,false,(i==1)?"test.txt":NULL,"/c$/thordata/test","test._$P$_of_$N$",0,rfn);
                 StringBuffer tmp;
                 printf("%d,%d: %s\n",i,ic,rfn.getRemotePath(tmp).str());
             }
@@ -828,7 +835,7 @@ class CDaliSDSStressTests : public CppUnit::TestFixture
         public:
             IMPLEMENT_IINTERFACE;
 
-            CNodeSubCommitThread(const char *_xpath, bool _finalDelete) : threaded("CNodeSubCommitThread"), xpath(_xpath), finalDelete(_finalDelete)
+            CNodeSubCommitThread(const char *_xpath, bool _finalDelete) : xpath(_xpath), finalDelete(_finalDelete), threaded("CNodeSubCommitThread")
             {
             }
             virtual void threadmain() override
@@ -1172,7 +1179,7 @@ public:
                 bool sub;
                 CResult &result;
             public:
-                CSubscriber(CResult &_result, const char *_xpath, bool _sub) : result(_result), xpath(_xpath), sub(_sub)
+                CSubscriber(CResult &_result, const char *_xpath, bool _sub) : xpath(_xpath), sub(_sub), result(_result)
                 {
                 }
                 virtual void notify(SubscriptionId id, const char *_xpath, SDSNotifyFlags flags, unsigned valueLen, const void *valueData)
@@ -3033,5 +3040,1257 @@ public:
 
 CPPUNIT_TEST_SUITE_REGISTRATION( CFileNameNormalizeUnitTest );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( CFileNameNormalizeUnitTest, "CFileNameNormalizeUnitTest" );
+
+#define SOURCE_COMPONENT_UNITTEST "sysinfologger-unittest"
+
+class DaliSysInfoLoggerTester : public CppUnit::TestFixture
+{
+    /* Note: global messages will be written for dates between 2000-02-04 and 2000-02-05 */
+    /* Note: All global messages with time stamp before 2000-03-31 will be deleted */
+    CPPUNIT_TEST_SUITE(DaliSysInfoLoggerTester);
+        CPPUNIT_TEST(testInit);
+        CPPUNIT_TEST(testSysInfoLogger);
+    CPPUNIT_TEST_SUITE_END();
+
+    struct TestCase
+    {
+        LogMsgCategory cat;
+        LogMsgCode code;
+        bool hidden;
+        const char * dateTimeStamp;
+        const char * msg;
+    };
+
+    const std::vector<TestCase> testCases =
+    {
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42301,
+            false,
+            "2000-02-03T10:01:22.342343",
+            "CSysInfoLogger Unit test message 1"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42302,
+            false,
+            "2000-02-03T12:03:42.114233",
+            "CSysInfoLogger Unit test message 2"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42303,
+            true,
+            "2000-02-03T14:02:13.678443",
+            "CSysInfoLogger Unit test message 3"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42304,
+            true,
+            "2000-02-03T16:05:18.8324832",
+            "CSysInfoLogger Unit test message 4"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42301,
+            false,
+            "2000-02-04T03:01:42.5754",
+            "CSysInfoLogger Unit test message 5"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42302,
+            false,
+            "2000-02-04T09:06:25.133132",
+            "CSysInfoLogger Unit test message 6"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42303,
+            false,
+            "2000-02-04T11:09:32.78439",
+            "CSysInfoLogger Unit test message 7"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42304,
+            true,
+            "2000-02-04T13:02:12.82821",
+            "CSysInfoLogger Unit test message 8"
+        },
+        {
+            LogMsgCategory(MSGAUD_operator, MSGCLS_information, DefaultDetail),
+            42304,
+            true,
+            "2000-02-04T18:32:11.23421",
+            "CSysInfoLogger Unit test message 9"
+        }
+    };
+
+    struct WrittenLogMessage
+    {
+        unsigned __int64 msgId;
+        unsigned __int64 ts;
+        unsigned testCaseIndex;
+    };
+    std::vector<WrittenLogMessage> writtenMessages;
+
+    unsigned testRead(bool hiddenOnly=false, bool visibleOnly=false, unsigned year=0, unsigned month=0, unsigned day=0)
+    {
+        unsigned readCount=0;
+        try
+        {
+            std::set<unsigned> matchedMessages; // used to make sure every message written has been read back
+            Owned<ISysInfoLoggerMsgIterator> iter = createSysInfoLoggerMsgIterator(visibleOnly, hiddenOnly, year, month, day, SOURCE_COMPONENT_UNITTEST);
+            ForEach(*iter)
+            {
+                const IConstSysInfoLoggerMsg & sysInfoMsg = iter->query();
+
+                if (strcmp(sysInfoMsg.querySource(), SOURCE_COMPONENT_UNITTEST)!=0)
+                    continue; // not a message written by this unittest so ignore
+
+                // Check written message matches read message
+                unsigned __int64 msgId = sysInfoMsg.queryLogMsgId();
+                auto matched = std::find_if(writtenMessages.begin(), writtenMessages.end(), [msgId] (const auto & wm){ return (wm.msgId == msgId); });
+                CPPUNIT_ASSERT_MESSAGE("Message read back not matching messages written by this unittest", matched!=writtenMessages.end());
+
+                // Make sure written messages matches message read back
+                matchedMessages.insert(matched->testCaseIndex);
+                const TestCase & testCase = testCases[matched->testCaseIndex];
+                ASSERT(testCase.hidden==sysInfoMsg.queryIsHidden());
+                ASSERT(testCase.code==sysInfoMsg.queryLogMsgCode());
+                ASSERT(strcmp(testCase.msg,sysInfoMsg.queryMsg())==0);
+                ASSERT(testCase.cat.queryAudience()==sysInfoMsg.queryAudience());
+                ASSERT(testCase.cat.queryClass()==sysInfoMsg.queryClass());
+
+                readCount++;
+            }
+            ASSERT(readCount==matchedMessages.size()); // make sure there are no duplicates
+        }
+        catch (IException *e)
+        {
+            StringBuffer msg;
+            msg.appendf("testRead(hidden=%s, visible=%s) failed: ", boolToStr(hiddenOnly), boolToStr(visibleOnly));
+            e->errorMessage(msg);
+            msg.appendf("(code %d)", e->errorCode());
+            e->Release();
+            CPPUNIT_FAIL(msg.str());
+        }
+        return readCount;
+    }
+
+public:
+    ~DaliSysInfoLoggerTester()
+    {
+        daliClientEnd();
+    }
+    void testInit()
+    {
+        daliClientInit();
+    }
+    void testWrite()
+    {
+        writtenMessages.clear();
+        unsigned testCaseIndex=0;
+        for (const auto & testCase: testCases)
+        {
+            try
+            {
+                CDateTime dateTime;
+                dateTime.setString(testCase.dateTimeStamp);
+
+                unsigned __int64 ts = dateTime.getTimeStamp();
+                unsigned __int64 msgId = logSysInfoError(testCase.cat, testCase.code, SOURCE_COMPONENT_UNITTEST, testCase.msg, ts);
+                writtenMessages.push_back({msgId, ts, testCaseIndex++});
+                if (testCase.hidden)
+                {
+                    Owned<ISysInfoLoggerMsgFilter> msgFilter = createSysInfoLoggerMsgFilter(msgId, SOURCE_COMPONENT_UNITTEST);
+                    ASSERT(hideLogSysInfoMsg(msgFilter)==1);
+                }
+            }
+            catch (IException *e)
+            {
+                StringBuffer msg;
+                msg.append("logSysInfoError failed: ");
+                e->errorMessage(msg);
+                msg.appendf("(code %d)", e->errorCode());
+                e->Release();
+                CPPUNIT_FAIL(msg.str());
+            }
+        }
+        ASSERT(testCases.size()==writtenMessages.size());
+    }
+    void testSysInfoLogger()
+    {
+        // cleanup - remove messages that may have been left over from previous run
+        deleteOlderThanLogSysInfoMsg(false, false, 2001, 03, 00, SOURCE_COMPONENT_UNITTEST);
+        // Start of tests
+        testWrite();
+        ASSERT(testRead(false, false)==9);
+        ASSERT(testRead(false, false, 2000, 02, 03)==4);
+        ASSERT(testRead(false, false, 2000, 02, 04)==5);
+        ASSERT(testRead(false, true)==5); //all visible messages
+        ASSERT(testRead(true, false)==4); //all hidden messages
+        ASSERT(deleteOlderThanLogSysInfoMsg(false, true, 2000, 02, 03, SOURCE_COMPONENT_UNITTEST)==2);
+        ASSERT(deleteOlderThanLogSysInfoMsg(true, false, 2000, 02, 04, SOURCE_COMPONENT_UNITTEST)==5);
+
+        // testCase[7] and [8] are the only 2 remaining
+        // Delete single message test: delete testCase[7]
+        unsigned testCaseId = 7;
+        auto matched = std::find_if(writtenMessages.begin(), writtenMessages.end(), [testCaseId] (const auto & wm){ return (wm.testCaseIndex == testCaseId); });
+        if (matched==writtenMessages.end())
+            throw makeStringExceptionV(-1, "Can't find test case %u in written messages", testCaseId);
+
+        Owned<ISysInfoLoggerMsgFilter> msgFilter = createSysInfoLoggerMsgFilter(matched->msgId, SOURCE_COMPONENT_UNITTEST);
+        ASSERT(deleteLogSysInfoMsg(msgFilter)==1);
+
+        // Verify only 1 message remaining
+        ASSERT(testRead(false, false)==1);
+        // Delete 2000/02/04 and 2000/02/03 (one message but there are 2 parents remaining)
+        ASSERT(deleteOlderThanLogSysInfoMsg(false, false, 2000, 02, 05, SOURCE_COMPONENT_UNITTEST)==1);
+        // There shouldn't be any records remaining
+        ASSERT(testRead(false, false)==0);
+
+        testWrite();
+
+        // delete all messages with MsgCode 42303 -> 3 messages
+        msgFilter.setown(createSysInfoLoggerMsgFilter(SOURCE_COMPONENT_UNITTEST));
+        msgFilter->setMatchCode(42304);
+        ASSERT(deleteLogSysInfoMsg(msgFilter)==3);
+
+        // delete all messages matching source=SOURCE_COMPONENT_UNITTEST
+        msgFilter.setown(createSysInfoLoggerMsgFilter(SOURCE_COMPONENT_UNITTEST));
+        ASSERT(deleteLogSysInfoMsg(msgFilter)==6);
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( DaliSysInfoLoggerTester );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( DaliSysInfoLoggerTester, "DaliSysInfoLoggerTester" );
+
+
+
+
+static constexpr bool traceJobQueue = false;
+static unsigned jobQueueStartTick = 0;
+//The following allows the tests to be slowed down to make it easier to debug problems
+static constexpr unsigned tickScaling = 1;
+static unsigned getJobQueueTick()
+{
+    return (msTick() - jobQueueStartTick) / tickScaling;
+}
+static void jobQueueSleep(unsigned ms)
+{
+    MilliSleep(ms * tickScaling);
+}
+class DaliJobQueueTester : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE(DaliJobQueueTester);
+        CPPUNIT_TEST(testInit);
+        CPPUNIT_TEST(testCppServer);
+        CPPUNIT_TEST(testSingle);
+        CPPUNIT_TEST(testDouble);
+        CPPUNIT_TEST(testMany);
+        CPPUNIT_TEST(testCleanup);
+    CPPUNIT_TEST_SUITE_END();
+
+    static constexpr const char * mainQueueName = "DaliTestJobQueue";
+    static constexpr const char * childQueueName = "DaliTestCppQueue";
+
+    struct JobEntry
+    {
+        unsigned delayMs;
+        const char * name;
+        unsigned processingMs;
+        int priority;
+    };
+
+    class JobProcessor : public Thread
+    {
+    public:
+        JobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+         : startedSem(_startedSem), processedSem(_processedSem), queue(_queue), id(_id)
+        {
+        }
+
+         virtual int run() override
+         {
+            startedSem.signal();
+            try
+            {
+                processAll();
+            }
+            catch (IException * _e)
+            {
+                e.setown(_e);
+            }
+            return 0;
+         }
+
+         bool processItem(IJobQueueItem * item)
+         {
+            assertex(item);
+            const char * name = item->queryWUID();
+            if (traceJobQueue)
+                DBGLOG("===%s===@%u", name, getJobQueueTick());
+            if (name[0] == '!')
+                return false;
+            output.append(name);
+            if (!log.isEmpty())
+                log.append(",");
+            log.append(name).append("@").append(getJobQueueTick());
+            unsigned delay = item->getPort();
+            jobQueueSleep(delay);
+            processedSem.signal();
+            return true;
+         }
+
+        const char * queryOutput()
+        {
+            if (e)
+                throw e.getClear();
+            return output.str();
+        }
+
+        const char * queryLog()
+        {
+            return log.str();
+        }
+
+        virtual void processAll() = 0;
+
+    public:
+        Semaphore & startedSem;
+        Semaphore & processedSem;
+        Linked<IJobQueue> queue;
+        StringBuffer output;
+        StringBuffer log;
+        Owned<IException> e;
+        unsigned id;
+    };
+
+    // Read the first (highest priority) item on the queue - no minimum priority
+    class StandardJobProcessor : public JobProcessor
+    {
+    public:
+        StandardJobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+        : JobProcessor(_startedSem, _processedSem, _queue, _id)
+        {
+        }
+
+        virtual void processAll() override
+        {
+            for (;;)
+            {
+                Owned<IJobQueueItem> item = queue->dequeue();
+                if (!processItem(item))
+                    break;
+            }
+        }
+
+    };
+
+    // Read the first item on the queue, but wait for 200ms to see if there is an item queued with a prioprity >= the last item that was dequeued.
+    // This is only used for bare metal, and I'm not sure the semantics are very helpful.  I think NewThor may be better approach.
+    class ThorJobProcessor : public JobProcessor
+    {
+    public:
+        ThorJobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+        : JobProcessor(_startedSem, _processedSem, _queue, _id)
+        {
+        }
+
+        virtual void processAll() override
+        {
+            for (;;)
+            {
+                Owned<IJobQueueItem> item = queue->dequeue(0, INFINITE, 200*tickScaling);
+                bool ret = processItem(item);
+                if (!ret)
+                    break;
+            }
+        }
+    };
+
+    // For 200ms check to see if there is an item queued with the same priority that this thread last dequeued.  Then wait for any item.
+    // This means if there is a single high priority job, the other threads do not wait for that high priority job.
+    class NewThorJobProcessor : public JobProcessor
+    {
+    public:
+        NewThorJobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+        : JobProcessor(_startedSem, _processedSem, _queue, _id)
+        {
+        }
+
+        virtual void processAll() override
+        {
+            for (;;)
+            {
+                Owned<IJobQueueItem> item = queue->dequeue(lastPrio, 200*tickScaling, 0);
+                if (!item)
+                    item.setown(queue->dequeue(0, INFINITE, 0));
+                lastPrio = item->getPriority();
+                bool ret = processItem(item);
+                if (!ret)
+                    break;
+            }
+        }
+
+    protected:
+        int lastPrio = 0;
+
+    };
+
+    class PriorityJobProcessor : public JobProcessor
+    {
+    public:
+        PriorityJobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+        : JobProcessor(_startedSem, _processedSem, _queue, _id)
+        {
+        }
+
+        virtual void processAll() override
+        {
+            __uint64 priority = 0;
+            for (;;)
+            {
+                Owned<IJobQueueItem> item = queue->dequeuePriority(priority);
+                bool ret = processItem(item);
+                if (!ret)
+                    break;
+                priority = getTimeStampNowValue();
+            }
+        }
+    };
+
+    //This class mimics the behaviour of the c++ job that is started to compile a single workunit.
+    //It reads items off a child queue and lingers to see if any other workunits are ready to be compiled.
+    class CppJobProcessor : public JobProcessor
+    {
+    public:
+        CppJobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+        : JobProcessor(_startedSem, _processedSem, _queue, _id)
+        {
+        }
+
+        virtual void processAll() override
+        {
+            for (;;)
+            {
+                __uint64 priority = getTimeStampNowValue();
+                unsigned cppTimeout = 100 * tickScaling;
+                Owned<IJobQueueItem> item = queue->dequeuePriority(priority, cppTimeout);
+                //Check for time out - linger period has expired so this job will exit
+                if (!item)
+                {
+                    output.append("*");
+                    log.append("*");
+                    break;
+                }
+                bool ret = processItem(item);
+                if (!ret)
+                {
+                    //Test case has finished - requeue the item so the calling eclccserver will
+                    //also terminate, and then exit.
+                    queue->setActiveQueue(mainQueueName);
+                    queue->enqueue(item.getClear());
+                    break;
+                }
+            }
+        }
+    };
+
+    //This class mimics the behaviour of the cppserver.
+    //It listens on the main queue with a default priority.  When it gets an item it adds it to a child
+    //queue and then starts a job to process items from that queue.  (This may be picked up by a job that
+    //is already running - deliberate design.)  It waits until that job terminates and then listens to
+    //the queue again.
+    class CppServerJobProcessor : public JobProcessor
+    {
+    public:
+        CppServerJobProcessor(Semaphore & _startedSem, Semaphore & _processedSem, IJobQueue * _queue, unsigned _id)
+        : JobProcessor(_startedSem, _processedSem, _queue, _id)
+        {
+        }
+
+        virtual void processAll() override
+        {
+            Owned<IJobQueue> childQueue = createJobQueue(childQueueName);
+            for (;;)
+            {
+                Owned<IJobQueueItem> item = queue->dequeue();
+                assertex(item);
+                const char * name = item->queryWUID();
+                if (name[0] == '!')
+                    break;
+
+                childQueue->enqueue(item.getClear());
+
+                StringBuffer cppQueues;
+                cppQueues.append(mainQueueName).append(",").append(childQueueName);
+
+                Owned<IJobQueue> localQueues = createJobQueue(cppQueues);
+                Semaphore dummySem;
+                Owned<JobProcessor> child = new CppJobProcessor(dummySem, processedSem, localQueues, id);
+
+                child->start(true);
+                child->join();
+                output.append(child->output);
+                log.append(child->log);
+            }
+        }
+    };
+
+    enum JobProcessorType
+    {
+        StandardProcessor,
+        ThorProcessor,
+        NewThorProcessor,
+        PriorityProcessor,
+        CppServerProcessor,
+    };
+
+    void testInit()
+    {
+        daliClientInit();
+    }
+
+    void testCleanup()
+    {
+        daliClientEnd();
+    }
+
+    void runTestCase(const char * name, const std::initializer_list<JobEntry> & jobs, const std::initializer_list<JobProcessorType> & processors, const std::initializer_list<const char *> & expectedResults)
+    {
+        try
+        {
+            Owned<IJobQueue> queue = createJobQueue(mainQueueName);
+            queue->connect(true);
+            queue->clear();
+
+            Semaphore startedSem;
+            Semaphore processedSem;
+
+            CIArrayOf<JobProcessor> jobProcessors;
+            for (auto & processor : processors)
+            {
+                JobProcessor * cur = nullptr;
+                //All listening threads must have a unique queue objects
+                Owned<IJobQueue> localQueue = createJobQueue(mainQueueName);
+
+                switch (processor)
+                {
+                case StandardProcessor:
+                    cur = new StandardJobProcessor(startedSem, processedSem, localQueue, jobProcessors.ordinality());
+                    break;
+                case ThorProcessor:
+                    cur = new ThorJobProcessor(startedSem, processedSem, localQueue, jobProcessors.ordinality());
+                    break;
+                case NewThorProcessor:
+                    cur = new NewThorJobProcessor(startedSem, processedSem, localQueue, jobProcessors.ordinality());
+                    break;
+                case PriorityProcessor:
+                    cur = new PriorityJobProcessor(startedSem, processedSem, localQueue, jobProcessors.ordinality());
+                    break;
+                case CppServerProcessor:
+                    cur = new CppServerJobProcessor(startedSem, processedSem, localQueue, jobProcessors.ordinality());
+                    break;
+                default:
+                    UNIMPLEMENTED;
+                }
+                jobProcessors.append(*cur);
+                cur->start(true);
+            }
+
+            for (auto & processor : processors)
+                startedSem.wait();
+
+            IArrayOf<IConversation> conversations;
+            jobQueueStartTick = msTick();
+            for (auto & job : jobs)
+            {
+                jobQueueSleep(job.delayMs);
+                if (traceJobQueue)
+                    DBGLOG("Add (%s, %d, %d) @%u", job.name, job.delayMs, job.processingMs, getJobQueueTick());
+                if (job.name)
+                {
+                    Owned<IJobQueueItem> item = createJobQueueItem(job.name);
+                    item->setPort(job.processingMs);
+                    item->setPriority(job.priority);
+
+                    queue->enqueue(item.getClear());
+                }
+            }
+
+            for (;;)
+            {
+                //Wait until all the items have been processed before adding the special end markers
+                //otherwise the ends will be interpreted as valid items, and may cause the items to
+                //be dequeued by the wrong thread.
+                unsigned connected;
+                unsigned waiting;
+                unsigned enqueued;
+                queue->getStats(connected,waiting,enqueued);
+                if (enqueued == 0)
+                    break;
+                MilliSleep(100 * tickScaling);
+            }
+
+            ForEachItemIn(i1, jobProcessors)
+            {
+                if (traceJobQueue)
+                    DBGLOG("Add (eoj) @%u", getJobQueueTick());
+
+                //The queue code dedups by "wuid", so we need to add a unique "stop" entry
+                std::string end = std::string("!") + std::to_string(i1);
+                Owned<IJobQueueItem> item = createJobQueueItem(end.c_str());
+                queue->enqueue(item.getClear());
+            }
+
+            ForEachItemIn(i2, jobProcessors)
+            {
+                if (traceJobQueue)
+                    DBGLOG("Wait for %u", i2);
+                jobProcessors.item(i2).join();
+            }
+
+            DBGLOG("%s: %ums", name, getJobQueueTick());
+            ForEachItemIn(i3, jobProcessors)
+            {
+                JobProcessor & cur = jobProcessors.item(i3);
+                DBGLOG("  Result: '%s' '%s'", cur.queryOutput(), cur.queryLog());
+            }
+
+            ForEachItemIn(i4, jobProcessors)
+            {
+                //If expected results are provided, check that the result matches one of them (it is undefined which
+                //processor will match which result)
+                JobProcessor & cur = jobProcessors.item(i4);
+                if (expectedResults.size())
+                {
+                    bool matched = false;
+                    StringBuffer expectedText;
+                    for (auto & expected : expectedResults)
+                    {
+                        if (streq(expected, cur.queryOutput()))
+                        {
+                            matched = true;
+                            break;
+                        }
+                        expectedText.append(", ").append(expected);
+                    }
+                    if (!matched)
+                    {
+                        DBGLOG("Test %s: No match for output %u: %s", name, i4, expectedText.str()+2);
+                        CPPUNIT_ASSERT_MESSAGE("Result does not match any of the expected results", false);
+                    }
+                }
+            }
+        }
+        catch (IException * e)
+        {
+            StringBuffer msg("Fail: ");
+            e->errorMessage(msg);
+            e->Release();
+            CPPUNIT_ASSERT_MESSAGE(msg.str(), 0);
+        }
+    }
+
+    static constexpr std::initializer_list<JobEntry> singleWuTest = {
+        { 0, "a", 90, 0 },
+        { 100, "b", 90, 0 },
+        { 100, "c", 90, 0 },
+        { 100, "d", 90, 0 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> dripSingleTest = {
+        { 0, "a", 10, 0 },
+        { 200, "b", 10, 0 },
+        { 200, "c", 10, 0 },
+        { 200, "d", 10, 0 },
+        { 20, nullptr, 0, 0 },      // Ensure d has completed before termination is sent
+    };
+
+    static constexpr std::initializer_list<JobEntry> twoWuTest = {
+        { 0, "a", 90, 0 },
+        { 50, "A", 90, 0},
+        { 50, "b", 90, 0 },
+        { 50, "B", 90, 0 },
+        { 50, "c", 90, 0 },
+        { 50, "C", 90, 0 },
+        { 50, "d", 90, 0 },
+        { 50, "D", 90, 0 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> lowHighTest = {
+        { 0, "a", 90, 0 },
+        { 50, "A", 90, 1},
+        { 50, "b", 90, 0 },
+        { 50, "B", 90, 1 },
+        { 50, "c", 90, 0 },
+        { 50, "C", 90, 1 },
+        { 50, "d", 90, 0 },
+        { 50, "D", 90, 1 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> lowHigh2Test = {
+        { 0, "a", 90, 0 },
+        { 50, "A", 90, 1},
+        { 10, "b", 90, 0 },
+        { 10, "B", 90, 1 },
+        { 10, "c", 90, 0 },
+        { 10, "C", 90, 1 },
+        { 10, "d", 90, 0 },
+        { 10, "D", 90, 1 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> lowHigh3Test = {
+        { 0, "a", 90, 0 },
+        { 50, "A", 90, 1},
+        { 10, "b", 90, 0 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> dripFeedTest = {
+        { 0, "a", 10, 0 },
+        { 100, "b", 10, 0},
+        { 100, "c", 10, 0},
+        { 100, "d", 10, 0},
+        { 100, "e", 10, 0},
+        { 100, "f", 10, 0},
+        { 100, "g", 10, 0},
+        { 100, "h", 10, 0},
+        { 100, "i", 10, 0},
+        { 100, "j", 10, 0},
+    };
+
+    static constexpr std::initializer_list<JobEntry> drip2FeedTest = {
+        {  0, "a", 60, 0 },
+        { 50, "b", 60, 0},
+        { 50, "c", 60, 0},
+        { 50, "d", 60, 0},
+        { 50, "e", 60, 0},
+        { 50, "f", 60, 0},
+        { 50, "g", 60, 0},
+        { 50, "h", 60, 0},
+        { 50, "i", 60, 0},
+        { 50, "j", 60, 0},
+        { 50, "k", 60, 0},
+        { 50, "l", 60, 0},
+        { 50, "m", 60, 0},
+        { 50, "n", 60, 0},
+        { 50, "o", 60, 0},
+    };
+
+    static constexpr std::initializer_list<JobEntry> Cpp1Test = {
+        {  0, "a", 50, 0 },
+        { 60, "b", 50, 0},
+        { 60, "c", 50, 0},
+        { 60, "d", 50, 0},
+        { 60, "e", 50, 0},
+        { 10, "f", 80, 0},
+        { 50, "g", 50, 0},
+        { 40, "h", 50, 0},
+        { 60, "i", 50, 0},
+        { 60, "j", 50, 0},
+        { 200, nullptr, 0, 0 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> Cpp2Test = {
+        {  0, "a", 50, 0 },
+        { 60, "b", 50, 0},
+        { 10, "c", 50, 0},
+        { 10, "d", 50, 0},
+        { 10, "e", 50, 0},
+        { 10, "f", 50, 0},
+        { 70, "g", 50, 0},
+        { 20, "h", 50, 0},
+        { 60, "i", 50, 0},
+        { 200, nullptr, 0, 0 },
+    };
+
+    static constexpr std::initializer_list<JobEntry> Cpp3Test = {
+        {  0, "a", 50, 0 },
+        { 10, "b", 50, 0},
+        { 40, "c", 50, 0},
+        { 20, "d", 50, 0},
+        { 70, "e", 50, 0},
+        { 60, "f", 50, 0},
+        { 60, "g", 50, 0},
+        { 10, "h", 50, 0},
+        { 10, "i", 50, 0},
+        { 10, "j", 50, 0},
+        { 100, "k", 50, 0},
+        { 200, nullptr, 0, 0 },
+    };
+
+
+    //MODEL The way that cpp server should work - an agent that listens to the main queue, and jobs that listen to the main queue and a child queue
+    //Timings are very temperamental - and if there are a choice of threads to restart processing then it isn't well defined which one will pick it up
+    void testCppServer()
+    {
+        runTestCase("single, 1 c++", singleWuTest, { CppServerProcessor }, { "abcd" });
+        runTestCase("drip, 1 c++", dripSingleTest, { CppServerProcessor }, { "a*b*c*d" });
+        runTestCase("single, 2 c++", singleWuTest, { CppServerProcessor, CppServerProcessor }, { "abcd", "" });
+        runTestCase("cpp, 2 c++", Cpp1Test, { CppServerProcessor, CppServerProcessor }, { "abcdeg*", "fhij*" });
+        runTestCase("cpp, 3 c++", Cpp1Test, { CppServerProcessor, CppServerProcessor, CppServerProcessor }, { "abcdeg*", "fhij*", "" });
+        runTestCase("cpp2, 3 c++", Cpp2Test, { CppServerProcessor, CppServerProcessor, CppServerProcessor }, { "abeg*", "cfhi*", "d*" });
+        runTestCase("cpp3, 2 c++", Cpp3Test, { CppServerProcessor, CppServerProcessor }, { "ac*hjk*", "bdefgi*" });
+    }
+    void testSingle()
+    {
+        runTestCase("1 wu, 1 standard", singleWuTest, { StandardProcessor }, { "abcd" });
+        runTestCase("2 wu, 1 standard", twoWuTest, { StandardProcessor }, { "aAbBcCdD" });
+        runTestCase("lo hi wu, 1 standard", lowHighTest, { StandardProcessor }, { "aABCDbcd" });
+        runTestCase("lo hi2 wu, 1 standard", lowHigh2Test, { StandardProcessor }, { "aABCDbcd" });
+        runTestCase("lo hi2 wu, 1 thor", lowHigh2Test, { ThorProcessor }, {});
+        runTestCase("lo hi2 wu, 1 newthor", lowHigh2Test, { NewThorProcessor }, {});
+        runTestCase("drip wu, 1 std", dripFeedTest, { StandardProcessor }, { "abcdefghij" });
+        runTestCase("drip wu, 1 std", dripFeedTest, { PriorityProcessor }, { "abcdefghij" });
+    }
+
+    void testDouble()
+    {
+        runTestCase("2 wu, 2 standard", twoWuTest, { StandardProcessor, StandardProcessor }, { "abcd", "ABCD" });
+        runTestCase("lo hi wu, 2 standard", lowHighTest, { StandardProcessor, StandardProcessor }, { "abcd", "ABCD" });
+        runTestCase("lo hi2  wu, 2 standard", lowHigh2Test, { StandardProcessor, StandardProcessor }, { "aBDc", "ACbd" });
+        runTestCase("lo hi2  wu, 2 thor", lowHigh2Test, { ThorProcessor, ThorProcessor }, { "aBDc", "ACbd" });
+        runTestCase("lo hi2  wu, 2 newthor", lowHigh2Test, { NewThorProcessor, NewThorProcessor }, {});
+
+        runTestCase("lo hi3  wu, 2 thor", lowHigh3Test, { ThorProcessor, ThorProcessor }, {});
+        runTestCase("lo hi3  wu, 2 newthor", lowHigh3Test, { NewThorProcessor, NewThorProcessor }, {});
+        runTestCase("lo hi3  wu, 2 prio", lowHigh3Test, { PriorityProcessor, PriorityProcessor }, {});
+        runTestCase("drip wu, 2 std", dripFeedTest, { StandardProcessor, StandardProcessor }, {});
+        runTestCase("drip wu, 2 newthor", dripFeedTest, { NewThorProcessor, NewThorProcessor }, {});
+        runTestCase("drip wu, 2 prio", dripFeedTest, { PriorityProcessor, PriorityProcessor }, { "abcdefghij", "" });
+    }
+
+    void testMany()
+    {
+        runTestCase("drip wu, 3 std", dripFeedTest, { StandardProcessor, StandardProcessor, StandardProcessor }, {});
+        runTestCase("drip2 wu, 3 std", drip2FeedTest, { StandardProcessor, StandardProcessor, StandardProcessor }, {});
+        runTestCase("drip wu, 3 prio", dripFeedTest, { PriorityProcessor, PriorityProcessor, PriorityProcessor }, { "abcdefghij", "", "" });
+        runTestCase("drip2 wu, 3 prio", drip2FeedTest, { PriorityProcessor, PriorityProcessor, PriorityProcessor }, { "acegikmo", "bdfhjln", ""});
+    }
+
+    //MORE Tests:
+    //Many requests at a time in waves
+    //Priority 1,2,3 fixed - not dynamic
+    //Stopping listening after N to check priorities removed correctly
+    //Mix standard and priority
+    //Priority with expiring and gaps to ensure the correct client picks up the items.
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( DaliJobQueueTester );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( DaliJobQueueTester, "DaliJobQueueTester" );
+
+//---------------------------------------------------------------------------------------------------------------------
+
+class GlobalMetricDumper : implements IGlobalMetricRecorder
+{
+public:
+    //MORE: Need to pass the start and end time.
+    virtual void processGlobalStatistics(const char * category, const MetricsDimensionList & dimensions, const char * startTime, const char * endTime, const GlobalStatisticsList & stats) override
+    {
+        //Only take account of metrics that are part of the unit test
+        if (!startsWith(category, "testCategory"))
+            return;
+
+        out.append(category).append("[");
+        if (dimensions.size())
+        {
+            for (const auto & dimension : dimensions)
+            {
+                out.append(dimension.first).append("=");
+                out.append(dimension.second).append(",");
+            }
+            out.setLength(out.length()-1);
+        }
+
+        out.appendf("] (%s..%s) => {", startTime, endTime);
+
+        if (stats.size())
+        {
+            for (const auto & stat : stats)
+            {
+                out.append(queryStatisticName(stat.first)).append("=");
+                out.append(stat.second).append(",");
+            }
+            out.setLength(out.length()-1);
+        }
+
+        out.append("}").newline();
+    }
+
+public:
+    StringBuffer out;
+};
+
+
+
+class DaliGlobalMetricsTester : public CppUnit::TestFixture
+{
+    /* Note: global messages will be written for dates between 2000-02-04 and 2000-02-05 */
+    /* Note: All global messages with time stamp before 2000-03-31 will be deleted */
+    CPPUNIT_TEST_SUITE(DaliGlobalMetricsTester);
+        CPPUNIT_TEST(doStart);
+        CPPUNIT_TEST(testGlobalMetrics);
+        CPPUNIT_TEST(testTimeslots);
+        CPPUNIT_TEST(testMultiThread);
+        CPPUNIT_TEST(doStop);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+    void doStart()
+    {
+        daliClientInit();
+    }
+    void doStop()
+    {
+        daliClientEnd();
+    }
+    void verifyGlobalMetrics(const char * optCategory, const MetricsDimensionList & optDimensions, const CDateTime & startTime, const CDateTime * endTime, const char * expected)
+    {
+        CDateTime now;
+        if (!endTime)
+        {
+            now.setNow();
+            endTime = &now;
+        }
+
+        GlobalMetricDumper visitor;
+        visitor.out.newline();  // start with a newline to allow cleaner definitions of the expected output
+        gatherGlobalMetrics(optCategory, optDimensions, startTime, *endTime, visitor);
+        if (expected)
+            CPPUNIT_ASSERT_EQUAL_STR(expected, visitor.out.str());
+        else
+            DBGLOG("Results: %s", visitor.out.str());
+    }
+
+    void testGlobalMetrics()
+    {
+        CDateTime startTime;
+        startTime.setString("1999-01-13T12:00:00", nullptr, false);
+
+        setGlobalMetricNowTime("1999-01-13T12:00:00");
+        try
+        {
+            resetGlobalMetrics("testCategory", MetricsDimensionList());
+            resetGlobalMetrics("testCategory2", MetricsDimensionList());
+
+            recordGlobalMetrics("testCategory", MetricsDimensionList{}, { StTimeBlocked }, { 10000 });
+
+            verifyGlobalMetrics(nullptr, MetricsDimensionList{}, startTime, nullptr,
+                                "\ntestCategory[] (1999011312..1999011312) => {TimeBlocked=10000}\n");
+
+            recordGlobalMetrics("testCategory", MetricsDimensionList{}, { StTimeBlocked, StTimeLocalExecute }, { 10000, 12345 });
+            recordGlobalMetrics("testCategory", MetricsDimensionList{{"user","gavin"},{"instance","thor400"}}, { StTimeLocalExecute, StCostExecute }, { 54321, 1290 });
+            recordGlobalMetrics("testCategory", MetricsDimensionList{{"user","gavin"}}, { StTimeLocalExecute, StCostExecute }, { 11111, 999 });
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeBlocked=20000,TimeLocalExecute=12345}
+testCategory[user=gavin,instance=thor400] (1999011312..1999011312) => {TimeLocalExecute=54321,CostExecute=1290}
+testCategory[user=gavin] (1999011312..1999011312) => {TimeLocalExecute=11111,CostExecute=999}
+)!";
+                verifyGlobalMetrics(nullptr, MetricsDimensionList{}, startTime, nullptr, expected);
+            }
+
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data1"},{"user","gavin"}}, { StCostFileAccess }, { 11111 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data2"},{"user","gavin"}}, { StCostFileAccess }, { 22222 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data2"},{"user","jim"}}, { StCostFileAccess }, { 33333 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data3"},{"user","bob"}}, { StCostFileAccess }, { 9999 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data1"},{"user","gavin"}}, { StCostFileAccess }, { 11111 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data2"},{"user","gavin"}}, { StCostFileAccess }, { 22222 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data2"},{"user","jim"}}, { StCostFileAccess }, { 33333 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data2"},{"user","gavin"}}, { StCostFileAccess }, { 22222 });
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{{"plane", "data2"},{"user","jim"}}, { StCostFileAccess }, { 33333 });
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeBlocked=20000,TimeLocalExecute=12345}
+testCategory[user=gavin,instance=thor400] (1999011312..1999011312) => {TimeLocalExecute=54321,CostExecute=1290}
+testCategory[user=gavin] (1999011312..1999011312) => {TimeLocalExecute=11111,CostExecute=999}
+testCategory2[plane=data1,user=gavin] (1999011312..1999011312) => {CostFileAccess=22222}
+testCategory2[plane=data2,user=gavin] (1999011312..1999011312) => {CostFileAccess=66666}
+testCategory2[plane=data2,user=jim] (1999011312..1999011312) => {CostFileAccess=99999}
+testCategory2[plane=data3,user=bob] (1999011312..1999011312) => {CostFileAccess=9999}
+)!";
+                verifyGlobalMetrics(nullptr, MetricsDimensionList{}, startTime, nullptr, expected);
+            }
+        }
+        catch (IException * e)
+        {
+            StringBuffer msg;
+            e->errorMessage(msg);
+            e->Release();
+            CPPUNIT_FAIL(msg.str());
+        }
+    }
+
+    void testTimeslots()
+    {
+        const char * slot1 = "1999-01-13T12:00:00";
+        const char * slot1End = "1999-01-13T12:59:99";
+        const char * slot1b = "1999-01-13T12:58:00";
+        const char * slot2 = "1999-01-13T13:00:00";
+        const char * slot3 = "1999-01-14T13:00:00";
+        const char * slot4 = "2000-01-14T13:00:00";
+
+        CDateTime slot1Time;
+        slot1Time.setString(slot1);
+        CDateTime slot1EndTime;
+        slot1EndTime.setString(slot1End);
+        CDateTime slot2Time;
+        slot2Time.setString(slot2);
+        CDateTime slot3Time;
+        slot3Time.setString(slot3);
+        CDateTime slot4Time;
+        slot4Time.setString(slot4);
+
+        try
+        {
+            resetGlobalMetrics("testCategory", MetricsDimensionList());
+            resetGlobalMetrics("testCategory2", MetricsDimensionList());
+
+            setGlobalMetricNowTime(slot1);
+            recordGlobalMetrics("testCategory", MetricsDimensionList{}, { StTimeLocalExecute }, { 10 });
+            setGlobalMetricNowTime(slot1b);
+            recordGlobalMetrics("testCategory", MetricsDimensionList{}, { StTimeLocalExecute }, { 20 });
+
+            setGlobalMetricNowTime(slot2);
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{}, { StTimeLocalExecute }, { 40 });
+
+            setGlobalMetricNowTime(slot3);
+            recordGlobalMetrics("testCategory2", MetricsDimensionList{}, { StTimeLocalExecute }, { 80 });
+
+            setGlobalMetricNowTime(slot4);
+            recordGlobalMetrics("testCategory", MetricsDimensionList{}, { StTimeLocalExecute }, { 160 });
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeLocalExecute=30}
+testCategory[] (2000011413..2000011413) => {TimeLocalExecute=160}
+testCategory2[] (1999011313..1999011313) => {TimeLocalExecute=40}
+testCategory2[] (1999011413..1999011413) => {TimeLocalExecute=80}
+)!";
+                verifyGlobalMetrics(nullptr, MetricsDimensionList{}, slot1Time, nullptr, expected);
+            }
+
+            {
+                constexpr const char * expected = R"!(
+)!";
+                verifyGlobalMetrics("unknown", MetricsDimensionList{}, slot1Time, nullptr, expected);
+            }
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeLocalExecute=30}
+testCategory[] (2000011413..2000011413) => {TimeLocalExecute=160}
+)!";
+                verifyGlobalMetrics("testCategory", MetricsDimensionList{}, slot1Time, nullptr, expected);
+            }
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeLocalExecute=30}
+)!";
+                verifyGlobalMetrics(nullptr, MetricsDimensionList{}, slot1Time, &slot1Time, expected);
+            }
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeLocalExecute=30}
+)!";
+                verifyGlobalMetrics(nullptr, MetricsDimensionList{}, slot1Time, &slot1EndTime, expected);
+            }
+
+            {
+                constexpr const char * expected = R"!(
+testCategory[] (1999011312..1999011312) => {TimeLocalExecute=30}
+testCategory2[] (1999011313..1999011313) => {TimeLocalExecute=40}
+)!";
+                verifyGlobalMetrics(nullptr, MetricsDimensionList{}, slot1Time, &slot2Time, expected);
+            }
+
+        }
+        catch (IException * e)
+        {
+            StringBuffer msg;
+            e->errorMessage(msg);
+            e->Release();
+            CPPUNIT_FAIL(msg.str());
+        }
+    }
+
+    class GlobalMetricReporter : public Thread
+    {
+    public:
+        GlobalMetricReporter(const char * _queueName, unsigned _numIterations) : queueName(_queueName), numIterations(_numIterations)
+        {
+        }
+
+        virtual int run()
+        {
+            sem.wait();
+            for (unsigned i = 0; i < numIterations; i++)
+            {
+                recordGlobalMetrics("testCategory", MetricsDimensionList{{"component","thor"},{"name",queueName.str()}}, { StTimeLocalExecute, StNumStarts }, { 1234, i });
+                MilliSleep(0);
+            }
+            return 0;
+        }
+
+    public:
+        StringAttr queueName;
+        Semaphore sem;
+        unsigned numIterations;
+    };
+
+    void testMultiThread()
+    {
+        const unsigned numQueues = 4;
+        const unsigned numThreadsPerQueue = 20;
+        const unsigned numIterations = 200;
+
+        CDateTime startTime;
+        startTime.setString("1999-01-13T12:00:00", nullptr, false);
+        setGlobalMetricNowTime("1999-01-13T12:00:00");
+
+        resetGlobalMetrics("testCategory", MetricsDimensionList());
+        resetGlobalMetrics("testCategory2", MetricsDimensionList());
+
+        CIArrayOf<GlobalMetricReporter> threads;
+        for (unsigned queue=0; queue < numQueues; queue++)
+        {
+            VStringBuffer queueName("queue%u", queue);
+            for (unsigned thread=0; thread < numThreadsPerQueue; thread++)
+            {
+                threads.append(*new GlobalMetricReporter(queueName, numIterations));
+                threads.tos().start(true);
+            }
+        }
+
+        CCycleTimer timer;
+        ForEachItemIn(i, threads)
+            threads.item(i).sem.signal();
+
+        ForEachItemIn(i2, threads)
+            threads.item(i2).join();
+
+        __uint64 elapsedNs = timer.elapsedNs();
+        unsigned numEvents = numQueues * numThreadsPerQueue * numIterations;
+        DBGLOG("Processing %u events took %lluns (%llu per event)", numEvents, elapsedNs, elapsedNs / numEvents);
+        {
+            constexpr const char * expected = nullptr;
+            DBGLOG("Expected TimeLocalExecute=%u NumStarts=%u", 1234 * numThreadsPerQueue * numIterations, numThreadsPerQueue * numIterations * (numIterations - 1) / 2);
+            verifyGlobalMetrics(nullptr, MetricsDimensionList{}, startTime, nullptr, expected);
+        }
+
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( DaliGlobalMetricsTester );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( DaliGlobalMetricsTester, "DaliGlobalMetricsTester" );
+
+
+//---------------------------------------------------------------------------------------------------------------------
+
+class DaliBinaryDataTester : public CppUnit::TestFixture
+{
+    /* Note: global messages will be written for dates between 2000-02-04 and 2000-02-05 */
+    /* Note: All global messages with time stamp before 2000-03-31 will be deleted */
+    CPPUNIT_TEST_SUITE(DaliBinaryDataTester);
+        CPPUNIT_TEST(doStart);
+        CPPUNIT_TEST(testSimpleBinary);
+        CPPUNIT_TEST(testCompression);
+        CPPUNIT_TEST(doCleanup);
+        CPPUNIT_TEST(doStop);
+    CPPUNIT_TEST_SUITE_END();
+
+public:
+    void doStart()
+    {
+        daliClientInit();
+    }
+    void doCleanup()
+    {
+        Owned<IRemoteConnection> conn = querySDS().connect("/testext", myProcessSession(), RTM_DELETE_ON_DISCONNECT, 2000);
+    }
+    void doStop()
+    {
+        daliClientEnd();
+    }
+
+    void testSimpleBinary(size32_t size, CompressionMethod compression)
+    {
+        DBGLOG("testBinary %u %s", size, translateFromCompMethod(compression));
+
+        Owned<IRemoteConnection> conn = querySDS().connect("/testext", myProcessSession(), RTM_CREATE, 2000);
+        IPropertyTree *root = conn->queryRoot();
+        MemoryBuffer mb;
+        // fill mem buffer with random data - 100k
+        void *mem = mb.reserveTruncate(size);
+        for (size32_t i = 0; i < size; i++)
+            ((byte *)mem)[i] = (i & 256) ? rand() : i;      // ensure some data is not random
+        root->setPropBin("bin", mb.length(), mb.toByteArray(), compression);
+
+        MemoryBuffer result;
+        root->getPropBin("bin", result);
+
+        CPPUNIT_ASSERT_EQUAL(mb.length(), result.length());
+        CPPUNIT_ASSERT(memcmp(mb.toByteArray(), result.toByteArray(), mb.length()) == 0);
+    }
+
+    void testDaliBinary(size32_t size, CompressionMethod compression)
+    {
+        DBGLOG("testDaliBinary %u %s", size, translateFromCompMethod(compression));
+
+        Owned<IRemoteConnection> conn = querySDS().connect("/testext", myProcessSession(), RTM_CREATE, 2000);
+        IPropertyTree *root = conn->queryRoot();
+        MemoryBuffer mb;
+        // fill mem buffer with random data - 100k
+        void *mem = mb.reserveTruncate(size);
+        for (size32_t i = 0; i < size; i++)
+            ((byte *)mem)[i] = (i & 256) ? rand() : i;      // ensure some data is not random
+        root->setPropBin("bin", mb.length(), mb.toByteArray(), compression);
+        conn->commit();
+        conn.clear();
+
+        conn.setown(querySDS().connect("/testext", myProcessSession(), RTM_LOCK_READ, 2000));
+        root = conn->queryRoot();
+        Owned<IPropertyTree> clonedRoot = createPTreeFromIPT(root);
+
+        MemoryBuffer result;
+        clonedRoot->getPropBin("bin", result);
+
+        CPPUNIT_ASSERT_EQUAL(mb.length(), result.length());
+        CPPUNIT_ASSERT(memcmp(mb.toByteArray(), result.toByteArray(), mb.length()) == 0);
+    }
+
+    void testSimpleBinary()
+    {
+        for (size32_t size=0x100; size < 0x1000000; size *= 2)
+        {
+            testSimpleBinary(size, COMPRESS_METHOD_NONE);
+            testDaliBinary(size, COMPRESS_METHOD_NONE);
+        }
+    }
+
+    void testCompression()
+    {
+        auto options = { COMPRESS_METHOD_LZW, COMPRESS_METHOD_FASTLZ, COMPRESS_METHOD_LZ4, COMPRESS_METHOD_LZ4HC };
+        for (auto compression : options)
+        {
+            testSimpleBinary(0x100000, compression);
+            testDaliBinary(0x100000, compression);
+        }
+    }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION( DaliBinaryDataTester );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( DaliBinaryDataTester, "DaliBinaryDataTester" );
+
+
+
 
 #endif // _USE_CPPUNIT

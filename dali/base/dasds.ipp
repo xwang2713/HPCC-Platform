@@ -30,6 +30,7 @@
 
 #define EXTERNAL_NAME_PREFIX "dalisds_"
 #define EXT_ATTR "@sds:ext"
+#define COMPRESS_ATTR "@sds:compress"
 #define EF_LegacyBinaryValue "bin"
 #define EF_BinaryValue       "bv2"
 #define EF_XML         "xml"
@@ -166,7 +167,7 @@ public:
         bool res = true;
         if (op.applyTop(node))
         {
-            IPropertyTreeIterator *iter = node.getElements("*");
+            Owned<IPropertyTreeIterator> iter = node.getElements("*");
             if (iter->first())
             {
                 bool levelBreak = false;
@@ -180,7 +181,6 @@ public:
                     iter->next();
                 }
             }
-            iter->Release();
         }
         return res;
     }

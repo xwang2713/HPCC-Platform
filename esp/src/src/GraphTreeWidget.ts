@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-declaration-merging */
 import * as arrayUtil from "dojo/_base/array";
 import * as declare from "dojo/_base/declare";
 import * as Deferred from "dojo/_base/Deferred";
@@ -16,10 +15,10 @@ import * as registry from "dijit/registry";
 
 import * as entities from "dojox/html/entities";
 
-// @ts-ignore
+// @ts-expect-error
 import * as tree from "../dgrid/tree";
 
-// @ts-ignore
+// @ts-expect-error
 import * as _Widget from "hpcc/_Widget";
 import * as ESPUtil from "./ESPUtil";
 import * as ESPWorkunit from "./ESPWorkunit";
@@ -27,7 +26,7 @@ import nlsHPCC from "./nlsHPCC";
 import * as Utility from "./Utility";
 import * as WsWorkunits from "./WsWorkunits";
 
-// @ts-ignore
+// @ts-expect-error
 import * as template from "dojo/text!hpcc/templates/GraphTreeWidget.html";
 
 import "dijit/Dialog";
@@ -48,40 +47,35 @@ import "dijit/ToolbarSeparator";
 import "hpcc/JSGraphWidget";
 import "hpcc/TimingTreeMapWidget";
 
-import { declareDecorator } from "./DeclareDecorator";
-
 type _Widget = any;
-export interface GraphTreeWidget extends _Widget { }
 
-@declareDecorator("GraphTreeWidget", _Widget)
-export class GraphTreeWidget {
-    templateString = template;
-    baseClass = "GraphTreeWidget";
-    i18n = nlsHPCC;
+export const GraphTreeWidget = declare("GraphTreeWidget", [_Widget], {
+    templateString: template,
+    i18n: nlsHPCC,
 
-    graphType = "JSGraphWidget";
-    graphName = "";
-    wu = null;
-    global = null;
-    main = null;
-    subgraphsGrid = null;
-    verticesGrid = null;
-    edgesGrid = null;
-    xgmmlDialog = null;
-    infoDialog = null;
-    findText = "";
-    found = [];
-    foundIndex = 0;
+    graphType: "JSGraphWidget",
+    graphName: "",
+    wu: null,
+    global: null,
+    main: null,
+    subgraphsGrid: null,
+    verticesGrid: null,
+    edgesGrid: null,
+    xgmmlDialog: null,
+    infoDialog: null,
+    findText: "",
+    found: [],
+    foundIndex: 0,
 
     constructor() {
-    }
+    },
 
-    buildRendering(args) {
-        this.inherited(arguments);
-    }
+    buildRendering: function buildRendering(args) {
+        this.inherited(buildRendering, arguments);
+    },
 
-    postCreate(args) {
-        this.inherited(arguments);
+    postCreate: function postCreate(args) {
+        this.inherited(postCreate, arguments);
         this._initGraphControls();
         this._initTimings();
         this._initActivitiesMap();
@@ -90,10 +84,10 @@ export class GraphTreeWidget {
         topic.subscribe(this.id + "OverviewTabContainer-selectChild", function (topic) {
             context.refreshActionState();
         });
-    }
+    },
 
-    startup(args) {
-        this.inherited(arguments);
+    startup: function startup(args) {
+        this.inherited(startup, arguments);
 
         this._initTree();
         this._initSubgraphs();
@@ -109,22 +103,22 @@ export class GraphTreeWidget {
         this.main.watchSelect(registry.byId(this.id + "AdvancedMenu"));
 
         this.refreshActionState();
-    }
+    },
 
-    resize(args) {
-        this.inherited(arguments);
+    resize: function resize(args) {
+        this.inherited(resize, arguments);
         this.widget.BorderContainer.resize();
-    }
+    },
 
-    layout(args) {
-        this.inherited(arguments);
-    }
+    layout: function layout(args) {
+        this.inherited(layout, arguments);
+    },
 
-    destroy(args) {
+    destroy: function destroy(args) {
         this.xgmmlDialog.destroyRecursive();
         this.infoDialog.destroyRecursive();
-        this.inherited(arguments);
-    }
+        this.inherited(destroy, arguments);
+    },
 
     //  Implementation  ---
     _initGraphControls() {
@@ -143,21 +137,21 @@ export class GraphTreeWidget {
             }
             context.syncSelectionFrom(context.main);
         };
-    }
+    },
 
     _initTimings() {
         const context = this;
         this.widget.TimingsTreeMap.onClick = function (value) {
             context.syncSelectionFrom(context.widget.TimingsTreeMap);
         };
-    }
+    },
 
     _initActivitiesMap() {
         const context = this;
         this.widget.ActivitiesTreeMap.onClick = function (value) {
             context.syncSelectionFrom(context.widget.ActivitiesTreeMap);
         };
-    }
+    },
 
     _initDialogs() {
         const context = this;
@@ -187,7 +181,7 @@ export class GraphTreeWidget {
         on(dom.byId(this.id + "XGMMLDialogCancel"), "click", function (event) {
             context.xgmmlDialog.hide();
         });
-    }
+    },
 
     _initItemGrid(grid) {
         const context = this;
@@ -201,7 +195,7 @@ export class GraphTreeWidget {
                 context.main.centerOnItem(mainItem, true);
             }
         });
-    }
+    },
 
     _initTree() {
         this.treeStore = this.global.createTreeStore();
@@ -211,7 +205,7 @@ export class GraphTreeWidget {
         }, this.id + "TreeGrid");
         this._initItemGrid(this.treeGrid);
         this.initContextMenu();
-    }
+    },
 
     initContextMenu() {
         const context = this;
@@ -249,7 +243,7 @@ export class GraphTreeWidget {
                 }
             }
         }));
-    }
+    },
 
     _initSubgraphs() {
         this.subgraphsStore = this.global.createStore();
@@ -258,7 +252,7 @@ export class GraphTreeWidget {
         }, this.id + "SubgraphsGrid");
 
         this._initItemGrid(this.subgraphsGrid);
-    }
+    },
 
     _initVertices() {
         this.verticesStore = this.global.createStore();
@@ -267,7 +261,7 @@ export class GraphTreeWidget {
         }, this.id + "VerticesGrid");
 
         this._initItemGrid(this.verticesGrid);
-    }
+    },
 
     _initEdges() {
         this.edgesStore = this.global.createStore();
@@ -276,21 +270,21 @@ export class GraphTreeWidget {
         }, this.id + "EdgesGrid");
 
         this._initItemGrid(this.edgesGrid);
-    }
+    },
 
     _onRefresh() {
         this.refreshData();
-    }
+    },
 
     _onTreeRefresh() {
         this.treeGrid.set("treeDepth", this.main.getDepth());
         this.treeGrid.refresh();
-    }
+    },
 
     _onChangeActivityMetric() {
         const metric = this.widget.ActivityMetric.get("value");
         this.widget.ActivitiesTreeMap.setActivityMetric(metric);
-    }
+    },
 
     _doFind(prev) {
         if (this.findText !== this.widget.FindField.value) {
@@ -309,32 +303,32 @@ export class GraphTreeWidget {
             this.main.centerOnGlobalID(this.found[this.foundIndex], true);
         }
         this.refreshActionState();
-    }
+    },
 
     _onFind(prev) {
         this.findText = "";
         this._doFind(false);
-    }
+    },
 
     _onFindNext() {
         this._doFind(false);
-    }
+    },
 
     _onFindPrevious() {
         this._doFind(true);
-    }
+    },
 
     _onAbout() {
         html.set(dom.byId(this.id + "InfoDialogContent"), "<div style='width: 320px; height: 120px; text-align: center;'><p>" + this.i18n.Version + ":  " + this.main.getVersion() + "</p><p>" + this.main.getResourceLinks() + "</p>");
         this.infoDialog.set("title", this.i18n.AboutHPCCSystemsGraphControl);
         this.infoDialog.show();
-    }
+    },
 
     _onGetSVG() {
         html.set(dom.byId(this.id + "InfoDialogContent"), "<textarea rows='25' cols='80'>" + entities.encode(this.main.getSVG()) + "</textarea>");
         this.infoDialog.set("title", this.i18n.SVGSource);
         this.infoDialog.show();
-    }
+    },
 
     _onRenderSVG() {
         const context = this;
@@ -343,39 +337,39 @@ export class GraphTreeWidget {
             context.infoDialog.set("title", this.i18n.RenderedSVG);
             context.infoDialog.show();
         });
-    }
+    },
 
     _onGetXGMML() {
         this.xgmmlDialog.set("title", this.i18n.XGMML);
         this.xgmmlDialog.set("hpccMode", "XGMML");
         this.xgmmlTextArea.set("value", this.main.getXGMML());
         this.xgmmlDialog.show();
-    }
+    },
 
     _onEditDOT() {
         this.xgmmlDialog.set("title", this.i18n.DOT);
         this.xgmmlDialog.set("hpccMode", "DOT");
         this.xgmmlTextArea.set("value", this.main.getDOT());
         this.xgmmlDialog.show();
-    }
+    },
 
     _onGetGraphAttributes() {
         this.xgmmlDialog.set("title", this.i18n.DOTAttributes);
         this.xgmmlDialog.set("hpccMode", "DOTATTRS");
         this.xgmmlTextArea.set("value", this.global.getDotMetaAttributes());
         this.xgmmlDialog.show();
-    }
+    },
 
     isWorkunit() {
         return lang.exists("params.Wuid", this);
-    }
+    },
 
     isQuery() {
         return lang.exists("params.QueryId", this);
-    }
+    },
 
-    init(params) {
-        if (this.inherited(arguments))
+    init: function init(params) {
+        if (this.inherited(init, arguments))
             return;
 
         if (this.global._plugin) {
@@ -385,13 +379,13 @@ export class GraphTreeWidget {
                 this.doInit(params);
             }));
         }
-    }
+    },
 
     refresh(params) {
         if (params.SubGraphId) {
             this.syncSelectionFrom([params.SubGraphId]);
         }
-    }
+    },
 
     doInit(params) {
         if (this.global.version.major < 5) {
@@ -457,7 +451,7 @@ export class GraphTreeWidget {
 
             this.loadGraphFromQuery(this.targetQuery, this.queryId, this.graphName);
         }
-    }
+    },
 
     refreshData() {
         if (this.isWorkunit()) {
@@ -465,7 +459,7 @@ export class GraphTreeWidget {
         } else if (this.isQuery()) {
             this.loadGraphFromQuery(this.targetQuery, this.queryId, this.graphName);
         }
-    }
+    },
 
     loadGraphFromXGMML(xgmml) {
         if (this.global.loadXGMML(xgmml, false, this.graphTimers, true)) {
@@ -485,7 +479,7 @@ export class GraphTreeWidget {
             this.loadEdges();
             this.syncSelectionFrom(mainRoot);
         }
-    }
+    },
 
     mergeGraphFromXGMML(xgmml) {
         if (this.global.loadXGMML(xgmml, true, this.graphTimers, true)) {
@@ -495,7 +489,7 @@ export class GraphTreeWidget {
             this.loadVertices();
             this.loadEdges();
         }
-    }
+    },
 
     loadGraphFromDOT(dot) {
         this.global.loadDOT(dot);
@@ -504,7 +498,7 @@ export class GraphTreeWidget {
         this.loadSubgraphs();
         this.loadVertices();
         this.loadEdges();
-    }
+    },
 
     loadGraphFromWu(wu, graphName, subGraphId, refresh: boolean = false) {
         const deferred = new Deferred();
@@ -516,14 +510,14 @@ export class GraphTreeWidget {
             deferred.resolve();
         }, refresh);
         return deferred.promise;
-    }
+    },
 
     refreshGraphFromWU(wu, graphName, subGraphId) {
         const context = this;
         wu.fetchGraphXgmmlByName(graphName, subGraphId, function (xgmml) {
             context.mergeGraphFromXGMML(xgmml);
         }, true);
-    }
+    },
 
     loadGraphFromQuery(targetQuery, queryId, graphName) {
         this.main.setMessage(this.i18n.FetchingData);
@@ -542,7 +536,7 @@ export class GraphTreeWidget {
                 }
             }
         });
-    }
+    },
 
     refreshGraphFromQuery(targetQuery, queryId, graphName) {
         const context = this;
@@ -559,7 +553,7 @@ export class GraphTreeWidget {
                 }
             }
         });
-    }
+    },
 
     loadTree() {
         const treeData = this.global.getTreeWithProperties();
@@ -609,7 +603,7 @@ export class GraphTreeWidget {
         });
         this.treeGrid.set("columns", columns);
         this.treeGrid.refresh();
-    }
+    },
 
     loadSubgraphs() {
         const subgraphs = this.global.getSubgraphsWithProperties();
@@ -626,7 +620,7 @@ export class GraphTreeWidget {
         this.subgraphsStore.appendColumns(columns, [this.i18n.TimeSeconds, "DescendantCount", "SubgraphCount", "ActivityCount"], ["ChildCount", "Depth"]);
         this.subgraphsGrid.set("columns", columns);
         this.subgraphsGrid.refresh();
-    }
+    },
 
     loadVertices() {
         const vertices = this.global.getVerticesWithProperties();
@@ -665,7 +659,7 @@ export class GraphTreeWidget {
         }));
         this.widget.ActivitiesTreeMap.setActivities(vertices, true);
         this.widget.ActivityMetric.set("value", "TimeMaxLocalExecute");
-    }
+    },
 
     loadEdges() {
         const edges = this.global.getEdgesWithProperties();
@@ -676,14 +670,14 @@ export class GraphTreeWidget {
         this.edgesStore.appendColumns(columns, ["label", "count"], ["source", "target"]);
         this.edgesGrid.set("columns", columns);
         this.edgesGrid.refresh();
-    }
+    },
 
-    inSyncSelectionFrom = false;
+    inSyncSelectionFrom: false,
     syncSelectionFrom(sourceControl) {
         if (!this.inSyncSelectionFrom) {
             this._syncSelectionFrom(sourceControl);
         }
-    }
+    },
 
     // _syncSelectionFrom: Utility.debounce(function (sourceControlOrGlobalIDs) {
     _syncSelectionFrom(sourceControlOrGlobalIDs) {
@@ -765,21 +759,21 @@ export class GraphTreeWidget {
         }
         this.inSyncSelectionFrom = false;
         // }, 500, false)
-    }
+    },
 
     resetPage() {
         this.main.clear();
-    }
+    },
 
     setMainRootItems(globalIDs) {
         const graphView = this.global.getGraphView(globalIDs, this.main.getDepth(), this.main.distance.get("value"), this.main.option("subgraph"), this.main.option("vhidespills"));
         return graphView.navigateTo(this.main);
-    }
+    },
 
     refreshMainXGMML() {
         const graphView = this.main.getCurrentGraphView();
         graphView.refreshXGMML(this.main);
-    }
+    },
 
     displayGraphs(graphs) {
         for (let i = 0; i < graphs.length; ++i) {
@@ -787,7 +781,7 @@ export class GraphTreeWidget {
                 this.main.loadXGMML(xgmml, true);
             });
         }
-    }
+    },
 
     refreshActionState() {
         const tab = this.widget.OverviewTabContainer.get("selectedChildWidget");
@@ -795,4 +789,4 @@ export class GraphTreeWidget {
         this.setDisabled(this.id + "FindNext", this.foundIndex >= this.found.length - 1, "iconRight", "iconRightDisabled");
         this.setDisabled(this.id + "ActivityMetric", tab.id !== this.id + "ActivitiesTreeMap");
     }
-}
+});

@@ -77,8 +77,6 @@
 #include "rtldynfield.hpp"
 #include "engineerr.hpp"
 
-#define MAX_HTTP_HEADERSIZE 8000
-
 #ifdef _WIN32
 #pragma warning(disable : 4355)
 #endif
@@ -176,55 +174,55 @@ public:
 
 //    void set(IRoxieAgentContext * _ctx) { ctx = _ctx; }
 
-    virtual ICodeContext *queryCodeContext()
+    virtual ICodeContext *queryCodeContext() override
     {
         return ctx->queryCodeContext();
     }
-    virtual void checkAbort() 
+    virtual void checkAbort() override
     {
         ctx->checkAbort();
     }
-    virtual unsigned checkInterval() const
+    virtual unsigned checkInterval() const override
     {
         return ctx->checkInterval();
     }
-    virtual void notifyAbort(IException *E) 
+    virtual void notifyAbort(IException *E) override
     {
         ctx->notifyAbort(E);
     }
-    virtual void notifyException(IException *E)
+    virtual void notifyException(IException *E) override
     {
         ctx->notifyException(E);
     }
-    virtual void throwPendingException()
+    virtual void throwPendingException() override
     {
         ctx->throwPendingException();
     }
-    virtual IActivityGraph * queryChildGraph(unsigned id) 
+    virtual IActivityGraph * queryChildGraph(unsigned id) override
     {
         return ctx->queryChildGraph(id);
     }
-    virtual void noteChildGraph(unsigned id, IActivityGraph *childGraph) 
+    virtual void noteChildGraph(unsigned id, IActivityGraph *childGraph) override
     {
         ctx->noteChildGraph(id, childGraph) ;
     }
-    virtual IRowManager &queryRowManager() 
+    virtual IRowManager &queryRowManager() override
     {
         return ctx->queryRowManager();
     }
-    virtual void noteStatistic(StatisticKind kind, unsigned __int64 value) const
+    virtual void noteStatistic(StatisticKind kind, unsigned __int64 value) const override
     {
         ctx->noteStatistic(kind, value);
     }
-    virtual void setStatistic(StatisticKind kind, unsigned __int64 value) const
+    virtual void setStatistic(StatisticKind kind, unsigned __int64 value) const override
     {
         ctx->setStatistic(kind, value);
     }
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const override
     {
-        ctx->mergeStats(from);
+        ctx->mergeStats(activityId, from);
     }
-    virtual StringBuffer &getStats(StringBuffer &ret) const
+    virtual StringBuffer &getStats(StringBuffer &ret) const override
     {
         return ctx->getStats(ret);
     }
@@ -236,7 +234,7 @@ public:
     {
         ctx->recordStatistics(progress);
     }
-    virtual bool collectingDetailedStatistics() const
+    virtual bool collectingDetailedStatistics() const override
     {
         return ctx->collectingDetailedStatistics();
     }
@@ -248,15 +246,15 @@ public:
     {
         ctx->CTXLOGa(category, cat, code, prefix, text);
     }
-    virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const __attribute__((format(printf,5,0)))
+    virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const override __attribute__((format(printf,5,0)))
     {
         ctx->logOperatorExceptionVA(E, file, line, format, args);
     }
-    virtual void CTXLOGaeva(IException *E, const char *file, unsigned line, const char *prefix, const char *format, va_list args) const __attribute__((format(printf,6,0)))
+    virtual void CTXLOGaeva(IException *E, const char *file, unsigned line, const char *prefix, const char *format, va_list args) const override __attribute__((format(printf,6,0)))
     {
         ctx->CTXLOGaeva(E, file, line, prefix, format, args);
     }
-    virtual void CTXLOGl(LogItem *log) const
+    virtual void CTXLOGl(LogItem *log) const override
     {
         ctx->CTXLOGl(log);
     }
@@ -264,15 +262,15 @@ public:
     {
         return ctx->getLogPrefix(ret);
     }
-    virtual unsigned queryTraceLevel() const
+    virtual unsigned queryTraceLevel() const override
     {
         return ctx->queryTraceLevel();
     }
-    virtual bool isIntercepted() const
+    virtual bool isIntercepted() const override
     {
         return ctx->isIntercepted();
     }
-    virtual bool isBlind() const
+    virtual bool isBlind() const override
     {
         return ctx->isBlind();
     }
@@ -300,7 +298,7 @@ public:
     {
         ctx->setSpanAttribute(name, value);
     }
-    virtual const char *queryGlobalId() const
+    virtual const char *queryGlobalId() const override
     {
         return ctx->queryGlobalId();
     }
@@ -308,83 +306,87 @@ public:
     {
         return ctx->queryCallerId();
     }
-    virtual const char *queryLocalId() const
+    virtual const char *queryLocalId() const override
     {
         return ctx->queryLocalId();
     }
-    virtual const QueryOptions &queryOptions() const
+    virtual const QueryOptions &queryOptions() const override
     {
         return ctx->queryOptions();
     }
-    virtual void addAgentsReplyLen(unsigned len, unsigned duplicates, unsigned resends)
+    virtual cycle_t queryElapsedCycles() const override
+    {
+        return ctx->queryElapsedCycles();
+    }
+    virtual void addAgentsReplyLen(unsigned len, unsigned duplicates, unsigned resends) override
     {
         ctx->addAgentsReplyLen(len, duplicates, resends);
     }
-    virtual const char *queryAuthToken() 
+    virtual const char *queryAuthToken() override
     {
         return ctx->queryAuthToken();
     }
-    virtual const IResolvedFile *resolveLFN(const char *filename, bool isOpt, bool isPrivilegedUser)
+    virtual const IResolvedFile *resolveLFN(const char *filename, bool isOpt, bool isPrivilegedUser) override
     {
         return ctx->resolveLFN(filename, isOpt, isPrivilegedUser);
     }
-    virtual IRoxieWriteHandler *createWriteHandler(const char *filename, bool overwrite, bool extend, const StringArray &clusters, bool isPrivilegedUser)
+    virtual IRoxieWriteHandler *createWriteHandler(const char *filename, bool overwrite, bool extend, const StringArray &clusters, bool isPrivilegedUser) override
     {
         return ctx->createWriteHandler(filename, overwrite, extend, clusters, isPrivilegedUser);
     }
-    virtual void onFileCallback(const RoxiePacketHeader &header, const char *lfn, bool isOpt, bool isLocal, bool isPrivilegedUser)
+    virtual void onFileCallback(const RoxiePacketHeader &header, const char *lfn, bool isOpt, bool isLocal, bool isPrivilegedUser) override
     {
         ctx->onFileCallback(header, lfn, isOpt, isLocal, isPrivilegedUser);
     }
-    virtual IActivityGraph *getLibraryGraph(const LibraryCallFactoryExtra &extra, IRoxieServerActivity *parentActivity)
+    virtual IActivityGraph *getLibraryGraph(const LibraryCallFactoryExtra &extra, IRoxieServerActivity *parentActivity) override
     {
         return ctx->getLibraryGraph(extra, parentActivity);
     }
-    virtual IProbeManager *queryProbeManager() const
+    virtual IProbeManager *queryProbeManager() const override
     {
         return ctx->queryProbeManager();
     }
-    virtual IDebuggableContext *queryDebugContext() const
+    virtual IDebuggableContext *queryDebugContext() const override
     {
         return ctx->queryDebugContext();
     }
-    virtual void printResults(IXmlWriter *output, const char *name, unsigned sequence)
+    virtual void printResults(IXmlWriter *output, const char *name, unsigned sequence) override
     {
         ctx->printResults(output, name, sequence);
     }
-    virtual void setWUState(WUState state)
+    virtual void setWUState(WUState state) override
     {
         ctx->setWUState(state);
     }
-    virtual bool checkWuAborted()
+    virtual bool checkWuAborted() override
     {
         return ctx->checkWuAborted();
     }
-    virtual IWorkUnit *updateWorkUnit() const
+    virtual IWorkUnit *updateWorkUnit() const override
     {
         return ctx->updateWorkUnit();
     }
-    virtual IConstWorkUnit *queryWorkUnit() const
+    virtual IConstWorkUnit *queryWorkUnit() const override
     {
         return ctx->queryWorkUnit();
     }
-    virtual IRoxieServerContext *queryServerContext()
+    virtual IRoxieServerContext *queryServerContext() override
     {
         return ctx->queryServerContext();
     }
-    virtual IWorkUnitRowReader *getWorkunitRowReader(const char *wuid, const char * name, unsigned sequence, IXmlToRowTransformer * xmlTransformer, IEngineRowAllocator *rowAllocator, bool isGrouped)
+    virtual IWorkUnitRowReader *getWorkunitRowReader(const char *wuid, const char * name, unsigned sequence, IXmlToRowTransformer * xmlTransformer, IEngineRowAllocator *rowAllocator, bool isGrouped) override
     {
         return ctx->getWorkunitRowReader(wuid, name, sequence, xmlTransformer, rowAllocator, isGrouped);
     }
-    virtual IEngineRowAllocator *getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, roxiemem::RoxieHeapFlags flags) const
+    virtual IEngineRowAllocator *getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, roxiemem::RoxieHeapFlags flags) const override
     {
         return ctx->getRowAllocatorEx(meta, activityId, flags);
     }
-    virtual void noteLibrary(IQueryFactory *library)
+    virtual void noteLibrary(IQueryFactory *library) override
     {
         ctx->noteLibrary(library);
     }
-    virtual const CRuntimeStatisticCollection & queryStats() const
+    virtual const CRuntimeStatisticCollection & queryStats() const override
     {
         return ctx->queryStats();
     }
@@ -477,9 +479,10 @@ static const StatisticsMapping keyedJoinStatistics({ StNumServerCacheHits, StNum
                                                     StTimeBlobLoad, StCycleBlobLoadCycles, StTimeLeafLoad, StCycleLeafLoadCycles, StTimeNodeLoad, StCycleNodeLoadCycles,
                                                     StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, StTimeBlobRead, StTimeLeafRead, StTimeNodeRead,
                                                     StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, StTimeBlobFetch, StTimeLeafFetch, StTimeNodeFetch,
+                                                    StNumBloomAccepts, StNumBloomRejects, StNumBloomSkips,
                                                     StCycleIndexCacheBlockedCycles, StTimeIndexCacheBlocked,
                                                     StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
-                                                    StNumDiskRejected, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeAgentProcess, StTimeIBYTIDelay, StNumAckRetries,
+                                                    StNumDiskRejected, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeAgentProcess, StTimeIBYTIDelay, StNumAckRetries, StNumAgentRequests, StSizeAgentRequests,
                                                     StSizeContinuationData, StNumContinuationRequests }, joinStatistics);
 static const StatisticsMapping indexStatistics({StNumServerCacheHits, StNumIndexSeeks, StNumIndexScans, StNumIndexWildSeeks,
                                                 StNumIndexSkips, StNumIndexNullSkips, StNumIndexMerges, StNumIndexMergeCompares,
@@ -489,14 +492,15 @@ static const StatisticsMapping indexStatistics({StNumServerCacheHits, StNumIndex
                                                 StTimeBlobLoad, StCycleBlobLoadCycles, StTimeLeafLoad, StCycleLeafLoadCycles, StTimeNodeLoad, StCycleNodeLoadCycles,
                                                 StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, StTimeBlobRead, StTimeLeafRead, StTimeNodeRead,
                                                 StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, StTimeBlobFetch, StTimeLeafFetch, StTimeNodeFetch,
+                                                StNumBloomAccepts, StNumBloomRejects, StNumBloomSkips,
                                                 StCycleIndexCacheBlockedCycles, StTimeIndexCacheBlocked,
                                                 StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
-                                                StNumIndexRowsRead, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeAgentProcess, StTimeIBYTIDelay, StNumAckRetries,
+                                                StNumIndexRowsRead, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeAgentProcess, StTimeIBYTIDelay, StNumAckRetries, StNumAgentRequests, StSizeAgentRequests,
                                                 StSizeContinuationData, StNumContinuationRequests }, actStatistics);
 static const StatisticsMapping diskStatistics({StNumServerCacheHits, StNumDiskRowsRead, StNumDiskSeeks, StNumDiskAccepted,
-                                               StNumDiskRejected, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeAgentProcess, StTimeIBYTIDelay, StNumAckRetries,
+                                               StNumDiskRejected, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeAgentProcess, StTimeIBYTIDelay, StNumAckRetries, StNumAgentRequests, StSizeAgentRequests,
                                                StSizeContinuationData, StNumContinuationRequests }, actStatistics);
-static const StatisticsMapping soapStatistics({ StTimeSoapcall }, actStatistics);
+static const StatisticsMapping soapStatistics({ StTimeSoapcall, StTimeSoapcallDNS, StTimeSoapcallConnect, StNumSoapcallConnectFailures }, actStatistics);
 static const StatisticsMapping groupStatistics({ StNumGroups, StNumGroupMax }, actStatistics);
 static const StatisticsMapping sortStatistics({ StTimeSortElapsed }, actStatistics);
 static const StatisticsMapping indexWriteStatistics({ StNumDuplicateKeys, StNumLeafCacheAdds, StNumNodeCacheAdds, StNumBlobCacheAdds }, actStatistics);
@@ -516,9 +520,10 @@ extern const StatisticsMapping accumulatedStatistics({StWhenFirstRow, StTimeLoca
                                                       StTimeBlobLoad, StCycleBlobLoadCycles, StTimeLeafLoad, StCycleLeafLoadCycles, StTimeNodeLoad, StCycleNodeLoadCycles,  // If time and cycles are not included they are not serialized from agents
                                                       StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, StTimeBlobRead, StTimeLeafRead, StTimeNodeRead,
                                                       StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, StTimeBlobFetch, StTimeLeafFetch, StTimeNodeFetch,
+                                                      StNumBloomAccepts, StNumBloomRejects, StNumBloomSkips,
                                                       StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
                                                       StNumDiskRejected, StSizeAgentReply, StTimeAgentWait,
-                                                      StTimeSoapcall,
+                                                      StTimeSoapcall, StTimeSoapcallDNS, StTimeSoapcallConnect, StNumSoapcallConnectFailures,
                                                       StNumGroups,
                                                       StTimeSortElapsed,
                                                       StNumDuplicateKeys,
@@ -526,7 +531,8 @@ extern const StatisticsMapping accumulatedStatistics({StWhenFirstRow, StTimeLoca
                                                       StNumSocketWrites, StSizeSocketWrite, StTimeSocketWriteIO,
                                                       StNumSocketReads, StSizeSocketRead, StTimeSocketReadIO,
                                                       StCycleIndexCacheBlockedCycles, StTimeIndexCacheBlocked,
-                                                      StNumAckRetries, StSizeContinuationData, StNumContinuationRequests
+                                                      StNumAckRetries, StNumAgentRequests, StSizeAgentRequests, StSizeContinuationData, StNumContinuationRequests,
+                                                      StTimeDelayed, StTimeQueryConsume,
                                                       });
 
 //=================================================================================
@@ -681,7 +687,7 @@ public:
         throwUnexpected();
     }
 
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const
+    virtual void mergeStats(const CRuntimeStatisticCollection &from) const override
     {
         CActivityFactory::mergeStats(from);
     }
@@ -1109,6 +1115,13 @@ protected:
             else
                 return ctx->registerTimer(activityId, name);
         }
+        virtual ISectionTimer *registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption)
+        {
+            if (activityId == activity.queryId())
+                return activity.registerStatsTimer(activityId, name, statsOption);
+            else
+                return ctx->registerStatsTimer(activityId, name, statsOption);
+        }
     private:
         CRoxieServerActivity &activity;
     } interceptedCtx;
@@ -1265,7 +1278,7 @@ public:
 
         //Updates the query summary statistics
         if (ctx)
-            ctx->queryCodeContext()->queryContextLogger().mergeStats(mergedStats);
+            ctx->queryCodeContext()->queryContextLogger().mergeStats(activityId, mergedStats);
 
         ForEachItemIn(i, childGraphs)
             childGraphs.item(i).gatherStatistics(statsBuilder);
@@ -1287,7 +1300,7 @@ public:
     {
         stats.deserializeMerge(buf);
     }
-    virtual void mergeStats(const CRuntimeStatisticCollection & childStats)
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection & childStats)
     {
         CriticalBlock b(statscrit);
         stats.merge(childStats);
@@ -1299,11 +1312,15 @@ public:
     }
     virtual ISectionTimer *registerTimer(unsigned _activityId, const char * name)
     {
+        return registerStatsTimer(_activityId, name, 0);
+    }
+    virtual ISectionTimer *registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption)
+    {
         CriticalBlock b(statscrit); // reuse statscrit to protect functionTimers - it will not be held concurrently
         ISectionTimer *timer = functionTimers.getValue(name);
         if (!timer)
         {
-            timer = ThorSectionTimer::createTimer(stats, name);
+            timer = ThorSectionTimer::createTimer(stats, name, static_cast<ThorStatOption>(statsOption));
             functionTimers.setValue(name, timer);
             timer->Release(); // Value returned is not linked
         }
@@ -1383,7 +1400,7 @@ public:
     {
         stats.setStatistic(kind, value);
     }
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const
     {
         stats.merge(from);
     }
@@ -1501,7 +1518,11 @@ public:
     virtual IEngineRowStream *queryConcreteOutputStream(unsigned whichInput) { assertex(whichInput==0); return this; }
     virtual IStrandJunction *queryConcreteOutputJunction(unsigned idx) const { assertex(idx==0); return junction; }
     virtual IRoxieServerActivity *queryActivity() { return this; }
-    virtual IIndexReadActivityInfo *queryIndexReadActivity() { return NULL; }
+    virtual IIndexReadActivityInfo *queryIndexReadActivity()
+    {
+        CTXLOG("Activity does not implement queryIndexReadActivity");
+        return NULL; 
+    }
 
     virtual bool needsAllocator() const { return false; }
 
@@ -3625,6 +3646,24 @@ void throwRemoteException(IMessageUnpackCursor *extra)
     throwUnexpected();
 }
 
+unsigned getPriorityMask(int priority)
+{
+    unsigned newPri = ROXIE_BG_PRIORITY;
+    switch (priority)
+    {
+        case QUERY_SLA_PRIORITY_VALUE:
+            newPri = ROXIE_SLA_PRIORITY;
+            break;
+        case QUERY_HIGH_PRIORITY_VALUE:
+            newPri = ROXIE_HIGH_PRIORITY;
+            break;
+        case QUERY_LOW_PRIORITY_VALUE:
+            newPri = ROXIE_LOW_PRIORITY;
+            break;
+    }
+    return newPri;
+}
+
 class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxieInput, implements IExceptionHandler, public CInterface
 {
     friend class CRemoteResultMerger;
@@ -3790,16 +3829,14 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
 
         void append(IRoxieServerQueryPacket *p, unsigned seq)
         {
-            HeapEntry &h = *new HeapEntry(adaptor, LINK(p), seq);
+            Owned<HeapEntry> h = new HeapEntry(adaptor, LINK(p), seq);
             IMessageResult *result = p->queryResult();
             assertex(result);
-            if (h.noteResult(result->getCursor(rowManager), isCompleteMatchFlag(result)))
+            if (h->noteResult(result->getCursor(rowManager), isCompleteMatchFlag(result)))
             {
-                heapEntries.append(h);
+                heapEntries.append(*h.getClear());
                 heap.append(heap.ordinality());
             }
-            else
-                h.Release();
         }
 
         void removeHeap(unsigned idx)
@@ -4158,17 +4195,17 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
         }
     }
 
-    void retryPending(unsigned timeout)
+    void retryPending()
     {
         checkDelayed();
         unsigned now = 0;
-        if (timeout)
+        if (acknowledgeAllRequests)
         {
+            now = msTick();
+            if (now-lastRetryCheck < packetAcknowledgeTimeout/4)
+                return;
             if (doTrace(traceRoxiePackets))
                 DBGLOG("Checking %d pending packets for ack status", pending.ordinality());
-            now = msTick();
-            if (now-lastRetryCheck < timeout/4)
-                return;
             lastRetryCheck = now;
         }
         CriticalBlock b(pendingCrit);
@@ -4180,16 +4217,16 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
                 IRoxieQueryPacket *i = p.queryPacket();
                 if (i)
                 {
-                    if (timeout)
+                    if (acknowledgeAllRequests)
                     {
-                        if (!i->resendNeeded(timeout, now))
+                        if (!i->resendNeeded(now))
                             continue;
                         if (doTrace(traceAcknowledge) || doTrace(traceRoxiePackets))
-                            activity.queryLogCtx().CTXLOG("Input has not been acknowledged for %u ms - retry required?", timeout);
+                            activity.queryLogCtx().CTXLOG("Input has not been acknowledged for %u ms - retry required?", packetAcknowledgeTimeout);
                         activity.noteStatistic(StNumAckRetries, 1);
 
                     }
-                    if (!i->queryHeader().retry(timeout!=0))
+                    if (!i->queryHeader().retry())
                     {
                         StringBuffer s;
                         IException *E = MakeStringException(ROXIE_MULTICAST_ERROR, "Failed to get response from agent(s) for %s in activity %d", i->queryHeader().toString(s).str(), activity.queryId());
@@ -4255,7 +4292,10 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
                 byte * tgt = (byte*)(h+1);
                 owner.copyHeader(tgt, channel);
 
+                owner.activity.noteStatistic(StNumAgentRequests, 1);
+                owner.activity.noteStatistic(StSizeAgentRequests, buffer.length());
                 ret.setown(createRoxiePacket(buffer));
+
                 if (overflowSequence == OVERFLOWSEQUENCE_MAX)
                     overflowSequence = 1; // don't wrap to 0 - that is a bit special
                 else
@@ -4336,7 +4376,7 @@ private:
 
     // this is only used to avoid recreating a bufferStream for each row.  A better solution may be needed
     MemoryBuffer tempRowBuffer;     
-    Owned<ISerialStream> bufferStream;
+    Owned<IBufferedSerialInputStream> bufferStream;
     CThorStreamDeserializerSource rowSource;
 
 protected:
@@ -4554,8 +4594,31 @@ public:
             //       But this could still cause too many reply packets on the fastlane
             //       (higher priority output Q), which may cause the activities on the 
             //       low priority output Q to not get service on time.
+
+            int origPriority = (int)ctx->queryOptions().priority;
+            int dynPriority = ctx->queryOptions().dynPriority;
+            if (dynPriority < origPriority)
+            {
+                unsigned newPri = getPriorityMask(dynPriority);
+                p->queryHeader().activityId &= ~ROXIE_PRIORITY_MASK;
+                p->queryHeader().activityId |= newPri;
+            }
+
+            // TODO: perhaps check elapsed every Nth msg ?
+            if ( (dynPriorityAdjustCycles > 0) && (origPriority == QUERY_LOW_PRIORITY_VALUE) && (dynPriority == QUERY_LOW_PRIORITY_VALUE) &&
+                 (ctx->queryElapsedCycles() > dynPriorityAdjustCycles) )
+            {
+                ctx->queryOptions().dynPriority = QUERY_BG_PRIORITY_VALUE;
+                unsigned dynAdjustMsec = (dynPriorityAdjustCycles * 1000ULL) / queryOneSecCycles();
+                UWARNLOG("WARNING: %d msec dynamic adjustment threshold reached, shifting query to BG queue", dynAdjustMsec);
+                p->queryHeader().activityId &= ~ROXIE_PRIORITY_MASK;
+                p->queryHeader().activityId |= ROXIE_BG_PRIORITY;
+                // TODO: what to do about still running activities' continuation/ack priorities ?
+            }
+
+            unsigned pmask = p->queryHeader().activityId & ROXIE_PRIORITY_MASK;
             if ((colocalArg == 0) &&     // not a child query activity??
-                    (p->queryHeader().activityId & (ROXIE_SLA_PRIORITY | ROXIE_HIGH_PRIORITY)) && 
+                    ( (pmask == ROXIE_SLA_PRIORITY) || (pmask == ROXIE_HIGH_PRIORITY) ) &&
                     (p->queryHeader().overflowSequence == 0) &&
                     (p->queryHeader().continueSequence & ~CONTINUE_SEQUENCE_SKIPTO)==0)
                 p->queryHeader().retries |= ROXIE_FASTLANE;
@@ -4674,7 +4737,7 @@ public:
         return true;
     }
 
-    virtual void onCreate(IHThorArg *_colocalArg)
+    virtual void onCreate(IHThorArg *_colocalArg, bool forceDeferred)
     {
         debugContext = ctx->queryDebugContext();
         colocalArg = _colocalArg;
@@ -4683,7 +4746,7 @@ public:
             deserializer.setown(meta.createDiskDeserializer(ctx->queryCodeContext(), activity.queryId()));
             rowAllocator.setown(activity.createRowAllocator(meta.queryOriginal()));
         }
-        if (ctx->queryDebugContext() && ctx->queryDebugContext()->getExecuteSequentially())
+        if (forceDeferred || (ctx->queryDebugContext() && ctx->queryDebugContext()->getExecuteSequentially()))
             deferredStart = true;
         timeActivities = ctx->queryOptions().timeActivities;
     }
@@ -5010,7 +5073,18 @@ public:
         mu.clear();
         SimpleActivityTimer t(unpackerWaitCycles, timeActivities);
         unsigned ctxTraceLevel = activity.queryLogCtx().queryTraceLevel();
-        unsigned timeout = remoteId.isSLAPriority() ? slaTimeout : (remoteId.isHighPriority() ? highTimeout : lowTimeout);
+
+        unsigned timeout = lowTimeout;
+        switch (activity.queryContext()->queryOptions().dynPriority)
+        {
+            case QUERY_SLA_PRIORITY_VALUE:
+                timeout = slaTimeout;
+                break;
+            case QUERY_HIGH_PRIORITY_VALUE:
+                timeout = highTimeout;
+                break;
+        }
+
         unsigned checkInterval = activity.queryContext()->checkInterval();
         if (checkInterval > timeout)
             checkInterval = timeout;
@@ -5023,7 +5097,7 @@ public:
             activity.queryContext()->checkAbort();
             if (acknowledgeAllRequests && !localAgent)
             {
-                retryPending(checkInterval);
+                retryPending();
             }
             bool anyActivity;
             if (ctxTraceLevel > 5)
@@ -5212,7 +5286,7 @@ public:
                                         CRuntimeStatisticCollection childStats(allStatistics);
                                         childStats.deserialize(buf);
                                         //activity.queryContext()->mergeActivityStats(childStats, graphId, childId);
-                                        activity.mergeStats(childStats);
+                                        activity.mergeStats(0, childStats);
                                     }
                                 }
                                 ReleaseRoxieRow(logInfo);
@@ -5235,7 +5309,9 @@ public:
                             Owned<IMessageUnpackCursor> exceptionData = mr->getCursor(rowManager);
                             throwRemoteException(exceptionData);
                         }
-                        // Leave it on pending queue in original location
+                        // One channel has failed, but should be recoverable
+                        // Leave it on pending queue in original location, but clear acknowledged flag
+                        op->clearAcknowledged();
                         break;
 
                     case ROXIE_ALIVE:
@@ -5315,11 +5391,11 @@ public:
             else if (!anyActivity && !localAgent && !acknowledgeAllRequests)
             {
                 unsigned timeNow = msTick();
-                if (timeNow-lastActivity >= checkInterval)
+                if (timeNow-lastActivity >= timeout)
                 {
                     lastActivity = timeNow;
-                    activity.queryLogCtx().CTXLOG("Input has stalled for %u ms - retry required?", checkInterval);
-                    retryPending(0);
+                    activity.queryLogCtx().CTXLOG("Input has stalled for %u ms - retry required?", timeout);
+                    retryPending();
                 }
             }
         }
@@ -5527,6 +5603,18 @@ IRoxieServerActivityFactory *createRoxieServerApplyActivityFactory(unsigned _id,
 
 //=================================================================================
 
+static class CDummyIndexReadInfo : public CInterfaceOf<IIndexReadActivityInfo>
+{
+public:
+    virtual IKeyArray *getKeySet() const { return nullptr; }
+    virtual const IResolvedFile *getVarFileInfo() const { return nullptr; }
+    virtual ITranslatorSet *getTranslators() const { return nullptr; }
+
+    virtual void mergeSegmentMonitors(IIndexReadContext *irc) const {  }
+    virtual IRoxieServerActivity *queryActivity() { throwUnexpected(); };    // Should never involve remote agent if keyset has returned nullptr
+    virtual const RemoteActivityId &queryRemoteId() const { throwUnexpected(); }
+} dummyIndexReadInfo;
+
 class CRoxieServerNullActivity : public CRoxieServerActivity
 {
 public:
@@ -5540,6 +5628,10 @@ public:
         return NULL;
     }
 
+    virtual IIndexReadActivityInfo *queryIndexReadActivity() 
+    {
+        return &dummyIndexReadInfo;
+    }
 };
 
 IRoxieServerActivity * createRoxieServerNullActivity(IRoxieAgentContext *_ctx, const IRoxieServerActivityFactory *_factory, IProbeManager *_probeManager)
@@ -9554,6 +9646,11 @@ public:
         CRoxieServerActivity::stop();
     };
 
+    virtual IIndexReadActivityInfo *queryIndexReadActivity() override
+    {
+        return input->queryIndexReadActivity();
+    }
+
     void reset(unsigned oid)
     {
         if (state != STATEreset) // make sure input is only reset once
@@ -11973,7 +12070,7 @@ public:
 class CRoxieServerDiskWriteActivity : public CRoxieServerInternalSinkActivity, implements IRoxiePublishCallback
 {
 protected:
-    Owned<IExtRowWriter> outSeq;
+    Owned<ILogicalRowWriter> outSeq;
     Owned<IOutputRowSerializer> rowSerializer;
     Linked<IFileIOStream> diskout;
     bool blockcompressed;
@@ -11985,10 +12082,7 @@ protected:
     IHThorDiskWriteArg &helper;
     Owned<IRecordSize> diskmeta;
     Owned<IRoxieWriteHandler> writer;
-
-    bool tallycrc;
     unsigned __int64 uncompressedBytesWritten;
-    CRC32 crc;
 
     void updateWorkUnitResult(unsigned __int64 reccount)
     {
@@ -12064,7 +12158,11 @@ protected:
         else
         {
             StringBuffer defaultCluster;
-            if (getDefaultStoragePlane(defaultCluster))
+            if (TDWpersist & helper.getFlags())
+                getDefaultPersistPlane(defaultCluster);
+            else
+                getDefaultStoragePlane(defaultCluster);
+            if (defaultCluster.length())
             {
                 clusters.append(defaultCluster);
                 Owned<IPropertyTree> plane = getStoragePlane(defaultCluster);
@@ -12098,7 +12196,6 @@ public:
             blockcompressed = (((helper.getFlags() & TDWnewcompress) != 0) || (((helper.getFlags() & TDXcompress) != 0) && ((0 == fixedSize) || (fixedSize >= MIN_ROWCOMPRESS_RECSIZE)))); //always use new compression
         }
         encrypted = false; // set later
-        tallycrc = true;
         uncompressedBytesWritten = 0;
     }
 
@@ -12135,7 +12232,11 @@ public:
                 blockcompressed = outputPlaneCompressed;
         }
         if (blockcompressed)
-            io.setown(createCompressedFileWriter(writer->queryFile(), (diskmeta->isFixedSize() ? diskmeta->getFixedSize() : 0), extend, true, ecomp, COMPRESS_METHOD_LZ4));
+        {
+            size32_t compBlockSize = 0; // i.e. default
+            size32_t blockedIoSize = -1; // i.e. default
+            io.setown(createCompressedFileWriter(writer->queryFile(), (diskmeta->isFixedSize() ? diskmeta->getFixedSize() : 0), extend, true, ecomp, COMPRESS_METHOD_LZ4, compBlockSize, blockedIoSize, IFEnone));
+        }
         else
             io.setown(writer->queryFile()->open(extend ? IFOwrite : IFOcreate));
         if (!io)
@@ -12143,14 +12244,11 @@ public:
         diskout.setown(createBufferedIOStream(io));
         if (extend)
             diskout->seek(0, IFSend);
-        tallycrc = !blockcompressed; // MORE: Should this be controlled by an activity hint/flag?
         Owned<IRowInterfaces> rowIf = createRowInterfaces(input->queryOutputMeta(), activityId, factory->getHeapFlags(), ctx->queryCodeContext());
         rowSerializer.set(rowIf->queryRowSerializer());
         unsigned rwFlags = rw_autoflush;
         if(grouped)
             rwFlags |= rw_grouped;
-        if(tallycrc)
-            rwFlags |= rw_crc;
         outSeq.setown(createRowWriter(diskout, rowIf, rwFlags));
     }
 
@@ -12166,11 +12264,15 @@ public:
             else
             {
                 if (outSeq)
-                    outSeq->flush(&crc);
+                    outSeq->flush();
                 if (outSeq)
                     uncompressedBytesWritten = outSeq->getPosition();
                 outSeq.clear();
-                diskout.clear();  // Make sure file is properly closed or date may not match published info
+                if (diskout)
+                {
+                    diskout->close();
+                    diskout.clear();  // Make sure file is properly closed or date may not match published info
+                }
                 if (writer)
                 {
                     updateWorkUnitResult(processed);
@@ -12194,7 +12296,6 @@ public:
         outSeq.clear();
         writer.clear();
         uncompressedBytesWritten = 0;
-        crc.reset();
     }
 
     virtual void onExecute()
@@ -12226,8 +12327,6 @@ public:
             partProps.setPropInt64("@compressedSize", partProps.getPropInt64("@size", 0));
             partProps.setPropInt64("@size", uncompressedBytesWritten);
         }
-        else if (tallycrc && crc.get())
-            partProps.setPropInt64("@fileCrc", crc.get());
 
         if (encrypted)
             fileProps.setPropBool("@encrypted", true);
@@ -12520,7 +12619,6 @@ class CRoxieServerIndexWriteActivity : public CRoxieServerInternalSinkActivity, 
 {
     IHThorIndexWriteArg &helper;
     bool overwrite;
-    Owned<ClusterWriteHandler> clusterHandler;
     Owned<IRoxieWriteHandler> writer;
     unsigned __int64 reccount;
     unsigned int fileCrc;
@@ -12558,8 +12656,6 @@ class CRoxieServerIndexWriteActivity : public CRoxieServerInternalSinkActivity, 
                         result->setResultLogicalName(lfn.str());
                     }
                 }
-                if(clusterHandler)
-                    clusterHandler->finish(writer->queryFile());
                 CTXLOG("Created roxie index file %s", lfn.str());
             }
         }
@@ -12738,16 +12834,20 @@ public:
                 }
                 reccount++;
             }
-            duplicateKeyCount = builder->getDuplicateCount();
+            duplicateKeyCount = builder->getStatistic(StNumDuplicateKeys);
             cummulativeDuplicateKeyCount += duplicateKeyCount;
-            builder->finish(metadata, &fileCrc, maxRecordSizeSeen);
-            numLeafNodes = builder->getNumLeafNodes();
-            numBranchNodes = builder->getNumBranchNodes();
-            numBlobNodes = builder->getNumBlobNodes();
-            offsetBranches = builder->getOffsetBranches();
+            builder->finish(metadata, &fileCrc, maxRecordSizeSeen, nullptr);
+            numLeafNodes = builder->getStatistic(StNumLeafCacheAdds);
+            numBranchNodes = builder->getStatistic(StNumNodeCacheAdds);
+            numBlobNodes = builder->getStatistic(StNumBlobCacheAdds);
+            offsetBranches = builder->getStatistic(StSizeOffsetBranches);
             originalBlobSize = bc.queryTotalSize();
-            branchMemorySize = builder->getBranchMemorySize();
-            leafMemorySize = builder->getLeafMemorySize();
+            branchMemorySize = builder->getStatistic(StSizeBranchMemory);
+            leafMemorySize = builder->getStatistic(StSizeLeafMemory);
+
+            builder.clear();
+            out.clear();
+            io->close();
 
             noteStatistic(StNumLeafCacheAdds, numLeafNodes);
             noteStatistic(StNumNodeCacheAdds, numBranchNodes);
@@ -12797,15 +12897,10 @@ public:
         // Now publish to name services
         StringBuffer dir, base;
         offset_t compressedFileSize = writer->queryFile()->size();
-        if(clusterHandler)
-            clusterHandler->getDirAndFilename(dir, base);
 
         //properties of the first file part.
         Owned<IPropertyTree> attrs;
-        if(clusterHandler)
-            attrs.setown(createPTree("Part", ipt_fast));  // clusterHandler is going to set attributes
-        else
-            attrs.set(&desc->queryPart(0)->queryProperties());
+        attrs.set(&desc->queryPart(0)->queryProperties());
         attrs->setPropInt64("@uncompressedSize", uncompressedSize + originalBlobSize);
         attrs->setPropInt64("@size", compressedFileSize);
         attrs->setPropInt64("@recordCount", reccount);
@@ -12821,9 +12916,6 @@ public:
         modifiedTime.getString(timestr);
         if(timestr.length())
             attrs->setProp("@modified", timestr.str());
-
-        if(clusterHandler)
-            clusterHandler->setDescriptorParts(desc, base.str(), attrs);
 
         // properties of the logical file
         IPropertyTree & properties = desc->queryProperties();
@@ -12992,8 +13084,8 @@ class CRoxieServerJoinActivity : public CRoxieServerTwoInputActivity
     OwnedConstRoxieRow defaultRight;
     Owned<IEngineRowAllocator> defaultLeftAllocator;
     Owned<IEngineRowAllocator> defaultRightAllocator;
-    Owned<IGroupedInput> sortedLeft;
-    Owned<IGroupedInput> groupedSortedRight;
+    Owned<IEngineRowStream> sortedLeft;
+    Owned<IEngineRowStream> groupedSortedRight;
 
     bool cloneLeft;
 
@@ -13146,7 +13238,7 @@ public:
     void fillLeft()
     {
         matchedLeft = false;
-        left = sortedLeft->nextRow(); // NOTE: already degrouped by the IGroupedInput we attached
+        left = sortedLeft->nextRow(); // NOTE: already degrouped by the IEngineRowStream we attached
         if (betweenjoin && left && pendingRight && (collate->docompare(left, pendingRight) >= 0))
             fillRight();
         if (limitedhelper && 0==rightIndex)
@@ -18026,7 +18118,7 @@ public:
     virtual void onCreate(IHThorArg *_colocalParent)
     {
         CRoxieServerActivity::onCreate(_colocalParent);
-        remote.onCreate(_colocalParent);
+        remote.onCreate(_colocalParent, false);
     }
 
     virtual void doStart(unsigned parentExtractSize, const byte *parentExtract, bool paused)
@@ -18632,7 +18724,7 @@ class CRoxieServerSelfJoinActivity : public CRoxieServerActivity
     Owned<IEngineRowAllocator> defaultAllocator;
     Owned<IRHLimitedCompareHelper> limitedhelper;
     Owned<CRHDualCache> dualcache;
-    Owned<IGroupedInput> groupedInput;
+    Owned<IEngineRowStream> groupedInput;
     IRowStream *dualCacheInput;
 
     bool fillGroup()
@@ -21052,6 +21144,14 @@ public:
         CRoxieServerMultiInputBaseActivity::reset();
     }
 
+    virtual IIndexReadActivityInfo *queryIndexReadActivity()
+    {
+        //CHOOSE defaults to the last argument if out of range.
+        if (cond >= numInputs)
+            cond = numInputs - 1;
+        return inputArray[cond]->queryIndexReadActivity();
+    }
+
     virtual const void *nextRow()
     {
         ActivityTimer t(activityStats, timeActivities);
@@ -21190,7 +21290,7 @@ public:
         IFinalRoxieInput *in = cond ? inputTrue  : inputFalse;
         if (in)
             return in->queryIndexReadActivity();
-        return NULL;
+        return &dummyIndexReadInfo;
     }
 
     virtual void reset()
@@ -22433,7 +22533,7 @@ public:
     {
         CRoxieServerActivity::onCreate(_colocalParent);
         if (remote)
-            remote->onCreate(_colocalParent);
+            remote->onCreate(_colocalParent, variableFileName);
     }
 
     virtual bool needsAllocator() const { return true; }
@@ -23614,7 +23714,7 @@ public:
     virtual void onCreate(IHThorArg *_colocalParent)
     {
         CRoxieServerActivity::onCreate(_colocalParent);
-        remote.onCreate(_colocalParent);
+        remote.onCreate(_colocalParent, variableFileName);
     }
 
     virtual void doStart(unsigned parentExtractSize, const byte *parentExtract, bool paused)
@@ -25394,7 +25494,7 @@ public:
     virtual void onCreate(IHThorArg *_colocalParent)
     {
         CRoxieServerActivity::onCreate(_colocalParent);
-        remote.onCreate(_colocalParent);
+        remote.onCreate(_colocalParent, variableFileName);
     }
 
     virtual void setInput(unsigned idx, unsigned _sourceIdx, IFinalRoxieInput *_in)
@@ -25920,9 +26020,9 @@ public:
         eof = false;
     }
 
-    virtual void onCreate(IHThorArg *_colocalArg)
+    virtual void onCreate(IHThorArg *_colocalArg, bool forceDeferred) override
     {
-        CRemoteResultAdaptor::onCreate(_colocalArg);
+        CRemoteResultAdaptor::onCreate(_colocalArg, forceDeferred);
         ccdRecordAllocator.setown(activity.createRowAllocator(helper.queryJoinFieldsRecordSize()));
     }
 
@@ -26088,7 +26188,7 @@ public:
     virtual void onCreate(IHThorArg *_colocalParent)
     {
         CRoxieServerActivity::onCreate(_colocalParent);
-        remote.onCreate(_colocalParent);
+        remote.onCreate(_colocalParent, variableIndexFileName);
         indexReadAllocator.setown(createRowAllocator(indexReadMeta));
     }
 
@@ -26456,16 +26556,14 @@ public:
         indexReadInput = NULL;
         rootIndex = NULL;
         atmostsTriggered = 0;
-        // Allocate blocks of rows (if fixed size) to reduce overhead and potential contention between threads
+        // Allocate blocks of CJoinGroup objects to reduce overhead and potential contention between threads
         unsigned allocatorFlags = roxiemem::RHFblocked;
         joinGroupAllocator.setown(ctx->queryRowManager().createFixedRowHeap(sizeof(CJoinGroup), activityId, allocatorFlags));
-        // MORE - code would be easier to read if I got more values from helper rather than passing from factory
-    }
 
-    virtual void onCreate(IHThorArg *_colocalParent)
-    {
-        CRoxieServerActivity::onCreate(_colocalParent);
-        remote.onCreate(_colocalParent);
+        //Output rows are only created on a single thread, so it is safe to use a blocked allocator - reducing contention
+        //and even if no contention it reduces the critical section overhead.
+        rowAllocator = createRowAllocatorEx(meta.queryOriginal(), roxiemem::RHFblocked);
+        // MORE - code would be easier to read if I got more values from helper rather than passing from factory
     }
 
     virtual void setInput(unsigned idx, unsigned _sourceIdx, IFinalRoxieInput *_in)
@@ -26556,6 +26654,8 @@ public:
     {
         CRoxieServerActivity::reset();
         joinGroupAllocator->emptyCache();
+        if (rowAllocator)
+            rowAllocator->emptyCache();
         defaultRight.clear();
         if (indexReadInput)
             indexReadInput->reset();
@@ -26860,6 +26960,7 @@ public:
     virtual void onCreate(IHThorArg *_colocalParent)
     {
         CRoxieServerKeyedJoinBase::onCreate(_colocalParent);
+        remote.onCreate(_colocalParent, variableFetchFileName);
         head.onCreate(_colocalParent);
         fetchInputFields.set(helper.queryFetchInputRecordSize());
         fetchInputAllocator.setown(createRowAllocator(helper.queryFetchInputRecordSize()));
@@ -27008,6 +27109,7 @@ public:
     virtual void onCreate(IHThorArg *_colocalParent)
     {
         CRoxieServerKeyedJoinBase::onCreate(_colocalParent);
+        remote.onCreate(_colocalParent, variableIndexFileName);
         //The index read allocator->allocate() is only ever called from a single thread => we can allocate rows in blocks
         indexReadAllocator.setown(createRowAllocatorEx(indexReadMeta, roxiemem::RHFblocked));
 

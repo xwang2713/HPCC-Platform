@@ -70,8 +70,39 @@
       choose to integrate HPCC Systems logging data with any existing logging
       solutions, or to implement another one specifically for HPCC Systems
       data. Starting with HPCC Systems version 8.4, we provide a lightweight,
-      yet complete log-processing solution for your convenience. The following
-      sections will look at a couple of the possible solutions.</para>
+      yet complete log-processing solution for convenience. Subsequent
+      sections will look at a couple other possible log-processing
+      solutions.</para>
+
+      <sect3 id="LogP_Depends">
+        <title>Log Dependant Applications</title>
+
+        <para>Currently there is a utility delivered with a containerized HPCC
+        Systems deployment which is dependant on having a properly configured
+        log-processing solution for optimal results.</para>
+
+        <sect4 id="CNTR_ZAP">
+          <title>The Z.A.P. Utility</title>
+
+          <para>The Zipped Analysis Package (Z.A.P.) utility collects system
+          information and encapsulates it into a shareable package. This
+          utility packages up information to send for further analysis. ZAP
+          reports contain several artifacts related to a given workunit, to
+          aid in debugging.</para>
+
+          <para>The Component logs are one of most important artifacts
+          expected to be included in the report. In containerized deployments
+          logging is handled differently from bare metal. The log fetching is
+          dependent on a back-end log processor being properly configured and
+          available and the HPCC LogAccess feature configured to bind to the
+          log processor. If those two dependencies are not met, the
+          containerized cluster logs are not included in the ZAP report. Those
+          ZAP reports will then be incomplete. To ensure inclusion of the logs
+          in the ZAP report you must have log access configured properly. See
+          the <link linkend="Containerized_Logging">Containerized
+          Logging</link> sections for more information.</para>
+        </sect4>
+      </sect3>
     </sect2>
   </sect1>
 
@@ -108,6 +139,29 @@
       The next sections will show you how to install and set up the Elastic
       stack logging solution for HPCC Systems.</para>
 
+      <para><informaltable colsep="1" frame="all" rowsep="1">
+          <?dbfo keep-together="always"?>
+
+          <tgroup cols="2">
+            <colspec colwidth="49.50pt"/>
+
+            <colspec/>
+
+            <tbody>
+              <row>
+                <entry><inlinegraphic
+                fileref="../../images/caution.png"/></entry>
+
+                <entry><emphasis role="bold">NOTE: </emphasis>The
+                elastic4hpcclogs chart does not enable any security. The
+                responsibility of determining the need for security and
+                enabling security on any deployed Elastic Stack instance or
+                components is up to you and your organization.</entry>
+              </row>
+            </tbody>
+          </tgroup>
+        </informaltable></para>
+
       <sect3 id="logs_Add_theHPCC_Systems_Repo">
         <title>Add the HPCC Systems Repository</title>
 
@@ -129,7 +183,7 @@
         Systems charts and repositories. The
         <emphasis>elastic4hpcclogs</emphasis> chart is among them.</para>
 
-        <para><graphic fileref="../../images/CL-Img01-1.jpg" /></para>
+        <para><graphic fileref="../../images/CL-Img01-1.jpg"/></para>
       </sect3>
 
       <sect3 id="Elastic4HPCC_Install_theChart">
@@ -163,14 +217,14 @@ PLEASE NOTE: Elastic Search declares PVC(s) which might require explicit manual 
             <?dbfo keep-together="always"?>
 
             <tgroup cols="2">
-              <colspec colwidth="49.50pt" />
+              <colspec colwidth="49.50pt"/>
 
-              <colspec />
+              <colspec/>
 
               <tbody>
                 <row>
                   <entry><inlinegraphic
-                  fileref="../../images/caution.png" /></entry>
+                  fileref="../../images/caution.png"/></entry>
 
                   <entry><emphasis role="bold">IMPORTANT: </emphasis>PLEASE
                   NOTE: Elastic Search declares PVC(s) which might require
@@ -207,7 +261,7 @@ PLEASE NOTE: Elastic Search declares PVC(s) which might require explicit manual 
 myelk-filebeat-6wd2g                      1/1     Running            0          
 myelk-kibana-68688b4d4d-d489b             1/1     Running            0      </programlisting>
 
-        <para><graphic fileref="../../images/CL-Img02-1.jpg" /></para>
+        <para><graphic fileref="../../images/CL-Img02-1.jpg"/></para>
 
         <para>Once all the pods are indicating a 'ready' state and 'Running',
         including the three components for filebeats, Elastic Search, and
@@ -259,12 +313,13 @@ myelk-kibana LoadBalancer 10.110.129.199 localhost 5601:31465/TCP 68m
         interface. For more information about using the Elastic-Kibana
         interface please refer to the corresponding documentation:</para>
 
-        <para><ulink url="???">https://www.elastic.co/</ulink></para>
+        <para><ulink
+        url="https://www.elastic.co">https://www.elastic.co/</ulink></para>
 
         <para>and</para>
 
         <para><ulink
-        url="???">https://www.elastic.co/elastic-stack/</ulink></para>
+        url="https://www.elastic.co/elastic-stack/">https://www.elastic.co/elastic-stack/</ulink></para>
       </sect3>
 
       <sect3>
@@ -395,7 +450,9 @@ myelk-kibana LoadBalancer 10.110.129.199 localhost 5601:31465/TCP 68m
             <para><emphasis role="bold">TAGS</emphasis> The tags associated
             with the new workspace.</para>
 
-            <para>For example: "admin=MyName email=my.email@mycompany.com
+            <!--#synthpii-->
+
+            <para>For example: "admin=MyName email=my.email@example.com
             environment=myenv justification=testing"</para>
           </listitem>
 
@@ -561,7 +618,7 @@ ContainerLog
 
       <para>Sample output</para>
 
-      <para><graphic fileref="../../images/CL-Img03-1.jpg" /></para>
+      <para><graphic fileref="../../images/CL-Img03-1.jpg"/></para>
 
       <para>More complex queries can be formulated to fetch specific
       information provided in any of the log columns including unformatted

@@ -25,6 +25,7 @@
 #endif
 
 //Using cpp wrapper from https://github.com/couchbaselabs/libcouchbase-cxx
+#include <cassert>
 #include <libcouchbase/couchbase++.h>
 #include <libcouchbase/couchbase++/views.h>
 #include <libcouchbase/couchbase++/query.h>
@@ -300,7 +301,7 @@ namespace couchbaseembed
     {
     public:
         CouchbaseRecordBinder(const IContextLogger &_logctx, const RtlTypeInfo *_typeInfo, Couchbase::QueryCommand * _pQcmd, int _firstParam)
-         : logctx(_logctx), typeInfo(_typeInfo), m_pQcmd(_pQcmd), firstParam(_firstParam), dummyField("<row>", NULL, typeInfo), thisParam(_firstParam) {}
+         : typeInfo(_typeInfo), m_pQcmd(_pQcmd), logctx(_logctx), firstParam(_firstParam), dummyField("<row>", NULL, typeInfo), thisParam(_firstParam) {}
 
         int numFields();
         void processRow(const byte *row);
@@ -360,7 +361,7 @@ namespace couchbaseembed
     {
     public:
         CouchbaseDatasetBinder(const IContextLogger &_logctx, IRowStream * _input, const RtlTypeInfo *_typeInfo, Couchbase::QueryCommand * _pQcmd, int _firstParam)
-          : input(_input), CouchbaseRecordBinder(_logctx, _typeInfo, _pQcmd, _firstParam)
+          : CouchbaseRecordBinder(_logctx, _typeInfo, _pQcmd, _firstParam), input(_input)
         {
         }
 

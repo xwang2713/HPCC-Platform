@@ -1,6 +1,6 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Image, Link } from "@fluentui/react";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import * as ESPDFUWorkunit from "src/ESPDFUWorkunit";
 import * as FileSpray from "src/FileSpray";
 import * as Utility from "src/Utility";
@@ -15,6 +15,10 @@ import { Filter } from "./forms/Filter";
 import { Fields } from "./forms/Fields";
 import { ShortVerticalDivider } from "./Common";
 import { selector } from "./DojoGrid";
+import { SashaService, WsSasha } from "@hpcc-js/comms";
+import { scopedLogger } from "@hpcc-js/util";
+
+const logger = scopedLogger("src-react/components/DFUWorkunits.tsx");
 
 const FilterFields: Fields = {
     "Type": { type: "checkbox", label: nlsHPCC.ArchivedOnly },
@@ -39,8 +43,6 @@ function formatQuery(_filter): { [id: string]: any } {
     if (filter.Type === true) {
         filter.Type = "archived workunits";
     }
-    filter.includeTimings = true;
-    filter.includeTransferRate = true;
     return filter;
 }
 
@@ -72,6 +74,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
     const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
 
     const [showFilter, setShowFilter] = React.useState(false);
+    const sashaService = React.useMemo(() => new SashaService({ baseUrl: "" }), []);
     const { currentUser } = useMyAccount();
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
     const {
@@ -83,7 +86,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
 
     //  Grid ---
     const gridStore = React.useMemo(() => {
-        return store || ESPDFUWorkunit.CreateWUQueryStore({});
+        return store || ESPDFUWorkunit.CreateWUQueryStore();
     }, [store]);
 
     const query = React.useMemo(() => {
@@ -133,7 +136,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
             JobName: { label: nlsHPCC.JobName, width: 220 },
             ClusterName: { label: nlsHPCC.Cluster, width: 70 },
             StateMessage: { label: nlsHPCC.State, width: 70 },
-            PCTDone: {
+            PercentDone: {
                 label: nlsHPCC.PctComplete, width: 80, sortable: true,
             },
             TimeStarted: { label: nlsHPCC.TimeStarted, width: 100, sortable: true },
@@ -192,6 +195,22 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
         },
         { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
+            key: "restore", text: nlsHPCC.Restore, disabled: !uiState.hasSelection,
+            onClick: () => {
+                const wuids = selection.map(item => item.Wuid || item.ID);
+                Promise.all(wuids.map(wuid =>
+                    sashaService.RestoreWU({
+                        Wuid: wuid,
+                        WUType: WsSasha.WUTypes.DFU
+                    })
+                )).then(() => {
+                    refreshTable.call(true);
+                }).catch(err => {
+                    logger.error(err);
+                });
+            }
+        },
+        {
             key: "protect", text: nlsHPCC.Protect, disabled: !uiState.hasNotProtected,
             onClick: () => { FileSpray.DFUWorkunitsAction(selection, "Protect").then(() => refreshTable.call()); }
         },
@@ -217,7 +236,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
                 pushParams(filter);
             }
         },
-    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowDeleteConfirm, store, total, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
+    ], [currentUser, filter, hasFilter, refreshTable, sashaService, selection, setShowDeleteConfirm, store, total, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
 
     const copyButtons = useCopyButtons(columns, selection, "dfuworkunits");
 
@@ -251,7 +270,7 @@ export const DFUWorkunits: React.FunctionComponent<DFUWorkunitsProps> = ({
         header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
             <>
-                <SizeMe monitorHeight>{({ size }) =>
+                <SizeMe>{({ size }) =>
                     <div style={{ width: "100%", height: "100%" }}>
                         <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
                             <FluentPagedGrid

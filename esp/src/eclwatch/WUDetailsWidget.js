@@ -41,6 +41,8 @@ define([
     "dijit/form/TextBox",
     "dijit/Dialog",
     "dijit/form/SimpleTextarea",
+    "dijit/form/DateTextBox",
+    "dijit/form/TimeTextBox",
 
     "hpcc/TableContainer"
 ], function (declare, lang, nlsHPCCMod, dom, domAttr, domClass, topic,
@@ -117,6 +119,16 @@ define([
             this.emailFrom = registry.byId(this.id + "EmailFrom");
             this.emailSubject = registry.byId(this.id + "EmailSubject");
             this.emailBody = registry.byId(this.id + "EmailBody");
+
+            //Zap LogFilters
+            this.logFilterStartDateTime = dom.byId(this.id + "StartDateTime");
+            this.logFilterStartDate = registry.byId(this.id + "StartDate");
+            this.logFilterStartTime = registry.byId(this.id + "StartTime");
+            this.logFilterEndDateTime = dom.byId(this.id + "EndDateTime");
+            this.logFilterEndDate = registry.byId(this.id + "EndDate");
+            this.logFilterEndTime = registry.byId(this.id + "EndTime");
+            this.logFilterRelativeTimeRangeBuffer = registry.byId(this.id + "RelativeTimeRangeBuffer");
+
             this.protected = registry.byId(this.id + "Protected");
             this.infoGridWidget = registry.byId(this.id + "InfoContainer");
             this.zapDialog = registry.byId(this.id + "ZapDialog");
@@ -146,14 +158,35 @@ define([
             this.checkThorLogStatus();
         },
 
+        formatLogFilterDateTime: function (dateField, timeField, dateTimeField) {
+            if (dateField.value.toString() !== "Invalid Date") {
+                const d = new Date(dateField.value);
+                const month = d.getMonth() + 1;
+                const day = d.getDate();
+                const date = `${d.getFullYear()}-${(month < 9 ? "0" : "") + month}-${(day < 9 ? "0" : "") + day}`;
+                const time = timeField.value.toString().replace(/.*1970\s(\S+).*/, "$1");
+                dateTimeField.value = `${date}T${time}.000Z`;
+            }
+        },
+
         _onSubmitDialog: function () {
             var context = this;
             var includeSlaveLogsCheckbox = this.includeSlaveLogsCheckbox.get("checked");
+            if (this.logFilterRelativeTimeRangeBuffer.value !== "") {
+                this.logFilterEndDate.required = "";
+                this.logFilterStartDate.required = "";
+            }
             if (this.zapForm.validate()) {
                 //WUCreateAndDownloadZAPInfo is not a webservice so relying on form to submit.
                 //Server treats "on" and '' as the same thing.
                 this.includeSlaveLogsCheckbox.set("value", includeSlaveLogsCheckbox ? "on" : "off");
+
+                // Log Filters
+                this.formatLogFilterDateTime(this.logFilterStartDate, this.logFilterStartTime, this.logFilterStartDateTime);
+                this.formatLogFilterDateTime(this.logFilterEndDate, this.logFilterEndTime, this.logFilterEndDateTime);
+
                 this.zapForm.set("action", "/WsWorkunits/WUCreateAndDownloadZAPInfo");
+
                 this.zapDialog.hide();
                 this.checkThorLogStatus();
                 if (this.logAccessorMessage !== "") {
@@ -354,6 +387,10 @@ define([
                 });
             } else if (currSel.id === this.widget._Workflows.id && !this.widget._Workflows.__hpcc_initalized) {
                 this.widget._Workflows.init({
+                    Wuid: this.wu.Wuid
+                });
+            } else if (currSel.id === this.widget._Processes.id && !this.widget._Processes.__hpcc_initalized) {
+                this.widget._Processes.init({
                     Wuid: this.wu.Wuid
                 });
             } else if (currSel.id === this.resultsWidget.id && !this.resultsWidgetLoaded) {
@@ -654,7 +691,7 @@ define([
             registry.byId(this.id + "Resubmit").set("disabled", isArchived || !this.wu.isComplete() || this.wu.isDeleted());
             registry.byId(this.id + "Recover").set("disabled", isArchived || !this.wu.isComplete() || this.wu.isDeleted());
             registry.byId(this.id + "Publish").set("disabled", isArchived || !this.wu.isComplete() || this.wu.isDeleted());
-            registry.byId(this.id + "ZapReport").set("disabled", this.wu.isDeleted());
+            registry.byId(this.id + "ZapReport").set("disabled", isArchived || this.wu.isDeleted());
             registry.byId(this.id + "Reschedule").set("disabled", !this.wu.isAbleToReschedule());
             registry.byId(this.id + "Deschedule").set("disabled", !this.wu.isAbleToDeschedule());
 

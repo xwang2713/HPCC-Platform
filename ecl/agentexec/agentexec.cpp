@@ -51,6 +51,7 @@ private:
     Owned<IThreadPool> pool; // for containerized only
     std::atomic<bool> running = { false };
     bool isThorAgent = false;
+    bool disableQueuePriority = false; // temporary JIC, while new client priority queuing beds in.
 
 friend class WaitThread;
 };
@@ -80,6 +81,7 @@ CEclAgentExecutionServer::CEclAgentExecutionServer(IPropertyTree *_config) : con
         isThorAgent = streq("thor", apptype);
     else
         apptype = "hthor";
+    disableQueuePriority = getComponentConfigSP()->getPropBool("expert/@disableQueuePriority");
 
     StatisticCreatorType ctype = SCThthor;
     if (strieq(apptype, "roxie"))
@@ -122,14 +124,20 @@ int CEclAgentExecutionServer::run()
         Owned<IGroup> serverGroup = createIGroupRetry(daliServers, DALI_SERVER_PORT);
         initClientProcess(serverGroup, DCR_AgentExec);
 #ifdef _CONTAINERIZED
-        if (streq("thor", apptype))
+        if (isThorAgent)
         {
             getClusterThorQueueName(queueNames, agentName);
-            if (config->getPropBool("@multiJobLinger", defaultThorMultiJobLinger))
+            if (disableQueuePriority)
             {
-                StringBuffer lingerQueueName;
-                getClusterLingerThorQueueName(lingerQueueName, agentName);
-                lingerQueue.setown(createJobQueue(lingerQueueName));
+                // old mechanism used to test a separate queue that only Thor instances listened to (<name>.lingerthor)
+                // by queuing to it for a short period, and if not pulled off, launching a new instance. (see queueJobIfQueueWaiting)
+                // In new client priority implementation, the agent will not pull it off the queue in the 1st place.
+                if (config->getPropBool("@multiJobLinger", defaultThorMultiJobLinger))
+                {
+                    StringBuffer lingerQueueName;
+                    getClusterLingerThorQueueName(lingerQueueName, agentName);
+                    lingerQueue.setown(createJobQueue(lingerQueueName));
+                }
             }
         }
         else
@@ -149,7 +157,7 @@ int CEclAgentExecutionServer::run()
         queue.setown(createJobQueue(queueNames.str()));
         queue->connect(false);
     }
-    catch (IException *e) 
+    catch (IException *e)
     {
         EXCLOG(e, "Server queue create/connect: ");
         e->Release();
@@ -166,10 +174,11 @@ int CEclAgentExecutionServer::run()
     serverStatus.commitProperties();
     writeSentinelFile(sentinelFile);
 
-    try 
+    try
     {
         running = true;
         LocalIAbortHandler abortHandler(*this);
+        unsigned __int64 priority = 0;
         while (running)
         {
             if (pool)
@@ -183,7 +192,7 @@ int CEclAgentExecutionServer::run()
             }
 
             PROGLOG("AgentExec: Waiting on queue(s) '%s'", queueNames.str());
-            Owned<IJobQueueItem> item = queue->dequeue();
+            Owned<IJobQueueItem> item = queue->dequeuePriority(priority);
             if (item.get())
             {
                 PROGLOG("AgentExec: Dequeued workunit request '%s'", item->queryWUID());
@@ -206,22 +215,32 @@ int CEclAgentExecutionServer::run()
                 removeSentinelFile(sentinelFile); // no reason to restart
                 break;
             }
+
+            // At the moment, we only prioritize if a thoragent, because it is the only component that fires instances that then also listen to the same queue
+            // That will change, when eclccserver and hthor use the same model.
+            //
+            // In all other cases, there may be multiple agents (via replicas) listening to the same queue, but there's no particular advantage to prioritizing
+            // one over the other, and theoretically could introduce some unexpected behaviour, like a skew of local disk usage.
+            // That will requirement will also change, if we have automatic horizontal scaling in place. Then we would want to prioritize the agents that have
+            // recently been in use.
+            if (!disableQueuePriority && isThorAgent)
+                priority = getTimeStampNowValue();
         }
         DBGLOG("Closing down");
     }
 
-    catch (IException *e) 
+    catch (IException *e)
     {
         EXCLOG(e, "Server Exception: ");
         e->Release();
         PROGLOG("Exiting");
     }
 
-    try 
+    try
     {
         queue->disconnect();
     }
-    catch (IException *e) 
+    catch (IException *e)
     {
         EXCLOG(e, "Server queue disconnect: ");
         e->Release();
@@ -235,6 +254,7 @@ int CEclAgentExecutionServer::run()
 typedef std::tuple<IJobQueueItem *, unsigned, const char *, const char *> ThreadCtx;
 
 // NB: WaitThread only used by if pool created (see CEclAgentExecutionServer ctor)
+static std::atomic<unsigned> nextInstanceNumber{0};
 class WaitThread : public CInterfaceOf<IPooledThread>
 {
 public:
@@ -242,6 +262,8 @@ public:
         : owner(_owner), dali(_dali), apptype(_apptype), queue(_queue)
     {
         isThorAgent = streq("thor", apptype);
+        // nextInstanceNumber always increases
+        myInstanceNumber = ++nextInstanceNumber;
     }
     virtual void init(void *param) override
     {
@@ -261,6 +283,7 @@ public:
     virtual void threadmain() override
     {
         Owned<IException> exception;
+        bool sharedK8sJob = false;
         try
         {
             StringAttr jobSpecName(apptype);
@@ -276,26 +299,57 @@ public:
             bool useChildProcesses = compConfig->getPropBool("@useChildProcesses");
             if (isContainerized() && !useChildProcesses)
             {
-                constexpr unsigned queueWaitingTimeoutMs = 10000;
+                sharedK8sJob = true;
                 constexpr unsigned queueWaitingCheckPeriodMs = 1000;
+                // NB: queueJobIfQueueWaiting is a legacy mechanism (should be deleted), for now only used if disableQueuePriority=true
                 if (!owner.lingerQueue || !queueJobIfQueueWaiting(owner.lingerQueue, item, queueWaitingCheckPeriodMs, queueWaitingCheckPeriodMs))
                 {
                     std::list<std::pair<std::string, std::string>> params = { };
                     if (compConfig->getPropBool("@useThorQueue", true))
                         params.push_back({ "queue", queue.get() });
-                    StringBuffer jobName(wuid);
+                    StringBuffer jobName;
                     if (isThorAgent)
                     {
-                        jobName.append('-').append(graphName);
                         params.push_back({ "graphName", graphName.get() });
                         params.push_back({ "wfid", std::to_string(wfid) });
-                    }
 
+                        const char *targetName = compConfig->queryProp("@targetName");
+                        if (targetName)
+                        {
+                            jobName.append(targetName).append('-');
+                            jobName.append(myInstanceNumber);
+                            params.push_back({ "instanceNum", std::to_string(myInstanceNumber) });
+                        }
+                        else
+                            jobName.append(wuid).append('-').append(graphName);
+                    }
+                    else
+                        jobName.append(wuid);
+
+                    SCMStringBuffer optPlatformVersion;
                     {
                         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
-                        Owned<IWorkUnit> workunit = factory->updateWorkUnit(wuid);
-                        if (isContainerized())
-                            workunit->setContainerizedProcessInfo("AgentExec", compConfig->queryProp("@name"), k8s::queryMyPodName(), nullptr);
+                        Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid);
+                        if (!cw)
+                        {
+                            WARNLOG("Queued wuid does not exist: %s", wuid.str());
+                            return; // exit pooled thread
+                        }
+                        if (isThorAgent)
+                        {
+                            SessionId agentSessionID = cw->getAgentSession();
+                            if ((agentSessionID <= 0) || querySessionManager().sessionStopped(agentSessionID, 0))
+                            {
+                                WARNLOG("Discarding agentless queued Thor job: %s", wuid.str());
+                                return; // exit pooled thread
+                            }
+                        }
+                        cw->getDebugValue("platformVersion", optPlatformVersion);
+                        if (optPlatformVersion.length())
+                            params.push_back({ "_HPCC_JOB_VERSION_", optPlatformVersion.str() });
+
+                        Owned<IWorkUnit> workunit = &cw->lock();
+                        workunit->setContainerizedProcessInfo("AgentExec", compConfig->queryProp("@name"), k8s::queryMyPodName(), k8s::queryMyContainerName(), graphName, nullptr);
                         addTimeStamp(workunit, wfid, graphName, StWhenK8sLaunched);
                     }
                     k8s::runJob(jobSpecName, wuid, jobName, params);
@@ -307,7 +361,7 @@ public:
                 {
                     Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
                     Owned<IWorkUnit> workunit = factory->updateWorkUnit(wuid.str());
-                    workunit->setContainerizedProcessInfo("AgentExec", compConfig->queryProp("@name"), k8s::queryMyPodName(), nullptr);
+                    workunit->setContainerizedProcessInfo("AgentExec", compConfig->queryProp("@name"), k8s::queryMyPodName(), k8s::queryMyContainerName(), nullptr, nullptr);
                 }
                 bool useValgrind = compConfig->getPropBool("@valgrind", false);
                 VStringBuffer exec("%s%s --workunit=%s --daliServers=%s", useValgrind ? "valgrind " : "", processName.get(), wuid.str(), dali.str());
@@ -337,13 +391,21 @@ public:
         {
             EXCLOG(exception);
             Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
-            Owned<IWorkUnit> workunit = factory->updateWorkUnit(wuid);
-            if (workunit)
+            Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid);
+            if (cw)
             {
-                workunit->setState(WUStateFailed);
-                StringBuffer eStr;
-                addExceptionToWorkunit(workunit, SeverityError, "agentexec", exception->errorCode(), exception->errorMessage(eStr).str(), nullptr, 0, 0, 0);
-                workunit->commit();
+                if (!sharedK8sJob && ((cw->getState() == WUStateRunning) || (cw->getState() == WUStateBlocked) || (cw->getState() == WUStateWait)))
+                {
+                    Owned<IWorkUnit> workunit = &cw->lock();
+                    // recheck now locked
+                    if ((workunit->getState() == WUStateRunning) || (workunit->getState() == WUStateBlocked) || (workunit->getState() == WUStateWait))
+                    {
+                        workunit->setState(WUStateFailed);
+                        StringBuffer eStr;
+                        addExceptionToWorkunit(workunit, SeverityError, "agentexec", exception->errorCode(), exception->errorMessage(eStr).str(), nullptr, 0, 0, 0);
+                        workunit->commit();
+                    }
+                }
             }
         }
     }
@@ -357,7 +419,8 @@ private:
     StringAttr apptype;
     StringAttr queue;
     Linked<IJobQueueItem> item;
-    bool isThorAgent = false;
+    bool isThorAgent{false};
+    unsigned myInstanceNumber{0};
 };
 
 IPooledThread *CEclAgentExecutionServer::createNew()
@@ -427,12 +490,12 @@ bool CEclAgentExecutionServer::executeWorkunit(IJobQueueItem *item)
 #ifdef _WIN32
     bool success = invoke_program(cmdLine.str(), runcode, false, NULL, NULL);
 #else
-    //specify "wait" to eliminate linux zombies. Waits for the startup script to 
+    //specify "wait" to eliminate linux zombies. Waits for the startup script to
     //complete (not eclagent), because script starts eclagent in the background
     bool success = invoke_program(cmdLine.str(), runcode, true, NULL, NULL);
 #endif
     if (success)
-    { 
+    {
         if (runcode != 0)
             PROGLOG("Process failed during execution: %s error(%" I64F "i)", cmdLine.str(), (unsigned __int64) runcode);
         else
@@ -462,8 +525,8 @@ eclagent:
     type: hthor
 )!!";
 
-int main(int argc, const char *argv[]) 
-{ 
+int main(int argc, const char *argv[])
+{
     if (!checkCreateDaemon(argc, argv))
         return EXIT_FAILURE;
 
@@ -474,7 +537,7 @@ int main(int argc, const char *argv[])
     {
         config.setown(loadConfiguration(defaultYaml, argv, "eclagent", "AGENTEXEC", "agentexec.xml", nullptr));
     }
-    catch (IException *e) 
+    catch (IException *e)
     {
         EXCLOG(e, "Error processing config file\n");
         return 1;
@@ -485,7 +548,7 @@ int main(int argc, const char *argv[])
     {
         CEclAgentExecutionServer server(config);
         server.run();
-    } 
+    }
     catch (...)
     {
         printf("Unexpected error running agentexec server\r\n");

@@ -253,7 +253,6 @@ public:
 
         for (; !iter.done(); iter.next())
         {
-            const char *arg = iter.query();
             if (iter.matchOption(optName, ECLOPT_JOB_NAME)||iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
                 continue;
             if (iter.matchFlag(optProtect, ECLOPT_PROTECT))
@@ -313,8 +312,7 @@ private:
 class EclCmdPublish : public EclCmdWithEclTarget
 {
 public:
-    EclCmdPublish() : optNoActivate(false), optSuspendPrevious(false), optDeletePrevious(false),
-        activateSet(false), optNoReload(false), optDontCopyFiles(false), optMsToWait(300000), optAllowForeign(false), optUpdateDfs(false),
+    EclCmdPublish() : optMsToWait(300000), optNoActivate(false), activateSet(false), optNoReload(false), optDontCopyFiles(false), optSuspendPrevious(false), optDeletePrevious(false), optAllowForeign(false), optUpdateDfs(false),
         optUpdateSuperfiles(false), optUpdateCloneFrom(false), optDontAppendCluster(false)
     {
         optObj.accept = eclObjWuid | eclObjArchive | eclObjSharedObject;
@@ -611,7 +609,7 @@ inline unsigned nextWait(unsigned wait, unsigned waited)
 class EclCmdRun : public EclCmdWithEclTarget
 {
 public:
-    EclCmdRun() : optWaitTime((unsigned)-1), optNoRoot(false), optExceptionSeverity("info")
+    EclCmdRun() : optExceptionSeverity("info"), optWaitTime((unsigned)-1), optNoRoot(false)
     {
         optObj.accept = eclObjWuid | eclObjArchive | eclObjSharedObject | eclObjWuid | eclObjQuery;
     }
@@ -1497,7 +1495,6 @@ public:
 
         for (; !iter.done(); iter.next())
         {
-            const char *arg = iter.query();
             if (iter.matchOption(optName, ECLOPT_WUID)||iter.matchOption(optName, ECLOPT_WUID_S))
             {
                 optObj.type = eclObjWuid;
@@ -1533,7 +1530,7 @@ public:
             reqQ->setJobname(optName.get());
 
             Owned<IClientWUQueryResponse> respQ = client->WUQuery(reqQ);
-            int res = respQ->queryClientStatus();
+            [[maybe_unused]] int res = respQ->queryClientStatus();
 
             if (!respQ->getCount_isNull())
             {
@@ -1629,7 +1626,6 @@ public:
 
         for (; !iter.done(); iter.next())
         {
-            const char *arg = iter.query();
             if (iter.matchOption(optName, ECLOPT_WUID)||iter.matchOption(optName, ECLOPT_WUID_S))
             {
                 optObj.type = eclObjWuid;
@@ -1715,7 +1711,6 @@ public:
 
         for (; !iter.done(); iter.next())
         {
-            const char *arg = iter.query();
             if (iter.matchOption(optName, ECLOPT_NAME)||iter.matchOption(optName, ECLOPT_NAME_S))
             {
                 retVal = EclCmdOptionMatch;
@@ -1800,7 +1795,6 @@ public:
 
         for (; !iter.done(); iter.next())
         {
-            const char *arg = iter.query();
             if (iter.matchOption(optName, ECLOPT_WUID)||iter.matchOption(optName, ECLOPT_WUID_S))
             {
                 optObj.type = eclObjWuid;
@@ -1848,7 +1842,7 @@ public:
             req->setJobname(optName.get());
 
         Owned<IClientWUQueryResponse> resp = client->WUQuery(req);
-        int res = resp->queryClientStatus();
+        [[maybe_unused]] int res = resp->queryClientStatus();
 
         IArrayOf<IConstECLWorkunit>& wus = resp->getWorkunits();
 

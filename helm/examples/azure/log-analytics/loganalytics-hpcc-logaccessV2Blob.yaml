@@ -1,0 +1,54 @@
+# Configures HPCC logAccess to target Azure Log Analytics Workspace
+global:
+  logAccess:
+    name: "Azure LogAnalytics LogAccess"
+    type: "AzureLogAnalyticsCurl"
+    blobMode: "true"
+    #connection:
+      #All connection attributes are optional.
+      #It is preferable to provide connection values as secret values category 'esp', secret name 'azure_logaccess'
+      # NOTE: secret 'azure_logaccess' must include 'aad-client-secret' and it cannot be provided in configuration
+      #
+      #workspaceID: "XYZ"      #ID of the Azure LogAnalytics workspace to query logs from
+                               # Secret value equivalent: 'ala-workspace-id'
+      #clientID: "DEF"         #ID of Azure Active Directory registered application with api.loganalytics.io access - format: 00000000-0000-0000-0000-000000000000
+                               # Secret value equivalent: 'aad-client-id'
+      #tenantID: "ABC"         #The Azure Active Directory Tenant ID, required for KQL API access
+                               # Secret value equivalent: 'aad-tenant-id'
+    logMaps:
+    - type: "global"
+      storeName: "ContainerLogV2"
+      searchColumn: "LogMessage"
+      columnType: "dynamic"
+      columnMode: "MIN"
+      timeStampColumn: "TimeGenerated"
+    - type: "components"
+      storeName: "ContainerLogV2"
+      searchColumn: "ContainerName" # Container name happens to coincide with component name
+      keyColumn: "ContainerName"
+      columnMode: "DEFAULT"
+      columnType: "string"
+    - type: "instance"
+      columnMode: "DEFAULT"
+      searchColumn: "Computer"
+      columnType: "string"
+    - type: "message"
+      searchColumn: "LogMessage"
+      columnMode: "MIN"
+      columnType: "string"
+    - type: "timestamp"
+      searchColumn: "LogMessage"
+      columnMode: "MIN"
+      columnType: "string"
+    - type: "pod"
+      searchColumn: "PodName"
+      columnMode: "DEFAULT"
+      columnType: "string"
+secrets:
+  esp:
+    azure-logaccess: "azure-logaccess"
+vaults:
+  esp:
+  - name: my-azure-logaccess-vault
+    url: http://${env.VAULT_SERVICE_HOST}:${env.VAULT_SERVICE_PORT}/v1/secret/data/esp/${secret}
+    kind: kv-v2

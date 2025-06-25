@@ -13,6 +13,8 @@ global:
       time: 200
       interval: 75
       probes: 9
+    regex:
+      cacheSize: 500
 ```
 
 NB: Some components (e.g. DfuServer and Thor) also have an 'expert' settings area (see values schema) that can be used for relavent settings
@@ -73,6 +75,13 @@ service via remote file reads with the ~remote:: syntax.
 Setting expert.allowForeign to true, enables foreign access for compatibility with legacy bare-metal environments
 that have their Dali and Dafilesrv's open.
 
+## regex (cacheSize: unsigned)
+
+See the regex example above.  If set, this should be added at the global level.
+The default value is 500.  Set to zero to disable the cache.
+This value is applied at the process level:  Each Thor worker, Roxie process, and hthor worker receives
+its own cache.  Threads/channels within a process share that process's cache.
+
 
 # Plane Expert Settings
 
@@ -81,3 +90,38 @@ that have their Dali and Dafilesrv's open.
 Optional list of bash commands to execute within an init container in pods that use this plane.
 This can be used to validate that the plane is healthy, e.g. that it is mounted as expected.
 If the script returns a non-zero result, the init container and therefore the pod will fail.
+
+## blockedFileIOKB (unsigned)
+
+The optimal size to read and write sequential file io (e.g. for Azure Blob storage set to 4096)
+
+## blockedRandomIOKB (unsigned)
+
+The optimal size of random file io reads (e.g. index lookups).
+
+## fileSyncWriteClose (boolean)
+
+Perform a fsync ahead of file close operations.
+Default: false
+
+## concurrentWriteSupport (boolean)
+
+Plane supports concurrent writing to a single physical file.
+Default: false
+
+## writeSyncMarginMs (unsigned)
+
+Minimum time period between the publication of a logical file and when it can
+be read. This setting will introduce a delay if a read operation is within this
+margin period.
+Should be set on planes backed by storage types that do not guarantee files are
+ready to be read by any other consumer immediately, e.g. Azure Blob storage.
+Default: 0
+
+## safeStatBehaviour (unsigned)
+
+Controls error behaviour of jfile stat() calls.
+0 = fail on any unexpected error. NB: ENOENT and ENOTDIR as file not present.
+1 = ignore EACCES - suppre exception, returns false.
+2 = ignore all other errors - suppress exception, return false. This was the legacy behaviour.
+Default: 0

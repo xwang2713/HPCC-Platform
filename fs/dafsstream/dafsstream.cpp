@@ -143,7 +143,7 @@ class CDFUFile : public CSimpleInterfaceOf<IDFUFileAccess>, implements IDFUFileA
 public:
     IMPLEMENT_IINTERFACE_USING(PARENT);
 
-    CDFUFile(const char *_metaInfoBlobB64, const char *_fileId) : metaInfoBlobB64(_metaInfoBlobB64), fileId(_fileId)
+    CDFUFile(const char *_metaInfoBlobB64, const char *_fileId) : fileId(_fileId), metaInfoBlobB64(_metaInfoBlobB64)
     {
         MemoryBuffer compressedMetaInfoMb;
         JBASE64_Decode(metaInfoBlobB64, compressedMetaInfoMb);
@@ -216,10 +216,13 @@ public:
                 break;
             }
             case 2: // serialized compact IFileDescriptor
+            case 3: // same as v2 with additional 'group' meta info within metaInfo
             {
                 fileDesc.setown(deserializeFileDescriptorTree(fileInfo));
                 break;
             }
+            default:
+                throwDsFsClientExceptionV(DaFsClient_InvalidMetaInfo, "Unsupported metaInfo version %u", metaInfoVersion);
         }
 
         if (isFileKey(fileDesc))
@@ -640,7 +643,7 @@ public:
     }
 };
 
-class CDFUPartReader : public CDaFileSrvClientBase, implements IDFUFilePartReader, implements ISerialStream
+class CDFUPartReader : public CDaFileSrvClientBase, implements IDFUFilePartReader, implements IBufferedSerialInputStream
 {
     typedef CDaFileSrvClientBase PARENT;
 
@@ -852,7 +855,7 @@ class CDFUPartReader : public CDaFileSrvClientBase, implements IDFUFilePartReade
         }
         ensureAvailable(0, nullptr); // reads from replyMb
     }
-// ISerialStream impl.
+// IBufferedSerialInputStream impl.
     virtual const void *peek(size32_t wanted, size32_t &got) override
     {
         if (bufRemaining >= wanted)
@@ -878,6 +881,25 @@ class CDFUPartReader : public CDaFileSrvClientBase, implements IDFUFilePartReade
             bufRemaining -= r;
             currentReadPos += r;
         }
+    }
+    virtual size32_t read(size32_t len, void * ptr) override
+    {
+        size32_t originalLen = len;
+        while (len)
+        {
+            if (0 == bufRemaining)
+            {
+                refill();
+                if (0 == bufRemaining)
+                    return originalLen-len;
+            }
+            size32_t r = len>bufRemaining ? bufRemaining : len;
+            memcpy(ptr, replyMb.readDirect(r), r);
+            len -= r;
+            bufRemaining -= r;
+            currentReadPos += r;
+        }
+        return originalLen;
     }
     virtual bool eos() override
     {
@@ -922,7 +944,7 @@ public:
     IMPLEMENT_IINTERFACE_USING(PARENT);
 
     CDFUPartReader(CDFUFile *file, unsigned part, unsigned copy, IOutputMetaData *_outMeta, bool _preserveGrouping)
-        : CDaFileSrvClientBase(file, part, copy), outMeta(_outMeta), prefetchBuffer(nullptr), preserveGrouping(_preserveGrouping)
+        : CDaFileSrvClientBase(file, part, copy), prefetchBuffer(nullptr), outMeta(_outMeta), preserveGrouping(_preserveGrouping)
     {
         checkAccess(SecAccess_Read);
         grouped = file->queryIsGrouped(); // inputGrouped. Will be sent to dafilesrv in request.
@@ -1049,7 +1071,9 @@ public:
             {
                 eoi = true;
                 got = prefetchBuffer.queryRowSize();
-                return got ? prefetchBuffer.queryRow() : nullptr;
+                if (!got)
+                    return nullptr;
+                break;
             }
             rowPrefetcher->readAhead(prefetchBuffer);
             pendingFinishRow = true;
@@ -1057,10 +1081,9 @@ public:
                 prefetchBuffer.read(sizeof(eog), &eog);
             got = prefetchBuffer.queryRowSize();
             if (got >= min)
-                return prefetchBuffer.queryRow();
+                break;
         }
-        got = 0;
-        return nullptr;
+        return prefetchBuffer.queryRow();
     }
 // NB: the methods below should be called before start()
     virtual void addFieldFilter(const char *textFilter) override
@@ -1442,6 +1465,9 @@ IRowWriter *createRowWriter(IDFUFilePartWriter *partWriter)
                 nested.clear();
             }
         }
+        virtual void noteStopped() override
+        {
+        }
     public:
         CRowWriter(IDFUFilePartWriter *_partWriter) : partWriter(_partWriter)
         {
@@ -1449,6 +1475,13 @@ IRowWriter *createRowWriter(IDFUFilePartWriter *partWriter)
             serializer.setown(meta->createDiskSerializer(nullptr, 1));
         }
         virtual void putRow(const void *row) override
+        {
+#ifdef _DEBUG
+            PrintStackReport();
+#endif
+            UNIMPLEMENTED_X("Caller should use writeRow() instead");
+        }
+        virtual void writeRow(const void *row) override
         {
             serializer->serialize(*this, (const byte *)row);
         }

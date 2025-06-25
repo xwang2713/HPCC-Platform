@@ -62,6 +62,12 @@ private:
     StringBuffer m_podIndexSearchPattern;
     StringBuffer m_podSearchColName;
 
+    StringBuffer m_traceIndexSearchPattern;
+    StringBuffer m_traceSearchColName;
+
+    StringBuffer m_spanIndexSearchPattern;
+    StringBuffer m_spanSearchColName;
+
     StringBuffer m_logAnalyticsWorkspaceID;
     StringBuffer m_aadTenantID;
     StringBuffer m_aadClientID;
@@ -69,7 +75,9 @@ private:
 
     StringBuffer m_componentsLookupKeyColumn;
     StringBuffer m_instanceLookupKeyColumn;
+
     bool targetIsContainerLogV2 = false;
+    bool m_blobMode = false;
 
 public:
     AzureLogAnalyticsCurlClient(IPropertyTree & logAccessPluginConfig);
@@ -81,6 +89,7 @@ public:
     void populateKQLQueryString(StringBuffer & queryString, StringBuffer& queryIndex, const ILogAccessFilter * filter);
     void declareContainerIndexJoinTable(StringBuffer & queryString, const LogAccessConditions & options);
     static void azureLogAnalyticsTimestampQueryRangeString(StringBuffer & range, const char * timestampfield, std::time_t from, std::time_t to);
+    static void azureLogAnalyticsQueryTimeSpanString(StringBuffer & queryTimeSpan, std::time_t from, std::time_t to);
     static unsigned processHitsJsonResp(IPropertyTreeIterator * lines, IPropertyTreeIterator * columns, StringBuffer & returnbuf, LogAccessLogFormat format, bool wrapped, bool reportHeader);
     static bool processSearchJsonResp(LogQueryResultDetails & resultDetails, const std::string & retrievedDocument, StringBuffer & returnbuf, LogAccessLogFormat format, bool reportHeader);
 
@@ -92,4 +101,5 @@ public:
     virtual IRemoteLogAccessStream * getLogReader(const LogAccessConditions & options, LogAccessLogFormat format) override;
     virtual IRemoteLogAccessStream * getLogReader(const LogAccessConditions & options, LogAccessLogFormat format, unsigned int pageSize) override;
     virtual bool supportsResultPaging() const override { return false;}
+    virtual void healthReport(LogAccessHealthReportOptions options, LogAccessHealthReportDetails & report) override;
 };

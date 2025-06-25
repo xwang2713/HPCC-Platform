@@ -143,6 +143,8 @@ void CWsSMCEx::init(IPropertyTree *cfg, const char *process, const char *service
 
 #ifdef _CONTAINERIZED
     initContainerRoxieTargets(roxieConnMap);
+#else
+    initBareMetalRoxieTargets(roxieConnMap);
 #endif
 
     xpath.setf("Software/EspProcess[@name=\"%s\"]/EspService[@name=\"%s\"]/ActivityInfoCacheSeconds", process, service);
@@ -1200,11 +1202,19 @@ bool CWsSMCEx::onActivity(IEspContext &context, IEspActivityRequest &req, IEspAc
 
         double version = context.getClientVersion();
 
-        bool isSuperUser = true;
+        bool isSuperUser = false; // deny by default
 #ifdef _USE_OPENLDAP
-        CLdapSecManager* secmgr = dynamic_cast<CLdapSecManager*>(context.querySecManager());
-        if(secmgr && !secmgr->isSuperUser(context.queryUser()))
-            isSuperUser =  false;
+        ILdapSecManager* secmgr = dynamic_cast<ILdapSecManager*>(context.querySecManager());
+
+        // If an LDAP security manager is in use, superuser status can be queried;
+        // otherwise the user is a superuser by default
+        if(secmgr)
+            isSuperUser = secmgr->isSuperUser(context.queryUser());
+        else
+            isSuperUser = true;
+#else
+        // User is a superuser by default if not compiled with OPEN LDAP support
+        isSuperUser = true;
 #endif
         if(isSuperUser && req.getFromSubmitBtn())
             readBannerAndChatRequest(context, req, resp);
@@ -1235,7 +1245,7 @@ void CWsSMCEx::addWUsToResponse(IEspContext &context, const IArrayOf<IEspActiveW
     {
         IEspActiveWorkunit& wu = aws.item(i);
         const char* wuid = wu.getWuid();
-        if (wuid[0] == 'D')//DFU WU
+        if (toupper(wuid[0]) == 'D')//DFU WU
         {
             awsReturned.append(*LINK(&wu));
             continue;
@@ -1837,7 +1847,7 @@ bool CWsSMCEx::onSetBanner(IEspContext &context, IEspSetBannerRequest &req, IEsp
     try
     {
 #ifdef _USE_OPENLDAP
-        CLdapSecManager* secmgr = dynamic_cast<CLdapSecManager*>(context.querySecManager());
+        ILdapSecManager* secmgr = dynamic_cast<ILdapSecManager*>(context.querySecManager());
         if(secmgr && !secmgr->isSuperUser(context.queryUser()))
         {
             context.setAuthStatus(AUTH_STATUS_NOACCESS);
@@ -2305,18 +2315,18 @@ bool CWsSMCEx::onRoxieControlCmd(IEspContext &context, IEspRoxieControlCmdReques
     if (isEmptyString(process))
         throw makeStringException(ECLWATCH_MISSING_PARAMS, "Process cluster not specified.");
 
-    SocketEndpointArray addrs;
-    getRoxieProcessServers(process, addrs);
-    if (!addrs.length())
-        throw makeStringException(ECLWATCH_CANNOT_GET_ENV_INFO, "Process cluster not found.");
-    Owned<IPropertyTree> controlResp = sendRoxieControlAllNodes(addrs.item(0), controlReq, true, req.getWait());
+    ISmartSocketFactory *conn = roxieConnMap.getValue(process);
+    if (!conn)
+        throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "Connection info for '%s' process cluster not found.", process);
+    
+    Owned<IPropertyTree> controlResp = sendRoxieControlAllNodes(conn, controlReq, true, req.getWait(), ROXIECONNECTIONTIMEOUT);
 #else
     const char *target = req.getTargetCluster();
     if (isEmptyString(target))
         target = req.getProcessCluster(); //backward compatible
     if (isEmptyString(target))
         throw makeStringException(ECLWATCH_MISSING_PARAMS, "Target cluster not specified.");
-
+ 
     ISmartSocketFactory *conn = roxieConnMap.getValue(target);
     if (!conn)
         throw makeStringExceptionV(ECLWATCH_CANNOT_GET_ENV_INFO, "roxie target cluster not mapped: %s", target);

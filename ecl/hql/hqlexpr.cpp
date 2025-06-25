@@ -11030,7 +11030,9 @@ IHqlExpression *CHqlDelayedCall::clone(HqlExprArray &newkids)
 
 IHqlExpression * CHqlDelayedCall::makeDelayedCall(IHqlExpression * _funcdef, HqlExprArray &operands)
 {
-    ITypeInfo * returnType = _funcdef->queryType()->queryChildType();
+    ITypeInfo * funcType = _funcdef->queryType();
+    assertex(funcType->getTypeCode() == type_function);
+    ITypeInfo * returnType = funcType->queryChildType();
     CHqlDelayedCall * ret;
     switch (returnType->getTypeCode())
     {
@@ -14211,7 +14213,6 @@ unsigned exportField(IPropertyTree *table, IHqlExpression *field, unsigned & off
         }
         f->setProp("Expression", ecl.str());
     }
-    f->setPropInt("@rawtype", getClarionResultType(type));
     StringBuffer typeName;
     if (!queryOriginalName(type, typeName))
         type->getECLType(typeName);

@@ -183,6 +183,7 @@ public:
     virtual offset_t size() override { return hwm; }
     virtual offset_t tell() override { return offset; }
     virtual unsigned __int64 getStatistic(StatisticKind kind) { return stats.getStatistic(kind); }
+    virtual void close() override { }
 private:
     offset_t offset = 0;
     offset_t hwm = 0;
@@ -231,17 +232,19 @@ int main(int argc, const char **argv)
                 printf("%s does not appear to be an index file\n", keyName);
                 continue;
             }
-            Owned <IKeyIndex> index;
-            index.setown(createKeyIndex(keyName, 0, false));
+            Owned<IFile> in = createIFile(keyName);
+            Owned<IFileIO> io = in->open(IFOread);
+            if (!io)
+                throw MakeStringException(999, "Failed to open file %s", keyName);
+
+            //read with a buffer size of 4MB - for optimal speed, and minimize azure read costs
+            Owned <IKeyIndex> index(createKeyIndex(keyName, 0, *io, 1, false, 0x400000));
             size32_t key_size = index->keySize();  // NOTE - in variable size case, this may be 32767 + sizeof(offset_t)
             size32_t keyedSize = index->keyedSize();
             unsigned nodeSize = index->getNodeSize();
+            bool isTLK = index->isTopLevelKey();
             if (optFullHeader)
             {
-                Owned<IFile> in = createIFile(keyName);
-                Owned<IFileIO> io = in->open(IFOread);
-                if (!io)
-                    throw MakeStringException(999, "Failed to open file %s", keyName);
                 Owned<CKeyHdr> header = new CKeyHdr;
                 MemoryAttr block(sizeof(KeyHdr));
                 io->read(0, sizeof(KeyHdr), (void *)block.get());
@@ -257,6 +260,7 @@ int main(int argc, const char **argv)
                 printf("Key '%s'\nkeySize=%d keyedSize = %d NumParts=%x, Top=%d\n", keyName, key_size, keyedSize, index->numParts(), index->isTopLevelKey());
                 printf("File size = %" I64F "d, nodes = %" I64F "d\n", in->size(), in->size() / nodeSize - 1);
                 printf("rootoffset=%" I64F "d[%" I64F "d]\n", header->getRootFPos(), header->getRootFPos()/nodeSize);
+                printf("bloomoffset=%" I64F "d[%" I64F "d]\n", header->queryBloomHead(), header->queryBloomHead()/nodeSize);
                 Owned<IPropertyTree> metadata = index->getMetadata();
                 if (metadata)
                 {
@@ -279,14 +283,14 @@ int main(int argc, const char **argv)
                 }
                 else
                 {
-                    int node = globals->getPropInt("node");
+                    offset_t node = globals->getPropInt64("node");
                     if (node != 0)
                         index->dumpNode(stdout, node * nodeSize, globals->getPropInt("recs", 0), optRaw);
                 }
             }
             else if (globals->hasProp("fpos"))
             {
-                index->dumpNode(stdout, globals->getPropInt("fpos"), globals->getPropInt("recs", 0), optRaw);
+                index->dumpNode(stdout, globals->getPropInt64("fpos"), globals->getPropInt("recs", 0), optRaw);
             }
             else
             {
@@ -418,7 +422,7 @@ int main(int argc, const char **argv)
                         outFileIO.setown(outFile->openShared(IFOcreate, IFSHfull));
                         if(!outFileIO)
                             throw MakeStringException(0, "Could not write index file %s", filename);
-                        outFileStream.setown(createIOStream(outFileIO));
+                        outFileStream.setown(createBufferedIOStream(outFileIO, 0x200000));
                     }
                     else
                         outFileStream.setown(new DummyFileIOStream);
@@ -436,14 +440,16 @@ int main(int argc, const char **argv)
                     bool isVariable = outmeta->isVariableSize();
                     size32_t fileposSize = hasTrailingFileposition(outmeta->queryTypeInfo()) ? sizeof(offset_t) : 0;
                     size32_t maxDiskRecordSize;
-                    if (isVariable)
+                    if (isTLK)
+                        maxDiskRecordSize = keyedSize;
+                    else if (isVariable)
                         maxDiskRecordSize = KEYBUILD_MAXLENGTH;
                     else
                         maxDiskRecordSize = outmeta->getFixedSize()-fileposSize;
                     const RtlRecord &indexRecord = outmeta->queryRecordAccessor(true);
                     size32_t keyedSize = indexRecord.getFixedOffset(indexRecord.getNumKeyedFields());
                     MyIndexWriteArg helper(filename, globals->queryProp("recode"), outmeta);  // MORE - is lifetime ok? Bloom support? May need longer lifetime once we add bloom support...
-                    keyBuilder.setown(createKeyBuilder(outFileStream, flags, maxDiskRecordSize, nodeSize, keyedSize, 0, &helper, nullptr, false, false));
+                    keyBuilder.setown(createKeyBuilder(outFileStream, flags, maxDiskRecordSize, nodeSize, keyedSize, 0, &helper, nullptr, false, index->isTopLevelKey()));
                 }
                 MyIndexVirtualFieldCallback callback(manager);
                 size32_t maxSizeSeen = 0;
@@ -505,8 +511,8 @@ int main(int argc, const char **argv)
                 }
                 if (keyBuilder)
                 {
-                    keyBuilder->finish(metadata, nullptr, maxSizeSeen);
-                    printf("New key has %" I64F "u leaves, %" I64F "u branches, %" I64F "u duplicates\n", keyBuilder->getNumLeafNodes(), keyBuilder->getNumBranchNodes(), keyBuilder->getDuplicateCount());
+                    keyBuilder->finish(metadata, nullptr, maxSizeSeen, nullptr);
+                    printf("New key has %" I64F "u leaves, %" I64F "u branches, %" I64F "u duplicates\n", keyBuilder->getStatistic(StNumLeafCacheAdds), keyBuilder->getStatistic(StNumNodeCacheAdds), keyBuilder->getStatistic(StNumDuplicateKeys));
                     printf("Original key size: %" I64F "u bytes\n", const_cast<IFileIO *>(index->queryFileIO())->size());
                     printf("New key size: %" I64F "u bytes (%" I64F "u bytes written in %" I64F "u writes)\n", outFileStream->size(), outFileStream->getStatistic(StSizeDiskWrite), outFileStream->getStatistic(StNumDiskWrites));
                     keyBuilder.clear();

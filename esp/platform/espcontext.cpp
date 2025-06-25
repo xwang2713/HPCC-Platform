@@ -89,7 +89,7 @@ private:
     Owned<IEspSecureContextEx> m_secureContext;
 
     StringAttr   m_transactionID;
-    OwnedSpanScope m_requestSpan;    // When the context is destroy the span will end.
+    OwnedSpanLifetime m_requestSpan;    // When the context is destroy the span will end.
     IHttpMessage* m_request;
 
 public:
@@ -244,7 +244,7 @@ public:
         return m_servName.str();
     }
 
-    virtual const unsigned queryCreationTime()
+    virtual unsigned queryCreationTime()
     {
         return m_creationTime;
     }
@@ -252,7 +252,7 @@ public:
     {
         m_processingTime = msTick() - m_creationTime;
     }
-    virtual const unsigned queryProcessingTime()
+    virtual unsigned queryProcessingTime()
     {
         return m_processingTime;
     }
@@ -262,7 +262,7 @@ public:
         m_exceptionCode = exceptionCode;
         m_exceptionTime = msTick() - m_creationTime;
     }
-    virtual const bool queryException(int& exceptionCode, unsigned& exceptionTime)
+    virtual bool queryException(int& exceptionCode, unsigned& exceptionTime)
     {
         if (m_hasException)
         {
@@ -271,7 +271,7 @@ public:
         }
         return m_hasException;
     }
-    virtual const bool queryHasException()
+    virtual bool queryHasException()
     {
         return m_hasException;
     }
@@ -456,7 +456,7 @@ public:
     virtual void ensureSuperUser(unsigned excCode, const char* excMsg)
     {
 #ifdef _USE_OPENLDAP
-        CLdapSecManager* secmgr = dynamic_cast<CLdapSecManager*>(m_secmgr.get());
+        ILdapSecManager* secmgr = dynamic_cast<ILdapSecManager*>(m_secmgr.get());
         if (secmgr && !secmgr->isSuperUser(m_user.get()))
         {
             setAuthStatus(AUTH_STATUS_NOACCESS);
@@ -628,9 +628,11 @@ public:
     }
     virtual void setRequestSpan(ISpan * span) override
     {
-        m_requestSpan.set(span);
+        // The server span for a request can be set only once.
+        if (span && span != m_requestSpan && m_requestSpan == queryNullSpan())
+            m_requestSpan.set(span);
     }
-    virtual ISpan * queryActiveSpan() const override
+    virtual ISpan * queryRequestSpan() const override
     {
         return m_requestSpan;
     }
@@ -951,7 +953,7 @@ LogLevel getTxSummaryLevel()
     return LogMin;
 }
 
-const unsigned int readTxSummaryStyle(char const* style)
+unsigned int readTxSummaryStyle(char const* style)
 {
     if (isEmptyString(style))
         return TXSUMMARY_OUT_TEXT;
@@ -966,7 +968,7 @@ const unsigned int readTxSummaryStyle(char const* style)
     return TXSUMMARY_OUT_TEXT;
 }
 
-const unsigned int readTxSummaryGroup(char const* group)
+unsigned int readTxSummaryGroup(char const* group)
 {
     if (isEmptyString(group))
         return TXSUMMARY_GRP_CORE;
@@ -981,14 +983,14 @@ const unsigned int readTxSummaryGroup(char const* group)
     return TXSUMMARY_GRP_CORE;
 }
 
-const unsigned int getTxSummaryStyle()
+unsigned int getTxSummaryStyle()
 {
     if (getContainer())
         return getContainer()->getTxSummaryStyle();
     return TXSUMMARY_OUT_TEXT;
 }
 
-const unsigned int getTxSummaryGroup()
+unsigned int getTxSummaryGroup()
 {
     if (getContainer())
         return getContainer()->getTxSummaryGroup();

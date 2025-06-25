@@ -362,8 +362,12 @@ protected:
             unsigned checksum;
             serializedCreate.read(checksum);
             OwnedRoxieString fname(queryDynamicFileName());
-            varFileInfo.setown(queryAgentDynamicFileCache()->lookupDynamicFile(logctx, fname, cacheDate, checksum, &packet->queryHeader(), isOpt, true));
-            setVariableFileInfo();
+            if (fname)
+            {
+                //fname may not be set if the index is being provided by another activity
+                varFileInfo.setown(queryAgentDynamicFileCache()->lookupDynamicFile(logctx, fname, cacheDate, checksum, &packet->queryHeader(), isOpt, true));
+                setVariableFileInfo();
+            }
         }
     }
 
@@ -560,6 +564,11 @@ public:
     virtual unsigned getExternalResultHash(const char * wuid, const char * name, unsigned sequence) { throwUnexpected(); }
 
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name)
+    {
+        return queryNullSectionTimer();
+    }
+
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption)
     {
         return queryNullSectionTimer();
     }
@@ -1412,7 +1421,7 @@ public:
             }
         }
         csvSplitter.init(helper->getMaxColumns(), csvInfo, quotes, separators, terminators, escapes);
-        ISerialStream *stream = reader->queryDirectStreamReader();
+        IBufferedSerialInputStream *stream = reader->queryDirectStreamReader();
         while (!aborted)
         {
             size32_t thisLineLength = csvSplitter.splitLine(stream, maxRowSize);
@@ -2034,7 +2043,7 @@ public:
         RtlDynamicRowBuilder finalBuilder(rowAllocator, false);
         if (deserializer)
         {
-            Owned<ISerialStream> stream = createMemoryBufferSerialStream(m);
+            Owned<IBufferedSerialInputStream> stream = createMemoryBufferSerialStream(m);
             CThorStreamDeserializerSource rowSource(stream);
 
             while (m.remaining())
@@ -2234,7 +2243,6 @@ class CParallelRoxieDiskGroupAggregateActivity : public CParallelRoxieActivity
 protected:
     IHThorDiskGroupAggregateArg *helper;
     RowAggregator resultAggregator;
-    Owned<IRowManager> rowManager;
 
 public:
     CParallelRoxieDiskGroupAggregateActivity(AgentContextLogger &_logctx, IRoxieQueryPacket *_packet, HelperFactory *_hFactory, const CAgentActivityFactory *_aFactory,
@@ -2300,7 +2308,7 @@ public:
     {
         CriticalBlock b(parCrit); // MORE - use a spinlock
         MemoryBuffer &m = d.data;
-        Owned<ISerialStream> stream = createMemoryBufferSerialStream(m);
+        Owned<IBufferedSerialInputStream> stream = createMemoryBufferSerialStream(m);
         CThorStreamDeserializerSource rowSource(stream);
         while (m.remaining())
         {
@@ -2431,6 +2439,7 @@ static const StatisticsMapping indexAgentStats({StNumIndexSeeks, StNumIndexScans
                                                 StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, // only need to accumulate cycles in the agents - serialized as times
                                                 StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, // only need to accumulate cycles in the agents - serialized as times
                                                 StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
+                                                StNumBloomAccepts, StNumBloomRejects, StNumBloomSkips,
                                                 StNumIndexRowsRead});
 
 class CRoxieIndexActivityFactory : public CRoxieKeyedActivityFactory
@@ -2505,15 +2514,19 @@ protected:
         else
         {
             IKeyIndexBase *kib = keyArray->queryKeyPart(lastPartNo.partNo);
-            assertex(kib != NULL);
-            IKeyIndex *k = kib->queryPart(lastPartNo.fileNo);
-            if (filechanged)
-            {
-                tlk.setown(createLocalKeyManager(*keyRecInfo, k, &logctx, hasNewSegmentMonitors(), !logctx.isBlind()));
-                createSegmentMonitorsPending = true;
-            }
+            if (!kib)
+                tlk.clear();
             else
-                tlk->setKey(k);
+            {
+                IKeyIndex *k = kib->queryPart(lastPartNo.fileNo);
+                if (filechanged || !tlk)
+                {
+                    tlk.setown(createLocalKeyManager(*keyRecInfo, k, &logctx, hasNewSegmentMonitors(), !logctx.isBlind()));
+                    createSegmentMonitorsPending = true;
+                }
+                else
+                    tlk->setKey(k);
+            }
         }
     }
 
@@ -2713,7 +2726,8 @@ public:
             compressToBuffer(compressed, si.length() - compressed.length(), si.toByteArray() + compressed.length());
             bool report = logctx.queryTraceLevel() && (doTrace(traceRoxiePackets) || si.length() >= continuationWarnThreshold);
             if (report)
-                logctx.CTXLOG("ERROR: continuation data size %u for %d cursor positions is large - compressed to %u", si.length(), tlk->numActiveKeys(), compressed.length());
+                logctx.CTXLOG("WARNING: continuation data size %u for %d cursor positions is large - compressed to %u", si.length(), tlk->numActiveKeys(), compressed.length());
+            // should we check if compressed.length() is > continuationErrorThreshold ?
             siLen = compressed.length() - sizeof(siLen);
             compressed.writeDirect(0, sizeof(siLen), &siLen);
             output->sendMetaInfo(compressed.toByteArray(), compressed.length());
@@ -3691,7 +3705,7 @@ protected:
     IHThorFetchBaseArg *helper;
     const CRoxieFetchActivityFactory *factory;
     Owned<IFileIO> rawFile;
-    Owned<ISerialStream> rawStream;
+    Owned<IBufferedSerialInputStream> rawStream;
     offset_t base;
     char *inputData;
     char *inputLimit;
@@ -3897,7 +3911,7 @@ public:
     virtual size32_t doFetch(ARowBuilder & rowBuilder, offset_t pos, offset_t rawpos, void *inputData)
     {
         IHThorCsvFetchArg *h = (IHThorCsvFetchArg *) helper;
-        rawStream->reset(pos);
+        rawStream->reset(pos, UnknownOffset);
         size32_t rowSize = 4096; // MORE - make configurable
         for (;;)
         {
@@ -4126,7 +4140,8 @@ class CRoxieKeyedJoinIndexActivity : public CRoxieKeyedActivity
             compressToBuffer(compressed, si.length() - compressed.length(), si.toByteArray() + compressed.length());
             bool report = logctx.queryTraceLevel() && (doTrace(traceRoxiePackets) || si.length() >= continuationWarnThreshold);
             if (report)
-                DBGLOG("ERROR: continuation data size %u for %d cursor positions is large - compressed to %u", si.length(), tlk->numActiveKeys(), compressed.length());
+                DBGLOG("WARNING: continuation data size %u for %d cursor positions is large - compressed to %u", si.length(), tlk->numActiveKeys(), compressed.length());
+            // should we check if compressed.length() is > continuationErrorThreshold ?
             siLen = compressed.length() - sizeof(siLen);
             compressed.writeDirect(0, sizeof(siLen), &siLen);
             output->sendMetaInfo(compressed.toByteArray(), compressed.length());
@@ -4463,7 +4478,7 @@ class CRoxieKeyedJoinFetchActivity : public CRoxieAgentActivity
     const char *inputData;
     Linked<ITranslatorSet> translators;
     Linked<IFileIOArray> files;
-    Owned<ISerialStream> rawStream;
+    Owned<IBufferedSerialInputStream> rawStream;
     CThorContiguousRowBuffer prefetchSource;
     Owned<ISourceRowPrefetcher> prefetcher;
     const IDynamicTransform *translator = nullptr;

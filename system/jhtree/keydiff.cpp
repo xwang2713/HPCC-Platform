@@ -222,7 +222,7 @@ public:
         keyFileIO.setown(keyFile->open(IFOread));
         if(!keyFileIO)
             throw MakeStringException(0, "Could not read index file %s", filename);
-        keyIndex.setown(createKeyIndex(filename, 0, *keyFileIO, (unsigned) -1, false)); // MORE - should we care about crc?
+        keyIndex.setown(createKeyIndex(filename, 0, *keyFileIO, (unsigned) -1, false, 0)); // MORE - should we care about crc?
         unsigned flags = keyIndex->getFlags();
         variableWidth = ((flags & HTREE_VARSIZE) == HTREE_VARSIZE);
         if((flags & HTREE_QUICK_COMPRESSED_KEY) == HTREE_QUICK_COMPRESSED_KEY)
@@ -343,58 +343,6 @@ private:
     offset_t progressCount = 0;
 };
 
-class CKeyFileReader: extends IKeyFileRowReader, public CInterface
-{
-    CKeyReader reader;
-    Owned<IPropertyTree> header;
-    RowBuffer buffer;
-
-public:
-    IMPLEMENT_IINTERFACE;
-    CKeyFileReader(const char *filename)
-        : reader(filename)
-    {
-        size32_t rowsize = reader.queryRowSize();
-        bool isvar = reader.isVariableWidth();
-        buffer.init(rowsize,isvar);
-
-        header.setown(createPTree("Index"));
-        header->setPropInt("@rowSize",rowsize);
-        header->setPropInt("@keyedSize",reader.queryKeyedSize());
-        header->setPropBool("@variableWidth",isvar);
-        header->setPropBool("@quickCompressed",reader.isQuickCompressed());
-        header->setPropBool("@noSeek",(reader.getFlags() & TRAILING_HEADER_ONLY) != 0);
-#if 0
-        PROGLOG("rowSize = %d",rowsize);
-        PROGLOG("keyedSize = %d",reader.queryKeyedSize());
-        PROGLOG("variableWidth = %s",isvar?"true":"false");
-        PROGLOG("quickCompressed = %s",reader.isQuickCompressed()?"true":"false");
-#endif
-        
-    }
-
-    const void *nextRow()
-    {
-        if (!reader.get(buffer)) 
-            return NULL;
-        void *ret = malloc(buffer.serializeRowSize());
-        buffer.serialize(ret);
-        return ret;
-    }       
-
-    
-    void stop()
-    {
-    }
-
-    IPropertyTree *queryHeader()
-    {
-        return header;
-    }
-};
-
-
-
 class CKeyWriter: public CInterface
 {
 public:
@@ -431,7 +379,7 @@ public:
     ~CKeyWriter()
     {
         if (keyBuilder)
-            keyBuilder->finish(nullptr, nullptr, maxRecordSizeSeen);
+            keyBuilder->finish(nullptr, nullptr, maxRecordSizeSeen, nullptr);
     }
 
     void put(RowBuffer & buffer)
@@ -493,47 +441,6 @@ private:
     unsigned short mjr;
     unsigned short mnr;
 };
-
-
-class CKeyFileWriter: extends IKeyFileRowWriter, public CInterface
-{
-    CKeyWriter writer;
-    Owned<IPropertyTree> header;
-    RowBuffer buffer;
-
-
-public:
-    IMPLEMENT_IINTERFACE;
-    CKeyFileWriter(const char *filename, IPropertyTree *_header, bool overwrite, unsigned nodeSize)
-        : header(createPTreeFromIPT(_header))
-    {
-        writer.init(filename,overwrite,header->getPropInt("@keyedSize"), header->getPropInt("@rowSize"), header->getPropBool("@variableWidth"), header->getPropBool("@quickCompressed"), header->getPropInt("@nodeSize", NODESIZE), header->getPropBool("@noSeek"));
-        size32_t rowsize = header->getPropInt("@rowSize");
-        bool isvar = header->getPropBool("@variableWidth");
-        buffer.init(rowsize,isvar);
-    }
-
-
-    void flush()
-    {
-        // not needed?
-    }
-
-    virtual void putRow(const void *src)
-    {
-        buffer.deserialize(src);
-        writer.put(buffer);
-        free((void *)src);
-    }
-
-
-    offset_t getPosition()
-    {
-        return writer.getPosition();
-    }
-
-};
-
 
 
 class KeyDiffHeader
@@ -835,7 +742,7 @@ private:
             size32_t newsize = outsize*4/5; // only compress if get better than 80%
             if (compmode==COMPRESS_METHOD_LZW) {
                 byte *compbuff = (byte *)ma.allocate(streambuffsize);
-                Owned<ICompressor> compressor = createLZWCompressor();
+                Owned<ICompressor> compressor = createLZWCompressor(false);
                 compressor->open(compbuff, newsize);
                 if (compressor->write(wrbuff, outsize)==outsize) {
                     compressor->close();
@@ -1037,7 +944,7 @@ private:
             if (fastlz) 
                 LZMADecompressToBuffer(inbuff,buf);
             else {
-                Owned<IExpander> expander = createLZWExpander();
+                Owned<IExpander> expander = createLZWExpander(false);
                 size32_t expsize = expander->init(buf);
                 if(expsize != insize) 
                     throw MakeStringException(0, "LZW compression/expansion error");
@@ -1286,7 +1193,7 @@ private:
 
 private:
     Owned<INodeReceiver> tlkReceiver;
-    unsigned remaining;
+    std::atomic<unsigned> remaining;
     KeyDiffHeader const & header;
     StringAttr filename;
     Owned<CKeyWriter> writer;
@@ -1529,16 +1436,6 @@ StringBuffer & getKeyDiffMinDiffVersionForPatch(StringBuffer & buff)
 StringBuffer & getKeyDiffMinPatchVersionForDiff(StringBuffer & buff)
 {
     return buff.append(CKeyDiff::minPatchVersionForDiff.queryMajor()).append('.').append(CKeyDiff::minPatchVersionForDiff.queryMinor());
-}
-
-IKeyFileRowReader *createKeyFileReader(const char *filename)
-{
-    return new CKeyFileReader(filename);
-}
-
-IKeyFileRowWriter *createKeyWriter(const char *filename,IPropertyTree *header, bool overwrite, unsigned nodeSize)
-{
-    return new CKeyFileWriter(filename,header,overwrite, nodeSize);
 }
 
 

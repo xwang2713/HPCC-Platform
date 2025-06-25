@@ -18,6 +18,9 @@
 #ifndef _THGRAPHMANAGER_HPP
 #define _THGRAPHMANAGER_HPP
 
+#include <vector>
+#include <string>
+
 class CSDSServerStatus;
 interface IException;
 CSDSServerStatus &queryServerStatus();
@@ -25,15 +28,31 @@ CSDSServerStatus &openThorServerStatus();
 void closeThorServerStatus();
 void thorMain(ILogMsgHandler *logHandler, const char *workunit, const char *graphName);
 
-enum ThorExitCodes { TEC_Clean, TEC_CtrlC, TEC_Idle, TEC_Watchdog, TEC_SlaveInit, TEC_Swap, TEC_DaliDown, TEC_Exception };
+enum ThorExitCodes { TEC_Clean, TEC_CtrlC, TEC_Idle, TEC_Watchdog, TEC_WorkerInit, TEC_Swap, TEC_DaliDown, TEC_Exception };
 
 void abortThor(IException *e, unsigned errCode, bool abortCurrentJob=true);
 void setExitCode(int code);
 int queryExitCode();
 
-void addConnectedWorkerPod(const char *podName);
-void publishPodNames(IWorkUnit *workunit);
+struct CConnectedWorkerDetail
+{
+    CConnectedWorkerDetail() {}
+    CConnectedWorkerDetail(const std::string& h) : host(h)
+    {
+    }
+    CConnectedWorkerDetail(const std::string& h, const std::string& p, const std::string& c) : host(h), podName(p), containerName(c)
+    {
+    }
+    std::string host;
+    std::string podName;
+    std::string containerName;
+
+};
+void publishPodNames(IWorkUnit *workunit, const char *graphName, const std::vector<CConnectedWorkerDetail> *connectedWorkers);
 void relayWuidException(IConstWorkUnit *wu, const IException *exception);
+void auditThorSystemEvent(const char *eventName);
+void auditThorSystemEvent(const char *eventName, std::initializer_list<const char*> args);
+void auditThorJobEvent(const char *eventName, const char *wuid, const char *graphName, const char *user);
 
 
 #endif

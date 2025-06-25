@@ -98,15 +98,11 @@ class LocalStorage implements IKeyValStore {
         this._prefix = prefix;
         this._prefixLength = this._prefix.length;
 
-        if (typeof StorageEvent !== void (0)) {
-            window.addEventListener("storage", (event: StorageEvent) => {
-                if (this.isECLWatchKey(event.key)) {
-                    this._dispatch.post(new ValueChangedMessage(this.extractKey(event.key), event.newValue, event.oldValue));
-                }
-            });
-        } else {
-            console.log("Browser doesn't support multi-tab communication");
-        }
+        window.addEventListener("storage", (event: StorageEvent) => {
+            if (this.isECLWatchKey(event.key)) {
+                this._dispatch.post(new ValueChangedMessage(this.extractKey(event.key), event.newValue, event.oldValue));
+            }
+        });
     }
 
     isECLWatchKey(key: string): boolean {
@@ -248,6 +244,13 @@ class CookieStorage implements IKeyValStore {
                 this._dispatch.post(new ValueChangedMessage(key, undefined, oldValue));
             }
         });
+    }
+
+    async deleteAll(broadcast?: boolean): Promise<void> {
+        const cookies = Utility.parseCookies();
+        for (const cookie in cookies) {
+            await this.delete(cookie, broadcast);
+        }
     }
 
     monitor(callback: (messages: ValueChangedMessage[]) => void): IObserverHandle {

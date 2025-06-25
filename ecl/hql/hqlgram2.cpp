@@ -3638,6 +3638,30 @@ IHqlExpression * HqlGram::implementInterfaceFromModule(const attribute & modpos,
             {
                 HqlExprArray parameters;
                 bool isParametered = extractSymbolParameters(parameters, &baseSym);
+                if (baseSym.isFunction() != match->isFunction())
+                {
+                    if (isParametered)
+                    {
+                        //Convert the value to a function definition - the parameters will be ignored
+                        IHqlExpression * formals = queryFunctionParameters(&baseSym);
+                        IHqlExpression * defaults = queryFunctionDefaults(&baseSym);
+                        OwnedHqlExpr funcdef = createFunctionDefinition(id, LINK(match->queryBody()), LINK(formals), LINK(defaults), NULL);
+                        match.setown(match->cloneAllAnnotations(funcdef));
+                    }
+                    else
+                    {
+                        //Convert a function into a value - possible if all parameters (including none) have default values
+                        if (!allParametersHaveDefaults(match))
+                        {
+                            reportError(ERR_EXPECTED_ATTRIBUTE, ipos, "Symbol %s is defined as a value in the base scope, but a function with non-default parameters in the interface", str(id));
+                        }
+                        else
+                        {
+                            HqlExprArray actuals;
+                            match.setown(createBoundFunction(nullptr, match, actuals, nullptr, false));
+                        }
+                    }
+                }
 
                 checkDerivedCompatible(id, newScopeExpr, match, isParametered, parameters, modpos);
                 newScope->defineSymbol(LINK(match));
@@ -4703,6 +4727,9 @@ void HqlGram::normalizeExpression(attribute & exprAttr, type_t expectedType, boo
     case type_unicode:
         ensureUnicode(exprAttr);
         break;
+    case type_utf8:
+        ensureUTF8(exprAttr);
+        break;
     default:
         throwUnexpected();
     }
@@ -4970,6 +4997,25 @@ void HqlGram::ensureUnicode(attribute &a)
         {
             StringBuffer s;
             reportError(ERR_TYPE_INCOMPATIBLE, a, "Incompatible types: expected Unicode, given %s", getFriendlyTypeStr(t1, s).str());
+        }
+    }
+}
+
+void HqlGram::ensureUTF8(attribute &a)
+{
+    ITypeInfo *t1 = a.queryExprType();
+    if (t1 && !isUTF8Type(t1))
+    {
+        if (isStringType(t1) || isUnicodeType(t1))
+        {
+            Owned<ITypeInfo> utf8Type = makeUtf8Type(UNKNOWN_LENGTH, NULL);
+            OwnedHqlExpr value = a.getExpr();
+            a.setExpr(ensureExprType(value, utf8Type));
+        }
+        else
+        {
+            StringBuffer s;
+            reportError(ERR_TYPE_INCOMPATIBLE, a, "Incompatible types: expected UTF8, given %s", getFriendlyTypeStr(t1, s).str());
         }
     }
 }
@@ -7282,6 +7328,9 @@ IHqlExpression * HqlGram::createBuildFileFromTable(IHqlExpression * table, const
     case no_xml:
         args.append(*createAttribute(xmlAtom, LINK(mode->queryChild(0))));
         break;
+    case no_json:
+        args.append(*createAttribute(jsonAtom, LINK(mode->queryChild(0))));
+        break;
     }
 
     ForEachItemIn(i, buildOptions)
@@ -8552,6 +8601,7 @@ void HqlGram::checkJoinFlags(const attribute &err, IHqlExpression * join)
                         {
                         case no_csv:
                         case no_xml:
+                        case no_json:
                             reportError(ERR_KEYEDNOTMATCHDATASET,err,"RIGHT side of a full keyed join must be a THOR disk file (CSV/XML) not currently supported");
                             break;
                         }
@@ -9029,6 +9079,10 @@ void HqlGram::checkValidRecordMode(IHqlExpression * dataset, attribute & atr, at
     case no_xml:
         if (!isValidXmlRecord(dataset->queryRecord()))
             reportError(ERR_INVALID_XML_RECORD, atr, "XML cannot be used on this record structure");
+        break;
+    case no_json:
+        if (!isValidXmlRecord(dataset->queryRecord()))
+            reportError(ERR_INVALID_JSON_RECORD, atr, "JSON cannot be used on this record structure");
         break;
     }
 }
@@ -9736,9 +9790,18 @@ void HqlGram::checkDerivedCompatible(IIdAtom * name, IHqlExpression * scope, IHq
     }
 }
 
+bool HqlGram::insideSignedMacro()
+{
+    if (inSignedModule)
+        return true;
+    if (!lexObject)
+        return false;
+    return lexObject->isImplicitlySigned();
+}
+
 bool HqlGram::checkAllowed(const attribute & errpos, const char *category, const char *description)
 {
-    if (lookupCtx.queryParseContext().codegenCtx && !lookupCtx.queryParseContext().codegenCtx->allowAccess(category, inSignedModule))
+    if (lookupCtx.queryParseContext().codegenCtx && !lookupCtx.queryParseContext().codegenCtx->allowAccess(category, insideSignedMacro()))
     {
         if (!inSignedModule && lookupCtx.queryParseContext().codegenCtx->allowAccess(category, true))
             reportWarning(CategorySecurity, WRN_REQUIRES_SIGNED, errpos.pos, "%s is only permitted in a signed module", description);

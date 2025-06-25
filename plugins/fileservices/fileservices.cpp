@@ -35,6 +35,7 @@
 #include "dasds.hpp"
 #include "enginecontext.hpp"
 #include "environment.hpp"
+#include "ws_dfsclient.hpp"
 
 #define USE_DALIDFS
 #define SDS_LOCK_TIMEOUT  10000
@@ -395,8 +396,7 @@ FILESERVICES_API bool FILESERVICES_CALL fsFileExists(ICodeContext *ctx, const ch
     constructLogicalName(ctx, name, lfn);
     if (physical)
         return queryDistributedFileDirectory().existsPhysical(lfn.str(),ctx->queryUserDescriptor());
-
-    return queryDistributedFileDirectory().exists(lfn.str(),ctx->queryUserDescriptor(),false,false);
+    return wsdfs::exists(lfn.str(), ctx->queryUserDescriptor(), false, false, INFINITE);
 }
 
 FILESERVICES_API bool FILESERVICES_CALL fsFileValidate(ICodeContext *ctx, const char *name)
@@ -405,7 +405,7 @@ FILESERVICES_API bool FILESERVICES_CALL fsFileValidate(ICodeContext *ctx, const 
     constructLogicalName(ctx, name, lfn);
 
     Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> df = wsdfs::lookup(lfn.str(), udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser, INFINITE);
     if (df)
     {
         Owned<IDistributedFilePartIterator> partIter = df->getIterator();
@@ -611,7 +611,7 @@ static void blockUntilComplete(const char * label, IClientFileSpray &server, ICo
 
     VStringBuffer reason("Blocked by fileservice activity: %s, workunit: %s", label, wuid);
     setWorkunitState(ctx, WUStateBlocked, reason.str());
-
+    bool isStartTimeRecorded = false;
     while(true)
     {
 
@@ -630,6 +630,7 @@ static void blockUntilComplete(const char * label, IClientFileSpray &server, ICo
         }
 
         IConstDFUWorkunit & dfuwu = result->getResult();
+        DFUstate state = (DFUstate)dfuwu.getState();
         bool aborting = false;
         Owned<IWorkUnit> wu = ctx->updateWorkUnit(); // may return NULL
         if (wu.get()) { // if updatable (e.g. not hthor with no agent context)
@@ -645,11 +646,32 @@ static void blockUntilComplete(const char * label, IClientFileSpray &server, ICo
             stat_type costFileAccess = money2cost_type(dfuwu.getFileAccessCost());
             updateWorkunitStat(wu, SSTdfuworkunit, wuScope, StCostFileAccess, "", costFileAccess);
             wu->setApplicationValue(label, dfuwu.getID(), dfuwu.getSummaryMessage(), true);
+            if (!isStartTimeRecorded)
+            {
+                switch (state)
+                {
+                case DFUstate_started:
+                case DFUstate_aborting:
+                case DFUstate_monitoring:
+                case DFUstate_aborted:
+                case DFUstate_failed:
+                case DFUstate_finished:
+
+                    const char * whenStarted = dfuwu.getTimeStarted();
+                    if (!isEmptyString(whenStarted))
+                    {
+                        CDateTime startedAt;
+                        startedAt.setString(whenStarted);
+                        updateWorkunitStat(wu, SSTdfuworkunit, wuScope, StWhenStarted, 0, startedAt.getTimeStamp());
+                        isStartTimeRecorded = true;
+                    }
+                    break;
+                }
+            }
             wu->commit();
             wu.clear();
         }
 
-        DFUstate state = (DFUstate)dfuwu.getState();
         if (stateout)
             stateout->clear().append(dfuwu.getStateMessage());
         switch(state)
@@ -757,28 +779,39 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayFixed(ICodeContext *ctx,
 
     req->setNoCommon(noCommon);
 
-    Owned<IClientSprayFixedResponse> result = server.SprayFixed(req);
-
-    StringBuffer wuid(result->getWuid());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Spray Fixed");
+    clientSpan->setSpanAttribute("destinationFilename", logicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientSprayFixedResponse> result = server.SprayFixed(req);
+
+        StringBuffer wuid(result->getWuid());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Spray", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Spray", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsSprayFixed(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int recordSize, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile)
@@ -892,28 +925,39 @@ static char * implementSprayVariable(ICodeContext *ctx, const char * sourceIP, c
         req->setNosplit(true);
     req->setNoCommon(noCommon);
 
-    Owned<IClientSprayResponse> result = server.SprayVariable(req);
-
-    StringBuffer wuid(result->getWuid());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Spray Variable");
+    clientSpan->setSpanAttribute("destinationFilename", logicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientSprayResponse> result = server.SprayVariable(req);
+
+        StringBuffer wuid(result->getWuid());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Spray", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Spray", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsSprayVariable(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char * sourceCsvSeparate, const char * sourceCsvTerminate, const char * sourceCsvQuote, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile)
@@ -1066,28 +1110,39 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayXml(ICodeContext *ctx, c
 
     req->setNoCommon(noCommon);
 
-    Owned<IClientSprayResponse> result = server.SprayVariable(req);
-
-    StringBuffer wuid(result->getWuid());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Spray Xml");
+    clientSpan->setSpanAttribute("destinationFilename", logicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientSprayResponse> result = server.SprayVariable(req);
+
+        StringBuffer wuid(result->getWuid());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Spray", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Spray", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 
@@ -1211,28 +1266,39 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayJson(ICodeContext *ctx, 
             req->setSrcPassword(userPw);
     }
 
-    Owned<IClientSprayResponse> result = server.SprayVariable(req);
-
-    StringBuffer wuid(result->getWuid());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Spray Json");
+    clientSpan->setSpanAttribute("destinationFilename", logicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientSprayResponse> result = server.SprayVariable(req);
+
+        StringBuffer wuid(result->getWuid());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Spray", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Spray", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 
@@ -1292,28 +1358,39 @@ static char * implementDespray(ICodeContext *ctx, const char * sourceLogicalName
     if (maxConnections != -1)
         req->setMaxConnections(maxConnections);
 
-    Owned<IClientDesprayResponse> result = server.Despray(req);
-
-    StringBuffer wuid(result->getWuid());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Despray");
+    clientSpan->setSpanAttribute("sourceFilename", logicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientDesprayResponse> result = server.Despray(req);
+
+        StringBuffer wuid(result->getWuid());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Despray", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Despray", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsDespray(ICodeContext *ctx, const char * sourceLogicalName, const char * destinationIP, const char * destinationPath, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite)
@@ -1336,7 +1413,7 @@ FILESERVICES_API char * FILESERVICES_CALL fsfDespray2(ICodeContext *ctx, const c
     return implementDespray(ctx, sourceLogicalName, destinationIP, destinationPath, timeOut, espServerIpPort, maxConnections, overwrite, destinationPlane);
 }
 
-FILESERVICES_API char * FILESERVICES_CALL implementCopy(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays, bool ensure)
+FILESERVICES_API char * FILESERVICES_CALL implementCopy(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays, bool ensure, bool wrap)
 {
     LOG(MCauditInfo, "Copy:  %s%s", sourceLogicalName,asSuperfile?" as superfile":"");
 
@@ -1376,70 +1453,94 @@ FILESERVICES_API char * FILESERVICES_CALL implementCopy(ICodeContext *ctx, const
         req->setNosplit(true);
     if (ensure)
         req->setEnsure(true);
+    if (wrap)
+        req->setWrap(true);
     req->setExpireDays(expireDays);
 
-    Owned<IClientCopyResponse> result = server.Copy(req);
-
-    StringBuffer wuid(result->getResult());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Copy");
+    clientSpan->setSpanAttribute("sourceFilename", sourceLogicalName);
+    clientSpan->setSpanAttribute("destinationFilename", destinationLogicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientCopyResponse> result = server.Copy(req);
+
+        StringBuffer wuid(result->getResult());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Copy", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Copy", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsCopy(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize)
 {
-    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, true, false, -1, false));
+    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, true, false, -1, false, false));
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsCopy_v2(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression)
 {
-    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, false, -1, false));
+    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, false, -1, false, false));
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsCopy_v3(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays)
 {
-    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, false));
+    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, false, false));
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsCopy_v4(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays, bool ensure)
 {
-    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, ensure));
+    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, ensure, false));
+}
+
+FILESERVICES_API void FILESERVICES_CALL fsCopy_v5(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays, bool ensure, bool wrap)
+{
+    CTXFREE(parentCtx, implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, ensure, wrap));
 }
 
 FILESERVICES_API char * FILESERVICES_CALL fsfCopy(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize)
 {
-    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, true, false, -1, false);
+    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, true, false, -1, false, false);
 }
 
 FILESERVICES_API char * FILESERVICES_CALL fsfCopy_v2(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression)
 {
-    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, false, -1, false);
+    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, false, -1, false, false);
 }
 
 FILESERVICES_API char * FILESERVICES_CALL fsfCopy_v3(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays)
 {
-    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, false);
+    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, false, false);
 }
 
 FILESERVICES_API char * FILESERVICES_CALL fsfCopy_v4(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays, bool ensure)
 {
-    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, ensure);
+    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, ensure, false);
+}
+
+FILESERVICES_API char * FILESERVICES_CALL fsfCopy_v5(ICodeContext *ctx, const char * sourceLogicalName, const char *destinationGroup, const char * destinationLogicalName, const char * sourceDali, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool asSuperfile, bool compress, bool forcePush, int transferBufferSize, bool preserveCompression, bool noSplit, int expireDays, bool ensure, bool wrap)
+{
+    return implementCopy(ctx, sourceLogicalName, destinationGroup, destinationLogicalName, sourceDali, timeOut, espServerIpPort, maxConnections, overwrite, replicate, asSuperfile, compress, forcePush, transferBufferSize, preserveCompression, noSplit, expireDays, ensure, wrap);
 }
 
 
@@ -1463,29 +1564,40 @@ FILESERVICES_API char * FILESERVICES_CALL fsfReplicate(ICodeContext *ctx, const 
     constructLogicalName(wu, sourceLogicalName, logicalName);
 
     req->setSourceLogicalName(logicalName.str());
-    Owned<IClientReplicateResponse> result = server.Replicate(req);
 
-    StringBuffer wuid(result->getWuid());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Spray Fixed");
+    clientSpan->setSpanAttribute("destinationFilename", logicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientReplicateResponse> result = server.Replicate(req);
+
+        StringBuffer wuid(result->getWuid());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("Replicate", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("Replicate", server, ctx, wuid, timeOut);
-    return wuid.detach();
-
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 
@@ -1592,7 +1704,7 @@ FILESERVICES_API bool FILESERVICES_CALL fsSuperFileExists(ICodeContext *ctx, con
 {
     StringBuffer lsfn;
     constructLogicalName(ctx, lsuperfn, lsfn);
-    return queryDistributedFileDirectory().exists(lsfn,ctx->queryUserDescriptor(),false,true);
+    return wsdfs::exists(lsfn, ctx->queryUserDescriptor(), false, true, INFINITE);
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsDeleteSuperFile(ICodeContext *ctx, const char *lsuperfn,bool deletesub)
@@ -2013,20 +2125,32 @@ FILESERVICES_API char *  FILESERVICES_CALL fsfMonitorLogicalFileName(ICodeContex
     constructLogicalName(ctx, _lfn, lfn);
     if (shotcount == 0)
         shotcount = -1;
-    Owned<IClientDfuMonitorRequest> req = server.createDfuMonitorRequest();
-    setContainerLocalCertificate(req->rpc());
-    req->setEventName(eventname);
-    req->setLogicalName(lfn);
-    req->setShotLimit(shotcount);
-    Owned<IClientDfuMonitorResponse> result = server.DfuMonitor(req);
-    StringBuffer res(result->getWuid());
-    StringBuffer s("MonitorLogicalFileName ('");
-    s.append(lfn).append("'): ").append(res);
-    WUmessage(ctx,SeverityInformation,NULL,s.str());
-    wu.clear();
-    if (res.length()!=0)
-        blockUntilComplete("MonitorLogicalFileName",server,ctx,res.str(),1000*60*60,NULL,true);
-    return res.detach();
+
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Monitor Logical Filename");
+    clientSpan->setSpanAttribute("filename", lfn);
+    try
+    {
+        Owned<IClientDfuMonitorRequest> req = server.createDfuMonitorRequest();
+        setContainerLocalCertificate(req->rpc());
+        req->setEventName(eventname);
+        req->setLogicalName(lfn);
+        req->setShotLimit(shotcount);
+        Owned<IClientDfuMonitorResponse> result = server.DfuMonitor(req);
+        StringBuffer wuid(result->getWuid());
+        StringBuffer s("MonitorLogicalFileName ('");
+        s.append(lfn).append("'): ").append(wuid);
+        WUmessage(ctx,SeverityInformation,NULL,s.str());
+        wu.clear();
+        if (wuid.length()!=0)
+        clientSpan->setSpanAttribute("wuid", wuid);
+            blockUntilComplete("MonitorLogicalFileName",server,ctx,wuid.str(),1000*60*60,NULL,true);
+        return wuid.detach();
+    }
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API void  FILESERVICES_CALL fsMonitorFile(ICodeContext *ctx, const char *eventname,const char *ip, const char *filename, bool sub, int shotcount, const char * espServerIpPort)
@@ -2043,22 +2167,33 @@ FILESERVICES_API char *  FILESERVICES_CALL fsfMonitorFile(ICodeContext *ctx, con
     if (shotcount == 0)
         shotcount = -1;
 
-    Owned<IClientDfuMonitorRequest> req = server.createDfuMonitorRequest();
-    setContainerLocalCertificate(req->rpc());
-    req->setEventName(eventname);
-    req->setIp(ip);
-    req->setFilename(filename);
-    req->setShotLimit(shotcount);
-    Owned<IClientDfuMonitorResponse> result = server.DfuMonitor(req);
-    StringBuffer res(result->getWuid());
-    StringBuffer s("MonitorFile (");
-    s.append(ip).append(", '").append(filename).append("'): '").append(res);
-    WUmessage(ctx,SeverityInformation,NULL,s.str());
-    wu.clear();
-    if (res.length()!=0)
-        blockUntilComplete("MonitorFile",server,ctx,res.str(),1000*60*60,NULL,true);
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Monitor File");
+    clientSpan->setSpanAttribute("filename", filename);
+    try
+    {
+        Owned<IClientDfuMonitorRequest> req = server.createDfuMonitorRequest();
+        setContainerLocalCertificate(req->rpc());
+        req->setEventName(eventname);
+        req->setIp(ip);
+        req->setFilename(filename);
+        req->setShotLimit(shotcount);
+        Owned<IClientDfuMonitorResponse> result = server.DfuMonitor(req);
+        StringBuffer wuid(result->getWuid());
+        StringBuffer s("MonitorFile (");
+        s.append(ip).append(", '").append(filename).append("'): '").append(wuid);
+        WUmessage(ctx,SeverityInformation,NULL,s.str());
+        wu.clear();
+        if (wuid.length()!=0)
+        clientSpan->setSpanAttribute("wuid", wuid);
+            blockUntilComplete("MonitorFile",server,ctx,wuid.str(),1000*60*60,NULL,true);
 
-    return res.detach();
+        return wuid.detach();
+    }
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsSetFileDescription(ICodeContext *ctx, const char *logicalfilename, const char *value)
@@ -2082,7 +2217,7 @@ FILESERVICES_API char *  FILESERVICES_CALL fsGetFileDescription(ICodeContext *ct
     constructLogicalName(ctx, logicalfilename, lfn);
 
     Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> df = wsdfs::lookup(lfn.str(), udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser, INFINITE);
     if (!df)
         throw MakeStringException(0, "GetFileDescription: Could not locate file %s", lfn.str());
     const char * ret = df->queryAttributes().queryProp("@description");
@@ -2368,28 +2503,40 @@ FILESERVICES_API char * FILESERVICES_CALL fsfRemotePull_impl(ICodeContext *ctx,
            req->setSrcpassword(userPw);
     }
 
-    Owned<IClientCopyResponse> result = server.Copy(req);
-
-    StringBuffer wuid(result->getResult());
-    if (!wuid.length())
+    OwnedActiveSpanScope clientSpan = queryThreadedActiveSpan()->createClientSpan("Dfu Remote Pull");
+    clientSpan->setSpanAttribute("sourceFilename", sourceLogicalName);
+    clientSpan->setSpanAttribute("destinationFilename", destinationLogicalName);
+    try
     {
-        const IMultiException* excep = &result->getExceptions();
-        if ((excep != NULL) && (excep->ordinality() > 0))
+        Owned<IClientCopyResponse> result = server.Copy(req);
+
+        StringBuffer wuid(result->getResult());
+        if (!wuid.length())
         {
-            StringBuffer errmsg;
-            excep->errorMessage(errmsg);
-            throw MakeStringExceptionDirect(0, errmsg.str());
+            const IMultiException* excep = &result->getExceptions();
+            if ((excep != NULL) && (excep->ordinality() > 0))
+            {
+                StringBuffer errmsg;
+                excep->errorMessage(errmsg);
+                throw MakeStringExceptionDirect(0, errmsg.str());
+            }
+            else
+            {
+                throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
+            }
         }
-        else
-        {
-            throw MakeStringExceptionDirect(0, "Result's dfu WUID is empty");
-        }
+
+        wu.clear();
+
+        clientSpan->setSpanAttribute("wuid", wuid);
+        blockUntilComplete("RemotePull", server, ctx, wuid, timeOut);
+        return wuid.detach();
     }
-
-    wu.clear();
-
-    blockUntilComplete("RemotePull", server, ctx, wuid, timeOut);
-    return wuid.detach();
+    catch (IException *e)
+    {
+        clientSpan->recordException(e, true, true);
+        throw;
+    }
 }
 
 FILESERVICES_API char * FILESERVICES_CALL fsfRemotePull(ICodeContext *ctx,
@@ -2849,7 +2996,6 @@ FILESERVICES_API void FILESERVICES_CALL fsDeleteExternalFile(ICodeContext *ctx,c
 {
     implementDeleteExternalFile(ctx,location,path,nullptr);
 }
-
 FILESERVICES_API void FILESERVICES_CALL fsDeleteExternalFile_v2(ICodeContext *ctx,const char *location,const char *path,const char *planename)
 {
     implementDeleteExternalFile(ctx,location,path,planename);
@@ -2883,14 +3029,33 @@ static void implementListPlaneDirectory(ICodeContext *ctx,const char *planename,
 {
     Owned<IPropertyTree> plane = checkPlaneOrHost(planename,machine,dir);
     RemoteFilename rfn;
-    checkExternalFilePath(ctx,plane,machine,dir,true,false,rfn);
+
+    // NB: If ctx == null, implies called from a compiled query that predates fsRemoteDirectory_v2
+    // checkExternalFilePath cannot be performed.
+    if (ctx)
+        checkExternalFilePath(ctx,plane,machine,dir,true,false,rfn);
+    else
+    {
+        // for backward compatibility
+
+        // NB: if no ctx, also implies no planename
+        SocketEndpoint ep(machine);
+        if (ep.isNull())
+        {
+            if (machine)
+                throw makeStringExceptionV(-1, "RemoteDirectory: Could not resolve host '%s'", machine);
+            // This should probably throw an error, but keeping this way for backward compatibility (with old compiled queries)
+            ep.setLocalHost(0);
+        }
+        rfn.setPath(ep,dir);
+    }
     listRemoteDirectoryFiles(rfn,mask,sub,lenresult,result);
 }
 
-FILESERVICES_API void FILESERVICES_CALL fsRemoteDirectory(ICodeContext *ctx,size32_t &lenresult,
+FILESERVICES_API void FILESERVICES_CALL fsRemoteDirectory(size32_t &lenresult,
     void *&result,const char *machine,const char *dir,const char *mask,bool sub)
 {
-    implementListPlaneDirectory(ctx,nullptr,machine,dir,mask,sub,lenresult,result);
+    implementListPlaneDirectory(nullptr,nullptr,machine,dir,mask,sub,lenresult,result);
 }
 
 FILESERVICES_API void FILESERVICES_CALL fsRemoteDirectory_v2(ICodeContext *ctx,size32_t &lenresult,
@@ -2904,7 +3069,7 @@ FILESERVICES_API char * FILESERVICES_CALL fsfGetLogicalFileAttribute(ICodeContex
     StringBuffer lfn;
     constructLogicalName(ctx, _lfn, lfn);
     Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, AccessMode::tbdRead,false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> df = wsdfs::lookup(lfn.str(), udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser, INFINITE);
     StringBuffer ret;
     if (df) {
         if (strcmp(attrname,"ECL")==0)
@@ -3189,6 +3354,15 @@ FILESERVICES_API char * FILESERVICES_CALL fsGetDefaultDropZone()
     return strdup(dropZonePath.str());
 }
 
+FILESERVICES_API char * FILESERVICES_CALL fsGetDefaultDropZoneName()
+{
+    StringBuffer dropZoneName;
+    Owned<IPropertyTreeIterator> dropZones = getGlobalConfigSP()->getElements("storage/planes[@category='lz']");
+    if (dropZones->first())
+        dropZones->query().getProp("@name", dropZoneName);
+    return strdup(dropZoneName.str());
+}
+
 FILESERVICES_API void FILESERVICES_CALL fsGetDropZones(ICodeContext *ctx, size32_t & __lenResult, void * & __result)
 {
     MemoryBuffer mb;
@@ -3209,7 +3383,7 @@ FILESERVICES_API void FILESERVICES_CALL fsGetLandingZones(ICodeContext *ctx, siz
     MemoryBuffer mb;
     size32_t sz;
     Owned<IPropertyTree> global = getGlobalConfig();
-    Owned<IPropertyTreeIterator> dropZones = global->getElements("storage/planes[labels='lz']");
+    Owned<IPropertyTreeIterator> dropZones = global->getElements("storage/planes[@category='lz']");
     ForEach(*dropZones)
     {
         const IPropertyTree &dropZone = dropZones->query();
@@ -3245,7 +3419,7 @@ FILESERVICES_API int FILESERVICES_CALL fsGetExpireDays(ICodeContext * ctx, const
     StringBuffer lfn;
     constructLogicalName(ctx, _lfn, lfn);
     Linked<IUserDescriptor> udesc = ctx->queryUserDescriptor();
-    Owned<IDistributedFile> df = queryDistributedFileDirectory().lookup(lfn.str(),udesc, AccessMode::tbdRead,false, false, nullptr, defaultPrivilegedUser);
+    Owned<IDistributedFile> df = wsdfs::lookup(lfn.str(), udesc, AccessMode::tbdRead, false, false, nullptr, defaultPrivilegedUser, INFINITE);
     if (df)
         return df->getExpire(nullptr);
     else

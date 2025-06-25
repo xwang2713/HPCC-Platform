@@ -1,11 +1,12 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, FontIcon, ICommandBarItemProps, Link, ScrollablePane, Sticky } from "@fluentui/react";
+import { CommandBar, ContextualMenuItemType, FontIcon, ICommandBarItemProps, Link } from "@fluentui/react";
 import * as ESPLogicalFile from "src/ESPLogicalFile";
 import nlsHPCC from "src/nlsHPCC";
 import { QuerySortItem } from "src/store/Store";
 import * as WsDfu from "src/WsDfu";
 import { useConfirm } from "../hooks/confirm";
-import { useFile } from "../hooks/file";
+import { useFile, useSubfiles } from "../hooks/file";
+import { HolyGrail } from "../layouts/HolyGrail";
 import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { ShortVerticalDivider } from "./Common";
 import { pushUrl } from "../util/history";
@@ -28,7 +29,8 @@ export const SubFiles: React.FunctionComponent<SubFilesProps> = ({
     sort = defaultSort
 }) => {
 
-    const [file, , , refresh] = useFile(cluster, logicalFile);
+    const { file } = useFile(cluster, logicalFile);
+    const [subfiles, refreshSubfiles] = useSubfiles(cluster, logicalFile);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
     const [data, setData] = React.useState<any[]>([]);
     const {
@@ -101,26 +103,30 @@ export const SubFiles: React.FunctionComponent<SubFilesProps> = ({
         message: nlsHPCC.RemoveSubfiles2,
         items: selection.map(item => item.Name),
         onSubmit: React.useCallback(() => {
-            WsDfu.SuperfileAction("remove", file.Name, selection, false).then(() => refresh());
-        }, [file, refresh, selection])
+            WsDfu.SuperfileAction("remove", file.Name, selection, false).then(() => refreshSubfiles());
+        }, [file, refreshSubfiles, selection])
     });
 
     React.useEffect(() => {
-        const subfiles = [];
+        const files = [];
         const promises = [];
 
-        file?.subfiles?.Item.forEach(item => {
+        subfiles?.Item.forEach(item => {
             const logicalFile = ESPLogicalFile.Get("", item);
             promises.push(logicalFile.getInfo2({
                 onAfterSend: function (response) {
                 }
             }));
-            subfiles.push(logicalFile);
+            files.push(logicalFile);
         });
-        Promise.all(promises).then(logicalFiles => {
-            setData(subfiles);
-        });
-    }, [file?.subfiles]);
+        if (promises.length) {
+            Promise.all(promises).then(logicalFiles => {
+                setData(files);
+            });
+        } else {
+            setData(files);
+        }
+    }, [file, subfiles]);
 
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
@@ -154,21 +160,21 @@ export const SubFiles: React.FunctionComponent<SubFilesProps> = ({
         setUIState(state);
     }, [selection]);
 
-    return <>
-        <ScrollablePane>
-            <Sticky>
-                <CommandBar items={buttons} farItems={copyButtons} />
-            </Sticky>
-            <FluentGrid
-                data={data}
-                primaryID={"Name"}
-                columns={columns}
-                alphaNumColumns={{ RecordCount: true, Totalsize: true }}
-                setSelection={setSelection}
-                setTotal={setTotal}
-                refresh={refreshTable}
-            ></FluentGrid>
-        </ScrollablePane >
-        <DeleteSubfilesConfirm />
-    </>;
+    return <HolyGrail
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
+        main={
+            <div style={{ position: "relative", height: "100%" }}>
+                <FluentGrid
+                    data={data}
+                    primaryID={"Name"}
+                    columns={columns}
+                    alphaNumColumns={{ RecordCount: true, Totalsize: true }}
+                    setSelection={setSelection}
+                    setTotal={setTotal}
+                    refresh={refreshTable}
+                ></FluentGrid>
+                <DeleteSubfilesConfirm />
+            </div>
+        }
+    />;
 };

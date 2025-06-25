@@ -58,6 +58,7 @@ static unsigned nIter = 1;
 //#define TEST_COPYFILE
 //#define TEST_DEADLOCK
 //#define TEST_THREADS
+//#define TEST_MEMTHREADS
 #define MDELAY 100
 
 static void addTestFile(const char *name,unsigned n)
@@ -80,7 +81,7 @@ static void addTestFile(const char *name,unsigned n)
     StringBuffer path;
     for (unsigned m=0; m<n; m++) {
         RemoteFilename rfn;
-        constructPartFilename(group,m+1,n,NULL,partmask.str(),dir.str(),false,1,rfn);
+        constructPartFilename(group,m+1,0,n,0,0,false,"",dir.str(),partmask.str(),1,rfn);
         rfn.getLocalPath(path.clear());
         Owned<IPropertyTree> pp = createPTree("Part");
         pp->setPropInt64("@size",1234*(m+1));
@@ -2927,7 +2928,7 @@ NULL
 #else
     out = fileno(stdout);
 #endif
-    Owned<IFileIO> stdOutFileIO = createIFileIO(out,IFOwrite);
+    Owned<IFileIO> stdOutFileIO = createIFileIO(nullptr,out,IFOwrite);
     if (testParams.ordinality())
     {
         newFileName = testParams.item(0);
@@ -3255,15 +3256,15 @@ public:
                 memset(ptrs[i],i,0x10000);
                 res+=0x10000;
             }
-            while (--i) 
-                free(ptrs[i]);
-            printf("allocated %x",res);
+            while (i) 
+                free(ptrs[--i]);
+            printf("allocated %x\n",res);
         }
         catch (IException *e) {
             pexception("Exception",e);
         }
         catch (...) {
-            printf("unknown exception!");
+            printf("unknown exception!\n");
         }
         return 0;
     }
@@ -3327,7 +3328,6 @@ void usage(const char *error=NULL)
 }
 
 struct ReleaseAtomBlock { ~ReleaseAtomBlock() { releaseAtoms(); } };
-
 
 int main(int argc, char* argv[])
 {   

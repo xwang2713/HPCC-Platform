@@ -1,6 +1,6 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import nlsHPCC from "src/nlsHPCC";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { usePods } from "../hooks/cloud";
@@ -29,12 +29,12 @@ export const Pods: React.FunctionComponent<PodsProps> = ({
     //  Grid ---
     const columns = React.useMemo((): FluentColumns => {
         return {
-            name: { label: nlsHPCC.Name, width: 300 },
-            container: { label: nlsHPCC.Container, width: 120 },
-            port: { label: nlsHPCC.Port, width: 64 },
+            Name: { label: nlsHPCC.Name, width: 300 },
+            ContainerName: { label: nlsHPCC.Container, width: 120 },
+            ports: { label: nlsHPCC.Port, width: 64 },
             ready: { label: nlsHPCC.Ready, width: 64 },
-            status: { label: nlsHPCC.Status, width: 90 },
-            restarts: { label: nlsHPCC.Restarts, width: 64 },
+            Status: { label: nlsHPCC.Status, width: 90 },
+            ContainerRestartCount: { label: nlsHPCC.Restarts, width: 64 },
             age: { label: nlsHPCC.Age, width: 90 }
         };
     }, []);
@@ -53,7 +53,7 @@ export const Pods: React.FunctionComponent<PodsProps> = ({
     return <HolyGrail
         header={<CommandBar items={buttons} farItems={copyButtons} />}
         main={
-            <SizeMe monitorHeight>{({ size }) =>
+            <SizeMe>{({ size }) =>
                 <div style={{ width: "100%", height: "100%" }}>
                     <div style={{ position: "absolute", width: "100%", height: `${size.height}px` }}>
                         <FluentGrid

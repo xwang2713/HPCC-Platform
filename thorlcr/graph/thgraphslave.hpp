@@ -46,10 +46,11 @@ public:
     COutputTiming() { }
 
     void resetTiming() { slaveTimerStats.reset(); }
-    ActivityTimeAccumulator &getTotalCyclesRef() { return slaveTimerStats; }
+    ActivityTimeAccumulator &getActivityTimerAccumulator() { return slaveTimerStats; }
     unsigned __int64 queryTotalCycles() const { return slaveTimerStats.totalCycles; }
     unsigned __int64 queryEndCycles() const { return slaveTimerStats.endCycles; }
     unsigned __int64 queryBlockedCycles() const { return slaveTimerStats.blockedCycles; }
+    unsigned __int64 queryLookAheadCycles() const { return slaveTimerStats.lookAheadCycles; }
 };
 
 class CEdgeProgress
@@ -84,7 +85,6 @@ public:
     inline void dataLinkIncrement() { dataLinkIncrement(1); }
     inline void dataLinkIncrement(rowcount_t v)
     {
-#ifdef _TESTING
         assertex(hasStarted());
 #ifdef OUTPUT_RECORDSIZE
         if (count==THORDATALINK_STARTED)
@@ -92,7 +92,6 @@ public:
             size32_t rsz = parent.queryRowMetaData(this)->getMinRecordSize();
             parent.ActPrintLog("Record size %s= %d", parent.queryRowMetaData(this)->isVariableSize()?"(min) ":"",rsz);
         }
-#endif
 #endif
         icount += v;
         count += v;
@@ -186,6 +185,7 @@ public:
         stopped = true;
     }
     bool isFastThrough() const;
+    bool suppressLookAhead() const;
 };
 typedef IArrayOf<CThorInput> CThorInputArray;
 
@@ -224,7 +224,12 @@ protected:
     void startLookAhead(unsigned index);
     bool isLookAheadActive(unsigned index) const;
     void setupSpace4FileStats(unsigned where, bool statsForMultipleFiles, bool isSuper, unsigned numSubs, const StatisticsMapping & statsMapping);
-    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const { }
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
+    {
+        offset_t peakTempSize = queryPeakTempSize();
+        if (peakTempSize)
+            activeStats.mergeStatistic(StSizePeakTempDisk, peakTempSize);
+    }
 public:
     IMPLEMENT_IINTERFACE_USING(CActivityBase)
 
@@ -261,7 +266,8 @@ public:
     void debugRequest(unsigned edgeIdx, MemoryBuffer &msg);
     bool canStall() const;
     bool isFastThrough() const;
-
+    bool suppressLookAhead() const;
+    unsigned __int64 queryLocalCycles(unsigned __int64 totalCycles, unsigned __int64 blockedCycles, unsigned __int64 lookAheadCycles) const;
 
 // IThorDataLink
     virtual CSlaveActivity *queryFromActivity() override { return this; }
@@ -283,8 +289,9 @@ public:
         return consumerOrdered;
     }
     virtual unsigned __int64 queryTotalCycles() const { return COutputTiming::queryTotalCycles(); }
-    virtual unsigned __int64 queryBlockedCycles() const { return COutputTiming::queryBlockedCycles();}
+    virtual unsigned __int64 queryBlockedCycles() const { return COutputTiming::queryBlockedCycles(); }
     virtual unsigned __int64 queryEndCycles() const { return COutputTiming::queryEndCycles(); }
+    virtual unsigned __int64 queryLookAheadCycles() const { return COutputTiming::queryLookAheadCycles(); }
     virtual void debugRequest(MemoryBuffer &msg) override;
 
 // IThorDataLink
@@ -465,6 +472,7 @@ public:
 
 class graphslave_decl CThorStrandedActivity : public CSlaveActivity
 {
+    typedef CSlaveActivity PARENT;
 protected:
     CThorStrandOptions strandOptions;
     IArrayOf<CThorStrandProcessor> strands;
@@ -472,6 +480,7 @@ protected:
     Owned<IStrandJunction> splitter;
     Owned<IStrandJunction> sourceJunction; // A junction applied to the output of a source activity
     std::atomic<unsigned> active;
+    unsigned __int64 startCycles = 0;
 protected:
     void onStartStrands();
 public:
@@ -490,7 +499,12 @@ public:
     virtual CThorStrandProcessor *createStrandSourceProcessor(bool inputOrdered) = 0;
 
     inline unsigned numStrands() const { return strands.ordinality(); }
-
+// CSlaveActivity
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const override
+    {
+        PARENT::gatherActiveStats(activeStats);
+        activeStats.addStatistic(StNumParallelExecute, numStrands());
+    }
 // IThorDataLink
     virtual IStrandJunction *getOutputStreams(CActivityBase &_ctx, unsigned idx, PointerArrayOf<IEngineRowStream> &streams, const CThorStrandOptions * consumerOptions, bool consumerOrdered, IOrderedCallbackCollection * orderedCallbacks) override;
     virtual unsigned __int64 queryTotalCycles() const override;
@@ -624,7 +638,7 @@ public:
             te->setSlave(queryMyRank());
             if (!te->queryOrigin())
             {
-                VStringBuffer msg("SLAVE #%d", queryMyRank());
+                VStringBuffer msg("WORKER #%d", queryMyRank());
                 te->setOrigin(msg);
             }
             else if (0 == stricmp("user", te->queryOrigin()))
@@ -635,12 +649,12 @@ public:
         {
             // wait for reply
             if (!queryJobComm().sendRecv(msg, 0, queryJob().querySlaveMpTag(), LONGTIMEOUT))
-                EXCLOG(e, "Failed to sendrecv to master");
+                IERRLOG(e, "Failed to sendrecv to master");
         }
         else
         {
             if (!queryJobComm().send(msg, 0, queryJob().querySlaveMpTag(), LONGTIMEOUT))
-                EXCLOG(e, "Failed to send to master");
+                IERRLOG(e, "Failed to send to master");
         }
         return true;
     }

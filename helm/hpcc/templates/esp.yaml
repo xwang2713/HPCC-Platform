@@ -82,6 +82,7 @@ data:
 {{ include "hpcc.generateVaultConfig" . | indent 6 }}
 {{- if eq .me.application "eclwatch" }}
  {{- include "hpcc.generateWarnings" (dict "root" .root) | nindent 6 }}
+ {{- include "hpcc.generateInfrastructureInfo" (dict "root" .root) | nindent 6 }}
 {{- end }}
     global:
 {{ include "hpcc.generateGlobalConfigMap" .root | indent 6 }}
@@ -96,7 +97,8 @@ data:
 {{- $secretsCategories := ternary (append $noAuthSecretsCategories "authn") $noAuthSecretsCategories  (eq $authtype "ldap") -}}
 {{- $includeStorageCategories := ternary (list "lz" "data" "dll" "debug") (list "data" "dll" "debug") (eq $application "eclwatch") -}}
 {{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories  "includeCategories" $includeStorageCategories "env" $env -}}
-{{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.espConfigMap" "component" "esp" "excludeKeys" "global,esp.queues")) -}}
+{{- $_ := set $commonCtx "lifeCycleCtx" (dict "containers" list) -}}
+{{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.espConfigMap" "component" "esp" "excludeKeys" "global,esp::queues")) -}}
 {{- if (ne (include "hpcc.isVisibilityPublic" (dict "root" $ "visibility" .service.visibility)) "") }}
  {{- /* If esp is using a public cert, this flag is used later to add the local MTLS mount and cert */ -}}
  {{- $_ := set $commonCtx "externalCert" true -}}
@@ -105,7 +107,7 @@ data:
 {{- end -}}
 {{- $signingEnabled := eq (include "hpcc.isIssuerEnabled" (dict "root" $ "issuerKeyName" "signing")) "true" -}}
 {{- $generateSigningCert := and ($signingEnabled) (eq $application "eclwatch") -}}
-{{- $signingCertGenerator := and ($signingEnabled) (has $application (list "eclwatch" "eclservices")) | ternary "eclwatch" "" -}}
+{{- $signingCertGenerator := and ($signingEnabled) (has $application (list "eclwatch" "eclservices")) | ternary "eclwatch" "" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -125,7 +127,7 @@ spec:
         accessSasha: "yes"
 {{- end }}
         app: {{ $application }}
-        helmVersion: 9.7.0-trunk0
+        {{- include "hpcc.generateHelmVersion" . | nindent 8 }}
         {{- include "hpcc.addStandardLabels" (dict "root" $ "name" $application "component" "esp" "instance" .name) | indent 8 }}
 {{- if hasKey $.Values.global "metrics" }}
  {{- include "hpcc.generateMetricsReporterLabel" $.Values.global.metrics | nindent 8 }}
@@ -140,31 +142,26 @@ spec:
  {{- include "hpcc.addPrometheusScrapeAnnotations" $.Values.global.metrics | nindent 8 }}
 {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds | default 600 }}
       {{- include "hpcc.placementsByPodTargetType" (dict "root" $ "pod" .name "type" "esp") | indent 6 }}
       serviceAccountName: "hpcc-esp-service"
       {{- include "hpcc.addImagePullSecrets" $commonCtx | nindent 6 -}}
       containers:
       - name: {{ .name | quote }}
         workingDir: /var/lib/HPCCSystems
-        command: [ {{ include "hpcc.componentCommand" (dict "me" . "root" $ "process" "esp") }} ] 
-        args: [ {{- include "hpcc.componentStartArgs" (dict "me" . "root" $ "process" "esp") | nindent 16 }}
-                {{ printf "--application=%s" $application | quote }},
-                {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" (dict "root" $ "component" $application "optional" (has $application (list "esdl" "ldapenvironment" "loggingservice")) )}}
-              ]
+{{- $optional := (has $application (list "esdl" "ldapenvironment" "loggingservice")) -}}
+{{- $extraArgs := list (printf "--application=%s" $application) -}}
+{{- include "hpcc.addCommandAndLifecycle" ($commonCtx | merge (dict "process" "esp" "extraArgs" $extraArgs "component" $application "optional" $optional)) | nindent 8 }}
         env:
-{{ include "hpcc.mergeEnvironments" $env | indent 8 -}}
+{{ include "hpcc.mergeEnvironments" (dict "env" $env "defaultArenas" 4) | indent 8 -}}
         - name: "SENTINEL"
           value: "/tmp/{{ .name }}.sentinel"
 {{ include "hpcc.addSentinelProbes" . | indent 8 }}
 {{- include "hpcc.addSecurityContext" $commonCtx | indent 8 }}
-{{- $omitResources := hasKey $.Values.global "omitResources" | ternary $.Values.global.omitResources $.Values.global.privileged }}
-{{- if not $omitResources }}
-{{- include "hpcc.addResources" (dict "me" .resources) | indent 8 }}
-{{- end }}
+{{- include "hpcc.addResources" (dict "me" .resources "root" $) | indent 8 }}
 {{ include "hpcc.addImageAttrs" $commonCtx | indent 8 }}
         volumeMounts:
-{{ include "hpcc.addConfigMapVolumeMount" . | indent 8 }}
+{{ include "hpcc.addEphemeralVolumeMounts" . | indent 8 }}
 {{ include "hpcc.addVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addSecretVolumeMounts" $commonCtx | indent 8 }}
 {{ include "hpcc.addVaultClientCertificateVolumeMounts" $commonCtx | indent 8 }}
@@ -175,8 +172,9 @@ spec:
 {{- if $signingCertGenerator }}
  {{- include "hpcc.addCertificateVolumeMount" (dict "root" $ "component" $signingCertGenerator "name" "global" "issuerKeyName" "signing") | nindent 8 }}
 {{- end }}
+{{- include "hpcc.addPostRunContainer" $commonCtx | nindent 6 }}
       volumes:
-{{ include "hpcc.addConfigMapVolume" . | indent 6 }}
+{{ include "hpcc.addEphemeralVolumes" . | indent 6 }}
 {{ include "hpcc.addVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addSecretVolumes" $commonCtx | indent 6 }}
 {{ include "hpcc.addVaultClientCertificateVolumes" $commonCtx | indent 6 }}

@@ -45,15 +45,3 @@ soapcallResult := SOAPCALL(TargetURL, 'HttpEcho', httpEchoServiceRequestRecord, 
                 httpheader('traceparent', '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01'));
 
 output(soapcallResult, named('soapcallResult'));
-
-
-//test proxyaddress functionality by using an invalid targetUrl, but a valid proxyaddress.  HTTP Host header will be wrong, but should still work fine as it's ignored by ESP.
-string HostURL := 'http://1.1.1.1:9999/WsSmc/HttpEcho?name=doe,joe&number=1';
-string TargetProxy := 'http://' + TargetIP + ':8010';
-
-proxyResult := SOAPCALL(HostURL, 'HttpEcho', httpEchoServiceRequestRecord, DATASET(httpEchoServiceResponseRecord), LITERAL, xpath('HttpEchoResponse'), proxyAddress(TargetProxy),
-                httpheader('StoredHeader', storedHeader), httpheader('literalHeader', 'literalHeaderValue'), httpheader('constHeader', constHeader),
-                httpheader('HPCC-Global-Id','9876543210'), httpheader('HPCC-Caller-Id','http111'),
-                httpheader('traceparent', '00-0123456789abcdef0123456789abcdef-f123456789abcdef-01'));
-
-output(proxyResult, named('proxyResult'));

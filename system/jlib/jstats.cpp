@@ -197,7 +197,7 @@ const static unsigned __int64 oneMinute = I64C(60000000000);
 const static unsigned __int64 oneHour = I64C(3600000000000);
 const static unsigned __int64 oneDay = 24 * I64C(3600000000000);
 
-static void formatTime(StringBuffer & out, unsigned __int64 value)
+void formatTime(StringBuffer & out, unsigned __int64 value)
 {
     //Aim to display at least 3 significant digits in the result string
     if (value < oneMicroSecond)
@@ -773,6 +773,7 @@ StatisticMeasure queryMeasure(const char * measure, StatisticMeasure dft)
 #define ENUMSTAT(y) STAT(Enum, y, SMeasureEnum, StatsMergeKeepNonZero)
 #define COSTSTAT(y) STAT(Cost, y, SMeasureCost, StatsMergeSum)
 #define PEAKSIZESTAT(y) STAT(Size, y, SMeasureSize, StatsMergeMax)
+#define PEAKNUMSTAT(y) STAT(Num, y, SMeasureCount, StatsMergeMax)
 //--------------------------------------------------------------------------------------------------------------------
 
 class StatisticMeta
@@ -944,7 +945,7 @@ static const constexpr StatisticMeta statsMetaData[StMax] = {
     { CYCLESTAT(LeafFetch) },
     { TIMESTAT(BlobFetch), "Time spent reading blobs from disk (EXCLUDING the linux page cache)" },
     { CYCLESTAT(BlobFetch) },
-    { PEAKSIZESTAT(GraphSpill), "Peak size of spill memory usage" },
+    { PEAKSIZESTAT(GraphSpill), "High water mark for inter-subgraph spill size" },
     { TIMESTAT(AgentQueue), "Time worker items were received and queued before being processed\nThis may indicate that the primary node on a channel was down, or that the workers are overloaded with requests" },
     { CYCLESTAT(AgentQueue) },
     { TIMESTAT(IBYTIDelay), "Time spent waiting for another worker to start processing a request\nA non-zero value indicates that the primary node on a channel was down or very busy" },
@@ -974,6 +975,58 @@ static const constexpr StatisticMeta statsMetaData[StMax] = {
     { SIZESTAT(ContinuationData), "The total size of continuation data sent from agent to the server\nA large number may indicate a poor filter, or merging from many different index locations" },
     { NUMSTAT(ContinuationRequests), "The number of times the agent indicated there was more data to be returned" },
     { NUMSTAT(Failures), "The number of times a query has failed" },
+    { NUMSTAT(LocalRows), "Number of rows handled locally"},
+    { NUMSTAT(RemoteRows), "Number of rows sent to remote workers"},
+    { SIZESTAT(RemoteWrite), "Size of data sent to remote workers"},
+    { PEAKSIZESTAT(PeakTempDisk), "High water mark for temporary files"},
+    { PEAKSIZESTAT(PeakEphemeralDisk), "High water mark for emphemeral storage use"},
+    { NUMSTAT(MatchLeftRowsMax), "The largest number of left rows in a join group" },
+    { NUMSTAT(MatchRightRowsMax), "The largest number of right rows in a join group" },
+    { NUMSTAT(MatchCandidates), "The number of candidate combinations of left and right rows forming join groups" },
+    { NUMSTAT(MatchCandidatesMax), "The largest number of candidate combinations of left and right rows in a single group" },
+    { NUMSTAT(ParallelExecute), "The number of parallel execution paths for this activity" },
+    { NUMSTAT(AgentRequests), "The number of agent request packets for this activity" },
+    { SIZESTAT(AgentRequests), "The total size of agent request packets for this activity" },
+    { TIMESTAT(SoapcallDNS), "The time taken for DNS lookup in SOAPCALL" },
+    { TIMESTAT(SoapcallConnect), "The time taken for connect[+SSL_connect] in SOAPCALL" },
+    { CYCLESTAT(SoapcallDNS) },
+    { CYCLESTAT(SoapcallConnect) },
+    { NUMSTAT(SoapcallConnectFailures), "The number of SOAPCALL connect failures" },
+    { TIMESTAT(LookAhead), "The total time lookahead thread spend prefetching rows from upstream activities" },
+    { CYCLESTAT(LookAhead) },
+    { NUMSTAT(CacheHits), "The number of times an item was retrieved from a cache" },
+    { NUMSTAT(CacheAdds), "The number of times an item was added to a cache" },
+    { PEAKNUMSTAT(PeakCacheObjects), "High water mark for number of objects in a cache"},
+    { NUMSTAT(CacheDuplicates), "The number of times an item was added to a cache by two threads at the same time" },
+    { NUMSTAT(CacheEvictions), "The number of times an item was evicted from a cache" },
+    { SIZESTAT(OffsetBranches), "The 1st branch node offset position in the index" },
+    { SIZESTAT(BranchMemory), "The estimated size of the branch nodes when stored in memory" },
+    { SIZESTAT(LeafMemory), "The estimated size of the leaf nodes when stored in memory"},
+    { SIZESTAT(LargestExpandedLeaf), "The size of the largest leaf node when expanded in memory"},
+    { TIMESTAT(Delayed), "Time spent waiting for minimum query execution period" },
+    { CYCLESTAT(Delayed) },
+    { TIMESTAT(PostMortemCapture), "The time taken for post mortem capture" },
+    { CYCLESTAT(PostMortemCapture) },
+    { NUMSTAT(BloomAccepts), "The number of times a bloom filter accepts an index lookup" },
+    { NUMSTAT(BloomRejects), "The number of times a bloom filter rejects an index lookup" },
+    { NUMSTAT(BloomSkips), "The number of times a bloom filter cannot filter an index lookup" },
+    { NUMSTAT(Accepts), "The number of items accepted for processing" },
+    { NUMSTAT(Waits), "The number of times a component waits for a entry on a queue" },
+    { TIMESTAT(Provision), "The total time spent provisioning a component" },
+    { CYCLESTAT(Provision) },
+    { COSTSTAT(Start), "The cost assocaiated with starting a component or operation" },
+    { TIMESTAT(WaitSuccess), "The time waiting for an item on a queue, when an item was eventually received" },
+    { CYCLESTAT(WaitSuccess) },
+    { TIMESTAT(WaitFailure), "The time waiting for an item on a queue, when no item was received" },
+    { CYCLESTAT(WaitFailure) },
+    { COSTSTAT(Wait), "The cost associated with a component being idle waiting for an event" },
+    { NUMSTAT(Aborts), "The number of times an abort was processed" },
+    { COSTSTAT(Abort), "The cost associated with aborted actions" },
+    { NUMSTAT(RowsRead), "The number of rows read from an input" },
+    { NUMSTAT(RowsWritten), "The number of rows written to an output" },
+    { TIMESTAT(QueryConsume), "The total time spent consuming and processing a query input" },
+    { CYCLESTAT(QueryConsume) },
+    { NUMSTAT(Successes), "The number of times something was successful" },
 };
 
 static MapStringTo<StatisticKind, StatisticKind> statisticNameMap(true);
@@ -1292,6 +1345,13 @@ class CComponentStatistics
 
 //--------------------------------------------------------------------------------------------------------------------
 
+//This object is accessed by all StatisticsMapping constructors.  It is important that it is initialised before any of
+//them are called.  Coverity routinely complains about possible GLOBAL_INIT_ORDER problems.  These are false positives
+//as long as
+//   * this definition of allStatsMappings comes first in this file before any StatisticsMappings
+//   * there must be no other files in jlib that declare a StatisticMapping.
+// StatisticsMappings in other dlls are ok because it is guaranteed that the dependent dll/so is initialised first
+
 static std::unordered_map<unsigned, const StatisticsMapping *> allStatsMappings;
 
 static int compareUnsigned(unsigned const * left, unsigned const * right)
@@ -1312,11 +1372,13 @@ void StatisticsMapping::createMappings()
     ForEachItemIn(i2, indexToKind)
     {
         unsigned kind = indexToKind.item(i2);
+        unsigned existing = kindToIndex.item(kind);
+        assertex(existing == numStatistics());  // Throw an error if there are duplicate statistics in the mapping
         kindToIndex.replace(i2, kind);
     }
 
     const unsigned * kinds = indexToKind.getArray();
-    hashcode = hashc((const byte *)kinds, indexToKind.ordinality() * sizeof(unsigned), 0x811C9DC5);
+    hashcode = hashc((const byte *)kinds, indexToKind.ordinality() * sizeof(unsigned), fnvInitialHash32);
 
     //All StatisticsMapping objects are assumed to be static, and never destroyed.
     const StatisticsMapping * existing = allStatsMappings[hashcode];
@@ -1349,6 +1411,7 @@ const StatisticsMapping jhtreeCacheStatistics({ StNumIndexSeeks, StNumIndexScans
                                                 StNumNodeCacheAdds, StNumLeafCacheAdds, StNumBlobCacheAdds, StNumNodeCacheHits, StNumLeafCacheHits, StNumBlobCacheHits, StCycleNodeLoadCycles, StCycleLeafLoadCycles,
                                                 StCycleBlobLoadCycles, StCycleNodeReadCycles, StCycleLeafReadCycles, StCycleBlobReadCycles, StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
                                                 StCycleNodeFetchCycles, StCycleLeafFetchCycles, StCycleBlobFetchCycles, StCycleIndexCacheBlockedCycles, StNumIndexMergeCompares, StNumIndexMerges, StNumIndexSkips,
+                                                StNumBloomAccepts, StNumBloomRejects, StNumBloomSkips,
                                                 StNumIndexNullSkips, StTimeLeafLoad, StTimeLeafRead, StTimeLeafFetch, StTimeIndexCacheBlocked, StTimeNodeFetch, StTimeNodeLoad, StTimeNodeRead});
 
 const StatisticsMapping allStatistics(StKindAll);
@@ -1633,6 +1696,26 @@ void StatsScopeId::setId(StatisticScopeType _scopeType, unsigned _id, unsigned _
 
 bool StatsScopeId::setScopeText(const char * text, const char * * _next)
 {
+    auto setScope = [&](StatisticScopeType _scopeType, const char *text, const char * *next)
+    {
+        if (!*text)
+            return false;
+        scopeType = _scopeType;
+        const char * endScopeNamePtr = strchr(text, ':');
+        if (endScopeNamePtr)
+        {
+            name.set(text, endScopeNamePtr-text);
+            if (next)
+                * next = endScopeNamePtr;
+        }
+        else
+        {
+            name.set(text);
+            if (next)
+                *next = text + strlen(text);
+        }
+        return true;
+    };
     char * * next = (char * *)_next;
     switch (*text)
     {
@@ -1683,21 +1766,11 @@ bool StatsScopeId::setScopeText(const char * text, const char * * _next)
         break;
     case FunctionScopePrefix[0]:
         if (MATCHES_CONST_PREFIX(text, FunctionScopePrefix))
-        {
-            setFunctionId(text+ strlen(FunctionScopePrefix));
-            if (_next)
-                *_next = text + strlen(text);
-            return true;
-        }
+            return setScope(SSTfunction, text+strlen(FunctionScopePrefix), _next);
         break;
     case FileScopePrefix[0]:
         if (MATCHES_CONST_PREFIX(text, FileScopePrefix))
-        {
-            setFileId(text+strlen(FileScopePrefix));
-            if (_next)
-                *_next = text + strlen(text);
-            return true;
-        }
+            return setScope(SSTfile, text+strlen(FileScopePrefix), _next);
         break;
     case WorkflowScopePrefix[0]:
         if (MATCHES_CONST_PREFIX(text, WorkflowScopePrefix) && isdigit(text[strlen(WorkflowScopePrefix)]))
@@ -1727,30 +1800,15 @@ bool StatsScopeId::setScopeText(const char * text, const char * * _next)
         break;
     case DFUWorkunitScopePrefix[0]:
         if (MATCHES_CONST_PREFIX(text, DFUWorkunitScopePrefix))
-        {
-            setDfuWorkunitId(text+ strlen(DFUWorkunitScopePrefix));
-            if (_next)
-                *_next = text + strlen(text);
-            return true;
-        }
+            return setScope(SSTdfuworkunit, text+strlen(DFUWorkunitScopePrefix), _next);
         break;
     case SectionScopePrefix[0]:
         if (MATCHES_CONST_PREFIX(text, SectionScopePrefix))
-        {
-            setSectionId(text+strlen(SectionScopePrefix));
-            if (_next)
-                *_next = text + strlen(text);
-            return true;
-        }
+            return setScope(SSTsection, text+strlen(SectionScopePrefix), _next);
         break;
     case OperationScopePrefix[0]:
         if (MATCHES_CONST_PREFIX(text, OperationScopePrefix))
-        {
-            setOperationId(text+strlen(OperationScopePrefix));
-            if (_next)
-                *_next = text + strlen(text);
-            return true;
-        }
+            return setScope(SSToperation, text+strlen(OperationScopePrefix), _next);
         break;
     case '\0':
         setId(SSTglobal, 0);
@@ -1879,7 +1937,7 @@ class CStatisticCollection : public CInterfaceOf<IStatisticCollection>
 {
     friend class CollectionHashTable;
 
-    CStatisticCollection * ensureSubScopePath(std::initializer_list<const StatsScopeId> path)
+    CStatisticCollection * ensureSubScopePath(std::initializer_list<const StatsScopeId> & path)
     {
         CStatisticCollection * curScope = this;
         for (const auto & scopeItem: path)
@@ -2871,7 +2929,7 @@ void CRuntimeStatisticCollection::deserialize(MemoryBuffer& in)
     in.read(hasNested);
     if (hasNested)
     {
-        ensureNested().deserializeMerge(in);
+        ensureNested().deserialize(in);
     }
 }
 
@@ -2892,7 +2950,7 @@ void CRuntimeStatisticCollection::deserializeMerge(MemoryBuffer& in)
     in.read(hasNested);
     if (hasNested)
     {
-        ensureNested().deserialize(in);
+        ensureNested().deserializeMerge(in);
     }
 }
 
@@ -3105,6 +3163,10 @@ static bool isWorthReportingMergedValue(StatisticKind kind)
     {
     case StSizePeakMemory:
     case StSizePeakRowMemory:
+    case StNumMatchLeftRowsMax:
+    case StNumMatchRightRowsMax:
+    case StNumMatchCandidatesMax:
+    case StSizeLargestExpandedLeaf:
         //These only make sense for individual nodes, the aggregated value is meaningless
         return false;
     }
@@ -3167,8 +3229,8 @@ void CRuntimeSummaryStatisticCollection::recordStatistics(IStatisticGatherer & t
                 //First test is redundant - but protects against minValue != maxValue test above changing.
                 if ((cur.minNode != cur.maxNode) && isSignificantRange(serialKind, range, mean))
                 {
-                    target.addStatistic((StatisticKind)(serialKind|StNodeMin), cur.minNode);
-                    target.addStatistic((StatisticKind)(serialKind|StNodeMax), cur.maxNode);
+                    target.addStatistic((StatisticKind)(serialKind|StNodeMin), cur.minNode+1);
+                    target.addStatistic((StatisticKind)(serialKind|StNodeMax), cur.maxNode+1);
 
                     if (skewHasMeaning(serialKind))
                     {

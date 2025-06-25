@@ -219,37 +219,45 @@ void MilliSleep(unsigned milli)
     Sleep(milli);
 }
 
+void NanoSleep(__uint64 nano)
+{
+    Sleep((unsigned)((nano + 999999)/100000));
+}
+
+
 #else
 
-void MilliSleep(unsigned milli)
+void NanoSleep(__uint64 ns)
 {
-    if (milli) {
-        unsigned target = msTick()+milli;
-        for (;;) {
-            timespec sleepTime;
+    if (ns)
+    {
+        __uint64 target = nsTick()+ns;
+        for (;;)
+        {
+            constexpr __uint64 nsPerSec = 1'000'000'000;
 
-            if (milli>=1000)
-            {
-                sleepTime.tv_sec = milli/1000;
-                milli %= 1000;
-            }
-            else
-                sleepTime.tv_sec = 0;
-            sleepTime.tv_nsec = milli * 1000000;
+            timespec sleepTime;
+            sleepTime.tv_sec = ns / nsPerSec;
+            sleepTime.tv_nsec = ns % nsPerSec;
             if (nanosleep(&sleepTime, NULL)==0)
                 break;
             if (errno!=EINTR) {
-                PROGLOG("MilliSleep err %d",errno);
+                PROGLOG("NanoSleep err %d",errno);
                 break;
             }
-            milli = target-msTick();
-            if ((int)milli<=0)
+            ns = target-nsTick();
+            if ((__int64)ns<=0)
                 break;
         }
     }
     else
         ThreadYield();  // 0 means  yield
 
+}
+
+void MilliSleep(unsigned milli)
+{
+    NanoSleep((__uint64)milli*1000000);
 }
 
 #endif
@@ -1808,97 +1816,6 @@ void doStackProbe()
 #pragma GCC diagnostic pop
 #endif
 
-#ifdef _WIN32
-
-DWORD dwTlsIndex = -1;
-CriticalSection tlscrit;
-
-void initThreadLocal(int len, void* val)
-{
-    {
-        CriticalBlock b(tlscrit);
-        if(dwTlsIndex == -1)
-        {
-            if ((dwTlsIndex = TlsAlloc()) == TLS_OUT_OF_INDEXES)
-                throw MakeStringException(-1, "TlsAlloc failed");
-        }
-    }
-
-    LPVOID lpvData;
-
-    lpvData = TlsGetValue(dwTlsIndex);
-    if (lpvData != 0)
-        LocalFree((HLOCAL) lpvData);
-
-    // Initialize the TLS index for this thread.
-    lpvData = (LPVOID) LocalAlloc(LPTR, len);
-    memcpy((char*)lpvData, val, len);
-    if (! TlsSetValue(dwTlsIndex, lpvData))
-        throw MakeStringException(-1, "TlsSetValue error");
-}
-
-void* getThreadLocalVal()
-{
-    if(dwTlsIndex == -1)
-        return NULL;
-
-    return TlsGetValue(dwTlsIndex);
-}
-
-void clearThreadLocal()
-{
-    if(dwTlsIndex == -1)
-        return;
-
-    LPVOID lpvData = TlsGetValue(dwTlsIndex);
-    if (lpvData != 0)
-    {
-        LocalFree((HLOCAL) lpvData);
-        if (! TlsSetValue(dwTlsIndex, NULL))
-            throw MakeStringException(-1, "TlsSetValue error");
-    }
-}
-
-#else
-// Key for the thread-specific buffer
-static pthread_key_t buffer_key;
-// Once-only initialisation of the key
-static pthread_once_t buffer_key_once = PTHREAD_ONCE_INIT;
-
-// Free the thread-specific buffer
-static void buffer_destroy(void * buf)
-{
-    if(buf)
-        free(buf);
-}
-
-// Allocate the key
-static void buffer_key_alloc()
-{
-    pthread_key_create(&buffer_key, buffer_destroy);
-}
-
-// Allocate the thread-specific buffer
-void initThreadLocal(int len, void* val)
-{
-    pthread_once(&buffer_key_once, buffer_key_alloc);
-    void* valbuf = malloc(len);
-    memcpy(valbuf, val, len);
-    pthread_setspecific(buffer_key, valbuf);
-}
-
-// Return the thread-specific buffer
-void* getThreadLocalVal()
-{
-    return (char *) pthread_getspecific(buffer_key);
-}
-
-void clearThreadLocal()
-{
-}
-
-#endif
-
 StringBuffer &expandMask(StringBuffer &buf, const char *mask, unsigned p, unsigned n)
 {
     const char *s=mask;
@@ -2017,8 +1934,9 @@ bool constructMask(StringAttr &attr, const char *fn, unsigned p, unsigned n)
     return false;
 }
 
-bool deduceMask(const char *fn, bool expandN, StringAttr &mask, unsigned &pret, unsigned &nret)
+bool deduceMask(const char *fn, bool expandN, StringAttr &mask, unsigned &pret, unsigned &nret, unsigned &filenameLen)
 {
+    filenameLen = 0;
     const char *e = findExtension(fn);
     if (!e)
         return false;
@@ -2044,6 +1962,7 @@ bool deduceMask(const char *fn, bool expandN, StringAttr &mask, unsigned &pret, 
                         buf.append((size32_t)(e-fn),fn).append("_$P$_of_$N$");
                     if (*s=='.')
                         buf.append(s);
+                    filenameLen = (e-1)-fn;
                     mask.set(buf);
                     return true;
                 }
@@ -2062,130 +1981,6 @@ bool deduceMask(const char *fn, bool expandN, StringAttr &mask, unsigned &pret, 
 }
 
 //==============================================================
-#ifdef _WIN32
-
-
-class CWindowsAuthenticatedUser: implements IAuthenticatedUser, public CInterface
-{
-    StringAttr name;
-    HANDLE usertoken;
-public:
-    IMPLEMENT_IINTERFACE;
-    CWindowsAuthenticatedUser()
-    {
-        usertoken = (HANDLE)-1;
-    }
-    ~CWindowsAuthenticatedUser()
-    {
-        if (usertoken != (HANDLE)-1)
-            CloseHandle(usertoken);
-    }
-    bool login(const char *user, const char *passwd)
-    {
-        name.clear();
-        if (usertoken != (HANDLE)-1)
-            CloseHandle(usertoken);
-        StringBuffer domain("");
-        const char *ut = strchr(user,'\\');
-        if (ut) {
-            domain.clear().append((size32_t)(ut-user),user);
-            user = ut+1;
-        }
-        BOOL res = LogonUser((LPTSTR)user,(LPTSTR)(domain.length()==0?NULL:domain.str()),(LPTSTR)passwd,LOGON32_LOGON_NETWORK,LOGON32_PROVIDER_DEFAULT,&usertoken);
-        if (res==0)
-            return false;
-        name.set(user);
-        return true;
-    }
-    void impersonate()
-    {
-        if (!ImpersonateLoggedOnUser(usertoken))
-            throw makeOsException(GetLastError());
-    }
-
-    void revert()
-    {
-        RevertToSelf();
-    }
-
-    const char *username()
-    {
-        return name.get();
-    }
-};
-
-IAuthenticatedUser *createAuthenticatedUser() { return new CWindowsAuthenticatedUser; }
-
-#elif defined(__linux__)
-
-class CLinuxAuthenticatedUser: implements IAuthenticatedUser, public CInterface
-{
-    StringAttr name;
-    uid_t uid;
-    gid_t gid;
-    uid_t saveuid;
-    gid_t savegid;
-
-public:
-    IMPLEMENT_IINTERFACE;
-    bool login(const char *user, const char *passwd)
-    {
-        name.clear();
-        const char *ut = strchr(user,'\\');
-        if (ut)
-            user = ut+1; // remove windows domain
-        struct passwd *pw;
-        char *epasswd;
-        if ((pw = getpwnam(user)) == NULL)
-            return false;
-        struct spwd *spwd = getspnam(user);
-        if (spwd)
-            epasswd = spwd->sp_pwdp;
-        else
-            epasswd = pw->pw_passwd;
-        if (!epasswd||!*epasswd)
-            return false;
-        if (strcmp(crypt(passwd,epasswd),epasswd)!=0)
-            return false;
-        uid = pw->pw_uid;
-        gid = pw->pw_gid;
-        name.set(pw->pw_name);
-        return true;
-    }
-    void impersonate()
-    {
-        saveuid = geteuid();
-        savegid = getegid();
-        if (setegid(gid) == -1)
-            throw makeOsException(errno, "Failed to set effective group id");
-        if (seteuid(uid) == -1)
-            throw makeOsException(errno, "Failed to set effective user id");
-    }
-
-    void revert()
-    {
-        if (seteuid(saveuid) == -1)
-            throw makeOsException(errno, "Failed to restore effective group id");
-        if (setegid(savegid) == -1)
-            throw makeOsException(errno, "Failed to restore effective user id");
-    }
-
-    const char *username()
-    {
-        return name.get();
-    }
-
-};
-
-
-
-IAuthenticatedUser *createAuthenticatedUser() { return new CLinuxAuthenticatedUser; }
-#elif defined(__FreeBSD__) || defined (__APPLE__)
-
-IAuthenticatedUser *createAuthenticatedUser() { UNIMPLEMENTED; }
-
-#endif
-
 
 extern jlib_decl void serializeAtom(MemoryBuffer & target, IAtom * name)
 {
@@ -2759,12 +2554,12 @@ StringBuffer &getFileAccessUrl(StringBuffer &out)
     return out;
 }
 
-
-#ifdef _CONTAINERIZED
 bool getDefaultPlane(StringBuffer &ret, const char * componentOption, const char * category)
 {
+    if (!isContainerized())
+        throwUnexpectedX("getDefaultPlane() called from non-container system");
     // If the plane is specified for the component, then use that
-    if (getComponentConfigSP()->getProp(componentOption, ret))
+    if (!isEmptyString(componentOption) && getComponentConfigSP()->getProp(componentOption, ret))
         return true;
 
     //Otherwise check what the default plane for data storage is configured to be
@@ -2780,8 +2575,11 @@ bool getDefaultPlane(StringBuffer &ret, const char * componentOption, const char
     return false;
 }
 
+#ifdef _CONTAINERIZED
 static bool getDefaultPlaneDirectory(StringBuffer &ret, const char * componentOption, const char * category)
 {
+    if (!isContainerized())
+        throwUnexpectedX("getDefaultPlaneDirectory() called from non-container system");
     StringBuffer planeName;
     if (!getDefaultPlane(planeName, componentOption, category))
         return false;
@@ -3283,6 +3081,28 @@ jlib_decl IFile *createUniqueTempDirectory()
     return createIFile(dir);
 }
 
+jlib_decl StringBuffer &getSystemTempDir(StringBuffer &dir)
+{
+#ifdef _WIN32
+    char path[_MAX_PATH+1];
+    if(GetTempPath(sizeof(path),path))
+        dir.append(path);
+    else
+    {
+        dir.append(getenv("TEMP"));
+        if (!dir.length())
+            dir.append(getenv("TMP"));
+        if (!dir.length())
+            dir.append(".");
+    }
+#else
+    dir.append(getenv("TMPDIR"));
+    if (!dir.length())
+        dir.append("/tmp");
+#endif
+    return dir;
+}
+
 const char *getEnumText(int value, const EnumMapping *map)
 {
     while (map->str)
@@ -3419,6 +3239,7 @@ void jlib_decl atomicWriteFile(const char *fileName, const char *output)
         if (!ifileio)
             throw MakeStringException(0, "atomicWriteFile: could not create output file %s", newFileName.str());
         ifileio->write(0, strlen(output), output);
+        ifileio->close();
     }
 #else
     VStringBuffer newFileName("%s.XXXXXX", fileName);
@@ -3428,10 +3249,11 @@ void jlib_decl atomicWriteFile(const char *fileName, const char *output)
     Owned<IFile> newFile = createIFile(newFileName);
     Owned<IFile> file = createIFile(fileName);
     {
-        OwnedIFileIO ifileio = createIFileIO(fh, IFOwrite);
+        OwnedIFileIO ifileio = createIFileIO(file, fh, IFOwrite);
         if (!ifileio)
             throw MakeStringException(0, "atomicWriteFile: could not create output file %s", newFileName.str());
         ifileio->write(0, strlen(output), output);
+        ifileio->close();
     }
 #endif
     if (file->exists())
@@ -3591,4 +3413,34 @@ extern jlib_decl void getResourceFromJfrog(StringBuffer &localPath, IPropertyTre
         if (!strieq(calculated, md5))
             throw makeStringExceptionV(0, "MD5 mismatch on file %s in manifest", filename.str());
     }
+}
+
+void hold(const char *msg)
+{
+    WARNLOG("Holding: %s", msg);
+    bool held = true;
+    while (held)
+    {
+        MilliSleep(5000);
+    }
+    WARNLOG("Released: %s", msg);
+}
+
+
+
+unsigned readDigits(char const * & str, unsigned numDigits, bool throwOnFailure)
+{
+    unsigned ret = 0;
+    while (numDigits--)
+    {
+        char c = *str++;
+        if (!isdigit(c))
+        {
+            if (throwOnFailure)
+                throw makeStringExceptionV(-1, "Invalid format (readDigits): %s", str);
+            return 0;
+        }
+        ret  = ret * 10 + (c - '0');
+    }
+    return ret;
 }

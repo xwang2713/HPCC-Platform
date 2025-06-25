@@ -71,6 +71,10 @@ bool Cws_logaccessEx::onGetLogAccessInfo(IEspContext &context, IEspGetLogAccessI
                                 WARNLOG("Invalid col type found in logaccess logmap config");
                             }
                         }
+                        else
+                        {
+                            espLogColumn->setColumnType("string");
+                        }
                         logColumns.append(*espLogColumn.getClear());
                     }
                     else
@@ -164,7 +168,14 @@ ILogAccessFilter * buildLogFilterByFields(CLogAccessType searchByCategory, const
         case CLogAccessType_BySourceNode:
         {
             return getHostLogAccessFilter(searchByValue);
-            break;
+        }
+        case CLogAccessType_ByTraceID:
+        {
+            return getTraceIDLogAccessFilter(searchByValue);
+        }
+        case CLogAccessType_BySpanID:
+        {
+            return getSpanIDLogAccessFilter(searchByValue);
         }
         case CLogAccessType_ByFieldName:
         {
@@ -197,10 +208,10 @@ ILogAccessFilter * buildBinaryLogFilter(IConstBinaryLogFilter * binaryfilter)
     if (!binaryfilter)
         return nullptr;
     
-    ILogAccessFilter * leftFilter = nullptr;
+    Owned<ILogAccessFilter> leftFilter;
     if (binaryfilter->getLeftBinaryFilter().ordinality() == 0)
     {
-        leftFilter = buildLogFilter(&binaryfilter->getLeftFilter());
+        leftFilter.setown(buildLogFilter(&binaryfilter->getLeftFilter()));
     }
     else
     {
@@ -210,7 +221,7 @@ ILogAccessFilter * buildBinaryLogFilter(IConstBinaryLogFilter * binaryfilter)
         if (!isLogFilterEmpty(&binaryfilter->getLeftFilter()))
             throw makeStringException(-1, "WsLogAccess: Cannot submit leftFilter and leftBinaryFilter!");
 
-        leftFilter = buildBinaryLogFilter(&binaryfilter->getLeftBinaryFilter().item(0));
+        leftFilter.setown(buildBinaryLogFilter(&binaryfilter->getLeftBinaryFilter().item(0)));
     }
 
     if (!leftFilter)
@@ -222,14 +233,14 @@ ILogAccessFilter * buildBinaryLogFilter(IConstBinaryLogFilter * binaryfilter)
     case LogAccessFilterOperator_Undefined: //no operator found
         //if (rightFilter != nullptr)
         //     WARNLOG("right FILTER ENCOUNTERED but no valid operator");
-        return leftFilter;
+        return leftFilter.getClear();
     case CLogAccessFilterOperator_AND:
     case CLogAccessFilterOperator_OR:
     {
-        ILogAccessFilter * rightFilter = nullptr;
+        Owned<ILogAccessFilter> rightFilter;
         if (binaryfilter->getRightBinaryFilter().ordinality() == 0)
         {
-            rightFilter = buildLogFilter(&binaryfilter->getRightFilter());
+            rightFilter.setown(buildLogFilter(&binaryfilter->getRightFilter()));
         }
         else
         {
@@ -239,13 +250,13 @@ ILogAccessFilter * buildBinaryLogFilter(IConstBinaryLogFilter * binaryfilter)
             if (!isLogFilterEmpty(&binaryfilter->getRightFilter()))
                 throw makeStringException(-1, "WsLogAccess: Cannot submit rightFilter and rightBinaryFilter!");
 
-            rightFilter = buildBinaryLogFilter(&binaryfilter->getRightBinaryFilter().item(0));
+            rightFilter.setown(buildBinaryLogFilter(&binaryfilter->getRightBinaryFilter().item(0)));
         }
 
         if (!rightFilter)
             throw makeStringExceptionV(-1, "WsLogAccess: Empty RIGHT filter encountered");
 
-        return getBinaryLogAccessFilterOwn(leftFilter, rightFilter, cLogAccessFilterOperator2LogAccessFilterType(binaryfilter->getOperator()));
+        return getBinaryLogAccessFilter(leftFilter, rightFilter, cLogAccessFilterOperator2LogAccessFilterType(binaryfilter->getOperator()));
     }
 
     default:
@@ -343,6 +354,12 @@ bool Cws_logaccessEx::onGetLogs(IEspContext &context, IEspGetLogsRequest &req, I
             case CSortColumType_BySourceNode:
                 mappedField = LOGACCESS_MAPPEDFIELD_host;
                 break;
+            case CSortColumType_ByTraceID:
+                mappedField = LOGACCESS_MAPPEDFIELD_traceid;
+                break;
+            case CSortColumType_BySpanID:
+                mappedField = LOGACCESS_MAPPEDFIELD_spanid;
+                break;
             case CSortColumType_ByFieldName:
                 if (isEmptyString(condition.getColumnName()))
                     throw makeStringExceptionV(-1, "WsLogAccess: SortByFieldName option requires ColumnName!");
@@ -365,6 +382,69 @@ bool Cws_logaccessEx::onGetLogs(IEspContext &context, IEspGetLogsRequest &req, I
     }
 
     resp.setLogLines(logcontent.str());
+
+    return true;
+}
+
+bool Cws_logaccessEx::onGetHealthReport(IEspContext &context, IEspGetHealthReportRequest &req, IEspGetHealthReportResponse &resp)
+{
+    double version = context.getClientVersion();
+
+    IEspLogAccessStatus * status = createLogAccessStatus("","");
+
+    StringBuffer report;
+    LogAccessHealthReportDetails reportDetails;
+    LogAccessHealthReportOptions options;
+    options.IncludeConfiguration = req.getIncludeConfiguration();
+    options.IncludeDebugReport = req.getIncludeDebugReport();
+    options.IncludeSampleQuery = req.getIncludeSampleQuery();
+
+    StringArray messages;
+    StringBuffer code;
+    if (!queryRemoteLogAccessor())
+    {
+        messages.append("Configuration Error - LogAccess plugin not available, review logAccess configuration!");
+        code.set("Fail");
+    }
+    else
+    {
+        IEspLogAccessDebugReport * debugReport = createLogAccessDebugReport();
+        queryRemoteLogAccessor()->healthReport(options, reportDetails);
+        code.set(LogAccessHealthStatusToString(reportDetails.status.getCode()));
+
+        auto messagesArray = reportDetails.status.queryMessages();
+        for (auto & message: messagesArray)
+        {
+            messages.append(message.c_str());
+        }
+
+        if (options.IncludeConfiguration)
+        {
+            resp.setConfiguration(reportDetails.Configuration.str());
+            DBGLOG("WsLogAccessHealth: configuration: %s", reportDetails.Configuration.str());
+        }
+
+        if (options.IncludeSampleQuery)
+        {
+            debugReport->setSampleQueryReport(reportDetails.DebugReport.SampleQueryReport.str());
+        }
+
+        if (options.IncludeDebugReport)
+        {
+            debugReport->setPluginDebugReport(reportDetails.DebugReport.PluginDebugReport.str());
+            debugReport->setServerDebugReport(reportDetails.DebugReport.ServerDebugReport.str());
+        }
+
+        resp.setDebugReport(*debugReport);
+    }
+
+    status->setCode(code.str());
+
+    if(version > 1.07)
+        status->setMessageArray(messages);
+    else // prior to 1.08, the messages field was incorrectly declared as str code type
+        status->setMessages(messages.length() > 0 ? messages.item(0) : "");
+    resp.setStatus(*status);
 
     return true;
 }

@@ -115,7 +115,7 @@ public:
     const IPropertyTree * getSecureConfig()
     {
         //Later: return a synced tree...
-        return createSecureSocketConfig(queryCertificate(), queryPrivateKey(), queryPassPhrase());
+        return createSecureSocketConfig(queryCertificate(), queryPrivateKey(), queryPassPhrase(), false);
     }
 
 protected:
@@ -1029,7 +1029,7 @@ CRemoteBase::CRemoteBase(const SocketEndpoint &_ep, DAFSConnectCfg _connectMetho
 }
 
 CRemoteBase::CRemoteBase(const SocketEndpoint &_ep, const char *_storageSecret, const char * _filename)
-    : ep(_ep), storageSecret(_storageSecret), filename(_filename)
+    : filename(_filename), ep(_ep), storageSecret(_storageSecret)
 {
 }
 
@@ -1239,13 +1239,13 @@ ISocket *connectDafs(SocketEndpoint &ep, unsigned timeoutms, const IPropertyTree
             {
                 if (e->errorCode() == JSOCKERR_connection_failed)
                 {
-                    e->Release();
                     if (ep.port == securitySettings.queryDaFileSrvSSLPort())
                         ep.port = securitySettings.queryDaFileSrvPort();
                     else
                         ep.port = securitySettings.queryDaFileSrvSSLPort();
                     if (!conAttempts)
                         throw;
+                    e->Release();
                 }
                 else
                     throw;
@@ -1265,13 +1265,11 @@ ISocket *connectDafs(SocketEndpoint &ep, unsigned timeoutms, const IPropertyTree
                         if (e->errorCode() == DAFSERR_connection_failed)
                         {
                             // worth logging to help identify any ssl config issues ...
-                            StringBuffer errmsg;
-                            e->errorMessage(errmsg);
-                            WARNLOG("%s", errmsg.str());
-                            e->Release();
+                            IWARNLOG(e, "connectDafs");
                             ep.port = securitySettings.queryDaFileSrvPort();
                             if (!conAttempts)
                                 throw;
+                            e->Release();
                         }
                         else
                             throw;

@@ -26,9 +26,9 @@
 
 #include "anacommon.hpp"
 
-void WUANALYSIS_API analyseWorkunit(IWorkUnit * wu, IPropertyTree *options, double costPerMs);
-void WUANALYSIS_API analyseAndPrintIssues(IConstWorkUnit * wu, double costPerMs, bool updatewu);
-
+void WUANALYSIS_API analyseWorkunit(IConstWorkUnit &workunit, const char *optGraph, IPropertyTree *options, double costPerHour);
+void WUANALYSIS_API analyseAndPrintIssues(IConstWorkUnit * wu, const char *optGraph, double costPerHour, bool updatewu);
+void WUANALYSIS_API runWorkunitAnalyser(IConstWorkUnit &workunit, IPropertyTree *cfg, const char * optGraph, bool inEclAgent, double costPerHour);
 //---------------------------------------------------------------------------------------------------------------------
 
 class WuScope;
@@ -131,7 +131,7 @@ class WorkunitRuleAnalyser;
 class WorkunitStatsAnalyser;
 
 using ScopeVector = std::vector<WuScope *>;
-class WuScope : public CInterface, implements IWuEdge, implements IWuActivity
+class WuScope : public CInterface, implements IWuEdge, implements IWuActivity, implements IWuSubGraph
 {
     friend class WorkunitStatsAnalyser;
     friend class WaActivityPath;

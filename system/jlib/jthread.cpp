@@ -43,6 +43,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #endif
+#include <algorithm>
 
 #define LINUX_STACKSIZE_CAP (0x200000)
 
@@ -995,6 +996,7 @@ class CThreadPool: public CThreadPoolBase, implements IThreadPool, public CInter
     unsigned stacksize;
     unsigned timeoutOnRelease;
     unsigned traceStartDelayPeriod = 0;
+    int niceValue = 0;
     unsigned startsInPeriod = 0;
     cycle_t startDelayInPeriod = 0;
     CCycleTimer overAllTimer;
@@ -1114,6 +1116,8 @@ public:
         CPooledThreadWrapper &ret = *new CPooledThreadWrapper(*this,newid,factory->createNew());
         if (stacksize)
             ret.setStackSize(stacksize);
+        if (niceValue)
+            ret.setNice(niceValue);
         ret.start(false);
         threadwrappers.append(ret);
         return ret;
@@ -1280,6 +1284,10 @@ public:
     void setStartDelayTracing(unsigned secs)
     {
         traceStartDelayPeriod = secs;
+    }
+    void setNiceValue(int value)
+    {
+        niceValue = value;
     }
     bool waitAvailable(unsigned timeout)
     {
@@ -2765,6 +2773,15 @@ TraceFlags queryTraceFlags()
 TraceFlags queryDefaultTraceFlags()
 {
     return defaultTraceFlags;
+}
+
+TraceFlags combineTraceFlags(TraceFlags existing, TraceFlags request)
+{
+    //Choose the highest level of the two
+    TraceFlags newLevel = std::max(existing & TraceFlags::LevelMask, request & TraceFlags::LevelMask);
+    //Use the union of the different flags
+    TraceFlags newFlags = (existing | request) & ~TraceFlags::LevelMask;
+    return newLevel | newFlags;
 }
 
 //---------------------------

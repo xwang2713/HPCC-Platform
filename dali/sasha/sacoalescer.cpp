@@ -118,7 +118,7 @@ void coalesceDatastore(IPropertyTree *coalesceProps, bool force)
 
             StringBuffer detachName;
             iStoreHelper->getDetachedDeltaName(detachName);
-            StringBuffer detachPath(dataPath);
+            StringBuffer detachPath(std::move(dataPath));
             detachPath.append(detachName);
             OwnedIFile detachedIFile = createIFile(detachPath.str());
             if (detachedIFile->exists() || iStoreHelper->detachCurrentDelta())
@@ -167,7 +167,7 @@ void coalesceDatastore(IPropertyTree *coalesceProps, bool force)
 
 class CSashaSDSCoalescingServer: public ISashaServer, public Thread
 {
-    bool stopped;
+    std::atomic<bool> stopped;
     Semaphore stopsem;
     CriticalSection suspendResumeCrit;
     Linked<IPropertyTree> coalesceProps;
@@ -175,9 +175,9 @@ public:
     IMPLEMENT_IINTERFACE_USING(Thread);
 
     CSashaSDSCoalescingServer(IPropertyTree *_config)
-        : coalesceProps(_config), Thread("CSashaSDSCoalescingServer")
+        : Thread("CSashaSDSCoalescingServer"), coalesceProps(_config)
     {
-        stopped = false;
+        stopped.store(false);
     }
 
     ~CSashaSDSCoalescingServer()
@@ -187,7 +187,7 @@ public:
     void start()
     {
         CriticalBlock b(suspendResumeCrit);
-        stopped = false;
+        stopped.store(false);
         Thread::start(false);
     }
 
@@ -198,8 +198,8 @@ public:
     void stop()
     {
         CriticalBlock b(suspendResumeCrit);
-        if (!stopped) {
-            stopped = true;
+        if (!stopped.load()) {
+            stopped.store(true);
             stopsem.signal();
         }
         join();
@@ -208,9 +208,9 @@ public:
     void suspend() // stops and resets coalescer (free up memory)
     {
         CriticalBlock b(suspendResumeCrit);
-        if (stopped) return;
+        if (stopped.load()) return;
         PROGLOG("COALESCER: suspend");
-        stopped = true;
+        stopped.store(true);
         stopsem.signal();
         join();
     }
@@ -218,9 +218,9 @@ public:
     void resume()
     {
         CriticalBlock b(suspendResumeCrit);
-        if (!stopped) return;
+        if (!stopped.load()) return;
         PROGLOG("COALESCER: resume");
-        stopped = false;
+        stopped.store(false);
         Thread::start(false);
         ready();
     }
@@ -239,10 +239,10 @@ public:
             CSashaSchedule schedule;
             schedule.init(coalesceProps,DEFAULT_INTERVAL,DEFAULT_INTERVAL/2);
             stopsem.wait(1000*60*60*DEFAULT_INTERVAL/2); // wait a bit til dali has started
-            while (!stopped)
+            while (!stopped.load())
             {
                 stopsem.wait(1000*60);
-                if (!stopped && schedule.ready())  {
+                if (!stopped.load() && schedule.ready())  {
                     CSuspendAutoStop suspendstop;
                     DWORD runcode;
                     HANDLE h;
@@ -263,13 +263,13 @@ public:
                         PROGLOG("COALESCE: started pid = %d",(int)h);
                         while (!wait_program(h,runcode,false)) {
                             stopsem.wait(1000*60);
-                            if (stopped) {
+                            if (stopped.load()) {
                                 interrupt_program(h, false);
                                 break;
                             }
                             PROGLOG("COALESCE running");
                         }
-                        if (stopped)
+                        if (stopped.load())
                             PROGLOG("COALESCE stopped");
                         else
                             PROGLOG("COALESCE returned %d",(int)runcode);
@@ -278,7 +278,7 @@ public:
             }
 
         }
-        while (!stopped);
+        while (!stopped.load());
         return 0;
     }
 } *sashaSDSCoalescingServer = NULL;

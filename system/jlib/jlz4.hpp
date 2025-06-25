@@ -24,14 +24,7 @@
 
 extern jlib_decl ICompressor *createLZ4Compressor(const char * options, bool hc=false);
 extern jlib_decl IExpander   *createLZ4Expander();
-
-extern jlib_decl void LZ4CompressToBuffer(MemoryBuffer & out, size32_t len, const void * src);
-extern jlib_decl void LZ4DecompressToBuffer(MemoryBuffer & out, const void * src);
-extern jlib_decl void LZ4DecompressToBuffer(MemoryBuffer & out, MemoryBuffer & in);
-extern jlib_decl void LZ4DecompressToAttr(MemoryAttr & out, const void * src);
-extern jlib_decl void LZ4DecompressToBuffer(MemoryAttr & out, MemoryBuffer & in);
-
-extern jlib_decl IFileIOStream *createLZ4StreamRead(IFileIO *base);
-extern jlib_decl IFileIOStream *createLZ4StreamWrite(IFileIO *base);
+extern jlib_decl ICompressor *createLZ4StreamCompressor(const char * options, bool hc=false);
+extern jlib_decl IExpander   *createLZ4StreamExpander();
 
 #endif

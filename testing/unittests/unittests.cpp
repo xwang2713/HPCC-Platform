@@ -56,6 +56,7 @@ void usage()
     "    -e  --exact      Match subsequent test names exactly\n"
     "    -h  --help       Display this help text\n"
     "    -l  --list       List matching tests but do not execute them\n"
+    "    -u  --unload     Unload dynamically-loaded dlls before termination (may crash on some systems)\n"
     "    -x  --exclude    Exclude subsequent test names\n"
     "\n");
 }
@@ -95,7 +96,7 @@ LoadedObject *loadDll(const char *thisDll)
     return NULL;
 }
 
-void loadDlls(IArray &objects, const char * libDirectory)
+void loadDlls(IArray &objects, const char * libDirectory, bool optUnloadDlls)
 {
     const char * mask = "*" SharedObjectExtension;
     Owned<IFile> libDir = createIFile(libDirectory);
@@ -108,7 +109,7 @@ void loadDlls(IArray &objects, const char * libDirectory)
                 if (!strstr(thisDll, "py3embed"))  // ... best to load neither...
                 {
                     LoadedObject *loaded = loadDll(thisDll);
-                    if (loaded)
+                    if (loaded && optUnloadDlls)
                         objects.append(*loaded);
                 }
     }
@@ -118,6 +119,20 @@ static constexpr const char * defaultYaml = R"!!(
 version: "1.0"
 unittests:
   name: unittests
+global:
+  storage:
+    planes:
+    - name: mystorageplane
+      storageClass: ""
+      storageSize: 1Gi
+      prefix: "/var/lib/HPCCSystems/hpcc-data"
+      category: data
+    - name: mystripedplane
+      storageClass: ""
+      storageSize: 1Gi
+      prefix: "/var/lib/HPCCSystems/hpcc-data-two"
+      numDevices: 111
+      category: data
 )!!";
 
 int main(int argc, const char *argv[])
@@ -133,8 +148,9 @@ int main(int argc, const char *argv[])
     bool verbose = false;
     bool list = false;
     bool useDefaultLocations = true;
+    bool unloadDlls = false;
 
-    //NB: not actually used for now, but required initialization for anything that may call getGlobalConfig*() or getComponentConfig*()
+    //NB: required initialization for anything that may call getGlobalConfig*() or getComponentConfig*()
     Owned<IPropertyTree> globals = loadConfiguration(defaultYaml, argv, "unittests", nullptr, nullptr, nullptr, nullptr, false);
 
     for (int argNo = 1; argNo < argc; argNo++)
@@ -152,6 +168,8 @@ int main(int argc, const char *argv[])
                 includeAll = true;
             else if (streq(arg, "-l") || streq(arg, "--list"))
                 list = true;
+            else if (streq(arg, "-u") || streq(arg, "-unload"))
+                unloadDlls = true;
             else if (streq(arg, "-d") || streq(arg, "--load"))
             {
                 useDefaultLocations = false;
@@ -177,7 +195,7 @@ int main(int argc, const char *argv[])
         }
     }
     if (verbose)
-        queryStderrLogMsgHandler()->setMessageFields(MSGFIELD_time|MSGFIELD_microTime|MSGFIELD_milliTime|MSGFIELD_thread);
+        queryStderrLogMsgHandler()->setMessageFields(MSGFIELD_trace|MSGFIELD_span|MSGFIELD_time|MSGFIELD_microTime|MSGFIELD_milliTime|MSGFIELD_thread);
     else
         removeLog();
 
@@ -186,6 +204,7 @@ int main(int argc, const char *argv[])
         excludeNames.append("*stress*");
         excludeNames.append("*timing*");
         excludeNames.append("*slow*");
+        excludeNames.append("Dali*"); // disabled by default as dali not available when executed by smoketest
     }
 
     if (!includeNames.length())
@@ -220,7 +239,7 @@ int main(int argc, const char *argv[])
                 DBGLOG("Specified library location %s not found", location);
             break;
         case fileBool::foundYes:
-            loadDlls(objects, location);
+            loadDlls(objects, location, unloadDlls);
             break;
         case fileBool::foundNo:
             LoadedObject *loaded = loadDll(location);
@@ -956,7 +975,7 @@ class RelaxedAtomicTimingTest : public CppUnit::TestFixture
         class T : public CThreaded
         {
         public:
-            T(unsigned _count, RelaxedAtomic<int> &_ra, CriticalSection &_lock, unsigned _mode) : CThreaded(""), count(_count), ra(_ra), lock(_lock), mode(_mode) 
+            T(unsigned _count, RelaxedAtomic<int> &_ra, CriticalSection &_lock, unsigned _mode) : CThreaded(""), mode(_mode), count(_count), ra(_ra), lock(_lock)
             {}
             virtual int run() override
             {

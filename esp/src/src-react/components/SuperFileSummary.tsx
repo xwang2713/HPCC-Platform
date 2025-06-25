@@ -25,7 +25,7 @@ export const SuperFileSummary: React.FunctionComponent<SuperFileSummaryProps> = 
     logicalFile
 }) => {
 
-    const [file, isProtected, , refresh] = useFile(cluster, logicalFile);
+    const { file, isProtected, refreshData } = useFile(cluster, logicalFile);
     const [description, setDescription] = React.useState("");
     const [_protected, setProtected] = React.useState(false);
     const [restricted, setRestricted] = React.useState(false);
@@ -33,9 +33,9 @@ export const SuperFileSummary: React.FunctionComponent<SuperFileSummaryProps> = 
 
     React.useEffect(() => {
         setDescription(file?.Description || "");
-        setProtected(file?.ProtectList?.DFUFileProtect?.length > 0 || false);
+        setProtected(isProtected);
         setRestricted(file?.IsRestricted || false);
-    }, [file]);
+    }, [file, isProtected]);
 
     const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
         title: nlsHPCC.Delete,
@@ -65,9 +65,7 @@ export const SuperFileSummary: React.FunctionComponent<SuperFileSummaryProps> = 
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => {
-                refresh();
-            }
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -92,7 +90,7 @@ export const SuperFileSummary: React.FunctionComponent<SuperFileSummaryProps> = 
             key: "copyFile", text: nlsHPCC.Copy, disabled: !file,
             onClick: () => setShowCopyFile(true)
         }
-    ], [_protected, canSave, description, file, refresh, restricted, setShowDeleteConfirm]);
+    ], [_protected, canSave, description, file, refreshData, restricted, setShowDeleteConfirm]);
 
     const protectedImage = _protected ? Utility.getImageURL("locked.png") : Utility.getImageURL("unlocked.png");
     const compressedImage = file?.IsCompressed ? Utility.getImageURL("compressed.png") : "";
@@ -124,6 +122,9 @@ export const SuperFileSummary: React.FunctionComponent<SuperFileSummaryProps> = 
                         break;
                     case "isProtected":
                         setProtected(value);
+                        file?.update({
+                            Protect: value ? WsDfu.DFUChangeProtection.Protect : WsDfu.DFUChangeProtection.Unprotect,
+                        }).catch(err => logger.error(err));
                         break;
                 }
             }} />

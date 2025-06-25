@@ -26,6 +26,7 @@
 #include "thorport.hpp"
 #include "thbufdef.hpp"
 #include "thexception.hpp"
+#include "thormisc.hpp"
 
 #define NUMINPARALLEL 16
 
@@ -38,7 +39,7 @@ class HashDistributeMasterBase : public CMasterActivity
     mptag_t mptag;
     mptag_t mptag2; // for tag 2
 public:
-    HashDistributeMasterBase(DistributeMode _mode, CMasterGraphElement *info, const StatisticsMapping &actStatsMapping = basicActivityStatistics) 
+    HashDistributeMasterBase(DistributeMode _mode, CMasterGraphElement *info, const StatisticsMapping &actStatsMapping = hashDistribActivityStatistics) 
         : CMasterActivity(info, actStatsMapping), mode(_mode) 
     {
         mptag = TAG_NULL;
@@ -115,7 +116,7 @@ public:
         checkFormatCrc(this, file, helper->getFormatCrc(), nullptr, helper->getFormatCrc(), nullptr, true);
         Owned<IFileDescriptor> fileDesc = file->getFileDescriptor();
         Owned<IPartDescriptor> tlkDesc = fileDesc->getPart(fileDesc->numParts()-1);
-        if (!tlkDesc->queryProperties().hasProp("@kind") || 0 != stricmp("topLevelKey", tlkDesc->queryProperties().queryProp("@kind")))
+        if (!hasTLK(*file, this))
             throw MakeActivityException(this, 0, "Cannot distribute using a non-distributed key: '%s'", scoped.str());
         unsigned location;
         OwnedIFile iFile;

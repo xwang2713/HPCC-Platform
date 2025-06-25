@@ -29,6 +29,7 @@
 #include "dautils.hpp"
 
 #include "daclient.hpp"
+#include "sysinfologger.hpp"
 
 extern bool registerClientProcess(ICommunicator *comm, IGroup *& retcoven,unsigned timeout,DaliClientRole role);
 extern void stopClientProcess();
@@ -105,7 +106,7 @@ void installEnvConfigMonitor()
             // ISDSSubscription impl.
             virtual void notify(SubscriptionId id, const char *xpath, SDSNotifyFlags flags, unsigned valueLen=0, const void *valueData=nullptr) override
             {
-                executeConfigUpdaterCallbacks();
+                refreshConfiguration();
             }
         };
 
@@ -141,13 +142,15 @@ bool initClientProcess(IGroup *servergrp, DaliClientRole role, unsigned mpport, 
     covengrp->Release();
     queryLogMsgManager()->setSession(myProcessSession());
 
+    if (getComponentConfigSP()->getPropBool("logging/@enableGlobalSysLog"))
+        useDaliForOperatorMessages(true);
+
     if (!isContainerized()) // The Environment is bare-metal only
     {
         // auto install environment monitor for server roles
         // causes any config update hooks (installed by installConfigUpdateHook() to trigger on an env. change)
         switch (role)
         {
-            case DCR_ThorMaster:
             case DCR_EclServer:
             case DCR_EclAgent:
             case DCR_SashaServer:
@@ -158,6 +161,9 @@ bool initClientProcess(IGroup *servergrp, DaliClientRole role, unsigned mpport, 
             case DCR_EclScheduler:
             case DCR_EclCCServer:
                 installEnvConfigMonitor();
+                break;
+            // Thor does not monitor because a fixed configuration is serialized to the slaves
+            case DCR_ThorMaster:
             default:
                 break;
         }
@@ -177,6 +183,7 @@ void removeShutdownHook(IDaliClientShutdown &shutdown)
 
 void closedownClientProcess()
 {
+    useDaliForOperatorMessages(false);
     if (!daliClientIsActive)
         return;
     while (shutdownHooks.ordinality())
@@ -260,6 +267,8 @@ void CSDSServerStatus::stop()
 
 void connectLogMsgManagerToDali()
 {
+    if (isContainerized())
+        return; // we do not redirect logging between components in containerized environments (this is used for audit->dali in BM)
     IGroup & servers = queryCoven().queryGroup();
     unsigned parentRank = getRandom() % servers.ordinality();    // PG: Not sure if logging to random parent is best?
     daliClientLoggingParent = &servers.queryNode(parentRank);
@@ -268,6 +277,8 @@ void connectLogMsgManagerToDali()
 
 void disconnectLogMsgManagerFromDali()
 {
+    if (isContainerized())
+        return; // we do not redirect logging between components in containerized environments (this is used for audit->dali in BM)
     disconnectLogMsgManagerFromParentOwn(daliClientLoggingParent);
     daliClientLoggingParent = 0;
 }

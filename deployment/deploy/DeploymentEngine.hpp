@@ -45,8 +45,8 @@ using std::vector;
 struct CInstallFile : public CInterface 
 {
    CInstallFile(const char* method, const char* srcPath, const char* destPath, bool bCacheable=false)
-        : m_method(method), m_srcPath(srcPath), m_destPath(destPath), m_bCacheable(bCacheable), 
-           m_szSrc(0), m_crcSrc(0), m_sizeInitialized(false), m_crcInitialized(false)
+        : m_method(method), m_srcPath(srcPath), m_destPath(destPath),
+           m_szSrc(0), m_crcSrc(0), m_sizeInitialized(false), m_crcInitialized(false), m_bCacheable(bCacheable)
     {
     }
     virtual ~CInstallFile()
@@ -118,7 +118,7 @@ private:
 //define a case insensitive comparator class for std::string to be used for 
 //implementing a case insensitive multimap below
 
-struct iless_string : std::binary_function<string, string, bool> {
+struct iless_string {
 bool operator()(const string& _X, const string& _Y) const
     {return stricmp(_X.c_str(), _Y.c_str()) < 0; }
 };

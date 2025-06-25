@@ -34,15 +34,16 @@
 #include "thgraphmaster.hpp"
 #include "thorport.hpp"
 
-#define DEFAULT_SLAVEDOWNTIMEOUT (60*5)
+#define DEFAULT_WORKERDOWNTIMEOUT (60*5)
 class CMachineStatus
 {
 public:
     SocketEndpoint ep;
     bool alive;
     bool markdead;
-    CMachineStatus(const SocketEndpoint &_ep)
-        : ep(_ep)
+    unsigned workerNum;
+    CMachineStatus(const SocketEndpoint &_ep, unsigned _workerNum)
+        : ep(_ep), workerNum(_workerNum)
     {
         alive = true;
         markdead = false;
@@ -55,7 +56,7 @@ public:
             markdead = false;
             StringBuffer epstr;
             ep.getEndpointHostText(epstr);
-            LOG(MCdebugProgress, "Watchdog : Marking Machine as Up! [%s]", epstr.str());
+            DBGLOG("Watchdog : Marking Machine as Up! [%s]", epstr.str());
         }
     }   
 };
@@ -64,7 +65,7 @@ public:
 CMasterWatchdog::CMasterWatchdog(bool startNow) : threaded("CMasterWatchdogBase")
 {
     stopped = true;
-    watchdogMachineTimeout = globals->getPropInt("@slaveDownTimeout", DEFAULT_SLAVEDOWNTIMEOUT);
+    watchdogMachineTimeout = globals->getPropInt("@slaveDownTimeout", DEFAULT_WORKERDOWNTIMEOUT);
     if (watchdogMachineTimeout <= HEARTBEAT_INTERVAL*10)
         watchdogMachineTimeout = HEARTBEAT_INTERVAL*10;
     watchdogMachineTimeout *= 1000;
@@ -86,7 +87,7 @@ void CMasterWatchdog::start()
 {
     if (stopped)
     {
-        PROGLOG("Starting watchdog");
+        DBGLOG("Starting watchdog");
         stopped = false;
         threaded.init(this, false);
 #ifdef _WIN32
@@ -95,24 +96,24 @@ void CMasterWatchdog::start()
     }
 }
 
-void CMasterWatchdog::addSlave(const SocketEndpoint &slave)
+void CMasterWatchdog::addWorker(const SocketEndpoint &worker, unsigned workerNum)
 {
     synchronized block(mutex);
-    CMachineStatus *mstate=new CMachineStatus(slave);
+    CMachineStatus *mstate=new CMachineStatus(worker, workerNum);
     state.append(mstate);
 }
 
-void CMasterWatchdog::removeSlave(const SocketEndpoint &slave)
+void CMasterWatchdog::removeWorker(const SocketEndpoint &worker)
 {
     synchronized block(mutex);
-    CMachineStatus *ms = findSlave(slave);
+    CMachineStatus *ms = findWorker(worker);
     if (ms) {
         state.zap(ms);
         delete ms;
     }
 }
 
-CMachineStatus *CMasterWatchdog::findSlave(const SocketEndpoint &ep)
+CMachineStatus *CMasterWatchdog::findWorker(const SocketEndpoint &ep)
 {
     ForEachItemInRev(i, state)
     {
@@ -133,13 +134,13 @@ void CMasterWatchdog::stop()
         stopped = true;
     }
 
-    LOG(MCdebugProgress, "Stopping watchdog");
+    DBGLOG("Stopping watchdog");
 #ifdef _WIN32
     threaded.adjustPriority(0); // restore to normal before stopping
 #endif
     stopReading();
     threaded.join();
-    LOG(MCdebugProgress, "Stopped watchdog");
+    DBGLOG("Stopped watchdog");
 }
 
 void CMasterWatchdog::checkMachineStatus()
@@ -153,12 +154,16 @@ void CMasterWatchdog::checkMachineStatus()
             StringBuffer epstr;
             mstate->ep.getEndpointHostText(epstr);
             if (mstate->markdead)
-                abortThor(MakeThorOperatorException(TE_AbortException, "Watchdog has lost contact with Thor slave: %s (Process terminated or node down?)", epstr.str()), TEC_Watchdog);
+            {
+                Owned<IThorException> te = MakeThorOperatorException(TE_AbortException, "Watchdog has lost contact with Thor worker: %s (Process terminated or node down?)", epstr.str());
+                te->setSlave(mstate->workerNum+1);
+                abortThor(te, TEC_Watchdog);
+            }
             else
             {
                 mstate->markdead = true;
-                LOG(MCdebugProgress, "Watchdog : Marking Machine as Down! [%s]", epstr.str());
-                //removeSlave(mstate->ep); // more TBD
+                DBGLOG("Watchdog : Marking Machine as Down! [%s]", epstr.str());
+                //removeWorker(mstate->ep); // more TBD
             }
         }
         else {
@@ -202,7 +207,7 @@ void CMasterWatchdog::stopReading()
 
 void CMasterWatchdog::threadmain()
 {
-    LOG(MCdebugProgress, "Started watchdog");
+    DBGLOG("Started watchdog");
     unsigned lastbeat=msTick();
     unsigned lastcheck=lastbeat;
 
@@ -219,7 +224,7 @@ void CMasterWatchdog::threadmain()
             else if (sz)
             {
                 synchronized block(mutex);
-                CMachineStatus *ms = findSlave(hb.sender);
+                CMachineStatus *ms = findWorker(hb.sender);
                 if (ms)
                 {
                     ms->update(hb);
@@ -234,7 +239,7 @@ void CMasterWatchdog::threadmain()
                 {
                     StringBuffer epstr;
                     hb.sender.getEndpointHostText(epstr);
-                    LOG(MCdebugProgress, "Watchdog : Unknown Machine! [%s]", epstr.str()); //TBD
+                    DBGLOG("Watchdog : Unknown Machine! [%s]", epstr.str()); //TBD
                 }
             }
             unsigned now=msTick();
@@ -261,7 +266,16 @@ void CMasterWatchdog::threadmain()
                 const SocketEndpoint &ep = e->queryEndpoint();
                 StringBuffer epStr;
                 ep.getEndpointHostText(epStr);
-                abortThor(MakeThorOperatorException(TE_AbortException, "Watchdog has lost connectivity with Thor slave: %s (Process terminated or node down?)", epStr.str()), TEC_Watchdog);
+                unsigned worker = NotFound;
+                {
+                    synchronized block(mutex);
+                    CMachineStatus *ms = findWorker(ep);
+                    if (ms)
+                        worker = ms->workerNum;
+                }
+                Owned<IThorException> te = MakeThorOperatorException(TE_AbortException, "Watchdog has lost connectivity with Thor worker %u [%s] (Process terminated or node down?)", worker+1, epStr.str());
+                te->setSlave(worker+1);
+                abortThor(te, TEC_Watchdog);
             }
         }
         catch (IException *e)

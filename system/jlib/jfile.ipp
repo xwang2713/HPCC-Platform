@@ -87,11 +87,10 @@ protected:
     unsigned flags;
 };
 
-
 class jlib_decl CFileIO : implements IFileIO, public CInterface
 {
 public:
-    CFileIO(HANDLE,IFOmode _openmode,IFSHmode _sharemode,IFEflags _extraFlags);
+    CFileIO(IFile * _creator,HANDLE,IFOmode _openmode,IFSHmode _sharemode,IFEflags _extraFlags);
     ~CFileIO();
     IMPLEMENT_IINTERFACE
 
@@ -105,9 +104,16 @@ public:
     virtual unsigned __int64 getStatistic(StatisticKind kind);
 
     HANDLE queryHandle() { return file; } // for debugging
+    const char * queryFilename() const { return creator ? creator->queryFilename() : nullptr; }
+    const char * querySafeFilename() const
+    {
+        const char * name = queryFilename();
+        return name ? name : "<unknown>";
+    }
 
 protected:
     CriticalSection     cs;
+    Linked<IFile>       creator;
     HANDLE              file;
     bool                throwOnError;
     IFSHmode            sharemode;
@@ -219,6 +225,7 @@ public:
     virtual offset_t tell();
     virtual size32_t write(size32_t len, const void * data);
     virtual unsigned __int64 getStatistic(StatisticKind kind) { return io->getStatistic(kind); }
+    virtual void close() override { io->close(); }
 protected:
     Linked<IFileIO>     io;
     offset_t            curOffset;
@@ -238,37 +245,10 @@ public:
     virtual offset_t tell();
     virtual size32_t write(size32_t len, const void * data);
     virtual unsigned __int64 getStatistic(StatisticKind kind) { return stream->getStatistic(kind); }
+    virtual void close() override { stream->close(); }
 protected:
     Linked<IFileIOStream>     stream;
 };
-
-
-class jlib_decl CIOStreamReadWriteSeq : public IWriteSeq, public IReadSeq, public CInterface
-{
-public:
-    IMPLEMENT_IINTERFACE;
-
-    CIOStreamReadWriteSeq(IFileIOStream * _stream, offset_t _offset, size32_t _size);
-
-    virtual void put(const void *src);
-    virtual void putn(const void *src, unsigned n);
-    virtual void flush();
-    virtual size32_t getRecordSize() { return size; }
-    virtual offset_t getPosition();
-
-    virtual bool get(void *dst);
-    virtual unsigned getn(void *dst, unsigned n);
-    virtual void reset();
-    virtual void stop() {} // no action required
-
-private:
-    offset_t offset;
-    size32_t    size;
-    Linked<IFileIOStream> stream;
-};
-
-
-
 
 
 class jlib_decl DirectBufferI : implements IFileIO, public CInterface

@@ -36,10 +36,15 @@ enum CompressionMethod
     COMPRESS_METHOD_LZ4HC,
     COMPRESS_METHOD_RANDROW,
     COMPRESS_METHOD_LZW_LITTLE_ENDIAN,
+    COMPRESS_METHOD_LZ4S,
+    COMPRESS_METHOD_LZ4SHC,
+    COMPRESS_METHOD_LZ4HC3,
+    COMPRESS_METHOD_ZSTDS,
     COMPRESS_METHOD_LAST,
 
 
     COMPRESS_METHOD_AES = 0x80,
+    COMPRESS_METHOD_DEFAULT = 0xFF,
     COMPRESS_METHOD_LZWLEGACY = 1,  // Matches value of boolean 'true' used to indicate LZW little endian compression by legacy compressToBuffer
 };
 
@@ -51,6 +56,8 @@ interface jlib_decl ICompressor : public IInterface
     virtual void   close()=0;
     virtual size32_t write(const void *buf,size32_t len)=0;
     virtual size32_t compressBlock(size32_t destSize, void * dest, size32_t srcSize, const void * src) = 0;
+     // Like compressBlock, but adds no internal header.  If numCompressed is not null, compress as much as will fit
+    virtual size32_t compressDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src, size32_t * numCompressed) = 0;
                                                                             
     virtual void * bufptr()=0;
     virtual size32_t buflen()=0;
@@ -71,6 +78,8 @@ interface jlib_decl IExpander : public IInterface
     virtual size32_t buflen()=0;
     virtual size32_t expandFirst(MemoryBuffer & target, const void * src) = 0;
     virtual size32_t expandNext(MemoryBuffer & target) = 0;
+    virtual size32_t expandDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src) = 0;
+    virtual bool supportsBlockDecompression() const = 0;
 };
 
 
@@ -93,11 +102,13 @@ public:
     //Provide default implementations
     virtual size32_t expandFirst(MemoryBuffer & target, const void * src) override;
     virtual size32_t expandNext(MemoryBuffer & target) override;
+    virtual size32_t expandDirect(size32_t destSize, void * dest, size32_t srcSize, const void * src) override;
+    virtual bool supportsBlockDecompression() const override;
 };
 
 
-extern jlib_decl ICompressor *createLZWCompressor(bool supportbigendian=false); // bigendiansupport required for cross platform with solaris
-extern jlib_decl IExpander *createLZWExpander(bool supportbigendian=false);
+extern jlib_decl ICompressor *createLZWCompressor(bool supportbigendian); // bigendiansupport required for cross platform with solaris
+extern jlib_decl IExpander *createLZWExpander(bool supportbigendian);
 
 #define RLEMAXOVERHEAD 2
 extern jlib_decl size32_t RLECompress(void *dst,const void *src,size32_t size);  // maximum will write is 2+size
@@ -130,8 +141,6 @@ interface ICompressedFileIO: extends IFileIO
     virtual unsigned dataCRC()=0;                   // CRC for data area (note total file CRC equals COMPRESSEDFILECRC)
     virtual size32_t recordSize()=0;                // 0 for lzw/fastlz, otherwise record length for row difference compression
     virtual size32_t blockSize()=0;                 // block size used
-    virtual void setBlockSize(size32_t size)=0;     // only callable before any writes
-    virtual bool readMode()=0;                      // true if created using createCompressedFileReader
     virtual unsigned method()=0;
 };
 
@@ -139,8 +148,8 @@ extern jlib_decl bool isCompressedFile(const char *filename);
 extern jlib_decl bool isCompressedFile(IFile *file);
 extern jlib_decl ICompressedFileIO *createCompressedFileReader(IFile *file,IExpander *expander=NULL, bool memorymapped=false, IFEflags extraFlags=IFEnone);
 extern jlib_decl ICompressedFileIO *createCompressedFileReader(IFileIO *fileio,IExpander *expander=NULL);
-extern jlib_decl ICompressedFileIO *createCompressedFileWriter(IFile *file,size32_t recordsize,bool append=false,bool setcrc=true,ICompressor *compressor=NULL, unsigned compMethod=COMPRESS_METHOD_LZ4, IFEflags extraFlags=IFEnone);
-extern jlib_decl ICompressedFileIO *createCompressedFileWriter(IFileIO *fileio, bool append, size32_t recordsize,bool setcrc=true,ICompressor *compressor=NULL, unsigned compMethod=COMPRESS_METHOD_LZ4);
+extern jlib_decl ICompressedFileIO *createCompressedFileWriter(IFileIO *fileio, bool append, size32_t recordsize,bool setcrc=true,ICompressor *compressor=NULL, unsigned compMethod=COMPRESS_METHOD_LZ4, size32_t compressorBlockSize=0, size32_t bufferSize=(size32_t)-1);
+extern jlib_decl ICompressedFileIO *createCompressedFileWriter(IFile *file,size32_t recordsize,bool append,bool setcrc,ICompressor *compressor, unsigned compMethod, size32_t compressorBlockSize, size32_t bufferSize, IFEflags extraFlags);
 
 #define COMPRESSEDFILECRC (~0U)
 

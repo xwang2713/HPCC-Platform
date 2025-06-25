@@ -68,12 +68,10 @@ class PackageSequencer : public CInterface, implements IInterface
     unsigned headerSize;
     const RoxiePacketHeader *header;
     unsigned maxSeqSeen = 0;
-    unsigned numPackets = 0;
-    bool outOfBand = false;
 #ifdef _DEBUG
-    unsigned scans = 0;
-    unsigned overscans = 0;
+    unsigned numPackets = 0;
 #endif
+    bool outOfBand = false;
 
     MemoryBuffer metadata;
     InterruptableSemaphore dataAvailable; // MORE - need to work out when to interrupt it!
@@ -223,7 +221,7 @@ public:
                 unsigned pktseq = fingerHdr->pktSeq & UDP_PACKET_SEQUENCE_MASK;
                 if (pktseq == prevseq+1)
                 {
-                    unsigned packetDataSize = fingerHdr->length - fingerHdr->metalength - sizeof(UdpPacketHeader);
+                    [[maybe_unused]] unsigned packetDataSize = fingerHdr->length - fingerHdr->metalength - sizeof(UdpPacketHeader);
                     assert(packetDataSize < roxiemem::DATA_ALIGNMENT_SIZE);
                     if (pktseq == 0)
                     {
@@ -474,7 +472,7 @@ PUID GETPUID(DataBuffer *dataBuff)
     return (((PUID) ip4) << 32) | (PUID) pktHdr->msgSeq;
 }
 
-CMessageCollator::CMessageCollator(IRowManager *_rowMgr, unsigned _ruid, bool _encrypted) : rowMgr(_rowMgr), ruid(_ruid), encrypted(_encrypted)
+CMessageCollator::CMessageCollator(IRowManager *_rowMgr, unsigned _ruid, bool _encrypted) : rowMgr(_rowMgr), encrypted(_encrypted), ruid(_ruid)
 {
     memLimitExceeded = false;
     activity = false;

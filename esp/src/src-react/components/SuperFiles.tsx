@@ -1,8 +1,9 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link, ScrollablePane, Sticky } from "@fluentui/react";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Link } from "@fluentui/react";
 import nlsHPCC from "src/nlsHPCC";
 import { QuerySortItem } from "src/store/Store";
 import { useFile } from "../hooks/file";
+import { HolyGrail } from "../layouts/HolyGrail";
 import { FluentGrid, useCopyButtons, useFluentStoreState, FluentColumns } from "./controls/Grid";
 import { ShortVerticalDivider } from "./Common";
 
@@ -24,7 +25,7 @@ export const SuperFiles: React.FunctionComponent<SuperFilesProps> = ({
     sort = defaultSort
 }) => {
 
-    const [file, , , refreshData] = useFile(cluster, logicalFile);
+    const { file, refreshData } = useFile(cluster, logicalFile);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
     const [data, setData] = React.useState<any[]>([]);
     const {
@@ -43,11 +44,11 @@ export const SuperFiles: React.FunctionComponent<SuperFilesProps> = ({
                 label: nlsHPCC.Name,
                 sortable: true,
                 formatter: (name, row) => {
-                    return <Link href={`#/files/${cluster}/${name}`}>{name}</Link>;
+                    return <Link href={`#/files/${row.NodeGroup !== null ? row.NodeGroup : undefined}/${name}`}>{name}</Link>;
                 }
             }
         };
-    }, [cluster]);
+    }, []);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
@@ -88,18 +89,18 @@ export const SuperFiles: React.FunctionComponent<SuperFilesProps> = ({
         }
     }, [file]);
 
-    return <ScrollablePane>
-        <Sticky>
-            <CommandBar items={buttons} farItems={copyButtons} />
-        </Sticky>
-        <FluentGrid
-            data={data}
-            primaryID={"Name"}
-            sort={sort}
-            columns={columns}
-            setSelection={setSelection}
-            setTotal={setTotal}
-            refresh={refreshTable}
-        ></FluentGrid>
-    </ScrollablePane>;
+    return <HolyGrail
+        header={<CommandBar items={buttons} farItems={copyButtons} />}
+        main={
+            <FluentGrid
+                data={data}
+                primaryID={"Name"}
+                sort={sort}
+                columns={columns}
+                setSelection={setSelection}
+                setTotal={setTotal}
+                refresh={refreshTable}
+            ></FluentGrid>
+        }
+    />;
 };

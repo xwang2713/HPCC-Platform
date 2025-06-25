@@ -38,7 +38,9 @@ public:
 class HQL_API EclRepositoryManager
 {
 public:
-    EclRepositoryManager() = default;
+    EclRepositoryManager(ICodegenContextCallback * _callback) : callback(_callback)
+    {
+    }
     EclRepositoryManager(const EclRepositoryManager & other) = delete;
 
     void addNestedRepository(IIdAtom * scopeId, IEclSourceCollection * source, bool includeInArchive);
@@ -86,16 +88,24 @@ protected:
 
     unsigned runGitCommand(StringBuffer * output, const char *args, const char * cwd, bool needCredentials);
     IEclPackage * queryRepository(IIdAtom * name, const char * defaultUrl, IEclSourceCollection * overrideSource, bool includeDefinitions);
+    IInterface * getGitUpdateLock(const char * path)
+    {
+        if (!callback)
+            return nullptr;
+        return callback->getGitUpdateLock(path);
+    }
 
 private:
     mutable IErrorReceiver * errorReceiver = nullptr; // mutable to allow const methods to set it, it logically doesn't change the object
     using DependencyInfo = std::pair<std::string, Shared<IEclPackage>>;
+    ICodegenContextCallback * callback;
     CIArrayOf<EclRepositoryMapping> repos;
     std::vector<DependencyInfo> dependencies;
     IArrayOf<IEclRepository> sharedSources;     // plugins, std library, bundles
     IArrayOf<IEclRepository> overrideSources;   // -D options
     IArrayOf<IEclRepository> allSources;        // also includes -D options
     cycle_t gitDownloadCycles = 0;
+    cycle_t gitDownloadBlockedCycles = 0;
 
     //Include all options in a nested struct to make it easy to ensure they are cloned
     struct {
@@ -125,5 +135,6 @@ extern HQL_API IHqlScope * getResolveDottedScope(const char * modname, unsigned 
 extern HQL_API IHqlExpression * getResolveAttributeFullPath(const char * attrname, unsigned lookupFlags, HqlLookupContext & ctx, IEclPackage * optPackage);
 extern HQL_API bool looksLikeGitPackage(const char * urn);
 extern HQL_API bool canReadPackageFrom(const char * urn);
+extern HQL_API bool checkAbortGitFetch();  // Return false if a git operation is in process (and force an abort when it finishes)
 
 #endif

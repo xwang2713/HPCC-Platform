@@ -83,6 +83,8 @@ void ResourceManager::addNamed(const char * type, unsigned len, const void * dat
     MemoryBuffer mb;
     appendResource(mb, len, data, compressed);
     resources.append(*new ResourceItem(type, id, mb.length(), mb.toByteArray()));
+    if (doTrace(traceResources))
+        DBGLOG("Add resource %s:%u (%u bytes from %u)%s", type, id, mb.length(), len, compressed ? " compressed" : "");
 }
 
 bool ResourceManager::addCompress(const char * type, unsigned len, const void * data, IPropertyTree *manifestEntry, unsigned id, bool addToManifest)
@@ -545,7 +547,7 @@ void ResourceManager::flushAsText(const char *filename)
     fclose(f);
 }
 
-bool ResourceManager::flush(StringBuffer &filename, const char *basename, bool flushText, bool target64bit)
+bool ResourceManager::flush(StringBuffer &filename, const char *basename, bool flushText, bool target64bit, CompilerType compilerType)
 {
     finalize();
 
@@ -606,11 +608,6 @@ bool ResourceManager::flush(StringBuffer &filename, const char *basename, bool f
         throwError1(HQLERR_ResourceCreateFailed, filename.str());
 
     //MORE: This should really use targetCompiler instead
-#if defined(__APPLE__)
-    const bool generateClang = true;
-#else
-    const bool generateClang = false;
-#endif
     ForEachItemIn(idx, resources)
     {
         ResourceItem &s = (ResourceItem &) resources.item(idx);
@@ -618,22 +615,31 @@ bool ResourceManager::flush(StringBuffer &filename, const char *basename, bool f
         unsigned id = s.id;
         VStringBuffer binfile("%s_%s_%u.bin", filename.str(), type, id);
         VStringBuffer label("%s_%u_txt_start", type, id);
-        if (generateClang)
+
+        //Note on targets where the @ character is the start of a comment (eg ARM) then another character is used instead. For example the ARM port uses the % character.
+#if defined(__arm__) || defined(__aarch64__)
+        const char typePrefix = '%';
+#else
+        const char typePrefix = '@';
+#endif
+
+        if (compilerType == ClangCppCompiler)
         {
 #ifdef __APPLE__
             if (id <= 1200)  // There is a limit of 255 sections before linker complains - and some are used elsewhere
-#endif
                 fprintf(f, " .section __TEXT,%s_%u\n", type, id);
+
             fprintf(f, " .global _%s\n", label.str());  // For some reason apple needs a leading underbar and linux does not
             fprintf(f, "_%s:\n", label.str());
+#else
+            fprintf(f, " .section %s_%u,\"a\",%cprogbits\n", type, id, typePrefix);
+            fprintf(f, " .global %s\n", label.str());
+            fprintf(f, "%s:\n", label.str());
+#endif
         }
         else
         {
-#if defined(__linux__) && defined(__GNUC__) && defined(__arm__)
-            fprintf(f, " .section .note.GNU-stack,\"\",%%progbits\n");   // Prevent the stack from being marked as executable
-#else
-            fprintf(f, " .section .note.GNU-stack,\"\",@progbits\n");   // Prevent the stack from being marked as executable
-#endif
+            fprintf(f, " .section .note.GNU-stack,\"\",%cprogbits\n", typePrefix);   // Prevent the stack from being marked as executable
             fprintf(f, " .section %s_%u,\"a\"\n", type, id);
             fprintf(f, " .global %s\n", label.str());
             fprintf(f, " .type %s,STT_OBJECT\n", label.str());
@@ -648,7 +654,8 @@ bool ResourceManager::flush(StringBuffer &filename, const char *basename, bool f
         }
         fwrite(s.data.get(), 1, s.data.length(), bin);
         fclose(bin);
-        fprintf(f, " .size %s,%u\n", label.str(), (unsigned)s.data.length());
+        if (compilerType != ClangCppCompiler)
+            fprintf(f, " .size %s,%u\n", label.str(), (unsigned)s.data.length());
     }
     fclose(f);
 #endif

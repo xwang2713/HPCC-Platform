@@ -6,6 +6,7 @@ import * as Observable from "dojo/store/Observable";
 import * as QueryResults from "dojo/store/util/QueryResults";
 
 import { DFUService, WsDfu as HPCCWsDfu } from "@hpcc-js/comms";
+import { scopedLogger } from "@hpcc-js/util";
 
 import { DPWorkunit } from "./DataPatterns/DPWorkunit";
 import * as ESPRequest from "./ESPRequest";
@@ -17,6 +18,8 @@ import * as WsDfu from "./WsDfu";
 
 import { Paged } from "./store/Paged";
 import { BaseStore } from "./store/Store";
+
+const logger = scopedLogger("src/ESPLogicalFile.ts");
 
 const _logicalFiles = {};
 
@@ -144,7 +147,7 @@ const TreeStore = declare(null, {
     cache: null,
     _watched: [],
 
-    constructor(options) {
+    constructor() {
         this.cache = {};
     },
 
@@ -300,15 +303,20 @@ const LogicalFile = declare([ESPUtil.Singleton], {
     save(request, args) {
         // WsDfu/DFUInfo?FileName=progguide%3A%3Aexampledata%3A%3Akeys%3A%3Apeople.lastname.firstname&UpdateDescription=true&FileDesc=%C2%A0123&Save+Description=Save+Description
         const context = this;
+
+        const dfuInfoRequest: { [key: string]: any } = {
+            Name: context.Name,
+            Cluster: context.Cluster
+        };
+        if (request.Description !== undefined) {
+            dfuInfoRequest.UpdateDescription = true;
+            dfuInfoRequest.FileDesc = request.Description;
+        }
+        dfuInfoRequest.Protect = request.isProtected === undefined ? 0 : (request.isProtected ? 1 : 2);
+        dfuInfoRequest.Restrict = request.isRestricted === undefined ? 0 : (request.isRestricted ? 1 : 2);
+
         WsDfu.DFUInfo({
-            request: {
-                Name: this.Name,
-                Cluster: this.Cluster,
-                UpdateDescription: true,
-                FileDesc: request.Description,
-                Protect: request.isProtected === true ? 1 : 2,
-                Restrict: request.isRestricted === true ? 1 : 2
-            }
+            request: dfuInfoRequest
         }).then(function (response) {
             if (lang.exists("DFUInfoResponse.FileDetail", response)) {
                 context.updateData(response.DFUInfoResponse.FileDetail);
@@ -472,7 +480,7 @@ export function Get(Cluster, Name, data?) {
     }
     const store = new Store();
     const retVal = store.get(createID(Cluster, Name));
-    if (data) {
+    if (data && !retVal.__hpcc_id) {
         lang.mixin(data, {
             __hpcc_id: createID(data.NodeGroup, data.Name),
             __hpcc_isDir: false,
@@ -483,13 +491,13 @@ export function Get(Cluster, Name, data?) {
     return retVal;
 }
 
-export function CreateLFQueryStore(options) {
-    const store = new Store(options);
+export function CreateLFQueryStore() {
+    const store = new Store();
     return new Observable(store);
 }
 
-export function CreateLFQueryTreeStore(options) {
-    const store = new TreeStore(options);
+export function CreateLFQueryTreeStore() {
+    const store = new TreeStore();
     return new Observable(store);
 }
 
@@ -512,6 +520,12 @@ export function CreateDFUQueryStore(): BaseStore<HPCCWsDfu.DFUQueryRequest, type
             return {
                 data: response?.DFULogicalFiles?.DFULogicalFile ?? [],
                 total: response.NumFiles
+            };
+        }).catch(err => {
+            logger.error(err);
+            return {
+                data: [],
+                total: 0
             };
         });
     });

@@ -71,7 +71,6 @@ define([
         contentWidget: null,
         dataPatternsWidget: null,
         sourceWidget: null,
-        defWidget: null,
         xmlWidget: null,
         filePartsWidget: null,
         queriesWidget: null,
@@ -95,7 +94,6 @@ define([
             this.contentWidget = registry.byId(this.id + "_Content");
             this.dataPatternsWidget = registry.byId(this.id + "_DataPatterns");
             this.sourceWidget = registry.byId(this.id + "_Source");
-            this.defWidget = registry.byId(this.id + "_DEF");
             this.xmlWidget = registry.byId(this.id + "_XML");
             this.filePartsWidget = registry.byId(this.id + "_FileParts");
             this.queriesWidget = registry.byId(this.id + "_Queries");
@@ -166,12 +164,8 @@ define([
         },
         _onSave: function (event) {
             var context = this;
-            var protectedCheckbox = registry.byId(this.id + "isProtected");
-            var restrictedCheckbox = registry.byId(this.id + "isRestricted");
             this.logicalFile.save({
                 Description: dom.byId(context.id + "Description").value,
-                isProtected: protectedCheckbox.get("checked"),
-                isRestricted: restrictedCheckbox.get("checked")
             }, null);
         },
         _onDelete: function (event) {
@@ -279,11 +273,17 @@ define([
             this.logicalFile.refresh();
 
             this.isProtected.on("click", function (evt) {
-                context._onSave();
+                var protectedCheckbox = registry.byId(context.id + "isProtected");
+                context.logicalFile.save({
+                    isProtected: protectedCheckbox.get("checked")
+                }, null);
             });
 
             this.isRestricted.on("click", function (evt) {
-                context._onSave();
+                var restrictedCheckbox = registry.byId(context.id + "isRestricted");
+                context.logicalFile.save({
+                    isRestricted: restrictedCheckbox.get("checked")
+                }, null);
             });
         },
 
@@ -305,13 +305,6 @@ define([
                 } else if (currSel.id === this.sourceWidget.id) {
                     this.sourceWidget.init({
                         ECL: this.logicalFile.Ecl
-                    });
-                } else if (currSel.id === this.defWidget.id) {
-                    var context = this;
-                    this.logicalFile.fetchDEF(function (response) {
-                        context.defWidget.init({
-                            ECL: response
-                        });
                     });
                 } else if (currSel.id === this.xmlWidget.id) {
                     var context = this;
@@ -403,7 +396,6 @@ define([
                 }
                 this.contentWidget.reset();
                 this.sourceWidget.reset();
-                this.defWidget.reset();
                 this.xmlWidget.reset();
                 this.filePartsWidget.reset();
                 this.widget._Queries.reset();

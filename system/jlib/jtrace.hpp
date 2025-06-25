@@ -108,8 +108,43 @@ struct SpanError
     void setError(const char * _errorMessage, int _errorCode) { errorMessage = _errorMessage; errorCode = _errorCode; }
 };
 
+class SpanTimeStamp
+{
+public:
+    SpanTimeStamp() = default;
+    SpanTimeStamp(bool initNow) { if (initNow) setNow(); }
+
+    void setNow()
+    {
+        systemClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch());
+        steadyClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch());
+    }
+
+    void setMSTickTime(const unsigned int msTickTime)
+    {
+        systemClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch() - std::chrono::milliseconds(msTick() - msTickTime));
+        steadyClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch() - std::chrono::milliseconds(msTick() - msTickTime));
+    }
+
+    void adjust(std::chrono::nanoseconds adjustment)
+    {
+        systemClockTime += adjustment;
+        steadyClockTime += adjustment;
+    }
+
+    bool isInitialized() const
+    {
+        return systemClockTime != std::chrono::nanoseconds::zero();
+    }
+
+public:
+    std::chrono::nanoseconds steadyClockTime = std::chrono::nanoseconds::zero();
+    std::chrono::nanoseconds systemClockTime = std::chrono::nanoseconds::zero();
+};
+
 interface ISpan : extends IInterface
 {
+    virtual bool isValid() const = 0;
     virtual void setSpanAttribute(const char * key, const char * val) = 0;
     virtual void setSpanAttribute(const char *name, __uint64 value) = 0;
     virtual void setSpanAttributes(const IProperties * attributes) = 0;
@@ -124,9 +159,11 @@ interface ISpan : extends IInterface
     virtual void recordException(IException * e, bool spanFailed = true, bool escapedScope = true) = 0;
     virtual void recordError(const SpanError & error = SpanError()) = 0;
     virtual void setSpanStatusSuccess(bool spanSucceeded, const char * statusMessage = NO_STATUS_MESSAGE) = 0;
+    virtual const char * queryTraceId() const = 0;
+    virtual const char * querySpanId() const = 0;
 
-    virtual ISpan * createClientSpan(const char * name) = 0;
-    virtual ISpan * createInternalSpan(const char * name) = 0;
+    virtual ISpan * createClientSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp = nullptr)  = 0;
+    virtual ISpan * createInternalSpan(const char * name, const SpanTimeStamp * spanStartTimeStamp = nullptr) = 0;
 
 //Old-style global/caller/local id interface functions
     virtual const char* queryGlobalId() const = 0;
@@ -134,12 +171,82 @@ interface ISpan : extends IInterface
     virtual const char* queryLocalId() const = 0;
 };
 
-class jlib_decl OwnedSpanScope
+//------------------------------------------------------------------------------
+// ActiveSpanScope vs OwnedActiveSpanScope Usage:
+//------------------------------------------------------------------------------
+// The primary difference between OwnedActiveSpanScope and ActiveSpanScope is that
+// OwnedActiveSpanScope controls the lifetime of its ISpan while ActiveSpanScope
+// does not. In cases where the ISpan will be used from a single thread and within
+// a single scope OwnedActiveSpanScope should be used. For more complicated scenarios,
+// involving multiple threads, time sliced work, etc ActiveSpanScope should be used
+// to associate that ISpan with each processing thread / unit of work, while an 
+// OwnedSpanLifetime, likely a class member, should control the ISpan lifetime.
+//
+// When using ActiveSpanScope another class such as OwnedSpanLifetime should be 
+// used to control the lifetime of the ISpan and the referenced ISpans lifetime
+// should be guaranteed to be longer than the ActiveSpanScopes lifetime.
+//------------------------------------------------------------------------------
+
+class jlib_decl ActiveSpanScope
 {
 public:
-    OwnedSpanScope() = default;
-    OwnedSpanScope(ISpan * _ptr);
-    ~OwnedSpanScope();
+    // Captures current threadActiveSpan for prevSpan
+    ActiveSpanScope(ISpan * _ptr);
+    ActiveSpanScope(ISpan * _ptr, ISpan * _prev);
+    
+    ActiveSpanScope(const ActiveSpanScope& rhs) = delete;
+    ~ActiveSpanScope();
+
+    inline ISpan * operator -> () const         { return span; }
+    inline operator ISpan *() const             { return span; }
+
+    inline ActiveSpanScope& operator=(ISpan * ptr) = delete;
+    inline ActiveSpanScope& operator=(const ActiveSpanScope& rhs) = delete;
+
+    inline bool operator == (ISpan * _ptr) const       { return span == _ptr; }
+    inline bool operator != (ISpan * _ptr) const       { return span != _ptr; }
+private:
+    ISpan * span = nullptr;
+    ISpan * prevSpan = nullptr;
+};
+
+class jlib_decl OwnedSpanLifetime
+{
+public:
+    OwnedSpanLifetime() = default;
+    OwnedSpanLifetime(ISpan * _ptr) : span(_ptr) {}
+    OwnedSpanLifetime(const OwnedSpanLifetime& rhs) = delete;
+    OwnedSpanLifetime(OwnedSpanLifetime&& rhs) = default;
+    ~OwnedSpanLifetime();
+
+    inline ISpan * operator -> () const         { return span; }
+    inline operator ISpan *() const             { return span; }
+
+    inline OwnedSpanLifetime& operator=(ISpan * ptr) = delete;
+    inline OwnedSpanLifetime& operator=(const OwnedSpanLifetime& rhs) = delete;
+    inline OwnedSpanLifetime& operator=(OwnedSpanLifetime&& rhs) = delete;
+
+    void clear();
+    ISpan * query() const { return span; }
+    void set(ISpan * _span);
+    void setown(ISpan * _span);
+
+private:
+    Owned<ISpan> span;
+};
+
+class jlib_decl OwnedActiveSpanScope
+{
+public:
+    OwnedActiveSpanScope() = default;
+    OwnedActiveSpanScope(ISpan * _ptr);
+    OwnedActiveSpanScope(const OwnedActiveSpanScope& rhs) = delete;
+    OwnedActiveSpanScope(OwnedActiveSpanScope&& rhs) = default;
+    ~OwnedActiveSpanScope();
+
+    inline OwnedActiveSpanScope& operator=(ISpan * ptr) = delete;
+    inline OwnedActiveSpanScope& operator=(const OwnedActiveSpanScope& rhs) = delete;
+    inline OwnedActiveSpanScope& operator=(OwnedActiveSpanScope&& rhs) = delete;
 
     inline ISpan * operator -> () const         { return span; }
     inline operator ISpan *() const             { return span; }
@@ -154,31 +261,9 @@ private:
     ISpan * prevSpan = nullptr;
 };
 
+
 extern jlib_decl IProperties * getClientHeaders(const ISpan * span);
 extern jlib_decl IProperties * getSpanContext(const ISpan * span);
-
-struct SpanTimeStamp
-{
-    std::chrono::nanoseconds steadyClockTime = std::chrono::nanoseconds::zero();
-    std::chrono::nanoseconds systemClockTime = std::chrono::nanoseconds::zero();
-
-    void now()
-    {
-        systemClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch());
-        steadyClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch());
-    }
-
-    void setMSTickTime(const unsigned int msTickTime)
-    {
-        systemClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch() - std::chrono::milliseconds(msTick() - msTickTime));
-        steadyClockTime = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch() - std::chrono::milliseconds(msTick() - msTickTime));
-    }
-
-    bool isInitialized() const
-    {
-        return systemClockTime != std::chrono::nanoseconds::zero();
-    }
-};
 
 interface ITraceManager : extends IInterface
 {
@@ -187,6 +272,9 @@ interface ITraceManager : extends IInterface
     virtual ISpan * createServerSpan(const char * name, const IProperties * httpHeaders, SpanFlags flags = SpanFlags::None) const = 0;
     virtual bool isTracingEnabled() const = 0;
  };
+
+ //Create an internal span that has now completed, but which started in the past.
+ extern jlib_decl ISpan * createBackdatedInternalSpan(const char * name, stat_type elapsedNs);
 
 extern jlib_decl ISpan * queryNullSpan();
 extern jlib_decl ISpan * getNullSpan();
@@ -205,7 +293,7 @@ extern jlib_decl void testJLogExporterPrintAttributes(StringBuffer & out, const 
 */
 
 //The following class is responsible for ensuring that the active span is restored in a context when the scope is exited
-//Use a template class so it can be reused for IContextLogger and IEspContext
+//Use a template class so it can be used for IContextLogger and any other conforming interface.
 template <class CONTEXT>
 class ContextSpanScopeImp
 {
@@ -323,6 +411,8 @@ constexpr TraceFlags traceNone = TraceFlags::None;
 constexpr TraceFlags traceStandard = TraceFlags::Standard;
 constexpr TraceFlags traceDetailed = TraceFlags::Detailed;
 constexpr TraceFlags traceMax = TraceFlags::Max;
+constexpr TraceFlags traceDetail = TraceFlags(0xFFFFFFFF);   // reserved term for one of traceNone, traceStandard, traceDetailed, or traceMax values
+constexpr TraceFlags traceAll = (TraceFlags)(~TraceFlags::LevelMask);   // i.e. all feature flags except for the detail level
 
 // Common to several engines
 constexpr TraceFlags traceHttp = TraceFlags::flag1;
@@ -333,6 +423,7 @@ constexpr TraceFlags traceCouchbase = TraceFlags::flag5;
 constexpr TraceFlags traceFilters = TraceFlags::flag6;
 constexpr TraceFlags traceKafka = TraceFlags::flag7;
 constexpr TraceFlags traceJava = TraceFlags::flag8;
+constexpr TraceFlags traceOptimizations = TraceFlags::flag9;        // code generator, but IHqlExpressions also used by esp/engines
 
 // Specific to Roxie
 constexpr TraceFlags traceRoxieLock = TraceFlags::flag16;
@@ -351,7 +442,13 @@ constexpr TraceFlags traceSmartStepping = TraceFlags::flag28;
 constexpr TraceFlags traceAborts = TraceFlags::flag29;
 constexpr TraceFlags traceAcknowledge = TraceFlags::flag30;
 
+// Specific to dfuserver and dafilesrv
+constexpr TraceFlags traceSprayDetails = TraceFlags::flag16;
+constexpr TraceFlags tracePartitionDetails = TraceFlags::flag17;
 
+//Specific to the code generator
+// see traceOptimizations above.
+constexpr TraceFlags traceResources = TraceFlags::flag16;
 
 //========================================================================================= 
 
@@ -392,12 +489,47 @@ constexpr std::initializer_list<TraceOption> roxieTraceOptions
     TRACEOPT(traceAcknowledge),
 };
 
+constexpr std::initializer_list<TraceOption> eclccTraceOptions
+{
+    TRACEOPT(traceNone),
+    TRACEOPT(traceAll),             // place before the other options so you can enable all and selectively disable
+    TRACEOPT(traceStandard),
+    TRACEOPT(traceDetailed),
+    TRACEOPT(traceMax),
+    TRACEOPT(traceOptimizations),
+    TRACEOPT(traceResources),
+};
+
+constexpr std::initializer_list<TraceOption> dfuServerTraceOptions
+{
+    TRACEOPT(traceNone),
+    TRACEOPT(traceAll),             // place before the other options so you can enable all and selectively disable
+    TRACEOPT(traceStandard),
+    TRACEOPT(traceDetailed),
+    TRACEOPT(traceMax),
+    TRACEOPT(traceSprayDetails),
+    TRACEOPT(tracePartitionDetails),
+};
+
+constexpr std::initializer_list<TraceOption> dafilesrvServerTraceOptions
+{
+    TRACEOPT(traceNone),
+    TRACEOPT(traceAll),             // place before the other options so you can enable all and selectively disable
+    TRACEOPT(traceStandard),
+    TRACEOPT(traceDetailed),
+    TRACEOPT(traceMax),
+    TRACEOPT(traceSprayDetails),
+    TRACEOPT(tracePartitionDetails),
+};
+
 interface IPropertyTree;
 
 extern jlib_decl bool doTrace(TraceFlags featureFlag, TraceFlags level=TraceFlags::Standard);
 
 // Overwrites current trace flags for active thread (and optionally the global default for new threads)
 extern jlib_decl void updateTraceFlags(TraceFlags flag, bool global = false);
+
+extern jlib_decl TraceFlags combineTraceFlags(TraceFlags existing, TraceFlags request);
 
 // Retrieve current trace flags for the active thread
 extern jlib_decl TraceFlags queryTraceFlags();

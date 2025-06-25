@@ -1,30 +1,37 @@
 import * as React from "react";
-import { ContextualMenuItemType, DefaultButton, IconButton, IContextualMenuItem, IIconProps, IPersonaSharedProps, Link, mergeStyleSets, Persona, PersonaSize, SearchBox, Stack, Text, useTheme } from "@fluentui/react";
-import { CounterBadgeProps, CounterBadge } from "@fluentui/react-components";
+import { ContextualMenuItemType, DefaultButton, IconButton, IContextualMenuItem, IIconProps, IPersonaSharedProps, Link, mergeStyleSets, Persona, PersonaSize, Stack, Text, useTheme } from "@fluentui/react";
+import { Button, ButtonProps, CounterBadgeProps, CounterBadge, SearchBox, Toaster } from "@fluentui/react-components";
+import { WindowNewRegular } from "@fluentui/react-icons";
 import { Level, scopedLogger } from "@hpcc-js/util";
-import { useBoolean } from "@fluentui/react-hooks";
-import { Toaster } from "react-hot-toast";
 import { cookie } from "dojo/main";
 
 import nlsHPCC from "src/nlsHPCC";
 import * as Utility from "src/Utility";
 
 import { useBanner } from "../hooks/banner";
-import { useECLWatchLogger } from "../hooks/logging";
-import { useBuildInfo, useModernMode } from "../hooks/platform";
-import { useGlobalStore } from "../hooks/store";
-import { useMyAccount, useUserSession } from "../hooks/user";
+import { useConfirm } from "../hooks/confirm";
 import { replaceUrl } from "../util/history";
-import { useCheckFeatures } from "../hooks/platform";
+import { useECLWatchLogger } from "../hooks/logging";
+import { useBuildInfo, useModernMode, useCheckFeatures } from "../hooks/platform";
+import { useGlobalStore } from "../hooks/store";
+import { PasswordStatus, useMyAccount, useUserSession } from "../hooks/user";
 
 import { TitlebarConfig } from "./forms/TitlebarConfig";
 import { switchTechPreview } from "./controls/ComingSoon";
 import { About } from "./About";
 import { MyAccount } from "./MyAccount";
-import { toasterScale } from "./controls/CustomToaster";
+import { debounce } from "../util/throttle";
 
 const logger = scopedLogger("src-react/components/Title.tsx");
-import { AppPanel } from "./AppPanel";
+
+const NewTabButton: React.FunctionComponent<ButtonProps> = (props) => {
+    return <Button
+        {...props}
+        appearance="transparent"
+        icon={<WindowNewRegular />}
+        size="small"
+    />;
+};
 
 const collapseMenuIcon: IIconProps = { iconName: "CollapseMenu" };
 
@@ -41,9 +48,13 @@ const personaStyles = {
 const DAY = 1000 * 60 * 60 * 24;
 
 interface DevTitleProps {
+    setNavWideMode: React.Dispatch<React.SetStateAction<boolean>>;
+    navWideMode: boolean;
 }
 
 export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
+    setNavWideMode,
+    navWideMode
 }) => {
 
     const [, { opsCategory }] = useBuildInfo();
@@ -53,9 +64,9 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
     const [logIconColor, setLogIconColor] = React.useState<CounterBadgeProps["color"]>();
 
     const [showAbout, setShowAbout] = React.useState(false);
+    const [searchValue, setSearchValue] = React.useState("");
     const [showMyAccount, setShowMyAccount] = React.useState(false);
     const { currentUser, isAdmin } = useMyAccount();
-    const [showAppPanel, { setTrue: openAppPanel, setFalse: dismissAppPanel }] = useBoolean(false);
 
     const [showTitlebarConfig, setShowTitlebarConfig] = React.useState(false);
     const [showEnvironmentTitle] = useGlobalStore("HPCCPlatformWidget_Toolbar_Active", toolbarThemeDefaults.active, true);
@@ -64,6 +75,33 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
 
     const [showBannerConfig, setShowBannerConfig] = React.useState(false);
     const [BannerMessageBar, BannerConfig] = useBanner({ showForm: showBannerConfig, setShowForm: setShowBannerConfig });
+
+    const [PasswordExpiredConfirm, setPasswordExpiredConfirm] = useConfirm({
+        title: nlsHPCC.PasswordExpiration,
+        message: nlsHPCC.PasswordExpired,
+        cancelLabel: null,
+        onSubmit: React.useCallback(() => {
+            setShowMyAccount(true);
+        }, [])
+    });
+
+    const onSearchKeyUp = debounce((evt) => {
+        if (evt.key === "Enter") {
+            if (!evt.target.value) return;
+            if (evt.ctrlKey) {
+                window.open(`#/search/${searchValue.trim()}`);
+            } else {
+                window.location.href = `#/search/${searchValue.trim()}`;
+            }
+        } else {
+            setSearchValue(evt.target.value);
+        }
+    }, 100);
+
+    const onSearchNewTabClick = React.useCallback(() => {
+        if (!searchValue) return;
+        window.open(`#/search/${searchValue.trim()}`);
+    }, [searchValue]);
 
     const titlebarColorSet = React.useMemo(() => {
         return titlebarColor && titlebarColor !== theme.palette.themeLight;
@@ -77,7 +115,7 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
         };
     }, [currentUser]);
 
-    const [log, logLastUpdated] = useECLWatchLogger();
+    const { id: toasterId, log, lastUpdate: logLastUpdated } = useECLWatchLogger();
 
     const { setModernMode } = useModernMode();
     const onTechPreviewClick = React.useCallback(
@@ -121,8 +159,8 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
     const advMenuProps = React.useMemo(() => {
         return {
             items: [
-                { key: "banner", text: nlsHPCC.SetBanner, disabled: !isAdmin, onClick: () => setShowBannerConfig(true) },
-                { key: "toolbar", text: nlsHPCC.SetToolbar, disabled: !isAdmin, onClick: () => setShowTitlebarConfig(true) },
+                { key: "banner", text: nlsHPCC.SetBanner, disabled: currentUser?.username !== "" && !isAdmin, onClick: () => setShowBannerConfig(true) },
+                { key: "toolbar", text: nlsHPCC.SetToolbar, disabled: currentUser?.username !== "" && !isAdmin, onClick: () => setShowTitlebarConfig(true) },
                 { key: "divider_1", itemType: ContextualMenuItemType.Divider },
                 { key: "docs", href: "https://hpccsystems.com/training/documentation/", text: nlsHPCC.Documentation, target: "_blank" },
                 { key: "downloads", href: "https://hpccsystems.com/download", text: nlsHPCC.Downloads, target: "_blank" },
@@ -173,6 +211,12 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
                     isChecked: true,
                     onClick: onTechPreviewClick
                 },
+                { key: "divider_4", itemType: ContextualMenuItemType.Divider },
+                {
+                    key: "reset",
+                    href: "/esp/files/index.html#/reset",
+                    text: nlsHPCC.ResetUserSettings
+                },
                 { key: "about", text: nlsHPCC.About, onClick: () => setShowAbout(true) }
             ],
             directionalHintFixed: true
@@ -218,34 +262,53 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
 
     React.useEffect(() => {
         if (!features.timestamp) return;
+        let ancient = 90;
+        let veryOld = 60;
+        let old = 30;
+        if (features.maturity === "trunk") {
+            ancient = 360;
+            veryOld = 180;
+            old = 90;
+        } else if (features.maturity === "rc") {
+            ancient = 28;
+            veryOld = 21;
+            old = 14;
+        }
         const age = Math.floor((Date.now() - features.timestamp.getTime()) / DAY);
         const message = nlsHPCC.PlatformBuildIsNNNDaysOld.replace("NNN", `${age}`);
-        if (age > 90) {
+        if (age > ancient) {
             logger.alert(message + `  ${nlsHPCC.PleaseUpgradeToLaterPointRelease}`);
-        } else if (age > 60) {
+        } else if (age > veryOld) {
             logger.error(message + `  ${nlsHPCC.PleaseUpgradeToLaterPointRelease}`);
-        } else if (age > 30) {
+        } else if (age > old) {
             logger.warning(message + `  ${nlsHPCC.PleaseUpgradeToLaterPointRelease}`);
         } else {
             logger.info(message);
         }
-    }, [features.timestamp]);
+    }, [features.maturity, features.timestamp]);
 
     React.useEffect(() => {
         if (!currentUser.username) return;
         if (!cookie("PasswordExpiredCheck")) {
             // cookie expires option expects whole number of days, use a decimal < 1 for hours
             cookie("PasswordExpiredCheck", "true", { expires: 0.5, path: "/" });
-            if (currentUser.passwordIsExpired) {
-                alert(nlsHPCC.PasswordExpired);
-                setShowMyAccount(true);
-            } else if (currentUser.passwordDaysRemaining && currentUser.passwordDaysRemaining <= currentUser.passwordExpirationWarningDays) {
-                if (confirm(nlsHPCC.PasswordExpirePrefix + currentUser.passwordDaysRemaining + nlsHPCC.PasswordExpirePostfix)) {
-                    setShowMyAccount(true);
-                }
+            switch (currentUser.passwordDaysRemaining) {
+                case PasswordStatus.Expired:
+                    setPasswordExpiredConfirm(true);
+                    break;
+                case PasswordStatus.NeverExpires:
+                case null:
+                    break;
+                default:
+                    if (currentUser?.passwordDaysRemaining <= currentUser?.passwordExpirationWarningDays) {
+                        if (confirm(nlsHPCC.PasswordExpirePrefix + currentUser.passwordDaysRemaining + nlsHPCC.PasswordExpirePostfix)) {
+                            setShowMyAccount(true);
+                        }
+                    }
+                    break;
             }
         }
-    }, [currentUser]);
+    }, [currentUser, setPasswordExpiredConfirm]);
 
     return <div style={{ backgroundColor: titlebarColorSet ? titlebarColor : theme.palette.themeLight }}>
         <BannerMessageBar />
@@ -253,12 +316,12 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
             <Stack.Item align="center">
                 <Stack horizontal>
                     <Stack.Item>
-                        <IconButton iconProps={waffleIcon} onClick={openAppPanel} style={{ width: 48, height: 48, color: titlebarColorSet ? Utility.textColor(titlebarColor) : theme.palette.themeDarker }} />
+                        <IconButton iconProps={waffleIcon} onClick={() => setNavWideMode(!navWideMode)} style={{ width: 48, height: 48, color: titlebarColorSet ? Utility.textColor(titlebarColor) : theme.palette.themeDarker }} />
                     </Stack.Item>
                     <Stack.Item align="center">
                         <Link href="#/activities">
                             <Text variant="large" nowrap block >
-                                <b title="ECL Watch" style={{ color: titlebarColorSet ? Utility.textColor(titlebarColor) : theme.palette.themeDarker }}>
+                                <b title="ECL Watch" style={{ paddingLeft: "8px", color: titlebarColorSet ? Utility.textColor(titlebarColor) : theme.palette.themeDarker }}>
                                     {(showEnvironmentTitle && environmentTitle) ? environmentTitle : "ECL Watch"}
                                 </b>
                             </Text>
@@ -267,7 +330,7 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
                 </Stack>
             </Stack.Item>
             <Stack.Item align="center">
-                <SearchBox onSearch={newValue => { window.location.href = `#/search/${newValue.trim()}`; }} placeholder={nlsHPCC.PlaceholderFindText} styles={{ root: { minWidth: 320 } }} />
+                <SearchBox onKeyUp={onSearchKeyUp} contentAfter={<NewTabButton onClick={onSearchNewTabClick} />} placeholder={nlsHPCC.PlaceholderFindText} style={{ minWidth: 320 }} />
             </Stack.Item>
             <Stack.Item align="center" >
                 <Stack horizontal>
@@ -285,17 +348,14 @@ export const DevTitle: React.FunctionComponent<DevTitleProps> = ({
                         <IconButton title={nlsHPCC.Advanced} iconProps={collapseMenuIcon} menuProps={advMenuProps} style={{ color: titlebarColorSet ? Utility.textColor(titlebarColor) : theme.palette.themeDarker }} />
                     </Stack.Item>
                 </Stack>
-                <Toaster position="top-right" gutter={8 - (90 - toasterScale(90))} containerStyle={{
-                    top: toasterScale(57),
-                    right: 8 - (180 - toasterScale(180))
-                }} />
+                <Toaster toasterId={toasterId} position={"top-end"} pauseOnHover />
             </Stack.Item>
         </Stack>
-        <AppPanel show={showAppPanel} onDismiss={dismissAppPanel} />
         <About eclwatchVersion="9" show={showAbout} onClose={() => setShowAbout(false)} ></About>
         <MyAccount currentUser={currentUser} show={showMyAccount} onClose={() => setShowMyAccount(false)}></MyAccount>
         <TitlebarConfig toolbarThemeDefaults={toolbarThemeDefaults} showForm={showTitlebarConfig} setShowForm={setShowTitlebarConfig} />
         <BannerConfig />
+        <PasswordExpiredConfirm />
     </div>;
 };
 

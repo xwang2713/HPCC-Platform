@@ -172,7 +172,7 @@ public:
         public:
             Owned<IException> &exc;
             casyncfor(CriticalSection &_crit,Semaphore &_sem,IFileDescriptor *_srcdesc,IFileDescriptor *_dstdesc,Owned<IException> &_exc, StringArray &_tmpnames, StringArray &_dstnames)
-                : crit(_crit), sem(_sem), exc(_exc), tmpnames(_tmpnames), dstnames(_dstnames)
+                : crit(_crit), sem(_sem), tmpnames(_tmpnames), dstnames(_dstnames), exc(_exc)
             {
                 srcdesc = _srcdesc;
                 dstdesc = _dstdesc;
@@ -503,22 +503,22 @@ public:
         if (iskey&&repeattlk)
             spec.setRepeatedCopies(CPDMSRP_lastRepeated,false);
         StringBuffer dstpartmask;
-        getPartMask(dstpartmask,destfilename,srcfdesc->numParts());
+        unsigned numParts = srcfdesc->numParts();
+        getPartMask(dstpartmask, destfilename, numParts);
         dstfdesc->setPartMask(dstpartmask.str());
-        unsigned np = srcfdesc->numParts();
-        dstfdesc->setNumParts(srcfdesc->numParts());
+        dstfdesc->setNumParts(numParts);
         StringBuffer dir;
         StringBuffer dstdir;
         getLFNDirectoryUsingBaseDir(dstdir, dstlfn.get(), spec.defaultBaseDir.get());
         dstfdesc->setDefaultDir(dstdir.str());
 
         Owned<IStoragePlane> plane = getDataStoragePlane(cluster1, false);
-        if (plane) // I think it should always exist, even in bare-metal.., but guard against it not for now (assumes initializeStorageGroups has been called)
+        if (plane) // I think it should always exist, even in bare-metal.., but guard against it not for now (assumes initializeStoragePlanes has been called)
         {
             DBGLOG("cloneSubFile: destfilename='%s', plane='%s', dirPerPart=%s", destfilename, cluster1.get(), boolToStr(plane->queryDirPerPart()));
 
             FileDescriptorFlags newFlags = srcfdesc->getFlags();
-            if (plane->queryDirPerPart())
+            if (plane->queryDirPerPart() && (numParts > 1))
                 newFlags |= FileDescriptorFlags::dirperpart;
             else
                 newFlags &= ~FileDescriptorFlags::dirperpart;
@@ -530,13 +530,21 @@ public:
         if (iskey&&!cluster2.isEmpty())
             dstfdesc->addCluster(cluster2,grp2,spec2);
 
-        for (unsigned pn=0;pn<srcfdesc->numParts();pn++) {
-            offset_t sz = srcfdesc->queryPart(pn)->queryProperties().getPropInt64("@size",-1);
+        for (unsigned pn=0; pn<numParts; pn++)
+        {
+            IPropertyTree &srcProps = srcfdesc->queryPart(pn)->queryProperties();
+            IPropertyTree &dstProps = dstfdesc->queryPart(pn)->queryProperties();
+            offset_t sz = srcProps.getPropInt64("@size",-1);
             if (sz!=(offset_t)-1)
-                dstfdesc->queryPart(pn)->queryProperties().setPropInt64("@size",sz);
+                dstProps.setPropInt64("@size",sz);
             StringBuffer dates;
-            if (srcfdesc->queryPart(pn)->queryProperties().getProp("@modified",dates))
-                dstfdesc->queryPart(pn)->queryProperties().setProp("@modified",dates.str());
+            if (srcProps.getProp("@modified",dates))
+                dstProps.setProp("@modified",dates.str());
+            if (srcProps.hasProp("@kind"))
+                dstProps.setProp("@kind", srcProps.queryProp("@kind"));
+            copyProp(dstProps, srcProps, "@uncompressedSize");
+            copyProp(dstProps, srcProps, "@recordCount");
+            copyProp(dstProps, srcProps, "@offsetBranches");
         }
 
         if (!copyphysical) //cloneFrom tells roxie where to copy from.. it's unnecessary if we already did the copy

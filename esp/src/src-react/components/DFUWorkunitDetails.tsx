@@ -1,7 +1,7 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, MessageBar, MessageBarType, Pivot, PivotItem, Sticky, StickyPositionType } from "@fluentui/react";
 import { scopedLogger } from "@hpcc-js/util";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import nlsHPCC from "src/nlsHPCC";
 import * as FileSpray from "src/FileSpray";
 import { formatCost } from "src/Session";
@@ -10,15 +10,13 @@ import { useDfuWorkunit } from "../hooks/workunit";
 import { pivotItemStyle } from "../layouts/pivot";
 import { pushUrl, replaceUrl } from "../util/history";
 import { ShortVerticalDivider } from "./Common";
-import { Field, Fields } from "./forms/Fields";
+import { Fields } from "./forms/Fields";
 import { TableGroup } from "./forms/Groups";
 import { XMLSourceEditor } from "./SourceEditor";
+import { SashaService, WsSasha } from "@hpcc-js/comms";
 
 const logger = scopedLogger("../components/DFUWorkunitDetails.tsx");
-
-const createField = (label: string, value: any): Field => {
-    return { label, type: typeof value === "number" ? "number" : "string", value, readonly: true };
-};
+const sashaService = new SashaService({ baseUrl: "" });
 
 type FieldMap = { key: string, label: string };
 const sourceFieldIds: FieldMap[] = [
@@ -99,7 +97,7 @@ export const DFUWorkunitDetails: React.FunctionComponent<DFUWorkunitDetailsProps
             setSourceFormatMessage(`(${nlsHPCC.CSV})`);
         } else if (sourceFormatMsg === "fixed") {
             setSourceFormatMessage(`(${nlsHPCC.Fixed})`);
-        } else if (!!workunit?.RowTag) {
+        } else if (workunit?.RowTag) {
             setSourceFormatMessage(`(${nlsHPCC.XML}/${nlsHPCC.JSON})`);
         }
 
@@ -107,7 +105,12 @@ export const DFUWorkunitDetails: React.FunctionComponent<DFUWorkunitDetailsProps
         for (const fieldId of sourceFieldIds) {
             if (workunit[fieldId.key] !== undefined) {
                 const value = fieldId.key === "SourceFormat" ? FileSpray.FormatMessages[workunit[fieldId.key]] : workunit[fieldId.key];
-                _sourceFields[fieldId.key] = createField(fieldId.label, value ?? null);
+                if (fieldId.key === "SourceFilePath") {
+                    const href = `#/landingzone/preview/~file::${workunit["SourceIP"]}::${FileSpray.lfEncode(value)}`;
+                    _sourceFields[fieldId.key] = { label: fieldId.label, value: value ?? null, type: "link", href, readonly: true };
+                } else {
+                    _sourceFields[fieldId.key] = { label: fieldId.label, value: value ?? null, type: "string", readonly: true };
+                }
             }
         }
         setSourceFields(_sourceFields);
@@ -123,7 +126,11 @@ export const DFUWorkunitDetails: React.FunctionComponent<DFUWorkunitDetailsProps
         for (const fieldId of targetFieldIds) {
             if (workunit[fieldId.key] !== undefined) {
                 const value = fieldId.key === "DestFormat" ? FileSpray.FormatMessages[workunit[fieldId.key]] : workunit[fieldId.key];
-                _targetFields[fieldId.key] = createField(fieldId.label, value ?? null);
+                if (fieldId.key === "DestLogicalName") {
+                    _targetFields[fieldId.key] = { label: fieldId.label, value: value ?? null, type: "link", href: `#/files/${value}`, readonly: true };
+                } else {
+                    _targetFields[fieldId.key] = { label: fieldId.label, value: value ?? null, type: "string", readonly: true };
+                }
             }
         }
         setTargetFields(_targetFields);
@@ -174,13 +181,26 @@ export const DFUWorkunitDetails: React.FunctionComponent<DFUWorkunitDetailsProps
         },
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
+            key: "restore", text: nlsHPCC.Restore,
+            onClick: () => {
+                sashaService.RestoreWU({
+                    Wuid: wuid,
+                    WUType: WsSasha.WUTypes.DFU
+                }).then(() => {
+                    refresh();
+                }).catch(err => {
+                    logger.error(err);
+                });
+            }
+        },
+        {
             key: "abort", text: nlsHPCC.Abort, disabled: canAbort,
             onClick: () => { workunit?.abort().catch(err => logger.error(err)); }
         },
     ], [canAbort, canDelete, canSave, refresh, saveWorkunit, setShowDeleteConfirm, workunit, wuid]);
 
     return <>
-        <SizeMe monitorHeight>{({ size }) =>
+        <SizeMe>{({ size }) =>
             <Pivot
                 overflowBehavior="menu" style={{ height: "100%" }} selectedKey={tab}
                 onLinkClick={evt => {
@@ -218,7 +238,7 @@ export const DFUWorkunitDetails: React.FunctionComponent<DFUWorkunitDetailsProps
                         "timeStarted": { label: nlsHPCC.TimeStarted, type: "string", value: workunit?.TimeStarted, readonly: true },
                         "secondsLeft": { label: nlsHPCC.SecondsRemaining, type: "number", value: workunit?.SecsLeft, readonly: true },
                         "timeStopped": { label: nlsHPCC.TimeStopped, type: "string", value: workunit?.TimeStopped, readonly: true },
-                        "percentDone": { label: nlsHPCC.PercentDone, type: "progress", value: workunit?.PercentDone.toString(), readonly: true },
+                        "percentDone": { label: nlsHPCC.PercentDone, type: "progress", value: workunit?.PercentDone?.toString(), readonly: true },
                         "progressMessage": { label: nlsHPCC.ProgressMessage, type: "string", value: workunit?.ProgressMessage, readonly: true },
                         "summaryMessage": { label: nlsHPCC.SummaryMessage, type: "string", value: workunit?.SummaryMessage, readonly: true },
                     }} onChange={(id, value) => {

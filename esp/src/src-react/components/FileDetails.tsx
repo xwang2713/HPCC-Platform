@@ -1,11 +1,12 @@
 import * as React from "react";
 import { WsDfu } from "@hpcc-js/comms";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import nlsHPCC from "src/nlsHPCC";
 import { QuerySortItem } from "src/store/Store";
-import { FileParts } from "./FileParts";
 import { useFile, useDefFile } from "../hooks/file";
-import { pushUrl, replaceUrl } from "../util/history";
+import { pushUrl, replaceUrl, updateFullscreen } from "../util/history";
+import { FullscreenFrame, FullscreenStack } from "../layouts/Fullscreen";
+import { FileParts } from "./FileParts";
 import { FileBlooms } from "./FileBlooms";
 import { FileHistory } from "./FileHistory";
 import { ProtectedBy } from "./ProtectedBy";
@@ -28,6 +29,7 @@ interface FileDetailsProps {
     cluster?: string;
     logicalFile: string;
     tab?: string;
+    fullscreen?: boolean;
     sort?: { subfiles?: QuerySortItem, superfiles?: QuerySortItem, parts?: QuerySortItem, graphs?: QuerySortItem, history?: QuerySortItem, blooms?: QuerySortItem, protectby?: QuerySortItem };
     queryParams?: { contents?: StringStringMap };
 }
@@ -36,21 +38,22 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
     cluster,
     logicalFile,
     tab = "summary",
+    fullscreen = false,
     sort = {},
     queryParams = {}
 }) => {
-    const [file] = useFile(cluster, logicalFile);
+    const { file } = useFile(cluster, logicalFile);
     React.useEffect(() => {
-        if (file?.NodeGroup && cluster === undefined) {
+        if (file?.NodeGroup && cluster === undefined && !file?.isSuperfile) {
             replaceUrl(`/files/${file.NodeGroup}/${logicalFile}`);
         }
-    }, [cluster, file?.NodeGroup, logicalFile]);
-    const [defFile] = useDefFile(cluster, logicalFile, WsDfu.DFUDefFileFormat.def);
+    }, [cluster, file?.NodeGroup, file?.isSuperfile, logicalFile]);
     const [xmlFile] = useDefFile(cluster, logicalFile, WsDfu.DFUDefFileFormat.xml);
 
     const onTabSelect = React.useCallback((tab: TabInfo) => {
         pushUrl(tab.__state ?? `/files/${cluster}/${logicalFile}/${tab.id}`);
-    }, [cluster, logicalFile]);
+        updateFullscreen(fullscreen);
+    }, [fullscreen, cluster, logicalFile]);
 
     const tabs = React.useMemo((): TabInfo[] => {
         return [{
@@ -65,9 +68,6 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
         }, {
             id: "ecl",
             label: nlsHPCC.ECL,
-        }, {
-            id: "def",
-            label: nlsHPCC.DEF,
         }, {
             id: "xml",
             label: nlsHPCC.XML,
@@ -103,56 +103,57 @@ export const FileDetails: React.FunctionComponent<FileDetailsProps> = ({
         }];
     }, [file]);
 
-    return <SizeMe monitorHeight>{({ size }) =>
-        <div style={{ height: "100%" }}>
-            <OverflowTabList tabs={tabs} selected={tab} onTabSelect={onTabSelect} size="medium" />
-            <DelayLoadedPanel visible={tab === "summary"} size={size}>
-                {file?.ContentType === "key"
-                    ? <IndexFileSummary cluster={cluster} logicalFile={logicalFile} />
-                    : file?.isSuperfile
-                        ? <SuperFileSummary cluster={cluster} logicalFile={logicalFile} />
-                        : <LogicalFileSummary cluster={cluster} logicalFile={logicalFile} />
-                }
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "contents"} size={size}>
-                <Result cluster={cluster} logicalFile={logicalFile} filter={queryParams.contents} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "datapatterns"} size={size}>
-                <DataPatterns cluster={cluster} logicalFile={logicalFile} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "ecl"} size={size}>
-                <SourceEditor text={file?.Ecl} mode="ecl" readonly={true} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "def"} size={size}>
-                <XMLSourceEditor text={defFile} readonly={true} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "xml"} size={size}>
-                <XMLSourceEditor text={xmlFile} readonly={true} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "subfiles"} size={size}>
-                <SubFiles cluster={cluster} logicalFile={logicalFile} sort={sort.subfiles} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "superfiles"} size={size}>
-                <SuperFiles cluster={cluster} logicalFile={logicalFile} sort={sort.superfiles} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "parts"} size={size}>
-                <FileParts cluster={cluster} logicalFile={logicalFile} sort={sort.parts} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "queries"} size={size}>
-                <Queries filter={{ FileName: logicalFile }} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "graphs"} size={size}>
-                <FileDetailsGraph cluster={cluster} logicalFile={logicalFile} sort={sort.graphs} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "history"} size={size}>
-                <FileHistory cluster={cluster} logicalFile={logicalFile} sort={sort.history} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "blooms"} size={size}>
-                <FileBlooms cluster={cluster} logicalFile={logicalFile} sort={sort.blooms} />
-            </DelayLoadedPanel>
-            <DelayLoadedPanel visible={tab === "protectby"} size={size}>
-                <ProtectedBy cluster={cluster} logicalFile={logicalFile} sort={sort.protectby} />
-            </DelayLoadedPanel>
-        </div>
-    }</SizeMe>;
+    return <FullscreenFrame fullscreen={fullscreen}>
+        <SizeMe>{({ size }) =>
+            <div style={{ height: "100%" }}>
+                <FullscreenStack fullscreen={fullscreen}>
+                    <OverflowTabList tabs={tabs} selected={tab} onTabSelect={onTabSelect} size="medium" />
+                </FullscreenStack>
+                <DelayLoadedPanel visible={tab === "summary"} size={size}>
+                    {file?.ContentType === "key"
+                        ? <IndexFileSummary cluster={cluster} logicalFile={logicalFile} />
+                        : file?.isSuperfile
+                            ? <SuperFileSummary cluster={cluster} logicalFile={logicalFile} />
+                            : <LogicalFileSummary cluster={cluster} logicalFile={logicalFile} />
+                    }
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "contents"} size={size}>
+                    <Result cluster={cluster} logicalFile={logicalFile} filter={queryParams.contents} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "datapatterns"} size={size}>
+                    <DataPatterns cluster={cluster} logicalFile={logicalFile} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "ecl"} size={size}>
+                    <SourceEditor text={file?.Ecl} mode="ecl" readonly={true} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "xml"} size={size}>
+                    <XMLSourceEditor text={xmlFile} readonly={true} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "subfiles"} size={size}>
+                    <SubFiles cluster={cluster} logicalFile={logicalFile} sort={sort.subfiles} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "superfiles"} size={size}>
+                    <SuperFiles cluster={cluster} logicalFile={logicalFile} sort={sort.superfiles} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "parts"} size={size}>
+                    <FileParts cluster={cluster} logicalFile={logicalFile} sort={sort.parts} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "queries"} size={size}>
+                    <Queries filter={{ FileName: logicalFile }} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "graphs"} size={size}>
+                    <FileDetailsGraph cluster={cluster} logicalFile={logicalFile} sort={sort.graphs} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "history"} size={size}>
+                    <FileHistory cluster={cluster} logicalFile={logicalFile} sort={sort.history} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "blooms"} size={size}>
+                    <FileBlooms cluster={cluster} logicalFile={logicalFile} sort={sort.blooms} />
+                </DelayLoadedPanel>
+                <DelayLoadedPanel visible={tab === "protectby"} size={size}>
+                    <ProtectedBy cluster={cluster} logicalFile={logicalFile} sort={sort.protectby} />
+                </DelayLoadedPanel>
+            </div>
+        }</SizeMe>
+    </FullscreenFrame>;
 };

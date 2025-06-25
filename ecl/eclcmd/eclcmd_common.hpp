@@ -58,6 +58,8 @@ typedef IEclCommand *(*EclCommandFactory)(const char *cmdname);
 #define ECLOPT_SSL_INI "eclSSL"
 #define ECLOPT_SSL_ENV "ECL_SSL"
 
+#define ECLOPT_NO_KEEP_ALIVE "--noKeepAlive"
+
 //The following TLS options could be made more verbose, but these match CURL for convenience
 #define ECLOPT_CLIENT_CERT "--cert"
 #define ECLOPT_CA_CERT "--cacert"
@@ -115,6 +117,7 @@ typedef IEclCommand *(*EclCommandFactory)(const char *cmdname);
 #define ECLOPT_INIT_PUBLISHER_WUID "--init-publisher-wuid"
 #define ECLOPT_DFU_QUEUE "--dfu-queue"
 #define ECLOPT_DFU_WAIT "--dfu-wait"
+#define ECLOPT_KEY_COMPRESSION "--key-compression"
 
 #define ECLOPT_ACTIVE "--active"
 #define ECLOPT_ACTIVE_ONLY "--active-only"
@@ -329,6 +332,7 @@ public:
                 "   -pw, --password=<pw>   Password for accessing ecl services\n"
                 "   --wait-connect=<Ms>    Timeout while connecting to server (in milliseconds)\n"
                 "   --wait-read=<Sec>      Timeout while reading from socket (in seconds)\n"
+                "   --noKeepAlive          Disable tcp keepalives with the server\n"
               );
     }
 public:
@@ -345,6 +349,7 @@ public:
     unsigned optWaitReadSec = 0;
     bool optVerbose;
     bool optSSL;
+    bool optNoKeepAlive = false;
     bool sslOptProvided = false;
     bool optAcceptSelfSigned = false;
     bool selfsignedOptProvided = false;
@@ -354,7 +359,7 @@ public:
 class EclCmdWithEclTarget : public EclCmdCommon
 {
 public:
-    EclCmdWithEclTarget() : optLegacy(false), optCheckDirty(false), optNoArchive(false), optResultLimit((unsigned)-1), optDebug(false), paramCount(0)
+    EclCmdWithEclTarget() : optResultLimit((unsigned)-1), paramCount(0), optNoArchive(false), optLegacy(false), optDebug(false), optCheckDirty(false)
     {
     }
     virtual eclCmdOptionMatchIndicator matchCommandLineOption(ArgvIterator &iter, bool finalAttempt=false);
@@ -466,6 +471,7 @@ public:
         req->setStopIfFilesCopied(optStopIfFilesCopied);
         req->setOnlyCopyFiles(optOnlyCopyFiles);
         req->setDfuPublisherWuid(optDfuPublisherWuid);
+        req->setKeyCompression(optKeyCompression);
     }
 
     void preallocatePublisherWuid(EclCmdCommon &cmd);
@@ -504,6 +510,8 @@ public:
             return true;
         if (iter.matchFlag(optOnlyCopyFiles, ECLOPT_ONLY_COPY_FILES))
             return true;
+        if (iter.matchOption(optKeyCompression, ECLOPT_KEY_COMPRESSION))
+            return true;
         return false;
     }
     void usage()
@@ -521,13 +529,15 @@ public:
             "   --stop-if-files-copied If all files already exist, publish the query.\n"
             "                          Otherwise, copy the files needed for the query, but don't publish the query\n"
             "   --init-publisher-wuid  Allocate and display the publisher wuid immediately, so that it can be tracked\n"
-            "                           even if the command line is disconnected\n",
+            "                           even if the command line is disconnected\n"
+            "   --keyCompression       When copyying a key file, allows the copy to be re-encoded using the new compression\n",
             stdout);
     }
 public:
     StringAttr optDfuPublisherWuid;
     StringAttr optRemoteStorage;
     StringAttr optDfuQueue;
+    StringAttr optKeyCompression;
     unsigned optDfuWaitSec = 1800; //30 minutes
     bool optDfuCopyFiles = false;
     bool optDfuOverwrite = false;

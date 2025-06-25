@@ -24,7 +24,7 @@
 #include "jhash.hpp"
 #include "jmutex.hpp"
 #include "jsuperhash.hpp"
-
+#include "jlzw.hpp"
 
 #include "jptree.hpp"
 #include "jbuff.hpp"
@@ -58,7 +58,7 @@ protected:
     virtual unsigned getHashFromElement(const void *e) const override;
     virtual unsigned getHashFromFindParam(const void *fp) const override
     {
-        return hashcz((const unsigned char *)fp, 0);
+        return hashcz_fnv1a((const unsigned char *)fp, fnvInitialHash32);
     }
     virtual bool matchesFindParam(const void *e, const void *fp, unsigned fphash) const override
     {
@@ -108,7 +108,7 @@ public:
 // SuperHashTable definitions
     virtual unsigned getHashFromFindParam(const void *fp) const override
     {
-        return hashncz((const unsigned char *)fp, 0);
+        return hashncz_fnv1a((const unsigned char *)fp, fnvInitialHash32);
     }
     virtual bool matchesFindParam(const void *e, const void *fp, unsigned fphash) const override
     {
@@ -156,12 +156,13 @@ interface IPTArrayValue
     virtual size32_t queryValueRawSize() const = 0;
     virtual unsigned find(const IPropertyTree *search) const = 0;
     virtual IPropertyTree **getRawArray() const = 0;
+    virtual CompressionMethod getCompressionType() const = 0;
 
     virtual void serialize(MemoryBuffer &tgt) = 0;
     virtual void deserialize(MemoryBuffer &src) = 0;
 };
 
-class CPTArray : implements IPTArrayValue, private IArray
+class CPTArray final : implements IPTArrayValue, private IArray
 {
     std::atomic<CQualifierMap *> map{nullptr};
 public:
@@ -170,6 +171,7 @@ public:
     virtual CQualifierMap *queryMap() override { return map.load(); }
     virtual CQualifierMap *setMap(CQualifierMap *_map) override;
     virtual bool isCompressed() const override { return false; }
+    virtual CompressionMethod getCompressionType() const override { return COMPRESS_METHOD_NONE; }
     virtual const void *queryValue() const override { UNIMPLEMENTED; }
     virtual MemoryBuffer &getValue(MemoryBuffer &tgt, bool binary) const override { UNIMPLEMENTED; }
     virtual StringBuffer &getValue(StringBuffer &tgt, bool binary) const override { UNIMPLEMENTED; }
@@ -192,19 +194,23 @@ public:
 };
 
 
-class jlib_decl CPTValue : implements IPTArrayValue, private MemoryAttr
+class jlib_decl CPTValue final : implements IPTArrayValue, private MemoryAttr
 {
 public:
     CPTValue(MemoryBuffer &src)
     { 
         deserialize(src); 
     }
-    CPTValue(size32_t size, const void *data, bool binary=false, bool raw=false, bool compressed=false);
+    explicit CPTValue() = default;   //MORE: Should there be a single shared null instance?
+    CPTValue(size32_t size, const void *data) : CPTValue(size, data, false, COMPRESS_METHOD_NONE, COMPRESS_METHOD_DEFAULT)
+    {}
+    CPTValue(size32_t size, const void *data, bool binary, CompressionMethod currentCompressType, CompressionMethod preferredCompressType);
 
     virtual bool isArray() const override { return false; }
     virtual CQualifierMap *queryMap() override { return nullptr; }
     virtual CQualifierMap *setMap(CQualifierMap *_map) { UNIMPLEMENTED; }
-    virtual bool isCompressed() const override { return compressed; }
+    virtual bool isCompressed() const override { return compressType != COMPRESS_METHOD_NONE; }
+    virtual CompressionMethod getCompressionType() const override { assertex(compressType != COMPRESS_METHOD_LZWLEGACY); return (CompressionMethod)compressType; }
     virtual const void *queryValue() const override;
     virtual MemoryBuffer &getValue(MemoryBuffer &tgt, bool binary) const override;
     virtual StringBuffer &getValue(StringBuffer &tgt, bool binary) const override;
@@ -219,12 +225,13 @@ public:
     virtual unsigned find(const IPropertyTree *search) const override { throwUnexpected(); }
     virtual IPropertyTree **getRawArray() const override { throwUnexpected(); }
 
+
 // serializable
     virtual void serialize(MemoryBuffer &tgt) override;
     virtual void deserialize(MemoryBuffer &src) override;
 
 private:
-    mutable bool compressed;
+    mutable byte compressType = COMPRESS_METHOD_NONE;
 };
 
 #define IptFlagTst(fs, f) (0!=(fs&(f)))
@@ -619,15 +626,29 @@ public:
     void serializeCutOff(MemoryBuffer &tgt, int cutoff=-1, int depth=0);
     void deserializeSelf(MemoryBuffer &src);
     void serializeAttributes(MemoryBuffer &tgt);
-    IPropertyTree *clone(IPropertyTree &srcTree, bool self=false, bool sub=true);
-    void clone(IPropertyTree &srcTree, IPropertyTree &dstTree, bool sub=true);
+
+    void cloneIntoSelf(const IPropertyTree &srcTree, bool sub);     // clone the name and contents of srcTree into "this" tree
+    IPropertyTree * clone(const IPropertyTree &srcTree, bool sub);  // create a node (that matches the type of this) and clone the source
+    void cloneContents(const IPropertyTree &srcTree, bool sub);
+    virtual IPTArrayValue * cloneValue() const;
+
     inline void setOwner(IPTArrayValue *_arrayOwner) { arrayOwner = _arrayOwner; }
     IPropertyTree *queryCreateBranch(IPropertyTree *branch, const char *prop, bool *existing=NULL);
     IPropertyTree *splitBranchProp(const char *xpath, const char *&_prop, bool error=false);
-    IPTArrayValue *queryValue() { return value; }
+    IPTArrayValue *queryValue() const { return value; }
     CQualifierMap *queryMap() { return value ? value->queryMap() : nullptr; }
     IPTArrayValue *detachValue() { IPTArrayValue *v = value; value = NULL; return v; }
-    void setValue(IPTArrayValue *_value, bool binary) { if (value) delete value; value = _value; if (binary) IptFlagSet(flags, ipt_binary); }
+    //This does not need to be virtual, because any remote PTree that the function is called on will already
+    //have the connection locked
+    void setValue(IPTArrayValue *_value, bool binary)
+    {
+        delete value;
+        value = _value;
+        if (binary)
+            IptFlagSet(flags, ipt_binary);
+        else
+            IptFlagClr(flags, ipt_binary);
+    }
     bool checkPattern(const char *&xxpath) const;
     IPropertyTree *detach()
     {
@@ -659,9 +680,10 @@ public:
     virtual bool hasProp(const char * xpath) const override;
     virtual bool isBinary(const char *xpath=NULL) const override;
     virtual bool isCompressed(const char *xpath=NULL) const override;
+    virtual CompressionMethod getCompressionType() const override;
     virtual bool renameProp(const char *xpath, const char *newName) override;
     virtual bool renameTree(IPropertyTree *tree, const char *newName) override;
-    virtual const char *queryProp(const char *xpath) const override;
+    virtual const char *queryProp(const char *xpath, const char * dft = nullptr) const override;
     virtual bool getProp(const char *xpath, StringBuffer &ret) const override;
     virtual void setProp(const char *xpath, const char *val) override;
     virtual void addProp(const char *xpath, const char *val) override;
@@ -679,7 +701,7 @@ public:
     virtual void addPropInt(const char *xpath, int val) override;
     virtual double getPropReal(const char *xpath, double dft=0.0) const override;
     virtual bool getPropBin(const char * xpath, MemoryBuffer &ret) const override;
-    virtual void setPropBin(const char * xpath, size32_t size, const void *data) override;
+    virtual void setPropBin(const char * xpath, size32_t size, const void *data, CompressionMethod preferredCompression) override;
     virtual void appendPropBin(const char *xpath, size32_t size, const void *data) override;
     virtual void addPropBin(const char *xpath, size32_t size, const void *data) override;
     virtual IPropertyTree *getPropTree(const char *xpath) const override;
@@ -715,7 +737,7 @@ protected:
 
     virtual ChildMap *checkChildren() const;
     virtual bool isEquivalent(IPropertyTree *tree) const { return (nullptr != QUERYINTERFACE(tree, PTree)); }
-    virtual void setLocal(size32_t l, const void *data, bool binary=false);
+    virtual void setLocal(size32_t l, const void *data, bool binary, CompressionMethod compressType);
     virtual void appendLocal(size32_t l, const void *data, bool binary=false);
     virtual void addingNewElement(IPropertyTree &child, int pos) { }
     virtual void removingElement(IPropertyTree *tree, unsigned pos) { }
@@ -726,7 +748,7 @@ protected:
     virtual bool removeAttribute(const char *k) = 0;
 
     AttrValue *findAttribute(const char *k) const;
-    const char *getAttributeValue(const char *k) const;
+    const char *getAttributeValue(const char *k, const char * dft) const;
     AttrValue *getNextAttribute(AttrValue *cur) const;
 
 private:
@@ -844,7 +866,7 @@ public:
         const char *myname = queryName();
         assert(myname);
         size32_t nl = strlen(myname);
-        return isnocase() ? hashnc((const byte *)myname, nl, 0): hashc((const byte *)myname, nl, 0);
+        return isnocase() ? hashnc_fnv1a((const byte *)myname, nl, fnvInitialHash32): hashc_fnv1a((const byte *)myname, nl, fnvInitialHash32);
     }
     virtual void setName(const char *_name) override;
     virtual void setAttribute(const char *attr, const char *val, bool encoded) override;

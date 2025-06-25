@@ -465,7 +465,7 @@ void CRemoteSlave::run(int argc, const char * * argv)
                         msg.read(numPasswds);
                         if (numPasswds <= 10)
                         {
-                            for (int i=0; i<numPasswds; i++)
+                            for (unsigned i=0; i<numPasswds; i++)
                             {
                                 IpAddress tip;
                                 tip.ipdeserialize(msg);
@@ -495,7 +495,8 @@ void CRemoteSlave::run(int argc, const char * * argv)
                     msg.append(results);
                     catchWriteBuffer(masterSocket, msg);
 
-                    LOG(MCdebugProgress, "Results sent from slave %d", info.replyTag);
+                    if (doTrace(traceSprayDetails))
+                        LOG(MCdebugProgress, "Results sent from slave %d", info.replyTag);
 
                     //Acknowledgement before closing down...
                     msg.clear();

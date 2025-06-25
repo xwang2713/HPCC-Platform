@@ -188,7 +188,12 @@ public:
         if (distributor)
             distributor->abort();
     }
-
+    virtual unsigned __int64 queryLookAheadCycles() const override
+    {
+        if (distributor)
+            return distributor->queryLookAheadCycles();
+        return 0;
+    }
     // IStopInput
     virtual void stopInput()
     {
@@ -404,6 +409,15 @@ public:
     {
     }
 
+    virtual unsigned __int64 queryLookAheadCycles() const override
+    {
+        CriticalBlock b(fetchStreamCS);
+        cycle_t lookAheadCycles = PARENT::queryLookAheadCycles();
+        if (fetchStream)
+            lookAheadCycles += fetchStream->queryLookAheadCycles();
+        return lookAheadCycles;
+    }
+
 // IThorDataLink impl.
     virtual void start() override
     {
@@ -515,6 +529,8 @@ public:
         OwnedRoxieString fileName = fetchBaseHelper->getFileName();
         {
             CriticalBlock b(fetchStreamCS);
+            if (fetchStream)
+                slaveTimerStats.lookAheadCycles += fetchStream->queryLookAheadCycles();
             fetchStream.setown(createFetchStream(*this, keyInIf, rowIf, abortSoon, fileName, parts, offsetCount, offsetMapSz, offsetMapBytes.toByteArray(), this, mptag, eexp));
         }
         fetchStreamOut = fetchStream->queryOutput();
@@ -598,7 +614,7 @@ public:
     virtual size32_t fetch(ARowBuilder & rowBuilder, const void *keyRow, unsigned filePartIndex, unsigned __int64 localFpos, unsigned __int64 fpos)
     {
         Owned<IFileIO> partIO = fetchStream->getPartIO(filePartIndex);
-        Owned<ISerialStream> stream = createFileSerialStream(partIO, localFpos);
+        Owned<IBufferedSerialInputStream> stream = createFileSerialStream(partIO, localFpos);
         RtlDynamicRowBuilder fetchedRowBuilder(fetchDiskRowIf->queryRowAllocator());
         const ITranslator *translator = translators.item(filePartIndex);
         size32_t fetchedLen;
@@ -653,7 +669,7 @@ public:
     virtual size32_t fetch(ARowBuilder & rowBuilder, const void *keyRow, unsigned filePartIndex, unsigned __int64 localFpos, unsigned __int64 fpos)
     {
         Owned<IFileIO> partIO = fetchStream->getPartIO(filePartIndex);
-        Owned<ISerialStream> inputStream = createFileSerialStream(partIO, localFpos);
+        Owned<IBufferedSerialInputStream> inputStream = createFileSerialStream(partIO, localFpos);
         if (inputStream->eos())
             return 0;
         size32_t maxRowSize = 10*1024*1024; // MORE - make configurable

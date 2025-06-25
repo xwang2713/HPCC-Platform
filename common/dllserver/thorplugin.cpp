@@ -36,6 +36,8 @@
 
 #include "thorplugin.hpp"
 
+static constexpr CompressionMethod defaultResourceCompression = COMPRESS_METHOD_LZ4HC;
+
 void * SimplePluginCtx::ctxMalloc(size_t size)
 { 
     return rtlMalloc(size); 
@@ -330,7 +332,7 @@ public:
 };
 
 HelperDll::HelperDll(const char *_name, const IFileIO *_dllFile)
-: name(_name), dllFile(_dllFile), manifestFiles(false)
+: dllFile(_dllFile), manifestFiles(false), name(_name)
 {
     logLoad = false;
 }
@@ -559,6 +561,8 @@ const StringArray &HelperDll::queryManifestFiles(const char *type, const char *w
                 OwnedIFileIO o = f->open(IFOcreate);
                 assertex(o.get() != nullptr);
                 o->write(0, len, data);
+                o->close();
+
                 list->append(extractName);
                 if (doTrace(traceJava) && streq(type, "jar"))
                     DBGLOG("Extracted jar resource %u size %u to %s in %u ms", id, len, extractName.str(), msTick() - start);
@@ -688,7 +692,7 @@ extern DLLSERVER_API bool decompressResource(size32_t len, const void *data, Str
 extern DLLSERVER_API void appendResource(MemoryBuffer & mb, size32_t len, const void *data, bool compress)
 {
     mb.append((byte)0x80).append(resourceHeaderVersion);
-    compressToBuffer(mb, len, data, compress ? COMPRESS_METHOD_LZW : COMPRESS_METHOD_NONE);
+    compressToBuffer(mb, len, data, compress ? defaultResourceCompression : COMPRESS_METHOD_NONE);
 }
 
 extern DLLSERVER_API void compressResource(MemoryBuffer & compressed, size32_t len, const void *data)

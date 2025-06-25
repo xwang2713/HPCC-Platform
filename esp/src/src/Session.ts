@@ -4,9 +4,9 @@ import * as topic from "dojo/topic";
 import { format as d3Format } from "@hpcc-js/common";
 import { SMCService } from "@hpcc-js/comms";
 import { scopedLogger } from "@hpcc-js/util";
-import { cookieKeyValStore, sessionKeyValStore, userKeyValStore } from "src/KeyValStore";
+import { cookieKeyValStore, sessionKeyValStore, userKeyValStore } from "./KeyValStore";
 import { singletonDebounce } from "../src-react/util/throttle";
-import { parseSearch } from "../src-react/util/history";
+import { parseSearch, replaceUrl } from "../src-react/util/history";
 import { ModernMode } from "./BuildInfo";
 import * as ESPUtil from "./ESPUtil";
 
@@ -33,6 +33,15 @@ export async function fetchModernMode(): Promise<string> {
     ]).then(([sessionModernMode, userModernMode]) => {
         return sessionModernMode ?? userModernMode;
     });
+}
+
+export async function resetModernMode() {
+    await sessionStore.delete(ModernMode);
+    await userStore.delete(ModernMode);
+}
+
+export async function resetCookies() {
+    await cookieStore.deleteAll(true);
 }
 
 const isV5DirectURL = () => !!parseSearch(window.location.search)?.["Widget"];
@@ -120,7 +129,7 @@ getBuildInfo().then(info => {
     dojoConfig.currencyCode = info["currencyCode"] ?? "";
 });
 
-const formatTwoDigits = d3Format(",.2f");
+export const formatTwoDigits = d3Format(",.2f");
 const formatSixDigits = d3Format(",.6f");
 export function formatCost(value): string {
     if (isNaN(value)) {
@@ -135,14 +144,23 @@ export function formatCost(value): string {
 export function initSession() {
     if (sessionIsActive > -1) {
 
+        const redirectUrl = window.localStorage.getItem("redirectAfterLogin") ?? "";
+        if (redirectUrl) {
+            window.localStorage.removeItem("redirectAfterLogin");
+            replaceUrl(redirectUrl);
+        }
         idleWatcher.on("active", function () {
             resetESPTime();
         });
         idleWatcher.on("idle", function (idleCreator) {
             idleWatcher.stop();
-            topic.publish("hpcc/session_management_status", {
-                status: "Idle",
-                idleCreator
+            fetch("/esp/lock", {
+                method: "post"
+            }).then(() => {
+                topic.publish("hpcc/session_management_status", {
+                    status: "Idle",
+                    idleCreator
+                });
             });
         });
 

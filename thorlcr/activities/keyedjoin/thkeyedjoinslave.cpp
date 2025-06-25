@@ -257,7 +257,9 @@ protected:
         {
             if (compress)
             {
-                iFileIO.setown(createCompressedFileWriter(iFile, 0, append, false, nullptr, COMPRESS_METHOD_LZ4));
+                size32_t compBlockSize = 0; // i.e. default
+                size32_t blockedIoSize = -1; // i.e. default
+                iFileIO.setown(createCompressedFileWriter(iFile, 0, append, false, nullptr, COMPRESS_METHOD_LZ4, compBlockSize, blockedIoSize, IFEnone));
                 iFileIOStream.setown(createIOStream(iFileIO));
             }
             else
@@ -811,7 +813,7 @@ struct PartIO
     IFileIO *iFileIO = nullptr;
     ITranslator *translator = nullptr;
     ISourceRowPrefetcher *prefetcher = nullptr;
-    ISerialStream *stream = nullptr;
+    IBufferedSerialInputStream *stream = nullptr;
 };
 
 class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implements roxiemem::IBufferedRowCallback
@@ -1240,7 +1242,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                     getInfo(errMsg);
                     Owned<IException> te = ThorWrapException(e, "%s", errMsg.str());
                     e->Release();
-                    EXCLOG(te, nullptr);
+                    IWARNLOG(te, nullptr);
                     activity.fireException(te);
                 }
                 processing.clearRows();
@@ -1445,7 +1447,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                 {
                     unsigned partNo = partCopy & partMask;
                     unsigned copy = partCopy >> partBits;
-                    Owned<IKeyIndex> keyIndex = activity.createPartKeyIndex(partNo, copy, false);
+                    Owned<IKeyIndex> keyIndex = activity.createPartKeyIndex(partNo, copy);
                     partKeySet->addIndex(keyIndex.getClear());
                 }
                 keyManager = createKeyMerger(helper->queryIndexRecordSize()->queryRecordAccessor(true), partKeySet, 0, &contextLogger, helper->hasNewSegmentMonitors(), false);
@@ -1768,7 +1770,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                 CRuntimeStatisticCollection statsDelta(jhtreeCacheStatistics);
                 statsDelta.deserialize(mb);
                 CStatsContextLogger * contextLogger(contextLoggers[selected]);
-                contextLogger->mergeStats(statsDelta);
+                contextLogger->mergeStats(activity.queryActivityId(), statsDelta);
                 if (received == numRows)
                     break;
             }
@@ -2052,7 +2054,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                 {
                     mb.read(totalRowSz);
 
-                    Owned<ISerialStream> stream = createMemorySerialStream(mb.readDirect(totalRowSz), totalRowSz);
+                    Owned<IBufferedSerialInputStream> stream = createMemorySerialStream(mb.readDirect(totalRowSz), totalRowSz);
                     rowSource.setStream(stream);
                 }
 
@@ -2454,7 +2456,7 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
         }
         return tlkKeyIndexes.ordinality();
     }
-    IKeyIndex *createPartKeyIndex(unsigned partNo, unsigned copy, bool delayed)
+    IKeyIndex *createPartKeyIndex(unsigned partNo, unsigned copy)
     {
         IPartDescriptor &filePart = allIndexParts.item(partNo);
         unsigned crc=0;
@@ -2464,25 +2466,16 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
         StringBuffer filename;
         rfn.getPath(filename);
 
-        if (delayed)
-        {
-            Owned<IFileIO> lazyIFileIO = queryThor().queryFileCache().lookupIFileIO(*this, indexName, filePart, nullptr);
-            Owned<IDelayedFile> delayedFile = createDelayedFile(lazyIFileIO);
-            return createKeyIndex(filename, crc, *delayedFile, (unsigned) -1, false);
-        }
-        else
-        {
-            /* NB: createKeyIndex here, will load the key immediately
-             * But that's okay, because we are only here on demand.
-             * The underlying IFileIO can later be closed by fhe file caching mechanism.
-             */
-            Owned<IFileIO> lazyIFileIO = queryThor().queryFileCache().lookupIFileIO(*this, indexName, filePart, nullptr);
-            return createKeyIndex(filename, crc, *lazyIFileIO, (unsigned) -1, false);
-        }
+        /* NB: createKeyIndex here, will load the key immediately
+            * But that's okay, because we are only here on demand.
+            * The underlying IFileIO can later be closed by fhe file caching mechanism.
+            */
+        Owned<IFileIO> lazyIFileIO = queryThor().queryFileCache().lookupIFileIO(*this, indexName, filePart, nullptr);
+        return createKeyIndex(filename, crc, *lazyIFileIO, (unsigned) -1, false, 0);
     }
     IKeyManager *createPartKeyManager(unsigned partNo, unsigned copy, IContextLogger *ctx)
     {
-        Owned<IKeyIndex> keyIndex = createPartKeyIndex(partNo, copy, false);
+        Owned<IKeyIndex> keyIndex = createPartKeyIndex(partNo, copy);
         return createLocalKeyManager(helper->queryIndexRecordSize()->queryRecordAccessor(true), keyIndex, ctx, helper->hasNewSegmentMonitors(), false);
     }
     const void *preparePendingLookupRow(void *row, size32_t maxSz, const void *lhsRow, size32_t keySz)
@@ -2675,13 +2668,18 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
         {
             if (queryAbortSoon())
                 break;
-            OwnedConstThorRow lhsRow = inputStream->nextRow();
-            if (!lhsRow)
+            OwnedConstThorRow lhsRow;
             {
-                groupStart = nullptr; // NB: only ever set if preserveGroups on
+                LookAheadTimer t(slaveTimerStats, timeActivities);
+
                 lhsRow.setown(inputStream->nextRow());
                 if (!lhsRow)
-                    break;
+                {
+                    groupStart = nullptr; // NB: only ever set if preserveGroups on
+                    lhsRow.setown(inputStream->nextRow());
+                    if (!lhsRow)
+                        break;
+                }
             }
             Linked<CJoinGroup> jg;
             if (helper->leftCanMatch(lhsRow))
@@ -3107,7 +3105,7 @@ public:
                     Owned<IFileIO> iFileIO = createIFileI(lenArray.item(p), tlkMb.toByteArray()+posArray.item(p));
                     StringBuffer name("TLK");
                     name.append('_').append(container.queryId()).append('_');
-                    Owned<IKeyIndex> tlkKeyIndex = createKeyIndex(name.append(p).str(), 0, *iFileIO, (unsigned) -1, true); // MORE - not the right crc
+                    Owned<IKeyIndex> tlkKeyIndex = createKeyIndex(name.append(p).str(), 0, *iFileIO, (unsigned) -1, true, 0); // MORE - not the right crc
                     tlkKeyIndexes.append(*tlkKeyIndex.getClear());
                 }
             }
@@ -3454,7 +3452,9 @@ public:
                 // NB: when preserveGroups, the lhs group will always be complete at same time, so this will traverse whole group
                 if (!joinGroup->hasFlag(GroupFlags::gf_head))
                     return; // intermediate rows are completing, but can't output any of those until head finishes, at which point head marker will shift to next if necessary (see below)
+#ifdef _DEBUG
                 unsigned numProcessed = 0;
+#endif
                 CJoinGroup *current = joinGroup;
                 do
                 {
@@ -3470,7 +3470,9 @@ public:
                     if (transferToDoneList(doneJG, !doneListMaxHit)) // 2nd param(markBlocked), record this thread will block once only
                         doneListMaxHit = true;
                     current = next;
+#ifdef _DEBUG
                     ++numProcessed;
+#endif
                 } while (current);
             }
             else
@@ -3526,7 +3528,7 @@ public:
             Linked<IRowInterfaces> rowIf;
             CThorContiguousRowBuffer prefetchBuffer;
             Owned<ISourceRowPrefetcher> prefetcher;
-            Owned<ISerialStream> strm;
+            Owned<IBufferedSerialInputStream> strm;
             IOutputRowDeserializer *deserializer = nullptr;
             IEngineRowAllocator *allocator = nullptr;
             std::vector<CJoinGroup::SpillMarker> spillMarkers;

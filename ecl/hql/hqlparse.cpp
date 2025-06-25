@@ -220,15 +220,6 @@ IHqlExpression *HqlLex::lookupSymbol(IIdAtom * name, const attribute& errpos)
     return yyParser->lookupSymbol(name, errpos);
 }
 
-unsigned HqlLex::hex2digit(char c)
-{
-  if (c >= 'a')
-    return (c - 'a' + 10);
-  else if (c >= 'A')
-    return (c - 'A' + 10);
-  return (c - '0');
-}
-
 __uint64 HqlLex::str2uint64(unsigned len, const char * digits, unsigned base)
 {
   __uint64 value = 0;
@@ -2211,6 +2202,15 @@ void HqlLex::stripSlashNewline(attribute & returnToken, StringBuffer & target, s
 
         target.append(cur);
     }
+}
+
+bool HqlLex::isImplicitlySigned()
+{
+    if (text && text->isImplicitlySigned())
+        return true;
+    if (!inmacro)
+        return false;
+    return inmacro->isImplicitlySigned();
 }
 
 //====================================== Error Reporting  ======================================

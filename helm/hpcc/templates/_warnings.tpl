@@ -56,7 +56,7 @@ Pass in dict with root and warnings
   {{- $_ := set $ctx "warnings" (append $ctx.warnings $warning) -}}
  {{- end -}}
  {{- /* Warn if any storage planes uses default cost values */ -}}
- {{- if or (eq .root.Values.global.cost.storageWrites 0.0500000000001) (or (eq .root.Values.global.cost.storageAtRest 0.0208000000001) (eq .root.Values.global.cost.storageReads 0.00400000000001)) -}}
+ {{- if or (eq (float64 .root.Values.global.cost.storageWrites) 0.0500000000001) (or (eq (float64 .root.Values.global.cost.storageAtRest) 0.0208000000001) (eq (float64 .root.Values.global.cost.storageReads) 0.00400000000001)) -}}
   {{- $_ := set $ctx "planesWithDefaultCosts" list -}}
   {{- range $storagePlane := .root.Values.storage.planes -}}
    {{- if not $storagePlane.disabled -}}
@@ -110,39 +110,42 @@ Pass in dict with root and warnings
   {{- end -}}
  {{- end -}}
  {{- /* Warn when resources not provided, default cpu rate used and components requiring resources for cost calcs */ -}}
- {{- if eq .root.Values.global.cost.perCpu 0.0565000000001 -}}
+ {{- if eq (float64 .root.Values.global.cost.perCpu) 0.0565000000001 -}}
   {{- $_ := set $ctx "usingDefaultCpuCost" "true" -}}
  {{- end -}}
  {{- $_ := set $ctx "missingResources" list -}}
  {{- $_ := set $ctx "missingResourcesForCosts" list -}}
  {{- $_ := set $ctx "defaultCpuRateComponents" list -}}
  {{- $_ := set $ctx "components" (pick .root.Values "dafilesrv" "dali" "sasha" "dfuserver" "eclagent" "eclccserver" "esp" "roxie" "thor" "eclscheduler") -}}
- {{- if (.root.Values.sasha.disabled|default false) -}}
+ {{- $sasha := .root.Values.sasha | dict -}}
+ {{- if ($sasha.disabled|default false) -}}
   {{- $_ := set $ctx "components" (omit $ctx.components "sasha") -}}
  {{- end -}}
  {{- range $cname, $ctypes := $ctx.components -}}
   {{- range $id, $component := $ctypes -}}
-   {{- if and (kindIs "map" $component) (not $component.disabled) -}}
-    {{- $hasResources := "" -}}
-    {{- if eq $cname "thor" -}}
-     {{- $hasResources = include "hpcc.hasResources" (dict "resources" $component.managerResources) -}}
-     {{- $hasResources = (eq $hasResources "true") | ternary (include "hpcc.hasResources" (dict "resources" $component.workerResources)) $hasResources -}}
-     {{- $hasResources = (eq $hasResources "true") | ternary (include "hpcc.hasResources" (dict "resources" $component.eclAgentResources)) $hasResources -}}
-    {{- else -}}
-     {{- $hasResources = include "hpcc.hasResources" (dict "resources" $component.resources) -}}
-    {{- end -}}
-    {{- if not $hasResources -}}
-     {{- $_ := set $ctx "missingResources" (append $ctx.missingResources ($component.name | default $id)) -}}
-    {{- end -}}
-    {{- /* Checks related to components that are used for cost reporting */ -}}
-    {{- /* (n.b. cpuRate ignored for components other than thor, eclagent and eclccserver)*/ -}}
-    {{- if has $cname (list "thor" "eclagent" "eclccserver") -}}
-     {{- if and $ctx.usingDefaultCpuCost (not $component.cost) -}}
-      {{- $_ := set $ctx "defaultCpuRateComponents" (append $ctx.defaultCpuRateComponents $component.name) -}}
+   {{- if (kindIs "map" $component) -}}
+    {{- if (not $component.disabled) -}}
+     {{- $hasResources := "" -}}
+     {{- if eq $cname "thor" -}}
+      {{- $hasResources = include "hpcc.hasResources" (dict "resources" $component.managerResources) -}}
+      {{- $hasResources = (eq $hasResources "true") | ternary (include "hpcc.hasResources" (dict "resources" $component.workerResources)) $hasResources -}}
+      {{- $hasResources = (eq $hasResources "true") | ternary (include "hpcc.hasResources" (dict "resources" $component.eclAgentResources)) $hasResources -}}
+     {{- else -}}
+      {{- $hasResources = include "hpcc.hasResources" (dict "resources" $component.resources) -}}
      {{- end -}}
-     {{- /* Components that are used for cost reporting require resources: warn if resources missing*/ -}}
      {{- if not $hasResources -}}
-      {{- $_ := set $ctx "missingResourcesForCosts" (append $ctx.missingResourcesForCosts ($component.name | default $id)) -}}
+      {{- $_ := set $ctx "missingResources" (append $ctx.missingResources ($component.name | default $id)) -}}
+     {{- end -}}
+     {{- /* Checks related to components that are used for cost reporting */ -}}
+     {{- /* (n.b. cpuRate ignored for components other than thor, eclagent and eclccserver)*/ -}}
+     {{- if has $cname (list "thor" "eclagent" "eclccserver") -}}
+      {{- if and $ctx.usingDefaultCpuCost (not $component.cost) -}}
+       {{- $_ := set $ctx "defaultCpuRateComponents" (append $ctx.defaultCpuRateComponents $component.name) -}}
+      {{- end -}}
+      {{- /* Components that are used for cost reporting require resources: warn if resources missing*/ -}}
+      {{- if not $hasResources -}}
+       {{- $_ := set $ctx "missingResourcesForCosts" (append $ctx.missingResourcesForCosts ($component.name | default $id)) -}}
+      {{- end -}}
      {{- end -}}
     {{- end -}}
    {{- end -}}
@@ -207,6 +210,17 @@ Pass in dict with root and warnings
  {{- if not $egressRestricted -}}
   {{- $warning := dict "source" "helm" "severity" "warning" -}}
   {{- $_ := set $warning "msg" "egress is not restricted to minimum required" -}}
+  {{- $_ := set $ctx "warnings" (append $ctx.warnings $warning) -}}
+ {{- end -}}
+ {{- if .root.Values.global.privileged -}}
+  {{- $warning := dict "source" "helm" "severity" "warning" -}}
+  {{- $_ := set $warning "msg" "privileged access should only be enabled for development systems" -}}
+  {{- $_ := set $ctx "warnings" (append $ctx.warnings $warning) -}}
+ {{- end -}}
+ {{- /* Warn if logaccess not provided */ -}}
+ {{- if not (hasKey .root.Values.global "logAccess") -}}
+  {{- $warning := dict "source" "helm" "severity" "warning" -}}
+  {{- $_ := set $warning "msg" "Global LogAccess not configured! Contact admin to enable logs in Zap reports and log viewers" -}}
   {{- $_ := set $ctx "warnings" (append $ctx.warnings $warning) -}}
  {{- end -}}
 {{- end -}}

@@ -15,7 +15,7 @@
     limitations under the License.
 ############################################################################## */
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
 #include <sys/time.h>
 #elif _WIN32
 #include <windows.h>
@@ -65,7 +65,7 @@ namespace ln_uid {
 
     ln_uid_t &createUniqueId(ln_uid_t &out)
     {
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
         struct timeval tv;
         gettimeofday(&tv, NULL);
 
@@ -89,13 +89,14 @@ namespace ln_uid {
 
         unsigned char randomdata[random_byte_count];
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
         FILE *fp;
         fp = fopen("/dev/urandom", "r");
         if (!fp || fread(&randomdata, 1, random_byte_count, fp) != random_byte_count)
         {
-            // Should never happen, but if it does log it and ignore
+            // Should never happen, but if it does log it and fallback
             OERRLOG("Could not read data from /dev/urandom");
+            std::generate_n(randomdata, random_byte_count, [](){ return char(rand()); });
         }
         if (fp)
             fclose(fp);
@@ -298,7 +299,7 @@ namespace ln_uid {
         t1 = time(NULL);
         t2 = time(NULL);
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
         localtime_r(&t1, &startDateTime);
         strptime(start, "%Y-%m-%d %H:%M:%S", &startDateTime);
 
@@ -317,7 +318,7 @@ namespace ln_uid {
        #error "Unimplemented"
 #endif
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
         localtime_r(&t2, &endDateTime);
         strptime(end, "%Y-%m-%d %H:%M:%S", &endDateTime);
 
@@ -342,7 +343,7 @@ namespace ln_uid {
 
         struct tm tm;
         char sb[100];
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
         localtime_r(&start_time, &tm);
         sprintf(sb, "now: %4d-%02d-%02d %02d:%02d:%02d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
             tm.tm_hour, tm.tm_min, tm.tm_sec);
@@ -379,7 +380,7 @@ namespace ln_uid {
         int gmtime_hours;
 
         /* get the local time for Jan 2, 1900 00:00 UTC */
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
         localtime_r(&zero, &timeptr);
 #elif _WIN32
         localtime_s(&timeptr, &zero);

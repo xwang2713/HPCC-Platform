@@ -39,7 +39,7 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
 
     IHThorCsvReadArg *helper;
     StringAttr csvQuote, csvSeparate, csvTerminate, csvEscape;
-    Owned<IRowStream> out;
+    Owned<CSeqPartHandler> out;
     rowcount_t limit;
     rowcount_t stopAfter;
     unsigned headerLines;
@@ -52,7 +52,7 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
     {
         Linked<IEngineRowAllocator> allocator;
         CCsvReadSlaveActivity &activity;
-        Owned<ISerialStream> inputStream;
+        Owned<IBufferedSerialInputStream> inputStream;
         OwnedIFileIO iFileIO;
         CSVSplitter csvSplitter;
         CRC32 inputCRC;
@@ -62,7 +62,7 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
         bool readFinished;
         bool processHeaderLines = false;
 
-        unsigned splitLine(ISerialStream *inputStream, size32_t maxRowSize)
+        unsigned splitLine(IBufferedSerialInputStream *inputStream, size32_t maxRowSize)
         {
             if (processHeaderLines)
             {
@@ -120,7 +120,6 @@ class CCsvReadSlaveActivity : public CDiskReadSlaveActivityBase
                 partFileIO.setown(createCompressedFileReader(iFile, activity.eexp));
                 if (!partFileIO)
                     throw MakeActivityException(&activity, 0, "Failed to open block compressed file '%s'", filename.get());
-                checkFileCrc = false;
             }
             else
                 partFileIO.setown(iFile->open(IFOread));

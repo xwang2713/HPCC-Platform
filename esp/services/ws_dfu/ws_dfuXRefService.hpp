@@ -101,16 +101,22 @@ public:
                 if (!xRefNode)
                     break;
 
-                if (xRefNode->useSasha()) // if sasha processing just set submitted
+                bool useSasha = xRefNode->useSasha();
+
+                // MORE: Containerized should only be using saxref and dfuXRefLib should probably be removed
+                if (isContainerized())
+                    assertex(useSasha);
+                if (useSasha) // if sasha processing just set submitted
                     xRefNode->setStatus("Submitted");
                 else
                 {
                     setRunningStatus(true);
                     Owned<IPropertyTree> tree = runXRefCluster(currentClusterName.str(), xRefNode);
                     DBGLOG("finished run XRef for %s", currentClusterName.str());
-                    clearCurrentClusterName();
                     setRunningStatus(false);
                 }
+
+                clearCurrentClusterName();
             }
         }
         catch(IException* e)
@@ -187,6 +193,7 @@ class CWsDfuXRefEx : public CWsDFUXRef
 {
     Owned<IXRefNodeManager> XRefNodeManager;
     Owned<CXRefExBuilderThread> m_XRefbuilder;
+    MapStringToMyClass<ISmartSocketFactory> roxieConnMap;
 
     IXRefFilesNode* getFileNodeInterface(IXRefNode& XRefNode,const char* nodeType);
     void addXRefNode(const char* name, IPropertyTree* pXRefNodeTree);

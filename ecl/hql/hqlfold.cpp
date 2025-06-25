@@ -1248,7 +1248,142 @@ IValue * doFoldExternalCall(IHqlExpression* expr, unsigned foldOptions, const ch
         }
  #elif defined(_ARCH_ARM64_)
         // http://infocenter.arm.com/help/topic/com.arm.doc.ihi0055c/IHI0055C_beta_aapcs64.pdf
-        UNIMPLEMENTED;
+  #ifdef MAXFPREGS
+        void * floatstack = fstack.getFloatMem();
+        if (floatstack) {
+            unsigned * floatSizes = fstack.getFloatSizes();
+           __asm__ __volatile__ (
+           ".doparm0: \n\t"
+               "ldr  w0,[%[sizes],#0] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d0,[%[vals], #0] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s0,[%[vals], #0] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#4] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d1,[%[vals], #8] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s1,[%[vals], #8] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#8] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d2,[%[vals], #16] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s2,[%[vals], #16] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#12] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d3,[%[vals], #24] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s3,[%[vals], #24] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#16] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d4,[%[vals], #32] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s4,[%[vals], #32] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#20] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d5,[%[vals], #40] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s5, [%[vals], #40] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#24] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d6,[%[vals], #48] \n\t"
+               "b 1f \n\t"
+           "0: \n\t"
+               "ldr  s6,[%[vals], #48] \n\t"
+           "1: \n\t"
+               "ldr  w0,[%[sizes],#28] \n\t"
+               "cmp  w0, #4 \n\t"
+               "blt  9f \n\t"
+               "beq  0f \n\t"
+               "ldr  d7,[%[vals], #56] \n\t"
+               "b 9f \n\t"
+           "0: \n\t"
+               "ldr  s7,[%[vals], #56] \n\t"
+           "9: \n\t"
+               "nop \n\t"
+            :
+            : [vals] "r"(floatstack), [sizes] "r"(floatSizes)
+            : "r0"
+           );
+        }
+  #endif
+        assertex((len & 15) == 0);                                              // Stack must always be 16-byte aligned
+        register unsigned __int64 _int64result asm("x0");                       // Specific register for result
+        register unsigned __int64 _len asm("x1") = len;
+        register unsigned __int64 _poplen asm("x19") = len-REGPARAMS*REGSIZE;   // Needs to survive the call
+        register void *_fh asm("x8") = fh;                                      // Needs to survive until the call
+        __asm__ __volatile__ (
+            "sub sp, sp, %[_len] \n\t"        // Make space on stack
+            "mov x2, sp \n\t"                 // r2 = destination for loop
+            ".repLoop: \n\t"
+            "ldrb w3, [%[strbuf]], #1 \n\t"   // copy a byte from src array to r3
+            "strb w3, [x2], #1 \n\t"          // and then from r3 onto stack
+            "subs %[_len], %[_len], #1 \n\t"  // decrement and repeat
+            "bne .repLoop \n\t"
+            "ldp x0, x1, [sp] \n\t"
+            "ldp x2, x3, [sp, #16] \n\t"
+            "ldp x4, x5, [sp, #32] \n\t"
+            "ldp x6, x7, [sp, #48] \n\t"
+            "add sp, sp, #64 \n\t"            // first 8 parameters go in registers
+            "blr %[fh] \n\t"                  // make the call
+            "add sp, sp, %[_poplen] \n\t"     // Restore stack pointer (note, have already popped 8 registers, so poplen is len - 64)
+            : "=r"(_int64result)
+            : [_len] "r"(_len), [_poplen] "r"(_poplen), [strbuf] "r"(strbuf), [fh] "r"(_fh)
+            : "x2","x3","x4","x5","x6","x7","x30"                  // function we call may corrupt x30 (also known as lr)
+            );
+        int64result = _int64result;
+        if (isRealvalue)
+        {
+  #ifdef MAXFPREGS
+            if(resultsize <= 4)
+            {
+                __asm__  __volatile__(
+                    "str  s0,[%[fresult]] \n\t"
+                    :"=m"(floatresult)
+                    : [fresult] "r"(&(floatresult))
+                );
+            }
+            else
+            {
+                __asm__  __volatile__(
+                    "str  d0,[%[fresult]] \n\t"
+                    :"=m"(doubleresult)
+                    : [fresult] "r"(&(doubleresult))
+                );
+            }
+  #else
+            if(resultsize <= 4)
+                floatresult = *(float*)&intresult;
+            else
+                doubleresult = *(double*)&intresult;
+  #endif
+        }
  #else
         // Unknown architecture
         UNIMPLEMENTED;
@@ -1529,6 +1664,7 @@ class DummyContext: implements ICodeContext
     virtual IEngineRowAllocator * getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, unsigned flags) const { throwUnexpected(); }
     virtual void addWuExceptionEx(const char*, unsigned int, unsigned int, unsigned int, const char*) override { throwUnexpected(); }
     virtual unsigned getElapsedMs() const  override { throwUnexpected(); }
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption) { throwUnexpected(); }
 
 };
 
@@ -2700,7 +2836,31 @@ IHqlExpression * foldConstantOperator(IHqlExpression * expr, unsigned foldOption
             if (t0 && t1 && (!c2 || t2))
             {
                 IValue * result;
-                if(isUnicodeType(t0->queryType()))
+                if (isUTF8Type(t0->queryType()))
+                {
+                    StringBuffer pattern, search;
+                    t0->getUTF8Value(pattern);
+                    t1->getUTF8Value(search);
+                    ICompiledStrRegExpr * compiled = rtlCreateCompiledU8StrRegExpr(pattern, !expr->hasAttribute(noCaseAtom));
+                    IStrRegExprFindInstance * match = compiled->find(search, 0, search.lengthUtf8(), false);
+                    ITypeInfo * type = expr->queryType();
+                    if(type->getTypeCode() == type_boolean)
+                    {
+                        result = createBoolValue(match->found());
+                    }
+                    else
+                    {
+                        assertex(c2 && t2);
+                        size32_t len;
+                        char * data;
+                        match->getMatchX(len, data, (unsigned)t2->getIntValue());
+                        result = type->castFrom(len, data);
+                        rtlFree(data);
+                    }
+                    rtlDestroyU8StrRegExprFindInstance(match);
+                    rtlDestroyCompiledU8StrRegExpr(compiled);
+                }
+                else if(isUnicodeType(t0->queryType()))
                 {
                     unsigned plen = t0->queryType()->getStringLen();
                     unsigned slen = t1->queryType()->getStringLen();
@@ -2767,7 +2927,16 @@ IHqlExpression * foldConstantOperator(IHqlExpression * expr, unsigned foldOption
                 size32_t resultBytes;
                 rtlDataAttr matchResults;
 
-                if(isUnicodeType(v0->queryType()))
+                if (isUTF8Type(v0->queryType()))
+                {
+                    StringBuffer pattern, search;
+                    v0->getUTF8Value(pattern);
+                    v1->getUTF8Value(search);
+                    ICompiledStrRegExpr * compiled = rtlCreateCompiledU8StrRegExpr(pattern.lengthUtf8(), pattern, !expr->hasAttribute(noCaseAtom));
+                    compiled->getMatchSet(isAllResult, resultBytes, matchResults.refdata(), search.lengthUtf8(), search.str());
+                    rtlDestroyCompiledU8StrRegExpr(compiled);
+                }
+                else if(isUnicodeType(v0->queryType()))
                 {
                     size32_t plen = v0->queryType()->getStringLen();
                     OwnedMalloc<UChar> pattern (plen+1);
@@ -2800,7 +2969,21 @@ IHqlExpression * foldConstantOperator(IHqlExpression * expr, unsigned foldOption
             if (t0 && t1 && t2)
             {
                 IValue * result;
-                if(isUnicodeType(t0->queryType()))
+                if (isUTF8Type(t0->queryType()))
+                {
+                    StringBuffer pattern, search, replace;
+                    t0->getUTF8Value(pattern);
+                    t1->getUTF8Value(search);
+                    t2->getUTF8Value(replace);
+                    size32_t outlen;
+                    char * out;
+                    ICompiledStrRegExpr * compiled = rtlCreateCompiledU8StrRegExpr(pattern, !expr->hasAttribute(noCaseAtom));
+                    compiled->replace(outlen, out, search.length(), search.str(), replace.length(), replace.str());
+                    result = createUtf8Value(outlen, out, makeUtf8Type(outlen, NULL));
+                    rtlFree(out);
+                    rtlDestroyCompiledU8StrRegExpr(compiled);
+                }
+                else if(isUnicodeType(t0->queryType()))
                 {
                     unsigned plen = t0->queryType()->getStringLen();
                     unsigned slen = t1->queryType()->getStringLen();
@@ -4563,7 +4746,8 @@ IHqlExpression * NullFolderMixin::foldNullDataset(IHqlExpression * expr)
                     {
                         if (isConstantTransform(transform))
                         {
-                            DBGLOG("Folder: Replace %s with ROW", getOpString(op));
+                            if (doTrace(traceOptimizations))
+                                DBGLOG("Folder: Replace %s with ROW", getOpString(op));
                             return createDataset(no_datasetfromrow, createRow(no_createrow, LINK(transform)));
                         }
                     }
@@ -4644,7 +4828,8 @@ IHqlExpression * NullFolderMixin::foldNullDataset(IHqlExpression * expr)
                 args.append(*newTransform.getClear());
                 args.append(*LINK(selSeq));
                 OwnedHqlExpr ret = createDataset(no_hqlproject, args);
-                DBGLOG("Folder: Replace %s%s with PROJECT", getOpString(op), reason);
+                if (doTrace(traceOptimizations))
+                    DBGLOG("Folder: Replace %s%s with PROJECT", getOpString(op), reason);
                 return ret.getClear();
             }
 
@@ -4673,7 +4858,8 @@ IHqlExpression * NullFolderMixin::foldNullDataset(IHqlExpression * expr)
                 args.append(*newTransform.getClear());
                 args.append(*LINK(newSelSeq));
                 OwnedHqlExpr ret = createDataset(no_hqlproject, args);
-                DBGLOG("Folder: Replace JOIN(<empty>, ds) with PROJECT");
+                if (doTrace(traceOptimizations))
+                    DBGLOG("Folder: Replace JOIN(<empty>, ds) with PROJECT");
                 return ret.getClear();
             }
             break;
@@ -4714,7 +4900,8 @@ IHqlExpression * NullFolderMixin::foldNullDataset(IHqlExpression * expr)
                 case 1:
                     if (op == no_cogroup)
                     {
-                        DBGLOG("Folder: Replace %s with group", getOpString(op));
+                        if (doTrace(traceOptimizations))
+                            DBGLOG("Folder: Replace %s with group", getOpString(op));
                         IHqlExpression * grouping = queryAttributeChild(expr, groupAtom, 0);
                         IHqlExpression * mappedGrouping = replaceSelector(grouping, queryActiveTableSelector(), lastInput);
                         OwnedHqlExpr group = createDataset(no_group, LINK(lastInput), mappedGrouping);
@@ -4722,11 +4909,13 @@ IHqlExpression * NullFolderMixin::foldNullDataset(IHqlExpression * expr)
                     }
                     else
                     {
-                        DBGLOG("Folder: Replace %s with child", getOpString(op));
+                        if (doTrace(traceOptimizations))
+                            DBGLOG("Folder: Replace %s with child", getOpString(op));
                         return LINK(lastInput);
                     }
                 default:
-                    DBGLOG("Folder: Remove %d inputs from %s", expr->numChildren()-args.ordinality(), getOpString(op));
+                    if (doTrace(traceOptimizations))
+                        DBGLOG("Folder: Remove %d inputs from %s", expr->numChildren()-args.ordinality(), getOpString(op));
                     return expr->clone(args);
                 }
             }
@@ -5585,9 +5774,12 @@ IHqlExpression * CExprFolderTransformer::doFoldTransformed(IHqlExpression * unfo
                             if (expandedFilter->isConstant())
                             {
                                 //Following would be sensible, but can't call transform at this point, so replace arg, and wait for it to re-iterate
-                                IIdAtom * nameF = expr->queryId();
-                                IIdAtom * nameP = child->queryId();
-                                DBGLOG("Folder: Combining FILTER %s with %s %s produces constant filter", nameF ? str(nameF) : "", getOpString(child->getOperator()), nameP ? str(nameP) : "");
+                                if (doTrace(traceOptimizations))
+                                {
+                                    IIdAtom * nameF = expr->queryId();
+                                    IIdAtom * nameP = child->queryId();
+                                    DBGLOG("Folder: Combining FILTER %s with %s %s produces constant filter", nameF ? str(nameF) : "", getOpString(child->getOperator()), nameP ? str(nameP) : "");
+                                }
                                 expandedFilter.setown(transformExpanded(expandedFilter));
                                 IValue * value = expandedFilter->queryValue();
                                 if (value)
@@ -5638,8 +5830,11 @@ IHqlExpression * CExprFolderTransformer::doFoldTransformed(IHqlExpression * unfo
                             return replaceWithNull(expr);
                         if (filtered.ordinality() == values->numChildren())
                             return removeParentNode(expr);
-                        StringBuffer s1, s2;
-                        DBGLOG("Folder: Node %s reduce values in child: %s from %d to %d", queryChildNodeTraceText(s1, expr), queryChildNodeTraceText(s2, child), values->numChildren(), filtered.ordinality());
+                        if (doTrace(traceOptimizations))
+                        {
+                            StringBuffer s1, s2;
+                            DBGLOG("Folder: Node %s reduce values in child: %s from %d to %d", queryChildNodeTraceText(s1, expr), queryChildNodeTraceText(s2, child), values->numChildren(), filtered.ordinality());
+                        }
                         HqlExprArray args;
                         args.append(*values->clone(filtered));
                         unwindChildren(args, child, 1);
@@ -6540,7 +6735,10 @@ IHqlExpression * CExprFolderTransformer::createTransformed(IHqlExpression * expr
 
 #ifdef LOG_ALL_FOLDING
     if ((op != transformed->getOperator()) || (expr->numChildren() != transformed->numChildren()))
-        DBGLOG("Folding %s to %s", getOpString(updated->getOperator()), getOpString(transformed->getOperator()));
+    {
+        if (doTrace(traceOptimizations))
+            DBGLOG("Folding %s to %s", getOpString(updated->getOperator()), getOpString(transformed->getOperator()));
+    }
 #endif
 
 #ifdef _DEBUG
@@ -7136,21 +7334,24 @@ IHqlExpression * CExprFolderTransformer::percolateConstants(IHqlExpression * exp
 IHqlExpression * CExprFolderTransformer::removeParentNode(IHqlExpression * expr)
 {
     IHqlExpression * child = expr->queryChild(0);
-    DBGLOG("Folder: Node %s remove self (now %s)", queryNode0Text(expr), queryNode1Text(child));
+    if (doTrace(traceOptimizations))
+        DBGLOG("Folder: Node %s remove self (now %s)", queryNode0Text(expr), queryNode1Text(child));
     return LINK(child);
 }
 
 IHqlExpression * CExprFolderTransformer::replaceWithNull(IHqlExpression * expr)
 {
     IHqlExpression * ret = createNullExpr(expr);
-    DBGLOG("Folder: Replace %s with %s", queryNode0Text(expr), queryNode1Text(ret));
+    if (doTrace(traceOptimizations))
+        DBGLOG("Folder: Replace %s with %s", queryNode0Text(expr), queryNode1Text(ret));
     return ret;
 }
 
 IHqlExpression * CExprFolderTransformer::replaceWithNullRow(IHqlExpression * expr)
 {
     IHqlExpression * ret = createRow(no_null, LINK(expr->queryRecord()));
-    DBGLOG("Folder: Replace %s with %s", queryNode0Text(expr), queryNode1Text(ret));
+    if (doTrace(traceOptimizations))
+        DBGLOG("Folder: Replace %s with %s", queryNode0Text(expr), queryNode1Text(ret));
     return ret;
 }
 

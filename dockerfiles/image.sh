@@ -11,11 +11,14 @@ trapFunc() {
 trap 'trapFunc "${LINENO}/${BASH_LINENO}" "$?" "$BASH_COMMAND"' ERR
 
 globals() {
+    detect_arch
     SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]:-$0}"; )" &> /dev/null && pwd 2> /dev/null; )"
     ROOT_DIR=$(git rev-parse --show-toplevel)
 
     set +e
-    export $(grep -v '^#' $ROOT_DIR/.env | sed -e 's/\r$//' | xargs) > /dev/null
+    if [ -f $ROOT_DIR/.env ]; then
+        export $(grep -v '^#' $ROOT_DIR/.env | sed -e 's/\r$//' | xargs) > /dev/null
+    fi
     set -e
 
     GIT_REF=$(git rev-parse --short=8 HEAD)
@@ -24,6 +27,10 @@ globals() {
     pushd $ROOT_DIR/vcpkg
     VCPKG_REF=$(git rev-parse --short=8 HEAD)
     popd
+    if [ "$ARCH" == "arm64" ]; then
+        VCPKG_REF="$VCPKG_REF-arm"
+        RELEASE_BASE_IMAGE="arm64v8/$RELEASE_BASE_IMAGE"
+    fi
     DOCKER_USERNAME="${DOCKER_USERNAME:-hpccbuilds}"
 
     CMAKE_OPTIONS="-G Ninja -DCPACK_THREADS=$(docker info --format '{{.NCPU}}') -DUSE_OPTIONAL=OFF -DCONTAINERIZED=ON -DINCLUDE_PLUGINS=ON -DSUPPRESS_V8EMBED=ON"
@@ -46,7 +53,7 @@ globals() {
 
 create_build_image() {
     echo "--- Create 'build-$BUILD_OS:$VCPKG_REF' image---"
-    docker build --rm -f "$SCRIPT_DIR/vcpkg/$BUILD_OS.dockerfile" \
+    docker build --rm -f "$SCRIPT_DIR/$BUILD_OS.dockerfile" \
         -t build-$BUILD_OS:$VCPKG_REF \
         --build-arg DOCKER_NAMESPACE=$DOCKER_USERNAME \
         --build-arg VCPKG_REF=$VCPKG_REF \
@@ -56,15 +63,23 @@ create_build_image() {
 create_platform_core_image() {
     local base=$1
     echo "--- Create 'platform-core:release' image ---"
-    docker build --rm -f "$SCRIPT_DIR/vcpkg/platform-core-$BUILD_OS.dockerfile" \
+    docker build --rm -f "$SCRIPT_DIR/platform-core-$BUILD_OS.dockerfile" \
         -t platform-core:release \
         --build-arg BASE_IMAGE=$base \
-            "$SCRIPT_DIR/vcpkg/." 
+            "$SCRIPT_DIR/." 
 
     if [ "$MODE" = "debug" ]; then
         echo "--- Create 'platform-core:debug' image ---"
-        docker build --rm -f "$SCRIPT_DIR/vcpkg/platform-core-debug-$BUILD_OS.dockerfile" \
+        docker build --rm -f "$SCRIPT_DIR/platform-core-debug-$BUILD_OS.dockerfile" \
             -t platform-core:debug \
+            --build-arg BASE_IMAGE=platform-core:release \
+                "$SCRIPT_DIR/."
+    fi
+
+    if [ "$MODE" = "relwithdebinfo" ]; then
+        echo "--- Create 'platform-core:relwithdebinfo' image ---"
+        docker build --rm -f "$SCRIPT_DIR/vcpkg/platform-core-debug-$BUILD_OS.dockerfile" \
+            -t platform-core:relwithdebinfo \
             --build-arg BASE_IMAGE=platform-core:release \
                 "$SCRIPT_DIR/vcpkg/."
     fi
@@ -88,7 +103,7 @@ finalize_platform_core_image() {
     docker commit $CONTAINER hpccsystems/platform-core:$GIT_BRANCH-$MODE-$crc
     docker rm -f $CONTAINER
 
-    if [ "$MODE" = "debug" ]; then
+    if [ "$MODE" = "debug" ] || [ "$MODE" = "relwithdebinfo" ]; then
         # Add sources
         echo "--- Adding sources to '$image_name' image ---"
         local CONTAINER=$(docker run -d \
@@ -97,6 +112,7 @@ finalize_platform_core_image() {
             hpccsystems/platform-core:$GIT_BRANCH-$MODE-$crc "tail -f /dev/null")
         docker exec --user root --workdir /hpcc-dev $CONTAINER /bin/bash -c "rm -rf /hpcc-dev/HPCC-Platform && mkdir /hpcc-dev/HPCC-Platform && chown -R hpcc:hpcc /hpcc-dev/HPCC-Platform"
         docker exec --workdir /hpcc-dev $CONTAINER /bin/bash -c "git config --global --add safe.directory /hpcc-dev/HPCC-Platform-local"
+        docker exec --workdir /hpcc-dev $CONTAINER /bin/bash -c "git config --global --add safe.directory /hpcc-dev/HPCC-Platform-local/.git"
         docker exec --workdir /hpcc-dev $CONTAINER /bin/bash -c "git clone --single-branch file:///hpcc-dev/HPCC-Platform-local /hpcc-dev/HPCC-Platform"
         docker exec --workdir /hpcc-dev/HPCC-Platform $CONTAINER /bin/bash -c "git reset --hard --recurse-submodules"
         docker exec --workdir /hpcc-dev/HPCC-Platform-local $CONTAINER /bin/bash -c "git ls-files --modified --exclude-standard -z | xargs -0 -I {} cp {} /hpcc-dev/HPCC-Platform/{}"
@@ -258,10 +274,18 @@ build() {
         local base=build-$BUILD_OS:$VCPKG_REF
         local build_type="Debug"
         local cmake_options="-DCMAKE_BUILD_TYPE=$build_type"
+    elif [ "$MODE" = "relwithdebinfo" ]; then
+        local base=build-$BUILD_OS:$VCPKG_REF
+        local build_type="RelWithDebInfo"
+        local cmake_options="-DCMAKE_BUILD_TYPE=$build_type"
     else
         echo "Invalid build mode: $MODE"
         usage
         exit 1
+    fi
+
+    if [ "$ARCH" == "arm64" ]; then
+        base="$base"
     fi
 
     if [ "$RECONFIGURE" -eq 1 ]; then
@@ -291,7 +315,7 @@ build() {
         run "cmake --build /hpcc-dev/build --parallel --target package"
         finalize_platform_core_image $crc \
             "dpkg -i /hpcc-dev/build/hpccsystems-platform*.deb"
-    elif [ "$MODE" = "debug" ]; then
+    elif [ "$MODE" = "debug" ] || [ "$MODE" = "relwithdebinfo" ]; then
         run "cmake --build /hpcc-dev/build --parallel"
         finalize_platform_core_image $crc \
             "cmake --install /hpcc-dev/build --prefix /opt/HPCCSystems"
@@ -330,6 +354,25 @@ function cleanup() {
     fi
 }
 
+function detect_arch() {
+    if [ -z "$ARCH" ]; then
+        if [ "$(uname -m)" == "x86_64" ]; then
+            ARCH="x64"
+        elif [ "$(uname -m)" == "aarch64" ]; then
+            ARCH="arm64"
+        elif [ "$(uname -m)" == "arm64" ]; then
+            ARCH="arm64"
+        else
+            echo "Unsupported architecture: $(uname -m)"
+            exit 1
+        fi
+    fi
+    if [ "$ARCH" != "x64" ] && [ "$ARCH" != "arm64" ]; then
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+    fi
+}
+
 trap cleanup EXIT
 
 status() {
@@ -343,7 +386,9 @@ status() {
     echo "MODE: $MODE"
     echo "RECONFIGURE: $RECONFIGURE"
     echo "BUILD_OS: $BUILD_OS"
+    echo "RELEASE_BASE_IMAGE: $RELEASE_BASE_IMAGE"
     echo "HPCC_BUILD: $HPCC_BUILD"
+    echo "ARCH: $ARCH"
 }
 
 # Print usage information
@@ -355,11 +400,12 @@ usage() {
     echo "  incr                    perform an incremental build (faster version of 'build -m debug')"
     echo "  install <file|folder>   install from a local deb file or build folder"
     echo "  status                  display environment variables"
-    echo "  -m, --mode              specify the build mode (debug or release)"
+    echo "  -m, --mode              specify the build mode (debug, release, relwithdebinfo)"
     echo "                          default mode is release"
     echo "  -t, --tag               tag the build volume with the current branch ref"
     echo "                          will preserve build state per branch"
     echo "  -r, --reconfigure       reconfigure CMake before building"
+    echo "  -a, --architecture      override default architecture (x64 or arm64)"
 }
 
 # Set default values
@@ -368,8 +414,9 @@ MODE="release"
 RECONFIGURE=0
 DEB_FILE=""
 BUILD_OS="ubuntu-22.04"
-RELEASE_BASE_IMAGE="ubuntu:jammy-20230308" # Matches vcpkg base image (does not need to be an exact match)
+RELEASE_BASE_IMAGE="ubuntu:22.04" # Matches vcpkg base image (does not need to be an exact match)
 TAG_BUILD=0
+ARCH=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]
@@ -411,6 +458,11 @@ case $key in
     -r|--reconfigure)
         RECONFIGURE=1
         shift # past argument
+        ;;
+    -a|--architecture)
+        ARCH="$2"
+        shift # past argument
+        shift # past value
         ;;
     -h|--help)
         usage

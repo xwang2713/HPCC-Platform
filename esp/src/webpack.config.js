@@ -1,5 +1,3 @@
-/* eslint-disable no-undef */
-/* eslint-disable @typescript-eslint/no-var-requires */
 var DojoWebpackPlugin = require("dojo-webpack-plugin");
 
 var fs = require("fs");
@@ -39,7 +37,6 @@ module.exports = function (env) {
             buildEnvironment: { dojoRoot: "node_modules" }, // used at build time
             locales: ["en", "bs", "es", "fr", "hr", "hu", "pt-br", "sr", "zh"]
         }),
-
         // For plugins registered after the DojoAMDPlugin, data.request has been normalized and
         // resolved to an absMid and loader-config maps and aliases have been applied
         new webpack.NormalModuleReplacementPlugin(/^dojox\/gfx\/renderer!/, "dojox/gfx/canvas"),
@@ -52,7 +49,37 @@ module.exports = function (env) {
             /^xstyle\/css!/, function (data) {
                 data.request = data.request.replace(/^xstyle\/css!/, "!style-loader!css-loader!");
             }
-        )
+        ),
+
+        // Custom plugin to remove "use strict" from final bundles
+        {
+            apply: (compiler) => {
+                compiler.hooks.thisCompilation.tap('RemoveUseStrictPlugin', (compilation) => {
+                    compilation.hooks.processAssets.tap(
+                        {
+                            name: 'RemoveUseStrictPlugin',
+                            stage: compilation.constructor.PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE
+                        },
+                        () => {
+                            try {
+                                for (const filename of Object.keys(compilation.assets)) {
+                                    if (filename.endsWith('.js')) {
+                                        const asset = compilation.assets[filename];
+                                        const source = asset.source();
+                                        const newSource = source.replace(/["']use strict["'];?\s*/g, '');
+                                        if (source !== newSource) {
+                                            compilation.assets[filename] = new webpack.sources.RawSource(newSource);
+                                        }
+                                    }
+                                }
+                            } catch (error) {
+                                console.warn('RemoveUseStrictPlugin warning:', error.message);
+                            }
+                        }
+                    );
+                });
+            }
+        }
     ];
 
     return {
@@ -72,8 +99,18 @@ module.exports = function (env) {
                     use: ["style-loader", "css-loader"]
                 }, {
                     test: /\.js$/,
-                    use: ["source-map-loader"],
-                    enforce: "pre"
+                    enforce: "pre",
+                    use: [{
+                        loader: "source-map-loader",
+                        options: {
+                            filterSourceMappingUrl: (url, resourcePath) => {
+                                if (resourcePath.includes("node_modules") && !resourcePath.includes("hpcc-js")) {
+                                    return false;
+                                }
+                                return true;
+                            }
+                        }
+                    }]
                 }, {
                     test: /\.js$/,
                     loader: "string-replace-loader",
@@ -87,8 +124,6 @@ module.exports = function (env) {
                 }]
         },
         resolve: {
-            alias: {
-            },
             fallback: {
                 "@hpcc-js": [
                     path.resolve(__dirname, "../../../hpcc-js/packages"),
@@ -101,6 +136,7 @@ module.exports = function (env) {
             modules: ["node_modules"]
         },
 
+        target: "web",
         mode: isProduction ? "production" : "development",
         devtool: isProduction ? undefined : "cheap-module-source-map",
 

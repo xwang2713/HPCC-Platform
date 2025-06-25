@@ -768,7 +768,7 @@ BOOL WINAPI ModuleExitHandler ( DWORD dwCtrlType )
     }
     return FALSE; 
 } 
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
 static void UnixAbortHandler(int signo)
 {
     ahType type = ahInterrupt;
@@ -790,7 +790,7 @@ void queryInstallAbortHandler()
 
 #if defined(_WIN32)
     SetConsoleCtrlHandler( WindowsAbortHandler, TRUE ); 
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__) || defined(__APPLE__) || defined(EMSCRIPTEN)
     struct sigaction action;
     sigemptyset(&action.sa_mask);
     action.sa_flags = SA_RESTART;
@@ -920,7 +920,7 @@ void throwExceptionIfAborting()
 
 StringBuffer & hexdump2string(byte const * in, size32_t inSize, StringBuffer & out)
 {
-    out.append("[");
+    out.appendf("%u bytes [", inSize);
     byte last = 0;
     unsigned seq = 1;
     for(unsigned i=0; i<inSize; ++i)

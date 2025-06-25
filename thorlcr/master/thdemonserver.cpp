@@ -75,7 +75,7 @@ private:
         catch (IException *e)
         {
             StringBuffer s;
-            LOG(MCwarning, "Failed to update progress information: %s", e->errorMessage(s).str());
+            IWARNLOG("Failed to update progress information: %s", e->errorMessage(s).str());
             e->Release();
         }
     }
@@ -98,9 +98,10 @@ private:
             }
 
             const cost_type totalCost = workunitCost + sgCost + graph.getDiskAccessCost();
+
             if (costLimit>0 && totalCost > costLimit)
             {
-                LOG(MCwarning, "ABORT job cost exceeds limit");
+                WARNLOG("ABORT job cost exceeds limit");
                 graph.fireException(MakeThorException(TE_CostExceeded, "Job cost exceeds limit"));
             }
         }
@@ -164,8 +165,7 @@ private:
             }
             catch (IException *E)
             {
-                StringBuffer s;
-                LOG(MCwarning, "Failed to update progress information: %s", E->errorMessage(s).str());
+                IWARNLOG(E, "Failed to update progress information");
                 E->Release();
             }
         }
@@ -193,7 +193,7 @@ private:
         catch (IException *e)
         {
             StringBuffer s;
-            LOG(MCwarning, "Failed to update progress information: %s", e->errorMessage(s).str());
+            IWARNLOG(e, "Failed to update progress information");
             e->Release();
         }
     }
@@ -214,7 +214,7 @@ public:
         if (0 == activeGraphs.ordinality())
         {
             StringBuffer urlStr;
-            LOG(MCdebugProgress, "heartbeat packet received with no active graphs");
+            IWARNLOG("heartbeat packet received with no active graphs");
             return;
         }
         size32_t compressedProgressSz = progressMb.remaining();
@@ -232,12 +232,12 @@ public:
                 ForEachItemIn(g, activeGraphs) if (activeGraphs.item(g).queryGraphId() == graphId) graph = (CMasterGraph *)&activeGraphs.item(g);
                 if (!graph)
                 {
-                    LOG(MCdebugProgress, "heartbeat received from unknown graph %" GIDPF "d", graphId);
+                    IWARNLOG("heartbeat received from unknown graph %" GIDPF "d", graphId);
                     break;
                 }
                 if (!graph->deserializeStats(slave, uncompressedMb))
                 {
-                    LOG(MCdebugProgress, "heartbeat error in graph %" GIDPF "d", graphId);
+                    IWARNLOG("heartbeat error in graph %" GIDPF "d", graphId);
                     break;
                 }
             }
@@ -257,30 +257,11 @@ public:
         IConstWorkUnit & wu =  graph->queryJob().queryWorkUnit();
         workunitCost = aggregateCost(&wu);
 
-        Owned<const IPropertyTree> costs = getCostsConfiguration();
-        double softLimit = 0.0, hardLimit = 0.0;
-        if (costs)
-        {
-            softLimit = costs->getPropReal("@limit");
-            hardLimit = costs->getPropReal("@hardlimit");
-        }
-        double tmpcostLimit = wu.getDebugValueReal("maxCost", softLimit);
-        if (hardLimit && ((tmpcostLimit == 0) || (tmpcostLimit > hardLimit)))
-            costLimit = money2cost_type(hardLimit);
-        else
-            costLimit = money2cost_type(tmpcostLimit);
+        costLimit = getGuillotineCost(&wu);
         activeGraphs.append(*LINK(graph));
         unsigned startTime = msTick();
         graphStarts.append(startTime);
         reportGraph(graph, false, true, startTime, getTimeStampNowValue());
-        const char *graphname = graph->queryJob().queryGraphName();
-        if (memcmp(graphname,"graph",5)==0)
-            graphname+=5;
-        LOG(MCauditInfo,",Progress,Thor,StartSubgraph,%s,%s,%s,%u,%s,%s",
-                queryServerStatus().queryProperties()->queryProp("@thorname"),
-                graph->queryJob().queryWuid(),
-                graphname,
-                (unsigned)graph->queryGraphId(), queryServerStatus().queryProperties()->queryProp("@nodeGroup"), queryServerStatus().queryProperties()->queryProp("@queue"));
     }
     void endGraph(CGraphBase *graph, bool success)
     {

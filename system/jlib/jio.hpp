@@ -47,26 +47,6 @@ interface IRecordSize: public IInterface
 #endif
 
 
-interface IReadSeq : public IInterface
-{
-// fixed length record read interface
-    virtual void     reset() = 0;
-    virtual bool get(void *dst) = 0;
-    virtual unsigned getn(void *dst, unsigned numrecs) = 0;
-    virtual size32_t getRecordSize() = 0; 
-    virtual void stop() = 0; // indicate finished reading
-};
-
-interface IWriteSeq : public IInterface
-{
-// fixed length record write interface
-    virtual void flush() = 0;
-    virtual void put(const void *dst) = 0;
-    virtual void putn(const void *dst, unsigned numrecs) = 0;
-    virtual size32_t getRecordSize() = 0;
-    virtual offset_t getPosition() = 0;
-};
-
 interface ISimpleReadStream : public IInterface
 {
     virtual size32_t read(size32_t max_len, void * data) = 0;
@@ -109,35 +89,15 @@ interface IReceiver : public IInterface
     virtual bool takeRecord(offset_t pos) = 0;
 };
 
-interface IWriteSeqAllocator : public IInterface
-{
-    virtual IWriteSeq *next(size32_t &num) = 0; 
-};
-
-interface IReadSeqAllocator : public IInterface
-{
-    virtual IReadSeq *next() = 0;
-};
-
-
-extern jlib_decl IReadSeq *createReadSeq(int fh, offset_t _offset, size32_t size, size32_t _bufsize = (size32_t)-1, // bufsize in bytes 
-                                         unsigned maxrecs=(unsigned)-1, bool compress=false); // compression is *not* blocked and needs buffer size
-extern jlib_decl IWriteSeq *createWriteSeq(int fh, size32_t size, size32_t bufsize = (size32_t)-1,bool compress=false); // compression is *not* blocked and needs buffer size
-extern jlib_decl IWriteSeq *createTeeWriteSeq(IWriteSeq *, IWriteSeq *);
-extern jlib_decl IWriteSeq *createChainedWriteSeq(IWriteSeqAllocator *iwsa);
-extern jlib_decl IReadSeq *createChainedReadSeq(IReadSeqAllocator *irsa);
-
 extern jlib_decl IRecordSize *createFixedRecordSize(size32_t recsize);
 extern jlib_decl IRecordSize *createDeltaRecordSize(IRecordSize * size, int delta);
 
 
-extern jlib_decl unsigned copySeq(IReadSeq *from,IWriteSeq *to,size32_t bufsize);
-
 extern jlib_decl void setIORetryCount(unsigned _ioRetryCount); // default 0 == off, retries if read op. fails
 extern jlib_decl offset_t checked_lseeki64(int handle, offset_t offset, int origin);
-extern jlib_decl size32_t checked_write(int handle, const void *buffer, size32_t count);
-extern jlib_decl size32_t checked_read(int file, void *buffer, size32_t len);
-extern jlib_decl size32_t checked_pread(int file, void *buffer, size32_t len, offset_t pos);
+extern jlib_decl size32_t checked_write(const char * filename, int handle, const void *buffer, size32_t count);
+extern jlib_decl size32_t checked_read(const char * filename, int file, void *buffer, size32_t len);
+extern jlib_decl size32_t checked_pread(const char * filename, int file, void *buffer, size32_t len, offset_t pos);
 
 interface IFileIO;
 interface IFileIOStream;
@@ -162,13 +122,9 @@ interface IRowStream : extends IInterface
 
 interface IRowWriter: extends IInterface
 {
-    virtual void putRow(const void *row) = 0; // takes ownership of row
+    virtual void putRow(const void *row) = 0;   // takes ownership of row
     virtual void flush() = 0;
-};
-
-interface IRowWriterEx : extends IRowWriter
-{
-public:
+    virtual void writeRow(const void *row) = 0; // does not take ownership of row, row may not be linkable, or live beyond the next call
     virtual void noteStopped() = 0;
 };
 
@@ -178,7 +134,7 @@ interface IRowLinkCounter: extends IInterface
     virtual void releaseRow(const void *row)=0;
 };
 
-interface IRowProvider: extends IRowLinkCounter
+interface IMergeRowProvider: extends IRowLinkCounter
 {
     virtual const void *nextRow(unsigned idx)=0;
     virtual void stop(unsigned idx)=0;

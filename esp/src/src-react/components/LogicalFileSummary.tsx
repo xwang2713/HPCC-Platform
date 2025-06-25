@@ -34,7 +34,7 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
     tab = "summary"
 }) => {
 
-    const [file, isProtected, , refresh] = useFile(cluster, logicalFile);
+    const { file, isProtected, refreshData } = useFile(cluster, logicalFile);
     const [description, setDescription] = React.useState("");
     const [_protected, setProtected] = React.useState(false);
     const [restricted, setRestricted] = React.useState(false);
@@ -69,7 +69,7 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
 
     React.useEffect(() => {
         setDescription(file?.Description || "");
-        setProtected(file?.ProtectList?.DFUFileProtect?.length > 0 || false);
+        setProtected(isProtected);
         setRestricted(file?.IsRestricted || false);
 
         if ((file?.filePartsOnCluster() ?? []).length > 0) {
@@ -83,7 +83,7 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
             setReplicateFlag(_replicate);
         }
 
-    }, [file]);
+    }, [file, isProtected]);
 
     const canSave = React.useMemo(() => {
         return file && (
@@ -96,15 +96,11 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => {
-                refresh();
-            }
+            onClick: () => refreshData()
         },
         {
             key: "copyFilename", text: nlsHPCC.CopyLogicalFilename, iconProps: { iconName: "Copy" },
-            onClick: () => {
-                navigator?.clipboard?.writeText(logicalFile);
-            }
+            onClick: () => navigator?.clipboard?.writeText(logicalFile)
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -112,9 +108,7 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
             onClick: () => {
                 file?.update({
                     UpdateDescription: true,
-                    FileDesc: description,
-                    Protect: _protected ? WsDfu.DFUChangeProtection.Protect : WsDfu.DFUChangeProtection.Unprotect,
-                    Restrict: restricted ? WsDfu.DFUChangeRestriction.Restrict : WsDfu.DFUChangeRestriction.Unrestricted,
+                    FileDesc: description
                 })
                     .then(_ => {
                         setShowMessageBar(true);
@@ -148,7 +142,7 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
             key: "replicate", text: nlsHPCC.Replicate, disabled: !canReplicateFlag || !replicateFlag,
             onClick: () => setShowReplicateFile(true)
         },
-    ], [_protected, canReplicateFlag, canSave, description, file, logicalFile, refresh, replicateFlag, restricted, setShowDeleteConfirm]);
+    ], [canReplicateFlag, canSave, description, file, logicalFile, refreshData, replicateFlag, setShowDeleteConfirm]);
 
     const protectedImage = _protected ? Utility.getImageURL("locked.png") : Utility.getImageURL("unlocked.png");
     const stateImage = Utility.getImageURL(getStateImageName(file as unknown as IFile));
@@ -181,7 +175,7 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
             <TableGroup fields={{
                 "Wuid": { label: nlsHPCC.Workunit, type: "link", value: file?.Wuid, href: `#/${isDFUWorkunit ? "dfu" : ""}workunits/${file?.Wuid}`, readonly: true, },
                 "Owner": { label: nlsHPCC.Owner, type: "string", value: file?.Owner, readonly: true },
-                "SuperOwner": { label: nlsHPCC.SuperFile, type: "links", links: file?.Superfiles?.DFULogicalFile?.map(row => ({ label: "", type: "link", value: row.Name, href: `#/files/${row.Name}` })) },
+                "SuperOwner": { label: nlsHPCC.SuperFile, type: "links", links: file?.Superfiles?.DFULogicalFile?.map(row => ({ label: "", type: "link", value: row.Name, href: `#/files/${row.NodeGroup !== null ? row.NodeGroup : undefined}/${row.Name}` })) },
                 "NodeGroup": { label: nlsHPCC.ClusterName, type: "string", value: file?.NodeGroup, readonly: true },
                 "Description": { label: nlsHPCC.Description, type: "string", value: description },
                 "JobName": { label: nlsHPCC.JobName, type: "string", value: file?.JobName, readonly: true },
@@ -205,8 +199,8 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
                 "RecordCount": { label: nlsHPCC.RecordCount, type: "string", value: file?.RecordCount, readonly: true },
                 "IsReplicated": { label: nlsHPCC.IsReplicated, type: "checkbox", value: (file?.filePartsOnCluster() ?? []).length > 0, readonly: true },
                 "NumParts": { label: nlsHPCC.FileParts, type: "number", value: file?.NumParts, readonly: true },
-                "MinSkew": { label: nlsHPCC.MinSkew, type: "string", value: `${Utility.formatDecimal(file?.Stat?.MinSkewInt64 / 100 ?? 0)}%`, readonly: true },
-                "MaxSkew": { label: nlsHPCC.MaxSkew, type: "string", value: `${Utility.formatDecimal(file?.Stat?.MaxSkewInt64 / 100 ?? 0)}%`, readonly: true },
+                "MinSkew": { label: nlsHPCC.MinSkew, type: "string", value: `${Utility.formatDecimal((file?.Stat?.MinSkewInt64 ?? 0) / 100)}%`, readonly: true },
+                "MaxSkew": { label: nlsHPCC.MaxSkew, type: "string", value: `${Utility.formatDecimal((file?.Stat?.MaxSkewInt64 ?? 0) / 100)}%`, readonly: true },
                 "MinSkewPart": { label: nlsHPCC.MinSkewPart, type: "string", value: file?.Stat?.MinSkewPart === undefined ? "" : file?.Stat?.MinSkewPart?.toString(), readonly: true },
                 "MaxSkewPart": { label: nlsHPCC.MaxSkewPart, type: "string", value: file?.Stat?.MaxSkewPart === undefined ? "" : file?.Stat?.MaxSkewPart?.toString(), readonly: true },
             }} onChange={(id, value) => {
@@ -216,9 +210,15 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
                         break;
                     case "isProtected":
                         setProtected(value);
+                        file?.update({
+                            Protect: value ? WsDfu.DFUChangeProtection.Protect : WsDfu.DFUChangeProtection.Unprotect,
+                        }).catch(err => logger.error(err));
                         break;
                     case "isRestricted":
                         setRestricted(value);
+                        file?.update({
+                            Restrict: value ? WsDfu.DFUChangeRestriction.Restrict : WsDfu.DFUChangeRestriction.Unrestricted,
+                        }).catch(err => logger.error(err));
                         break;
                 }
             }} />

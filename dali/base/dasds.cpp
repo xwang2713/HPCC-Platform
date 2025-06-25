@@ -84,10 +84,20 @@ static unsigned readWriteTimeout = 60000;
 #define DEFAULT_LCIDLE_RATE 1          // 1 write transactions per idle period. <= this rate is deemed idle (suitable for save)
 #define STORENOTSAVE_WARNING_PERIOD 72 // hours
 
-static auto pSdsRequestsReceived = hpccMetrics::registerCounterMetric("dali.sds.requests.received", "The total number of Dali SDS requests received", SMeasureCount);
-static auto pSdsRequestsStarted = hpccMetrics::registerCounterMetric("dali.sds.requests.started", "The total number of Dali SDS requests started", SMeasureCount);
-static auto pSdsRequestsCompleted = hpccMetrics::registerCounterMetric("dali.sds.requests.completed", "The total number of Dali SDS requests completed", SMeasureCount);
-static auto pSdsRequestsPending = hpccMetrics::registerGaugeFromCountersMetric("dali.sds.requests.pending", "Current number of pending SDS requests", SMeasureCount, pSdsRequestsReceived, pSdsRequestsStarted);
+static std::shared_ptr<hpccMetrics::CounterMetric> pSdsRequestsReceived;
+static std::shared_ptr<hpccMetrics::CounterMetric> pSdsRequestsStarted;
+static std::shared_ptr<hpccMetrics::CounterMetric> pSdsRequestsCompleted;
+static std::shared_ptr<hpccMetrics::GaugeMetricFromCounters> pSdsRequestsPending;
+
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    pSdsRequestsReceived = hpccMetrics::registerCounterMetric("dali.sds.requests.received", "The total number of Dali SDS requests received", SMeasureCount);
+    pSdsRequestsStarted = hpccMetrics::registerCounterMetric("dali.sds.requests.started", "The total number of Dali SDS requests started", SMeasureCount);
+    pSdsRequestsCompleted = hpccMetrics::registerCounterMetric("dali.sds.requests.completed", "The total number of Dali SDS requests completed", SMeasureCount);
+    pSdsRequestsPending = hpccMetrics::registerGaugeFromCountersMetric("dali.sds.requests.pending", "Current number of pending SDS requests", SMeasureCount, pSdsRequestsReceived, pSdsRequestsStarted);
+    return true;
+}
+
 
 // #define TEST_NOTIFY_HANDLER
 
@@ -559,7 +569,7 @@ public:
     IMPLEMENT_IINTERFACE;
 
     CServerConnection(ISDSConnectionManager &manager, ConnectionId connectionId, const char *xpath, SessionId id, unsigned mode, unsigned timeout, IPropertyTree *_parent, ConnInfoFlags _connInfoFlags)
-        : CConnectionBase(manager, connectionId, xpath, id, mode, timeout), parent(_parent), connInfoFlags(_connInfoFlags)
+        : CConnectionBase(manager, connectionId, xpath, id, mode, timeout), connInfoFlags(_connInfoFlags), parent(_parent)
     {
         INIT_NAMEDCOUNT;
         subsid = 0;
@@ -941,7 +951,7 @@ void serializeVisibleAttributes(IPropertyTree &tree, MemoryBuffer &mb)
         for (;;)
         {
             const char *attr = aIter->queryName();
-            if (0 != strcmp(EXT_ATTR, attr))
+            if (0 != strncmp("@sds:", attr, 5))
             {
                 mb.append(attr);
                 mb.append(aIter->queryValue());
@@ -1022,12 +1032,13 @@ void writeDelta(StringBuffer &xml, IFile &iFile, const char *msg="", unsigned re
             sprintf(strNum, "%016" I64F "X", fLen);
             memcpy(headerPtr + deltaHeaderSizeOff, strNum, 16);
             iFileIO->write(0, strlen(deltaHeader), headerPtr);
+            iFileIO->close();
         }
         catch (IException *e)
         {
             exception.setown(e);
             StringBuffer s(msg);
-            IERRLOG(e, s.append("writeDelta, failed").str());
+            OWARNLOG(e, s.append("writeDelta, failed").str());
         }
         if (!exception.get())
             break;
@@ -1035,7 +1046,7 @@ void writeDelta(StringBuffer &xml, IFile &iFile, const char *msg="", unsigned re
             return;
         if (0 == --_retryAttempts)
         {
-            IWARNLOG("writeDelta, too many retry attempts [%d]", retryAttempts);
+            DISLOG("writeDelta, too many retry attempts [%d]", retryAttempts);
             return;
         }
         exception.clear();
@@ -1117,7 +1128,6 @@ class CDeltaWriter : implements IThreaded
     unsigned transactionQueueLimit = defaultDeltaTransactionQueueLimit; // absolute limit, will block if this far behind
     memsize_t transactionMaxMem = defaultDeltaMemMaxMB * 0x100000; // 10MB
     unsigned totalQueueLimitHits = 0;
-    unsigned addQueueWaiting = 0;
     unsigned saveThresholdSecs = 0;
     cycle_t lastSaveTime = 0;
     cycle_t thresholdDuration = 0;
@@ -1159,11 +1169,10 @@ class CDeltaWriter : implements IThreaded
             StringBuffer deltaFilename(dataPath);
             iStoreHelper->getCurrentDeltaFilename(deltaFilename);
             OwnedIFile iFile = createIFile(deltaFilename.str());
-            writeDelta(deltaXml, *iFile);
+            writeDelta(deltaXml, *iFile, "writeXml", 1, INFINITE);
         }
         catch (IException *e)
         {
-            // NB: writeDelta retries a few times before giving up.
             VStringBuffer errMsg("writeXml: failed to save delta data, blockedDelta size=%d", deltaXml.length());
             OWARNLOG(e, errMsg.str());
             e->Release();
@@ -1186,7 +1195,7 @@ class CDeltaWriter : implements IThreaded
                     StringBuffer deltaFilename(backupPath);
                     constructStoreName(DELTANAME, iStoreHelper->queryCurrentEdition(), deltaFilename);
                     OwnedIFile iFile = createIFile(deltaFilename.str());
-                    ::writeDelta(deltaXml, *iFile, "backup - ", 60, 30);
+                    ::writeDelta(deltaXml, *iFile, "backup - ", 1, 10); // backup is less critical - will be synched at startup
                 }
             }
             catch (IException *e)
@@ -1214,21 +1223,25 @@ class CDeltaWriter : implements IThreaded
                 Owned<IFile> iFile = createIFile(rL.str());
                 Owned<IFileIO> fileIO = iFile->open(IFOcreate);
                 fileIO->write(0, length, data);
+                fileIO->close();
             }
             catch (IException *e)
             {
                 exception.setown(e);
                 StringBuffer err("Saving external (backup): ");
-                LOG(MCoperatorError, e, err.append(rL).str());
+                OERRLOG(e, err.append(rL).str());
             }
             if (!exception.get())
                 break;
             if (0 == retrySecs)
                 return;
-            if (0 == --_retryAttempts)
+            if (_retryAttempts != INFINITE)
             {
-                IWARNLOG("writeExt, too many retry attempts [%d]", retryAttempts);
-                return;
+                if (0 == --_retryAttempts)
+                {
+                    IWARNLOG("writeExt, too many retry attempts [%d]", retryAttempts);
+                    return;
+                }
             }
             exception.clear();
             DBGLOG("writeExt, retrying");
@@ -1252,120 +1265,26 @@ class CDeltaWriter : implements IThreaded
             {
                 exception.setown(e);
                 StringBuffer err("Removing external (backup): ");
-                LOG(MCoperatorWarning, e, err.append(rL).str());
+                OWARNLOG(e, err.append(rL).str());
             }
             if (!exception.get())
                 break;
             if (0 == retrySecs)
                 return;
-            if (0 == --_retryAttempts)
+            if (_retryAttempts != INFINITE)
             {
-                IWARNLOG("deleteExt, too many retry attempts [%d]", retryAttempts);
-                return;
+                if (0 == --_retryAttempts)
+                {
+                    IWARNLOG("deleteExt, too many retry attempts [%d]", retryAttempts);
+                    return;
+                }
             }
             exception.clear();
             DBGLOG("deleteExt, retrying");
             MilliSleep(retrySecs*1000);
         }
     }
-    bool save(std::queue<Owned<CTransactionItem>> &todo)
-    {
-        StringBuffer fname(dataPath);
-        OwnedIFile deltaIPIFile = createIFile(fname.append(DELTAINPROGRESS).str());
-        touchFile(deltaIPIFile);
-        struct RemoveDIPBlock
-        {
-            IFile &iFile;
-            bool done;
-            void doit() { done = true; iFile.remove(); }
-            RemoveDIPBlock(IFile &_iFile) : iFile(_iFile), done(false) { }
-            ~RemoveDIPBlock () { if (!done) doit(); }
-        } removeDIP(*deltaIPIFile);
-        StringBuffer detachIPStr(dataPath);
-        OwnedIFile detachIPIFile = createIFile(detachIPStr.append(DETACHINPROGRESS).str());
-        if (detachIPIFile->exists()) // very small window where this can happen.
-        {
-            // implies other operation about to access current delta
-            // CHECK session is really alive, otherwise it has been orphaned, so remove it.
-            try
-            {
-                SessionId sessId = 0;
-                OwnedIFileIO detachIPIO = detachIPIFile->open(IFOread);
-                if (detachIPIO)
-                {
-                    size_t s = detachIPIO->read(0, sizeof(sessId), &sessId);
-                    detachIPIO.clear();
-                    if (sizeof(sessId) == s)
-                    {
-                        // double check session is really alive
-                        if (querySessionManager().sessionStopped(sessId, 0))
-                            detachIPIFile->remove();
-                        else
-                        {
-                            // *cannot block* because other op (sasha) accessing remote dali files, can access dali.
-                            removeDIP.doit();
-                            PROGLOG("blocked");
-                            return false;
-                        }
-                    }
-                }
-            }
-            catch (IException *e) { EXCLOG(e, NULL); e->Release(); }
-        }
-
-        std::vector<std::string> pendingExtDeletes;
-        while (!todo.empty())
-        {
-            CTransactionItem *item = todo.front();
-            if (CTransactionItem::f_delta == item->type)
-            {
-                Owned<IPropertyTree> changeTree = item->deltaTree;
-                item->deltaTree = nullptr;
-                cleanChangeTree(*changeTree);
-
-                // write out with header details (i.e. path)
-                deltaXml.appendf("<Header path=\"%s\">\n  <Delta>\n", item->name);
-                toXML(changeTree, deltaXml, 4);
-                deltaXml.append("  </Delta>\n</Header>");
-            }
-            else
-            {
-                // external file
-
-                if (CTransactionItem::f_addext == item->type)
-                {
-                    // NB: the XML referring to these externals will not be written until the pending xml is built up and saved,
-                    // meaning if there's a cold restart at this point, there will be unreferenced ext files on disk (and ensuing warnings)
-                    // However, that is better than committing the xml that references externals, before they exist in the event of 
-                    // a cold restart between the two.
-                    // NB2: It is also important to ensure that these externals are committed to disk, in the event of a Dali saveStore
-                    // because the saved in-memory store has been altered at this point, i.e. it depends on the external file (see flush())
-                    writeExt(dataPath, item->name, item->ext.dataLength, item->ext.data);
-                    if (backupPath.length())
-                        writeExt(backupPath, item->name, item->ext.dataLength, item->ext.data, 60, 30);
-                    item->ext.pendingWrite = false;
-                }
-                else
-                {
-                    // track externals to delete / don't delete until xml is committed. See below.
-                    dbgassertex(CTransactionItem::f_delext == item->type);
-                    pendingExtDeletes.push_back(item->name);
-                }
-            }
-            todo.pop();
-        }
-        if (deltaXml.length())
-            writeXml();
-        for (auto &ext : pendingExtDeletes)
-        {
-            deleteExt(dataPath, ext.c_str());
-            if (backupPath.length())
-                deleteExt(backupPath, ext.c_str(), 60, 30);
-        }
-        if (thresholdDuration)
-            lastSaveTime = get_cycles_now();
-        return true;
-    }
+    bool save(std::queue<Owned<CTransactionItem>> &todo);
     void requestAsyncWrite()
     {
         // must be called whilst pendingCrit is held + writeRequested == false
@@ -1443,7 +1362,11 @@ public:
             if (!writeRequested)
             {
                 if (pendingSz) // the writer thread is idle, but there are some transactions that the writer hasn't seen yet
+                {
+                    // NB: will never happen in default configuration (i.e. unless @deltaSaveThresholdSecs is enabled)
+                    // because addToQueue (in default config) will always call requestAsyncWrite() as soon as anything is queued
                     requestAsyncWrite();
+                }
             }
             // NB: this is not an else, because if called, requestAsyncWrite() above will set writeRequested=true
             if (writeRequested)
@@ -1456,7 +1379,11 @@ public:
         {
             // this should not be here long, but log just in case
             while (!allWrittenSem.wait(10000))
+            {
+                if (aborted) // can ony happen if CDeltaWriter thread is stopping
+                    return;
                 WARNLOG("Waiting on CDeltaWriter to flush transactions");
+            }
         }
     }
     void stop()
@@ -1472,49 +1399,63 @@ public:
 // IThreaded
     virtual void threadmain() override
     {
-        while (!aborted)
+        PROGLOG("CDeltaWriter thread started");
+        try
         {
-            bool semTimedout = false;
-            if (saveThresholdSecs)
-                semTimedout = !pendingTransactionsSem.wait(saveThresholdSecs * 1000);
-            else
-                pendingTransactionsSem.wait();
-
-            if (aborted)
-                break;
-            // keep going whilst there's things pending
-            while (true)
+            while (!aborted)
             {
-                CLeavableCriticalBlock b(pendingCrit);
-                std::queue<Owned<CTransactionItem>> todo = std::move(pending);
-                if (0 == todo.size())
-                {
-                    if (writeRequested)
-                    {
-                        // NB: if here, implies someone signalled via requestAsyncWrite()
+                bool semTimedout = false;
+                if (saveThresholdSecs)
+                    semTimedout = !pendingTransactionsSem.wait(saveThresholdSecs * 1000);
+                else
+                    pendingTransactionsSem.wait();
 
-                        // if reason we're here is because sem timedout, consume the signal that was sent
-                        if (semTimedout)
-                            pendingTransactionsSem.wait();
-
-                        writeRequested = false;
-                    }
-                    if (signalWhenAllWritten)
-                    {
-                        signalWhenAllWritten = false;
-                        allWrittenSem.signal();
-                    }
+                if (aborted)
                     break;
+                // keep going whilst there's things pending
+                while (true)
+                {
+                    CLeavableCriticalBlock b(pendingCrit);
+                    std::queue<Owned<CTransactionItem>> todo = std::move(pending);
+                    if (0 == todo.size())
+                    {
+                        if (writeRequested)
+                        {
+                            // NB: if here, implies someone signalled via requestAsyncWrite()
+
+                            // if reason we're here is because sem timedout, consume the signal that was sent
+                            if (semTimedout)
+                                pendingTransactionsSem.wait();
+
+                            writeRequested = false;
+                            if (signalWhenAllWritten) // can only be true if writeRequested was true
+                            {
+                                signalWhenAllWritten = false;
+                                allWrittenSem.signal();
+                            }
+                        }
+                        break;
+                    }
+                    pendingSz = 0;
+                    // Hold blockedSaveCrit before releasing pendingCrit, because need to ensure this saves ahead
+                    // of other transactions building up in addToQueue
+                    CHECKEDCRITICALBLOCK(blockedSaveCrit, fakeCritTimeout); // because if Dali is saving state (::blockingSave), it will clear pending
+                    b.leave();
+
+                    // Because blockedSaveCrit is held, it will also block 'synchronous save' (see addToQueue)
+                    // i.e. if stuck here, the transactions will start building up, and trigger a 'Forced synchronous save',
+                    // which will in turn block. This must complete!
+                    while (!save(todo)) // if temporarily blocked, wait a bit (blocking window is short)
+                        MilliSleep(1000);
                 }
-                pendingSz = 0;
-                // Hold blockedSaveCrit before releasing pendingCrit, because need to ensure this saves ahead
-                // of other transactions building up in addToQueue
-                CHECKEDCRITICALBLOCK(blockedSaveCrit, fakeCritTimeout); // because if Dali is saving state (::blockingSave), it will clear pending
-                b.leave();
-                while (!save(todo)) // if temporarily blocked, wait a bit (blocking window is short)
-                    MilliSleep(1000);
             }
         }
+        catch (IException *e)
+        {
+            DISLOG(e, "CDeltaWriter: thread exited. Remedial action must be taken. Save, shutdown or restart ASAP.");
+            e->Release();
+        }
+        aborted = true;
     }
 };
 
@@ -1525,7 +1466,7 @@ protected:
     CCovenSDSManager &manager;
     StringAttr ext, dataPath;
 public:
-    CExternalFile(const char *_ext, const char *_dataPath, CCovenSDSManager &_manager) : ext(_ext), dataPath(_dataPath), manager(_manager) { }
+    CExternalFile(const char *_ext, const char *_dataPath, CCovenSDSManager &_manager) : manager(_manager), ext(_ext), dataPath(_dataPath) { }
     const char *queryExt() { return ext; }
     StringBuffer &getName(StringBuffer &fName, const char *base)
     {
@@ -1580,12 +1521,12 @@ public:
             if (*_name)
                 s.append("in property ").append(_name);
             Owned<IException> e = MakeSDSException(SDSExcpt_MissingExternalFile, "%s", filename.str());
-            LOG(MCoperatorWarning, e, s.str());
+            OWARNLOG(e, s.str());
             if (withValue)
             {
                 StringBuffer str("EXTERNAL BINARY FILE: \"");
                 str.append(filename.str()).append("\" MISSING");
-                CPTValue v(str.length()+1, str.str(), false);
+                CPTValue v(str.length()+1, str.str());
                 v.serialize(mb);
             }
             else
@@ -1598,7 +1539,7 @@ public:
                 MemoryBuffer vmb;
                 Owned<IFileIO> fileIO = iFile->open(IFOread);
                 verifyex(sz == ::read(fileIO, 0, sz, vmb));
-                CPTValue v(sz, vmb.toByteArray(), true);
+                CPTValue v(sz, vmb.toByteArray(), true, COMPRESS_METHOD_NONE, COMPRESS_METHOD_DEFAULT);
                 v.serialize(mb);
             }
             else
@@ -1662,7 +1603,7 @@ public:
             if (name && *name)
                 s.append("in property ").append(name);
             Owned<IException> e = MakeSDSException(SDSExcpt_MissingExternalFile, "%s", filename.str());
-            LOG(MCoperatorWarning, e, s.str());
+            OWARNLOG(e, s.str());
             StringBuffer str("EXTERNAL XML FILE: \"");
             str.append(filename.str()).append("\" MISSING");
             tree.setown(createPTree(owner.queryName()));
@@ -1763,7 +1704,7 @@ class CSubscriberNotifier : public CInterface
     };
 public:
     CSubscriberNotifier(CSubscriberNotifierTable &_table, CSubscriberContainerBase &_subscriber, MemoryBuffer &notifyData)
-        : table(_table), subscriber(_subscriber) //NB: takes ownership of subscriber
+        : subscriber(_subscriber), table(_table) //NB: takes ownership of subscriber
     {
         INIT_NAMEDCOUNT;
         change.setown(new CChange(notifyData));
@@ -1951,13 +1892,16 @@ public:
             return;
         MemoryAttr ma;
         ma.set(sz, data);
-        CTransactionItem *item = new CTransactionItem(strdup(name), sz, ma.detach(), false);
+        Owned<CTransactionItem> item = new CTransactionItem(strdup(name), sz, ma.detach(), false);
         doAdd(item);
     }
     void add(CTransactionItem *item)
     {
         if (item->ext.dataLength > cacheSzLimit)
+        {
+            remove(item->name);
             return;
+        }
         doAdd(item);
     }
     void remove(const char *key)
@@ -1991,6 +1935,13 @@ public:
 
 enum LockStatus { LockFailed, LockHeld, LockTimedOut, LockSucceeded };
 
+enum SaveStoreFlags
+{
+    ssf_none  = 0x0,
+    ssf_flush = 0x1,
+    ssf_stop  = 0x2
+};
+BITMASK_ENUM(SaveStoreFlags);
 class CCovenSDSManager : public CSDSManagerBase, implements ISDSManagerServer, implements ISubscriptionManager, implements IExceptionHandler
 {
 public:
@@ -2004,7 +1955,7 @@ public:
     void restart(IException * e);
 
     void loadStore(const char *store=NULL, const bool *abort=NULL);
-    void saveStore(const char *store=NULL, bool currentEdition=false);
+    void saveStore(const char *store, SaveStoreFlags flags);
     void checkEnvironment(IPropertyTree *oldEnv, IPropertyTree *newEnv);
     bool unlock(__int64 treeId, ConnectionId connectionId, bool delayDelete=false);
     void unlockAll(__int64 treeId);
@@ -2101,6 +2052,7 @@ public:
     virtual void setConfigOpt(const char *opt, const char *value);
     virtual unsigned queryCount(const char *xpath);
     virtual bool updateEnvironment(IPropertyTree *newEnv, bool forceGroupUpdate, StringBuffer &response);
+    virtual void closedown() override;
 
 // ISubscriptionManager impl.
     virtual void add(ISubscription *subs,SubscriptionId id);
@@ -2190,10 +2142,10 @@ void CBinaryFileExternal::readValue(const char *name, MemoryBuffer &mb)
     {
         StringBuffer s("Missing external file ");
         Owned<IException> e = MakeSDSException(SDSExcpt_MissingExternalFile, "%s", filename.str());
-        LOG(MCoperatorWarning, e, s.str());
+        OWARNLOG(e, s.str());
         StringBuffer str("EXTERNAL BINARY FILE: \"");
         str.append(filename.str()).append("\" MISSING");
-        CPTValue v(str.length()+1, str.str(), false);
+        CPTValue v(str.length()+1, str.str());
         v.serialize(mb);
     }
     else
@@ -2236,10 +2188,10 @@ void CBinaryFileExternal::read(const char *name, IPropertyTree &owner, MemoryBuf
             if (*_name)
                 s.append("in property ").append(_name);
             Owned<IException> e = MakeSDSException(SDSExcpt_MissingExternalFile, "%s", filename.str());
-            LOG(MCoperatorWarning, e, s.str());
+            OWARNLOG(e, s.str());
             StringBuffer str("EXTERNAL BINARY FILE: \"");
             str.append(filename.str()).append("\" MISSING");
-            CPTValue v(str.length()+1, str.str(), false);
+            CPTValue v(str.length()+1, str.str());
             v.serialize(mb);
         }
         else
@@ -2286,10 +2238,13 @@ void CDeltaWriter::addToQueue(CTransactionItem *item)
     }
     else // here if exceeded transationQueueLimit, transactionMaxMem or exceeded time threshold (deltaSaveThresholdSecs)
     {
+        if (aborted) // critical situation if delta writer is no longer running (there will have been previous errors)
+            DISLOG("CDeltaWriter thread was aborted! Dali is compromised. Save, shutdown or restart ASAP.");
+
         ++totalQueueLimitHits;
         // force a synchronous save
         CCycleTimer timer;
-        PROGLOG("Forcing synchronous save of %u transactions", (unsigned)pending.size());
+        PROGLOG("Forcing synchronous save of %u transactions (pendingSz=%zu)", (unsigned)pending.size(), pendingSz);
         CHECKEDCRITICALBLOCK(blockedSaveCrit, fakeCritTimeout); // because if Dali is saving state (::blockingSave), it will clear pending
         if (save(pending)) // if temporarily blocked, continue, meaning queue limit will overrun a bit (blocking window is short)
         {
@@ -2685,7 +2640,7 @@ public:
             try { SDSManager->deleteExternal(index); }
             catch (IException *e)
             {
-                LOG(MCoperatorWarning, e, StringBuffer("Deleting external reference for ").append(queryName()).str());
+                OWARNLOG(e, StringBuffer("Deleting external reference for ").append(queryName()).str());
                 e->Release();
             }
         }
@@ -2787,7 +2742,7 @@ public:
 
         if (cutoff < 0 || depth<cutoff)
         {
-            IPropertyTreeIterator *iter = getElements("*");
+            Owned<IPropertyTreeIterator> iter = getElements("*");
             iter->first();
             while (iter->isValid())
             {
@@ -2796,8 +2751,6 @@ public:
                 child->serializeCutOffRT(tgt, cutoff, depth+1, extValues);
                 iter->next();
             }
-            iter->Release();
-
         }
         tgt.append(""); // element terminator. i.e. blank child name.
     }
@@ -2842,8 +2795,18 @@ public:
         if (isAttribute(xpath)) return false;
         if (CRemoteTreeBase::isCompressed(xpath)) return true;
         if (SDSManager->ignoreExternals) return false;
-        CServerRemoteTree *child = (CServerRemoteTree *)queryPropTree(xpath);
+        IPropertyTree * child = queryPropTree(xpath);
         return child->hasProp(EXT_ATTR);
+    }
+
+    virtual CompressionMethod getCompressionType() const override
+    {
+        CompressionMethod method = CRemoteTreeBase::getCompressionType();
+        if (method) return method;
+        if (SDSManager->ignoreExternals) return COMPRESS_METHOD_NONE;
+        if (!hasProp(EXT_ATTR))
+            return COMPRESS_METHOD_NONE;
+        return (CompressionMethod)getPropInt(COMPRESS_ATTR, COMPRESS_METHOD_LZW_LITTLE_ENDIAN);
     }
 
     bool getProp(const char *xpath, StringBuffer &ret) const override
@@ -2891,7 +2854,7 @@ class CNodeSubscriberContainer : public CSubscriberContainerBase
     ICopyArrayOf<CServerRemoteTree> nodes; // never linked, node must signal the unsubscription and removal of subscriber and these references
 public:
     CNodeSubscriberContainer(ISubscription *subscriber, SubscriptionId id, bool _sendValue, const char *_xpath)
-        : CSubscriberContainerBase(subscriber, id), sendValue(_sendValue), xpath(_xpath)
+        : CSubscriberContainerBase(subscriber, id), xpath(_xpath), sendValue(_sendValue)
     {
     }
     bool querySendValue() const { return sendValue; }
@@ -3246,7 +3209,7 @@ PDState CServerRemoteTree::checkChange(IPropertyTree &changeTree, CBranchChange 
     {
         bool binary=changeTree.isBinary(NULL);
         IPTArrayValue *v = ((PTree &)changeTree).queryValue();
-        setValue(v?new CPTValue(v->queryValueRawSize(), v->queryValueRaw(), binary, true, v->isCompressed()):NULL, binary);
+        setValue(v?new CPTValue(v->queryValueRawSize(), v->queryValueRaw(), binary, v->getCompressionType(), COMPRESS_METHOD_NONE):NULL, binary);
         if (changeTree.getPropBool("@new"))
             mergePDState(res, PDS_New);
         mergePDState(res, PDS_Data);
@@ -3270,7 +3233,7 @@ PDState CServerRemoteTree::checkChange(IPropertyTree &changeTree, CBranchChange 
             getPropBin(NULL, mb);
         changeTree.getPropBin(NULL, mb);
         if (binary)
-            setPropBin(NULL, mb.length(), mb.toByteArray());
+            setPropBin(NULL, mb.length(), mb.toByteArray(), COMPRESS_METHOD_DEFAULT);
         else
         {
             mb.append('\0');
@@ -3289,6 +3252,7 @@ PDState CServerRemoteTree::checkChange(IPropertyTree &changeTree, CBranchChange 
             {
                 SDSManager->deleteExternal(index); // i.e. no longer e.g. now less than threshold.
                 r = removeProp(EXT_ATTR);
+                removeProp(COMPRESS_ATTR);
             }
             else
                 SDSManager->writeExternal(*this, false, index);
@@ -3298,6 +3262,7 @@ PDState CServerRemoteTree::checkChange(IPropertyTree &changeTree, CBranchChange 
                 if (!t)
                     t = changeTree.addPropTree(ATTRDELETE_TAG, createPTree());
                 t->addProp(EXT_ATTR, "");
+                t->setProp(COMPRESS_ATTR, nullptr);//MORE: What should this do?
             }
             else
                 changeTree.setProp(NULL, (const char *)NULL);
@@ -3312,6 +3277,7 @@ PDState CServerRemoteTree::checkChange(IPropertyTree &changeTree, CBranchChange 
                     t = changeTree.addPropTree(ATTRCHANGE_TAG, createPTree());
                 changeTree.setProp(NULL, (const char *)NULL);
                 t->setProp(EXT_ATTR, queryProp(EXT_ATTR));
+                t->setProp(COMPRESS_ATTR, queryProp(COMPRESS_ATTR));
             }
             catch (IException *)
             {
@@ -3712,7 +3678,7 @@ public:
     IMPLEMENT_IINTERFACE;
 
     CLock(CLockTable &_table, __int64 _treeId, IdPath &_idPath, const char *_xpath, unsigned mode, ConnectionId id, SessionId sessId)
-        : table(_table), treeId(_treeId), xpath(_xpath), exclusive(false), sub(0), readLocks(0), holdLocks(0), waiting(0), pending(0)
+        : table(_table), sub(0), readLocks(0), holdLocks(0), pending(0), waiting(0), xpath(_xpath), treeId(_treeId), exclusive(false)
     {
         INIT_NAMEDCOUNT;
         verifyex(tryLock(mode, id, sessId)==LockSucceeded);
@@ -3922,7 +3888,7 @@ template <> void CLockTable::onRemove(void *et)
 ///////////////
 
 CSDSTransactionServer::CSDSTransactionServer(CCovenSDSManager &_manager)
- : Thread("SDS Manager, CSDSTransactionServer"), manager(_manager), CTransactionLogTracker(DAMP_SDSCMD_MAX)
+ : Thread("SDS Manager, CSDSTransactionServer"), CTransactionLogTracker(DAMP_SDSCMD_MAX), manager(_manager)
 {
     stopped = true;
 }
@@ -4207,7 +4173,7 @@ bool checkOldFormat(CServerRemoteTree *parentServerTree, IPropertyTree *tree, Me
                 ((PTree *)tree)->setValue(v, binary);
             }
             else
-                ((PTree *)tree)->setValue(new CPTValue(0, NULL, false, true, false), false);
+                ((PTree *)tree)->setValue(new CPTValue(), false);
 
             Owned<IAttributeIterator> attrs = clientTree->getAttributes();
             if (attrs->first())
@@ -4811,7 +4777,7 @@ void CSDSTransactionServer::processMessage(CMessageBuffer &mb)
         mb.append(e->errorMessage(s).str());
         StringBuffer clientUrl("EXCEPTION in reply to client ");
         mb.getSender().getEndpointHostText(clientUrl);
-        LOG(MCoperatorError, e);
+        OERRLOG(e);
     }
     try {
         CheckTime block10("DAMP_REQUEST reply");
@@ -5007,6 +4973,18 @@ void initializeInternals(IPropertyTree *root)
     root->addPropTree("Status/Servers",createPTree());
 }
 
+void clearStaleMeteData(IPropertyTree *root)
+{
+    // JobQueues
+    // Remove all Client entries from all queues. By definition they are stale (they should normally be removed when the client disconnects)
+    Owned<IPropertyTreeIterator> jobQueues = root->getElements("JobQueues/Queue");
+    ForEach(*jobQueues)
+    {
+        IPropertyTree &queue = jobQueues->query();
+        while (queue.removeProp("Client"));
+    }
+}
+
 IPropertyTree *loadStore(const char *storeFilename, unsigned edition, IPTreeMaker *iMaker, unsigned crcValidation, bool logErrorsOnly=false, const bool *abort=NULL)
 {
     CHECKEDCRITICALBLOCK(loadStoreCrit, fakeCritTimeout);
@@ -5047,7 +5025,7 @@ IPropertyTree *loadStore(const char *storeFilename, unsigned edition, IPTreeMake
     catch (DALI_CATCHALL)
     {
         IException *e = MakeStringException(0, "Unknown exception - loading store file : %s", storeFilename);
-        LOG(MCoperatorDisaster, e, "");
+        DISLOG(e);
         if (!logErrorsOnly)
             throw;
         e->Release();
@@ -5197,7 +5175,7 @@ public:
                             t += idlePeriodSecs;
                             if (t/3600 >= STORENOTSAVE_WARNING_PERIOD && ((t-lastWarning)/3600>(STORENOTSAVE_WARNING_PERIOD/2)))
                             {
-                                OWARNLOG("Store has not been saved for %d hours", t/3600);
+                                OERRLOG("Store has not been saved for %d hours", t/3600);
                                 lastWarning = t;
                             }
                         }
@@ -5343,6 +5321,7 @@ class CStoreHelper : implements IStoreHelper, public CInterface
             iFileIO->write(0, sizeof(unsigned), crc);
         if (storeInfo)
             storeInfo->cache.set(filename.str());
+        iFileIO->close();
     }
 
     void updateStoreInfo(const char *base, const char *location, unsigned edition, unsigned *crc, CStoreInfo *storeInfo=NULL)
@@ -5454,6 +5433,7 @@ class CStoreHelper : implements IStoreHelper, public CInterface
 
             OwnedIFileIO detachIPIO = detachIPIFile->open(IFOcreate);
             detachIPIO->write(0, sizeof(storeHelper.mySessId), &storeHelper.mySessId);
+            detachIPIO->close();
             detachIPIO.clear();
             detachIPIFile->rename(activeDetachIPStr.str());
             // check often do not wait any longer than necessary
@@ -5491,7 +5471,7 @@ class CStoreHelper : implements IStoreHelper, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
 
-    CStoreHelper(const char *_storeName, const char *_location, const char *_remoteBackupLocation, unsigned _configFlags, unsigned _keepStores, unsigned _delay, const bool *_abort) : storeName(_storeName), location(_location), remoteBackupLocation(_remoteBackupLocation), configFlags(_configFlags), keepStores(_keepStores), delay(_delay), abort(_abort)
+    CStoreHelper(const char *_storeName, const char *_location, const char *_remoteBackupLocation, unsigned _configFlags, unsigned _keepStores, unsigned _delay, const bool *_abort) : storeName(_storeName), location(_location), remoteBackupLocation(_remoteBackupLocation), configFlags(_configFlags), abort(_abort), delay(_delay), keepStores(_keepStores)
     {
         mySessId = daliClientActive()?myProcessSession():0;
         if (!keepStores) keepStores = DEFAULT_KEEP_LASTN_STORES;
@@ -5527,7 +5507,7 @@ public:
                                 if (newName.charAt(i)==':')
                                     newName.setCharAt(i,'_');
                             newName.append(".unused");
-                            PROGLOG("Detected spurious data file : '%s' - renaming to %s", file.queryFilename(), newName.str());
+                            PROGLOG("Detected spurious data file : '%s' - renaming to %s (current edition=%u, file edition=%u)", file.queryFilename(), newName.str(), edition, fileEdition);
                             try
                             {
                                 file.rename(newName.str());
@@ -5564,13 +5544,15 @@ public:
             return true;
         offset_t fSize = iFileIO->size();
         PROGLOG("Loading delta: %s (size=%.2f MB)", filename, ((double)fSize) / 0x100000);
+        size32_t lenDeltaHeader = strlen(deltaHeader);
         MemoryBuffer tmp;
-        char *ptr = (char *) tmp.reserveTruncate(strlen(deltaHeader));
+        char *ptr = (char *) tmp.reserveTruncate(lenDeltaHeader+1);
         unsigned embeddedCrc = 0;
         offset_t pos = 0;
         bool hasCrcHeader = false; // check really only needed for deltas proceeding CRC header
-        if (strlen(deltaHeader) == iFileIO->read(0, strlen(deltaHeader), ptr))
+        if (lenDeltaHeader == iFileIO->read(0, lenDeltaHeader, ptr))
         {
+            ptr[lenDeltaHeader] = '\0';
             if (0 == memicmp(deltaHeader, ptr, 5))
             {
                 pos = deltaHeaderSizeStart;
@@ -5713,14 +5695,14 @@ public:
         }
         return res;
     }
-    virtual void saveStore(IPropertyTree *root, unsigned *_newEdition, bool currentEdition=false)
+    virtual void saveStore(IPropertyTree *root, unsigned *_newEdition)
     {
         LOG(MCdebugProgress, "Saving store");
 
         refreshStoreInfo();
 
         unsigned edition = storeInfo.edition;
-        unsigned newEdition = currentEdition?edition:nextEditionN(edition);
+        unsigned newEdition = nextEditionN(edition);
         bool done = false;
         try
         {
@@ -5750,7 +5732,7 @@ public:
             }
             catch (IException *e)
             {
-                OERRLOG(e, "Exception(1) - Error saving store file");
+                DISLOG(e, "Exception(1) - Error saving store file");
                 iFileIOTmpStore.clear();
                 iFileTmpStore->remove();
                 throw;
@@ -5763,7 +5745,7 @@ public:
             refreshStoreInfo();
             if (storeInfo.edition != edition)
             {
-                OWARNLOG("Another process has updated the edition whilst saving the store: %s", newStoreNamePath.str());
+                WARNLOG("Another process has updated the edition whilst saving the store: %s", newStoreNamePath.str());
                 iFileTmpStore->remove();
                 return;
             }
@@ -5789,7 +5771,7 @@ public:
                 catch (IException *e)
                 {
                     StringBuffer s("Exception(2) - Error saving store file");
-                    OERRLOG(e, s.str());
+                    DISLOG(e, s.str());
                     e->Release();
                     return;
                 }
@@ -5798,7 +5780,7 @@ public:
                     try { renameDelta(edition, newEdition, remoteBackupLocation); }
                     catch (IException *e)
                     {
-                        LOG(MCoperatorError, e, "Failure handling backup");
+                        OERRLOG(e, "Failure handling backup");
                         e->Release();
                     }
                 }
@@ -5828,7 +5810,7 @@ public:
             catch (IException *e)
             {
                 StringBuffer s;
-                LOG(MCoperatorError, e, s.append("Failure to backup dali to remote location: ").append(remoteBackupLocation));
+                OERRLOG(e, s.append("Failure to backup dali to remote location: ").append(remoteBackupLocation));
                 e->Release();
             }
 
@@ -5841,13 +5823,13 @@ public:
         catch (IException *e)
         {
             StringBuffer s("Exception(3) - Error saving store file");
-            OERRLOG(e, s.str());
+            DISLOG(e, s.str());
             e->Release();
         }
         if (done)
         {
 #ifndef NODELETE
-            unsigned toDeleteEdition = prevEditionN(edition, keepStores+(currentEdition?1:0));
+            unsigned toDeleteEdition = prevEditionN(edition, keepStores);
             StringBuffer filename(location);
             constructStoreName(storeName, toDeleteEdition, filename);
             OwnedIFile iFile = createIFile(filename.str());
@@ -5972,7 +5954,7 @@ static void initializeStorageGroups(IPropertyTree *oldEnvironment) // oldEnviron
 #endif
 
 CCovenSDSManager::CCovenSDSManager(ICoven &_coven, IPropertyTree &_config, const char *_dataPath, const char *_daliName)
-    : coven(_coven), config(_config), server(*this), dataPath(_dataPath), daliName(_daliName)
+    : dataPath(_dataPath), daliName(_daliName), server(*this), coven(_coven), config(_config)
 {
     config.Link();
     restartOnError = config.getPropBool("@restartOnUnhandled");
@@ -6106,6 +6088,7 @@ CCovenSDSManager::~CCovenSDSManager()
 {
     if (unhandledThread) unhandledThread->join();
     if (coalesce) coalesce->stop();
+    deltaWriter.stop();
     scanNotifyPool.clear();
     notifyPool.clear();
     connections.kill();
@@ -6115,6 +6098,11 @@ CCovenSDSManager::~CCovenSDSManager()
     else
         enableMemLeakChecking(false);
     config.Release();
+}
+
+void CCovenSDSManager::closedown()
+{
+    //Should never be called - but do not assert since it is harmless and it is better not to report
 }
 
 void CCovenSDSManager::validateDeltaBackup()
@@ -6567,17 +6555,17 @@ void CCovenSDSManager::loadStore(const char *storeName, const bool *abort)
         if (saveNeeded)
         {
             LOG(MCdebugInfo, "Saving converted store");
-            SDSManager->saveStore();
+            SDSManager->saveStore(nullptr, ssf_flush);
         }
     }
     catch (IException *e)
     {
-        OERRLOG(e, "Exception - Failed to load main store");
+        DISLOG(e, "Exception - Failed to load main store");
         throw;
     }
     catch (DALI_CATCHALL)
     {
-        OERRLOG("Unknown exception - Failed to load main store");
+        DISLOG("Unknown exception - Failed to load main store");
         throw;
     }
 
@@ -6591,7 +6579,7 @@ void CCovenSDSManager::loadStore(const char *storeName, const bool *abort)
     if (remoteBackupLocation.length())
     {
         try { validateBackup(); }
-        catch (IException *e) { LOG(MCoperatorError, e, "Validating backup"); e->Release(); }
+        catch (IException *e) { OERRLOG(e, "Validating backup"); e->Release(); }
 
         StringBuffer deltaFilename(dataPath);
         iStoreHelper->getCurrentDeltaFilename(deltaFilename);
@@ -6612,21 +6600,31 @@ void CCovenSDSManager::loadStore(const char *storeName, const bool *abort)
     }
     Owned<IRemoteConnection> conn = connect("/", 0, RTM_INTERNAL, INFINITE);
     initializeInternals(conn->queryRoot());
+    clearStaleMeteData(conn->queryRoot());
     conn.clear();
     initializeStorageGroups(oldEnvironment);
 }
 
-void CCovenSDSManager::saveStore(const char *storeName, bool currentEdition)
+void CCovenSDSManager::saveStore(const char *storeName, SaveStoreFlags flags)
 {
     struct CIgnore
     {
         CIgnore() { SDSManager->ignoreExternals=true; }
         ~CIgnore() { SDSManager->ignoreExternals=false; }
     } ignore;
-    // lock blockingaveCrit after flush, since deltaWriter itself blocks on blockedSaveCrit
-    deltaWriter.flush(); // transactions will be blocked at this stage, no new deltas will be added to writer
+    if (hasMask(flags, ssf_stop))
+    {
+        // Dali is stopping, we don't care about any inflight transactions any more, we're about to save and quit
+        // Wait for delta writer thread to finish, to ensure no dangling writes after we've saved
+        deltaWriter.stop();
+    }
+    else if (hasMask(flags, ssf_flush))
+    {
+        // lock blockedSaveCrit after flush, since deltaWriter itself blocks on blockedSaveCrit
+        deltaWriter.flush(); // transactions will be blocked at this stage, no new deltas will be added to writer
+    }
     CHECKEDCRITICALBLOCK(blockedSaveCrit, fakeCritTimeout);
-    iStoreHelper->saveStore(root, NULL, currentEdition);
+    iStoreHelper->saveStore(root, NULL);
     unsigned initNodeTableSize = allNodes.maxElements()+OVERFLOWSIZE;
     queryCoven().setInitSDSNodes(initNodeTableSize>INIT_NODETABLE_SIZE?initNodeTableSize:INIT_NODETABLE_SIZE);
 }
@@ -6718,7 +6716,7 @@ inline void serverToClientTree(CServerRemoteTree &src, CClientRemoteTree &dst)
         dst.deserializeSelfRT(mb);
     }
     else
-        dst.clone(src, true, false);
+        dst.cloneIntoSelf(src, false);
     dst.setServerId(src.queryServerId());
     if (src.hasChildren()) dst.addServerTreeInfo(STI_HaveChildren);
 }
@@ -7290,7 +7288,7 @@ void CCovenSDSManager::restart(IException * e)
     connections.kill();
     DBGLOG("-------: stopped");
     DBGLOG("-------: saving current store . . . . . .");
-    saveStore();
+    saveStore(nullptr, ssf_flush);
     DBGLOG("-------: store saved.");
     DBGLOG("-------: restarting SDS server restart");
     start();
@@ -8236,7 +8234,7 @@ void CCovenSDSManager::blockingSave(unsigned *writeTransactions)
     if (writeTransactions)
         *writeTransactions = SDSManager->writeTransactions;
     // JCS - could in theory, not block, but abort save.
-    SDSManager->saveStore();
+    SDSManager->saveStore(nullptr, ssf_flush);
 }
 
 bool CCovenSDSManager::updateEnvironment(IPropertyTree *newEnv, bool forceGroupUpdate, StringBuffer &response)
@@ -8409,7 +8407,7 @@ public:
         ~PushPop() { stack.pop(); }
         CPTStack &stack;
     };
-    CSubscriberNotifyScanner(IPropertyTree &_changeTree, CPTStack &_stack, CBranchChange &_rootChanges) : changeTree(&_changeTree), rootChanges(&_rootChanges), stack(_stack)
+    CSubscriberNotifyScanner(IPropertyTree &_changeTree, CPTStack &_stack, CBranchChange &_rootChanges) : stack(_stack), changeTree(&_changeTree), rootChanges(&_rootChanges)
     {
         INIT_NAMEDCOUNT;
         SDSManager->querySubscriberTable().getSubscribers(subs);
@@ -8748,9 +8746,11 @@ void CCovenSDSManager::writeExternal(CServerRemoteTree &tree, bool direct, __int
     IExternalHandler *extHandler = queryExternalHandler(EF_BinaryValue);
     assertex(extHandler);
     tree.removeProp(EXT_ATTR);
+    tree.removeProp(COMPRESS_ATTR);
     StringBuffer name(EXTERNAL_NAME_PREFIX);
     extHandler->write(name.append(index).str(), tree);
     tree.setPropInt64(EXT_ATTR, index);
+    tree.setPropInt(COMPRESS_ATTR, tree.getCompressionType());
     extHandler->resetAsExternal(tree);
     // setPropInt64(EXT_ATTR, index); // JCSMORE not necessary
 }
@@ -8785,7 +8785,7 @@ bool CCovenSDSManager::fireException(IException *e)
         {
             if (handled)
             {
-                LOG(MCoperatorDisaster, e, "FATAL, too many exceptions");
+                DISLOG(e, "FATAL, too many exceptions");
                 return false; // did not successfully handle.
             }
             IERRLOG(e, "Exception while restarting or shutting down");
@@ -8818,11 +8818,11 @@ bool CCovenSDSManager::fireException(IException *e)
                     msg.append("Unhandled exception, shutting down: ").append(e->errorCode()).append(": ");
                     e->errorMessage(msg);
                     manager.stop();
-                    manager.saveStore();
+                    manager.saveStore(nullptr, ssf_stop);
                 }
                 manager.unhandledThread.clear();
             }
-            catch (IException *_e) { LOG(MCoperatorError, _e, "Exception while restarting or shutting down"); _e->Release(); }
+            catch (IException *_e) { OERRLOG(_e, "Exception while restarting or shutting down"); _e->Release(); }
             catch (DALI_CATCHALL) { IERRLOG("Unknown exception while restarting or shutting down"); }
             if (!restart)
             {
@@ -8878,6 +8878,137 @@ void CCovenSDSManager::notifyNodeDelete(CServerRemoteTree &node)
 void CCovenSDSManager::notifyNode(CServerRemoteTree &node, PDState state)
 {
     nodeSubscriptionManager->notify(node, state);
+}
+
+///////////////////////
+
+bool CDeltaWriter::save(std::queue<Owned<CTransactionItem>> &todo)
+{
+    StringBuffer fname(dataPath);
+    OwnedIFile deltaIPIFile = createIFile(fname.append(DELTAINPROGRESS).str());
+    struct RemoveDIPBlock
+    {
+        IFile &iFile;
+        bool done;
+        void doit() { done = true; iFile.remove(); }
+        RemoveDIPBlock(IFile &_iFile) : iFile(_iFile), done(false) { }
+        ~RemoveDIPBlock () { if (!done) doit(); }
+    } removeDIP(*deltaIPIFile);
+
+    while (true)
+    {
+        try
+        {
+            touchFile(deltaIPIFile);
+            StringBuffer detachIPStr(dataPath);
+            OwnedIFile detachIPIFile = createIFile(detachIPStr.append(DETACHINPROGRESS).str());
+            if (detachIPIFile->exists()) // very small window where this can happen.
+            {
+                // implies other operation about to access current delta
+                // CHECK session is really alive, otherwise it has been orphaned, so remove it.
+                SessionId sessId = 0;
+                OwnedIFileIO detachIPIO = detachIPIFile->open(IFOread);
+                if (detachIPIO)
+                {
+                    size_t s = detachIPIO->read(0, sizeof(sessId), &sessId);
+                    detachIPIO.clear();
+                    if (sizeof(sessId) == s)
+                    {
+                        // double check session is really alive
+                        if (querySessionManager().sessionStopped(sessId, 0))
+                            detachIPIFile->remove();
+                        else
+                        {
+                            // *cannot block* because other op (sasha) accessing remote dali files, can access dali.
+                            removeDIP.doit();
+                            PROGLOG("blocked");
+                            return false;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        catch (IException *e)
+        {
+            DISLOG(e, "save: failed to touch delta in progress file");
+            e->Release();
+        }
+        // here if exception only
+        MilliSleep(1000);
+    }
+
+    bool forceBlockingSave = false;
+    // NB: once we reach this point, this function must complete
+    try
+    {
+        std::vector<std::string> pendingExtDeletes;
+        while (!todo.empty())
+        {
+            CTransactionItem *item = todo.front();
+            if (CTransactionItem::f_delta == item->type)
+            {
+                Owned<IPropertyTree> changeTree = item->deltaTree;
+                item->deltaTree = nullptr;
+                cleanChangeTree(*changeTree);
+
+                // write out with header details (i.e. path)
+                deltaXml.appendf("<Header path=\"%s\">\n  <Delta>\n", item->name);
+                toXML(changeTree, deltaXml, 4);
+                deltaXml.append("  </Delta>\n</Header>");
+            }
+            else
+            {
+                // external file
+
+                if (CTransactionItem::f_addext == item->type)
+                {
+                    // NB: the XML referring to these externals will not be written until the pending xml is built up and saved,
+                    // meaning if there's a cold restart at this point, there will be unreferenced ext files on disk (and ensuing warnings)
+                    // However, that is better than committing the xml that references externals, before they exist in the event of
+                    // a cold restart between the two.
+                    // NB2: It is also important to ensure that these externals are committed to disk, in the event of a Dali saveStore
+                    // because the saved in-memory store has been altered at this point, i.e. it depends on the external file (see flush())
+                    writeExt(dataPath, item->name, item->ext.dataLength, item->ext.data, 1, INFINITE);
+                    if (backupPath.length())
+                        writeExt(backupPath, item->name, item->ext.dataLength, item->ext.data, 1, 10); // backup is less critical - will be synched at startup
+                    item->ext.pendingWrite = false;
+                }
+                else
+                {
+                    // track externals to delete / don't delete until xml is committed. See below.
+                    dbgassertex(CTransactionItem::f_delext == item->type);
+                    pendingExtDeletes.push_back(item->name);
+                }
+            }
+            todo.pop();
+        }
+        if (deltaXml.length())
+            writeXml();
+        for (auto &ext : pendingExtDeletes)
+        {
+            deleteExt(dataPath, ext.c_str(), 1, INFINITE);
+            if (backupPath.length())
+                deleteExt(backupPath, ext.c_str(), 1, 10); // backup is less critical - will be synched at startup
+        }
+    }
+    catch (IException *e)
+    {
+        DISLOG(e, "save: failure whilst committing deltas to disk! Remedial action must be taken");
+        e->Release();
+        // this is really an attempt at disaster recovery at this point
+        forceBlockingSave = true;
+    }
+    if (forceBlockingSave)
+    {
+        DISLOG("Due to earlier failures, attempting forced/blocking save of Dali store");
+        while (todo.size())
+            todo.pop();
+        SDSManager->saveStore(nullptr, ssf_none);
+    }
+    if (thresholdDuration)
+        lastSaveTime = get_cycles_now();
+    return true;
 }
 
 ///////////////////////
@@ -8966,7 +9097,7 @@ public:
         if (storeLoaded)
         {
             manager->stop();
-            manager->saveStore();
+            manager->saveStore(nullptr, ssf_stop);
         }
         removeThreadExceptionHandler(manager);
         ::Release(manager);
@@ -9032,7 +9163,7 @@ bool applyXmlDeltas(IPropertyTree &root, IIOStream &stream, bool stopOnError)
 
         bool hadError;
 
-        CDeltaProcessor(IPropertyTree &_store, bool _stopOnError) : store(_store), stopOnError(_stopOnError), level(0)
+        CDeltaProcessor(IPropertyTree &_store, bool _stopOnError) : level(0), store(_store), stopOnError(_stopOnError)
         {
             sectionEndOffset = 0;
             hadError = false;

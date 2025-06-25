@@ -22,8 +22,8 @@ MACRO(SET_PLUGIN_PACKAGE plugin)
     set(USE_OPTIONAL OFF) # Force failure if we can't find the plugin dependencies
 ENDMACRO()
 
-set(VCPKG_INCLUDE "(windows | osx | linux)")
-set(VCPKG_SUPPRESS "(!windows & !osx & !linux)")
+set(VCPKG_INCLUDE "(windows | osx | linux | emscripten)")
+set(VCPKG_SUPPRESS "(!windows & !osx & !linux & !emscripten)")
 
 set(PLUGINS_LIST
     CASSANDRAEMBED
@@ -85,6 +85,11 @@ if (USE_PARQUET)
 endif()
 
 #  vcpkg.json options  ---
+set(VCPKG_ANTLR3 "${VCPKG_SUPPRESS}")
+if (WSSQL_SERVICE)
+    set(VCPKG_ANTLR3 "${VCPKG_INCLUDE}")
+endif()
+
 set(VCPKG_APR "${VCPKG_SUPPRESS}")
 if (USE_APR)
     set(VCPKG_APR "${VCPKG_INCLUDE}")
@@ -149,6 +154,23 @@ set(VCPKG_ZLIB "${VCPKG_SUPPRESS}")
 if (USE_ZLIB)
     set(VCPKG_ZLIB "${VCPKG_INCLUDE}")
 endif()
+
+if (VCPKG_ECLBLAS_DYNAMIC_ARCH)
+    set(VCPKG_ECLBLAS_DYNAMIC_ARCH_FEATURE "\"dynamic-arch\",")
+else ()
+    set(VCPKG_ECLBLAS_DYNAMIC_ARCH_FEATURE "")
+endif()
+
+set(VCPKG_NUMA "${VCPKG_SUPPRESS}")
+if (USE_NUMA)
+    set(VCPKG_NUMA "${VCPKG_INCLUDE}")
+endif()
+
+if (USE_OPENTEL_GRPC)
+    set(VCPKG_OPENTEL_GRPC_FEATURE "\"otlp-grpc\",")
+else ()
+    set(VCPKG_OPENTEL_GRPC_FEATURE "")
+endif ()
 
 configure_file("${HPCC_SOURCE_DIR}/vcpkg.json.in" "${HPCC_SOURCE_DIR}/vcpkg.json")
 

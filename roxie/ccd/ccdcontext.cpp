@@ -952,7 +952,7 @@ protected:
     const IRoxieContextLogger &logctx;
     byte *bufferBase;
     MemoryBuffer blockBuffer;
-    Owned<ISerialStream> bufferStream;
+    Owned<IBufferedSerialInputStream> bufferStream;
     CThorStreamDeserializerSource rowSource;
     bool eof;
     bool eogPending;
@@ -1314,9 +1314,9 @@ public:
         logctx.setStatistic(kind, value);
     }
 
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const override
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const override
     {
-        logctx.mergeStats(from);
+        logctx.mergeStats(activityId, from);
     }
 
     virtual void gatherStats(CRuntimeStatisticCollection & merged) const override
@@ -1530,6 +1530,11 @@ public:
         return options;
     }
 
+    virtual cycle_t queryElapsedCycles() const
+    {
+        return elapsedTimer.elapsedCycles();
+    }
+
     const char *queryAuthToken()
     {
         return authToken.str();
@@ -1658,6 +1663,7 @@ public:
         }
         else
         {
+            OwnedActiveSpanScope graphScope = queryThreadedActiveSpan()->createInternalSpan(name);
             ProcessInfo startProcessInfo;
             if (workUnit || statsWu)
                 startProcessInfo.update(ReadAllInfo);
@@ -1927,15 +1933,6 @@ public:
         return useContext(sequence).getPropBool(name);
     }
 
-    static unsigned hex2digit(char c)
-    {
-        // MORE - what about error cases?
-        if (c >= 'a')
-            return (c - 'a' + 10);
-        else if (c >= 'A')
-            return (c - 'A' + 10);
-        return (c - '0');
-    }
     virtual void getResultData(unsigned & tlen, void * & tgt, const char * name, unsigned sequence)
     {
         MemoryBuffer result;
@@ -2136,11 +2133,15 @@ public:
     }
     virtual ISectionTimer * registerTimer(unsigned activityId, const char * name)
     {
+        return registerStatsTimer(activityId, name, 0);
+    }
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption)
+    {
         CriticalBlock b(timerCrit);
         ISectionTimer *timer = functionTimers.getValue(name);
         if (!timer)
         {
-            timer = ThorSectionTimer::createTimer(globalStats, name);
+            timer = ThorSectionTimer::createTimer(globalStats, name, static_cast<ThorStatOption>(statsOption));
             functionTimers.setValue(name, timer);
             timer->Release(); // Value returned is not linked
         }
@@ -2379,7 +2380,7 @@ public:
     {
         // NOTE: This is needed to ensure that owned activities are destroyed BEFORE I am,
         // to avoid pure virtual calls when they come to call noteProcessed()
-        logctx.mergeStats(globalStats);
+        logctx.mergeStats(0, globalStats);
         if (factory)
             factory->mergeStats(logctx);
         childGraphs.releaseAll();
@@ -2611,8 +2612,16 @@ protected:
 
     void doPostProcess()
     {
-        logctx.mergeStats(globalStats);
-        logctx.setStatistic(StTimeTotalExecute, elapsedTimer.elapsedNs());
+        logctx.mergeStats(0, globalStats);
+        unsigned __int64 elapsed = elapsedTimer.elapsedNs();
+        unsigned __int64 minTime = milliToNano(options.minTimeLimit);
+        if (minTime && (nanoToMilli(elapsed) < minTime))
+        {
+            unsigned __int64 delay = minTime - elapsed;
+            NanoSleep(delay);
+            logctx.noteStatistic(StTimeDelayed, delay);
+        }
+        logctx.setStatistic(StTimeTotalExecute, elapsed);  // Should this include delay?
         if (factory)
         {
             factory->mergeStats(logctx);
@@ -2697,6 +2706,7 @@ protected:
         }
         options.timeLimit = 0;
         options.warnTimeLimit = 0;
+        options.minTimeLimit = 0;
     }
 
 public:
@@ -2950,7 +2960,7 @@ public:
         rowManager->reportPeakStatistics(statsTarget, 0);
     }
 
-    virtual void done(bool failed)
+    virtual void done(bool failed) override
     {
         if (debugContext)
             debugContext->debugTerminate();
@@ -3069,6 +3079,10 @@ public:
     {
         Owned<IRoxieDaliHelper> dali = ::connectToDali();
         return dali != nullptr;
+    }
+    virtual bool allowSashaAccess() const
+    {
+        return nullptr != workUnit; // allow if dynamic query only
     }
     virtual StringBuffer &getQueryId(StringBuffer &result, bool isShared) const
     {
@@ -4038,6 +4052,7 @@ public:
             GlobalCodeContextExtra gctx(this, 0);
             p->perform(&gctx, 0);
         }
+        doPostProcess();
     }
 };
 

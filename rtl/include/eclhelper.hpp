@@ -46,9 +46,20 @@ typedef unsigned short UChar;
 #endif
 #include "rtlconst.hpp"
 
+
+#if !defined(ECLRTL_LOCAL)
+#ifdef ECLRTL_EXPORTS
+#define ECLRTL_API DECL_EXPORT
+#else
+#define ECLRTL_API DECL_IMPORT
+#endif
+#else
+#define ECLRTL_API
+#endif
+
 //Should be incremented whenever the virtuals in the context or a helper are changed, so
 //that a work unit can't be rerun.  Try as hard as possible to retain compatibility.
-#define ACTIVITY_INTERFACE_VERSION      654
+#define ACTIVITY_INTERFACE_VERSION      655
 #define MIN_ACTIVITY_INTERFACE_VERSION  650             //minimum value that is compatible with current interface
 
 typedef unsigned char byte;
@@ -484,7 +495,7 @@ inline byte getVirtualInitializer(const void * initializer) { return (byte)(mems
 typedef IThorDiskCallback IVirtualFieldCallback;
 
 //Core struct used for representing meta for a field.  Effectively used as an interface.
-struct RtlFieldInfo
+struct ECLRTL_API RtlFieldInfo
 {
     constexpr inline RtlFieldInfo(const char * _name, const char * _xpath, const RtlTypeInfo * _type, unsigned _flags = 0, const char *_initializer = NULL)
     : name(_name), xpath(_xpath), type(_type), initializer(_initializer), flags(_type->fieldType | _flags) {}
@@ -663,6 +674,11 @@ interface ISectionTimer : public IInterface
 {
     virtual unsigned __int64 getStartCycles() = 0;
     virtual void noteSectionTime(unsigned __int64 startCycles) = 0;
+
+    // arg kind is of type StatisticKind
+    virtual void addStatistic(__int64 kind, unsigned __int64 value) = 0;
+    virtual void setStatistic(__int64 kind, unsigned __int64 value) = 0;
+    virtual void mergeStatistic(__int64 kind, unsigned __int64 value) = 0;
 };
 
 //NB: New methods must always be added at the end of this interface to retain backward compatibility
@@ -776,11 +792,12 @@ interface ICodeContext : public IResourceContext
     virtual const void * fromJson(IEngineRowAllocator * _rowAllocator, size32_t len, const char * utf8, IXmlToRowTransformer * xmlTransformer, bool stripWhitespace) = 0;
     virtual void getRowJSON(size32_t & lenResult, char * & result, IOutputMetaData & info, const void * row, unsigned flags) = 0;
     virtual unsigned getExternalResultHash(const char * wuid, const char * name, unsigned sequence) = 0;
-    virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) = 0;
+    virtual ISectionTimer * registerTimer(unsigned activityId, const char * name) = 0; // see also registerStatTimer
     virtual IEngineRowAllocator * getRowAllocatorEx(IOutputMetaData * meta, unsigned activityId, unsigned flags) const = 0;
     virtual void addWuExceptionEx(const char * text, unsigned code, unsigned severity, unsigned audience, const char * source) = 0;
     virtual unsigned getElapsedMs() const = 0;
     virtual unsigned getWorkflowId() const = 0; // Note: don't use yet as it has not been fully implemented in all derived classes
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption) = 0;
 };
 
 //Provided by engine=>can extend
@@ -1117,6 +1134,9 @@ enum
     TDXjobtemp          = 0x0040,       // stay around while a wu is being executed.
     TDXgeneric          = 0x0080,       // generic form of disk read/write
 
+    TDXdynprovideroptions = 0x40000000,     // The provider options are dynamic and must be called after onStart()
+    TDXdynformatoptions = 0x80000000,       // The format options are dynamic and must be called after onStart()
+
 //disk read flags
     TDRoptional         = 0x00000100,
     TDRunsorted         = 0x00000200,
@@ -1136,10 +1156,12 @@ enum
     TDRunfilteredcount  = 0x00800000,       // count/aggregegate doesn't have an additional filter
     TDRfilenamecallback = 0x01000000,
     TDRtransformvirtual = 0x02000000,       // transform uses a virtual field.
-    TDRdynformatoptions = 0x04000000,
+    //UNUSED            = 0x04000000,
     TDRinvariantfilename= 0x08000000,       // filename is non constant but has the same value for the whole query
     TDRprojectleading   = 0x10000000,       // The projeted format matches leading fields of the source row (so no need to project if disappearing quickly)
     TDRcloneappendvirtual = 0x20000000,     // Can clone the disk record and then append the virtual fields.
+
+    //NB: All flags are now used.
 
 //disk write flags
     TDWextend           = 0x0100,
@@ -1279,6 +1301,17 @@ struct IHThorDiskWriteArg : public IHThorArg
     virtual void getEncryptKey(size32_t & keyLen, void * & key) = 0;
     virtual unsigned getFormatCrc() = 0;
     virtual const char * getCluster(unsigned idx) = 0;
+};
+
+//New prototype interface for writing any format file through the same interface
+//liable to change at any point.
+//Functions should only be called if getFlags() & TDXgeneric is true.
+struct IHThorGenericDiskWriteArg : extends IHThorDiskWriteArg
+{
+    virtual const char * queryFormat() = 0;                         // not needed for unified provider
+    virtual void getFormatOptions(IXmlWriter & options) = 0;        // not needed for unified provider
+    virtual const char * queryProvider() = 0;
+    virtual void getProviderOptions(IXmlWriter & options) = 0;
 };
 
 struct IHThorFilterArg : public IHThorArg
@@ -1430,12 +1463,7 @@ struct IHThorSplitArg : public IHThorArg
     virtual bool isBalanced() = 0;
 };
 
-struct IHThorSpillExtra : public IInterface
-{
-    //fill in functions here if we need any more...
-};
-
-struct IHThorSpillArg : public IHThorDiskWriteArg
+struct IHThorSpillArg : public IHThorGenericDiskWriteArg
 {
 };
 
@@ -2460,11 +2488,13 @@ struct IHThorDiskReadBaseArg : extends IHThorCompoundBaseArg
 
 //New prototype interface for reading any format file through the same interface
 //liable to change at any point.
-struct IHThorNewDiskReadBaseArg : extends IHThorDiskReadBaseArg
+//Functions should only be called if getFlags() & TDXgeneric is true.
+struct IHThorGenericDiskReadBaseArg : extends IHThorDiskReadBaseArg
 {
     virtual const char * queryFormat() = 0;
     virtual void getFormatOptions(IXmlWriter & options) = 0;
-    virtual void getFormatDynOptions(IXmlWriter & options) = 0;
+    virtual const char * queryProvider() = 0;
+    virtual void getProviderOptions(IXmlWriter & options) = 0;
 };
 
 //The following are mixin classes added to one of the activity base interfaces above.
@@ -2607,7 +2637,7 @@ struct IHThorDiskGroupAggregateArg : extends IHThorDiskReadBaseArg, extends IHTh
 };
 
 
-struct IHThorNewDiskReadArg : extends IHThorNewDiskReadBaseArg, extends IHThorSourceLimitTransformExtra, extends IHThorCompoundReadExtra
+struct IHThorNewDiskReadArg : extends IHThorGenericDiskReadBaseArg, extends IHThorSourceLimitTransformExtra, extends IHThorCompoundReadExtra
 {
     COMMON_NEWTHOR_FUNCTIONS
 };
@@ -3007,6 +3037,30 @@ protected:
 
 constexpr unsigned daliResultOutputMax = 2000; // MB
 constexpr unsigned futureResultOutputMax = 100; // MB
+
+//------------------------------------------------------------------------------------------------
+
+// RAII class to start and stop a section timer
+class SectionTimerBlock
+{
+private:
+    ISectionTimer * timer;
+    unsigned long long cycles = 0;
+
+public:
+    SectionTimerBlock(ISectionTimer * _timer) : timer(_timer)
+    {
+        if (timer)
+            cycles = timer->getStartCycles();
+    }
+    ~SectionTimerBlock()
+    {
+        if (timer)
+            timer->noteSectionTime(cycles);
+    }
+};
+
+//------------------------------------------------------------------------------------------------
 
 #ifdef STARTQUERY_EXPORTS
 #define STARTQUERY_API DECL_EXPORT

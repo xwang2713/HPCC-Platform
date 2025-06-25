@@ -48,6 +48,10 @@
 #include "dafdesc.hpp"
 
 #include "jmetrics.hpp"
+#include "workunit.hpp"
+#include "esptrace.h"
+#include "jevent.hpp"
+
 using namespace hpccMetrics;
 
 void CEspServer::sendSnmpMessage(const char* msg) { throwUnexpected(); }
@@ -353,6 +357,33 @@ static void usage()
 IPropertyTree *buildApplicationLegacyConfig(const char *application, const char* argv[]);
 
 //
+// Initialize trace settings
+void initializeTraceFlags(CEspConfig* config)
+{
+    IPropertyTree* pEspTree = config->queryConfigPTree();
+    Owned<IPropertyTree> pTraceTree = pEspTree->getPropTree(propTraceFlags);
+    if (!pTraceTree)
+    {
+        pTraceTree.setown(getComponentConfigSP()->getPropTree(propTraceFlags));
+    }
+#ifdef _DEBUG
+    if (!pTraceTree)
+    {
+        static const char * defaultTraceFlagsYaml = R"!!(
+traceDetail: max
+)!!";
+        pTraceTree.setown(createPTreeFromYAMLString(defaultTraceFlagsYaml));
+    }
+#endif
+
+    if (pTraceTree)
+    {
+        TraceFlags defaults = loadTraceFlags(pTraceTree, mapTraceOptions(pEspTree), queryDefaultTraceFlags());
+        updateTraceFlags(defaults, true);
+    }
+}
+
+//
 // Initialize metrics
 void initializeMetrics(CEspConfig* config)
 {
@@ -400,6 +431,16 @@ static IPropertyTree * extractLegacyOptions(IPropertyTree * legacyOptions)
     Owned<IPropertyTree> extractedOptions = createPTree();
     copyTree(extractedOptions, legacyProcessConfig, "tracing");
     return extractedOptions.getClear();
+}
+
+bool startEspEventRecording(const char * options, const char * filename)
+{
+    return startComponentRecording("esp", options, filename, false);
+}
+
+bool stopEspEventRecording(EventRecordingSummary * optSummary)
+{
+    return queryRecorder().stopRecording(optSummary);
 }
 
 int init_main(int argc, const char* argv[])
@@ -488,6 +529,7 @@ int init_main(int argc, const char* argv[])
         Owned<IPropertyTree> procpt = NULL;
         if (envpt)
         {
+            workunitGraphCacheEnabled = envpt->getPropBool("expert/@workunitGraphCacheEnabled", workunitGraphCacheEnabled);
             envpt->addProp("@config", cfgfile);
             StringBuffer xpath;
             if (procname==NULL || strcmp(procname, ".")==0)
@@ -542,6 +584,14 @@ int init_main(int argc, const char* argv[])
             config.setown(cfg);
             abortHandler.setConfig(cfg);
         }
+
+        if (procpt->getPropBool("expert/@recordEvents", false))
+        {
+            const char * recordEventOptions = procpt->queryProp("expert/@recordEventOptions");
+            const char * optRecordEventFilename = procpt->queryProp("expert/@recordEventFilename");
+            startEspEventRecording(recordEventOptions, optRecordEventFilename);
+        }
+
     }
     catch(IException* e)
     {
@@ -574,8 +624,9 @@ int init_main(int argc, const char* argv[])
             config->bindServer(*server.get(), *server.get());
             config->checkESPCache(*server.get());
 
+            initializeTraceFlags(config);
             initializeMetrics(config);        
-            initializeStorageGroups(daliClientActive());
+            initializeStoragePlanes(daliClientActive(), true);
         }
         catch(IException* e)
         {
@@ -593,6 +644,8 @@ int init_main(int argc, const char* argv[])
         writeSentinelFile(sentinelFile);
 
         result = work_main(*config, *server.get());
+
+        (void)stopEspEventRecording(nullptr);
     }
     else
     {

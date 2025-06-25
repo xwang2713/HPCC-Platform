@@ -29,33 +29,23 @@
 
 class IndexWriteActivityMaster : public CMasterActivity
 {
-    rowcount_t recordsProcessed;
-    unsigned __int64 duplicateKeyCount = 0;
-    unsigned __int64 cummulativeDuplicateKeyCount = 0;
-    unsigned __int64 numLeafNodes = 0;
-    unsigned __int64 numBlobNodes = 0;
-    unsigned __int64 numBranchNodes = 0;
+    rowcount_t recordsProcessed = 0;
     offset_t compressedFileSize = 0;
     offset_t uncompressedSize = 0;
     offset_t originalBlobSize = 0;
-    offset_t branchMemorySize = 0;
-    offset_t leafMemorySize = 0;
     Owned<IFileDescriptor> fileDesc;
-    bool buildTlk, isLocal, singlePartKey;
+    bool buildTlk = false, isLocal = false, singlePartKey = false;
     StringArray clusters;
-    mptag_t mpTag2;
-    bool refactor;
+    mptag_t mpTag2 = TAG_NULL;
+    bool refactor = false;
     CDfsLogicalFileName dlfn;
-    IHThorIndexWriteArg *helper;
+    IHThorIndexWriteArg *helper = nullptr;
     StringAttr fileName;
 
 public:
     IndexWriteActivityMaster(CMasterGraphElement *info) : CMasterActivity(info, indexWriteActivityStatistics)
     {
         helper = (IHThorIndexWriteArg *)queryHelper();
-        recordsProcessed = 0;
-        refactor = singlePartKey = isLocal = false;
-        mpTag2 = TAG_NULL;
         reInit = (0 != (TIWvarfilename & helper->getFlags()));
     }
     ~IndexWriteActivityMaster()
@@ -159,9 +149,9 @@ public:
             checkFormatCrc(this, _f, helper->getFormatCrc(), nullptr, helper->getFormatCrc(), nullptr, true);
             IDistributedFile *f = _f->querySuperFile();
             if (!f) f = _f;
-            Owned<IDistributedFilePart> existingTlk = f->getPart(f->numParts()-1);
-            if (!existingTlk->queryAttributes().hasProp("@kind") || 0 != stricmp("topLevelKey", existingTlk->queryAttributes().queryProp("@kind")))
+            if (!hasTLK(*f, this))
                 throw MakeActivityException(this, 0, "Cannot build new key '%s' based on non-distributed key '%s'", fileName.get(), diName.get());
+            Owned<IDistributedFilePart> existingTlk = f->getPart(f->numParts()-1);
             IPartDescriptor *tlkDesc = fileDesc->queryPart(fileDesc->numParts()-1);
             IPropertyTree &props = tlkDesc->queryProperties();
             if (existingTlk->queryAttributes().hasProp("@size"))
@@ -252,25 +242,32 @@ public:
         IHThorIndexWriteArg *helper = (IHThorIndexWriteArg *)queryHelper();
         updateActivityResult(container.queryJob().queryWorkUnit(), 0, helper->getSequence(), fileName, recordsProcessed);
 
-        cummulativeDuplicateKeyCount += duplicateKeyCount;
         // MORE - add in the extra entry somehow
         if (fileName.get())
         {
             IPropertyTree &props = fileDesc->queryProperties();
             props.setPropInt64("@recordCount", recordsProcessed);
-            props.setPropInt64("@duplicateKeyCount", duplicateKeyCount);
+            props.setPropInt64("@duplicateKeyCount", statsCollection.getStatisticSum(StNumDuplicateKeys));
             props.setProp("@kind", "key");
             props.setPropInt64("@uncompressedSize", uncompressedSize);
             props.setPropInt64("@size", compressedFileSize);
-            props.setPropInt64("@numLeafNodes", numLeafNodes);
-            props.setPropInt64("@numBranchNodes", numBranchNodes);
+            props.setPropInt64("@numLeafNodes", statsCollection.getStatisticSum(StNumLeafCacheAdds));
+            stat_type numBlobNodes = statsCollection.getStatisticSum(StNumBlobCacheAdds);
             props.setPropInt64("@numBlobNodes", numBlobNodes);
             if (numBlobNodes)
                 props.setPropInt64("@originalBlobSize", originalBlobSize);
+            props.setPropInt64("@numBranchNodes", statsCollection.getStatisticSum(StNumNodeCacheAdds));
+
+            stat_type branchMemorySize = statsCollection.getStatisticSum(StSizeBranchMemory);
             if (branchMemorySize)
                 props.setPropInt64("@branchMemorySize", branchMemorySize);
+            stat_type leafMemorySize = statsCollection.getStatisticSum(StSizeLeafMemory);
             if (leafMemorySize)
                 props.setPropInt64("@leafMemorySize", leafMemorySize);
+
+            stat_type maxLeafMemorySize = statsCollection.getStatisticMax(StSizeLargestExpandedLeaf);
+            if (maxLeafMemorySize)
+                props.setPropInt64("@maxLeafMemorySize", maxLeafMemorySize);
 
             Owned<IPropertyTree> metadata;
             buildUserMetadata(metadata, *helper);
@@ -322,12 +319,9 @@ public:
         if (mb.length()) // if 0 implies aborted out from this slave.
         {
             rowcount_t r;
-            unsigned __int64 slaveDuplicateKeyCount;
             mb.read(r);
-            mb.read(slaveDuplicateKeyCount);
 
             recordsProcessed += r;
-            duplicateKeyCount += slaveDuplicateKeyCount;
 
             if (!singlePartKey || 0 == slaveIdx)
             {
@@ -346,34 +340,19 @@ public:
                 mb.read(crc);
                 props.setPropInt64("@fileCrc", crc);
 
-                unsigned __int64 slaveNumLeafNodes;
-                unsigned __int64 slaveNumBlobNodes;
-                unsigned __int64 slaveNumBranchNodes;
-                offset_t slaveOffsetBranches;
                 offset_t slaveUncompressedSize;
                 offset_t slaveOriginalBlobSize;
-                offset_t slaveBranchMemorySize;
-                offset_t slaveLeafMemorySize;
-                mb.read(slaveNumLeafNodes);
-                mb.read(slaveNumBlobNodes);
-                mb.read(slaveNumBranchNodes);
-                mb.read(slaveOffsetBranches);
+                offset_t offsetBranches;
                 mb.read(slaveUncompressedSize);
                 mb.read(slaveOriginalBlobSize);
-                mb.read(slaveBranchMemorySize);
-                mb.read(slaveLeafMemorySize);
+                mb.read(offsetBranches);
 
                 compressedFileSize += size;
-                numLeafNodes += slaveNumLeafNodes;
-                numBlobNodes += slaveNumBlobNodes;
-                numBranchNodes += slaveNumBranchNodes;
                 uncompressedSize += slaveUncompressedSize;
                 originalBlobSize += slaveOriginalBlobSize;
-                branchMemorySize += slaveBranchMemorySize;
-                leafMemorySize += slaveLeafMemorySize;
 
                 props.setPropInt64("@uncompressedSize", slaveUncompressedSize);
-                props.setPropInt64("@offsetBranches", slaveOffsetBranches);
+                props.setPropInt64("@offsetBranches", offsetBranches);
 
                 //Read details for the TLK if it has been generated
                 if (!singlePartKey && 0 == slaveIdx && buildTlk)
@@ -413,12 +392,10 @@ public:
                 checkSuperFileOwnership(*file);
             }
         }
-        duplicateKeyCount = 0;
     }
     virtual void getActivityStats(IStatisticGatherer & stats) override
     {
         CMasterActivity::getActivityStats(stats);
-        stats.addStatistic(StNumDuplicateKeys, cummulativeDuplicateKeyCount);
         diskAccessCost = calcDiskWriteCost(clusters, statsCollection.getStatisticSum(StNumDiskWrites));
         if (diskAccessCost)
             stats.addStatistic(StCostFileAccess, diskAccessCost);

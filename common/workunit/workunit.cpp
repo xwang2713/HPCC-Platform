@@ -19,6 +19,7 @@
 #include <unordered_set>
 
 #include "jlib.hpp"
+#include "jconfig.hpp"
 #include "jcontainerized.hpp"
 #include "workunit.hpp"
 #include "jprop.hpp"
@@ -184,7 +185,7 @@ void doDescheduleWorkkunit(char const * wuid)
  */
 
 CWuGraphStats::CWuGraphStats(StatisticCreatorType _creatorType, const char * _creator, unsigned wfid, const char * _rootScope, unsigned _id, bool _merge)
-    : creatorType(_creatorType), creator(_creator), id(_id), merge(_merge)
+    : creator(_creator), creatorType(_creatorType), id(_id), merge(_merge)
 {
     StatsScopeId graphScopeId;
     verifyex(graphScopeId.setScopeText(_rootScope));
@@ -246,7 +247,7 @@ class CConstGraphProgress : public CInterface, implements IConstWUGraphProgress
 {
 public:
     IMPLEMENT_IINTERFACE;
-    CConstGraphProgress(const char *_wuid, const char *_graphName, IPropertyTree *_progress) : wuid(_wuid), graphName(_graphName), progress(_progress)
+    CConstGraphProgress(const char *_wuid, const char *_graphName, IPropertyTree *_progress) : progress(_progress), wuid(_wuid), graphName(_graphName)
     {
         if (!progress)
             progress.setown(createPTree());
@@ -559,7 +560,7 @@ static int compareEdgeNode(IInterface * const *ll, IInterface * const *rr)
 class CConstGraphProgressScopeIterator : public CInterfaceOf<IConstWUScopeIterator>
 {
 public:
-    CConstGraphProgressScopeIterator(const char * wuid, const ScopeFilter & _filter, __uint64 _minVersion) : filter(_filter), minVersion(_minVersion)
+    CConstGraphProgressScopeIterator(const char * wuid, const ScopeFilter & _filter, __uint64 _minVersion) : minVersion(_minVersion), filter(_filter)
     {
         //Examine the filter, and determine if we only need to look at a single graph/subgraph
         StringAttr singleGraph;
@@ -1422,10 +1423,9 @@ private:
         SDone
     };
     State state = SDone;
-    State nextState = SDone;
 
 public:
-    GraphScopeIterator(const IConstWorkUnit * wu, const ScopeFilter & _filter) : graphIter(&wu->getGraphs(GraphTypeAny)), filter(_filter)
+    GraphScopeIterator(const IConstWorkUnit * wu, const ScopeFilter & _filter) : filter(_filter), graphIter(&wu->getGraphs(GraphTypeAny))
     {
     }
 
@@ -1493,7 +1493,14 @@ public:
         {
             if (whichProperties & PTattributes)
             {
-                playAttribute(visitor, WaLabel);
+                Owned<IAttributeIterator> nodeAttrs = cur.getAttributes();
+                ForEach(*nodeAttrs)
+                {
+                    const char * name = nodeAttrs->queryName();
+                    WuAttr attr = queryGraphAttrToWuAttr(name+1);
+                    if (attr != WaNone)
+                        visitor.noteAttribute(attr, nodeAttrs->queryValue());
+                }
                 Owned<IPropertyTreeIterator> attrs = cur.getElements("att");
                 ForEach(*attrs)
                 {
@@ -1514,7 +1521,6 @@ public:
             }
             if (whichProperties & PTstatistics)
             {
-                playAttribute(visitor, WaLabel);
                 Owned<IPropertyTreeIterator> attrs = cur.getElements("att");
                 ForEach(*attrs)
                 {
@@ -2681,13 +2687,12 @@ void StatisticsAggregator::loadExistingAggregates(const IConstWorkUnit &workunit
     };
 
     WuScopeFilter filter;
-    filter.addScopeType(SSTglobal).addScopeType(SSTworkflow).addScopeType(SSTgraph);
+    filter.addScopeType(SSTglobal).addScopeType(SSTworkflow).addScopeType(SSTgraph).addScopeType(SSToperation);
     const unsigned numStats = mapping.numStatistics();
     for (unsigned i=0; i<numStats; ++i)
         filter.addOutputStatistic(mapping.getKind(i));
-    filter.setDepth(1,3); // 1=global, 2=workflow, 3=graph
+    filter.setDepth(0,3); // 0=global, 1=workflow, (2=graph, 3=subgraph | 2=>dfu)
     filter.setSources(SSFsearchGlobalStats);
-    filter.setIncludeNesting(0);
     filter.finishedFilter();
 
     StatsCollectionAggregatesLoader aggregatesLoader(statsCollection);
@@ -2703,7 +2708,7 @@ void StatisticsAggregator::recordStats(IStatisticCollection * sourceStats, unsig
     verifyex(graphScopeId.setScopeText(graphName));
     StatsScopeId wfScopeId(SSTworkflow, wfid);
     StatsScopeId sgScopeId(SSTsubgraph, sgId);
-    statsCollection->recordStats(mapping, sourceStats, {wfScopeId, graphScopeId, sgScopeId});
+    statsCollection->recordStats(mapping, sourceStats, {std::move(wfScopeId), std::move(graphScopeId), std::move(sgScopeId)});
 }
 
 // Recalculate aggregates and then write the aggregates to global stats (dali)
@@ -3668,6 +3673,7 @@ EnumMapping actions[] = {
    { WUActionPause, "pause" },
    { WUActionPauseNow, "pausenow" },
    { WUActionResume, "resume" },
+   { WUActionGenerateDebugInfo, "debuginfo" },
    { WUActionSize, NULL },
 };
 
@@ -3681,7 +3687,8 @@ EnumMapping priorityClasses[] = {
 
 const char * getWorkunitStateStr(WUState state)
 {
-    dbgassertex(state < WUStateSize);
+    if (state >= WUStateSize)
+        return "unknown workunit state";
     return states[state].str; // MORE - should be using getEnumText, or need to take steps to ensure values remain contiguous and in order.
 }
 
@@ -3928,7 +3935,7 @@ class CDaliWorkUnit : public CPersistedWorkUnit
     friend class CDaliWuGraphStats;
 public:
     CDaliWorkUnit(IRemoteConnection *_conn, ISecManager *secmgr, ISecUser *secuser)
-        : connection(_conn), CPersistedWorkUnit(secmgr, secuser)
+        : CPersistedWorkUnit(secmgr, secuser), connection(_conn)
     {
         loadPTree(connection->getRoot());
     }
@@ -4335,6 +4342,8 @@ public:
             { return c->getStateEx(str); }
     virtual __int64 getAgentSession() const
             { return c->getAgentSession(); }
+    virtual __int64 getEngineSession() const
+            { return c->getEngineSession(); }
     virtual unsigned getAgentPID() const
             { return c->getAgentPID(); }
     virtual const char *queryStateDesc() const
@@ -4437,6 +4446,8 @@ public:
             { return c->getFileAccessCost(); }
     virtual cost_type getCompileCost() const
             { return c->getCompileCost(); }
+    virtual bool getSummary(SummaryType type, SummaryMap &map) const override
+            { return c->getSummary(type, map); }
     virtual void import(IPropertyTree *wuTree, IPropertyTree *graphProgressTree)
             { return c->import(wuTree, graphProgressTree); }
 
@@ -4449,8 +4460,8 @@ public:
             { return c->createException(); }
     virtual void addProcess(const char *type, const char *instance, unsigned pid, unsigned max, const char *pattern, bool singleLog, const char *log)
             { c->addProcess(type, instance, pid, max, pattern, singleLog, log); }
-    virtual bool setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *sequence)
-            { return c->setContainerizedProcessInfo(type, instance, podName, sequence); }
+    virtual bool setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *containerName, const char *graphName, const char *sequence)
+            { return c->setContainerizedProcessInfo(type, instance, podName, containerName, graphName, sequence); }
     virtual void protect(bool protectMode)
             { c->protect(protectMode); }
     virtual void setAction(WUAction action)
@@ -4491,6 +4502,8 @@ public:
             { c->setStateEx(text); }
     virtual void setAgentSession(__int64 sessionId)
             { c->setAgentSession(sessionId); }
+    virtual void setEngineSession(__int64 sessionId)
+            { c->setEngineSession(sessionId); }
     virtual void setStatistic(StatisticCreatorType creatorType, const char * creator, StatisticScopeType scopeType, const char * scope, StatisticKind kind, const char * optDescription, unsigned __int64 value, unsigned __int64 count, unsigned __int64 maxValue, StatsMergeAction mergeAction)
             { c->setStatistic(creatorType, creator, scopeType, scope, kind, optDescription, value, count, maxValue, mergeAction); }
     virtual void setTracingValue(const char * propname, const char * value)
@@ -4503,6 +4516,8 @@ public:
             { c->setUser(value); }
     virtual void setWuScope(const char * value)
             { c->setWuScope(value); }
+    virtual void setSummary(SummaryType type, const SummaryMap &map) override
+            { c->setSummary(type, map); }
     virtual IWorkflowItem* addWorkflowItem(unsigned wfid, WFType type, WFMode mode, unsigned success, unsigned failure, unsigned recovery, unsigned retriesAllowed, unsigned contingencyFor)
             { return c->addWorkflowItem(wfid, type, mode, success, failure, recovery, retriesAllowed, contingencyFor); }
     virtual void syncRuntimeWorkflow(IWorkflowItemArray * array)
@@ -5233,6 +5248,18 @@ IWorkUnit* CWorkUnitFactory::createNamedWorkUnit(const char *wuid, const char *a
     IWorkUnit* ret = &cw->lockRemote(false);   // Note - this may throw exception if user does not have rights.
     ret->setDebugValue("CREATED_BY", app, true);
     ret->setDebugValue("CREATED_FOR", scope, true);
+    if (secuser)
+    {
+        //Record employee ids and numbers in the workunit if they are available.
+        //Future: This should probably be stored in an un-modifiable attribute and set by setUser()
+        const char * id = secuser->getEmployeeID();
+        if (!isEmptyString(id))
+            ret->setDebugValue("CREATOR_EMPLOYEE_ID", id, true);
+
+        const char * number = secuser->getEmployeeNumber();
+        if (!isEmptyString(number))
+            ret->setDebugValue("CREATOR_EMPLOYEE_NUMBER", number, true);
+    }
     return ret;
 }
 
@@ -5289,7 +5316,7 @@ bool CWorkUnitFactory::deleteWorkUnit(const char * wuid, ISecManager *secmgr, IS
     return deleteWorkUnitEx(wuid, false, secmgr, secuser);
 }
 
-IConstWorkUnit* CWorkUnitFactory::openWorkUnit(const char *wuid, ISecManager *secmgr, ISecUser *secuser)
+IConstWorkUnit* CWorkUnitFactory::openWorkUnit(const char *wuid, ISecManager *secmgr, ISecUser *secuser, bool expected)
 {
     StringBuffer wuidStr(wuid);
     wuidStr.trim();
@@ -5315,7 +5342,7 @@ IConstWorkUnit* CWorkUnitFactory::openWorkUnit(const char *wuid, ISecManager *se
     }
     else
     {
-        if (workUnitTraceLevel > 0)
+        if (expected && workUnitTraceLevel > 0)
             IERRLOG("openWorkUnit %s not found", wuidStr.str());
         return NULL;
     }
@@ -5912,9 +5939,11 @@ void CWorkUnitFactory::clearAborting(const char *wuid)
     }
 }
 
-void CWorkUnitFactory::reportAbnormalTermination(const char *wuid, WUState &state, SessionId agent)
+void CWorkUnitFactory::reportAbnormalTermination(const char *wuid, WUState &state, SessionId sessionId, const char *sessionText)
 {
-    WARNLOG("reportAbnormalTermination: session stopped unexpectedly: %" I64F "d state: %d", (__int64) agent, (int) state);
+    StringBuffer sessionMessage(sessionText);
+    sessionMessage.appendf(" session stopped unexpectedly [sessionId=%" I64F "d]", (__int64) sessionId);
+    WARNLOG("reportAbnormalTermination: %s - state: %d", sessionText, (int) state);
     bool isEcl = false;
     switch (state)
     {
@@ -5931,7 +5960,10 @@ void CWorkUnitFactory::reportAbnormalTermination(const char *wuid, WUState &stat
     wu->setState(state);
     Owned<IWUException> e = wu->createException();
     e->setExceptionCode(isEcl ? 1001 : 1000);
-    e->setExceptionMessage(isEcl ? "EclCC terminated unexpectedly" : "Workunit terminated unexpectedly");
+    StringBuffer exceptionText;
+    exceptionText.append(isEcl ? "EclCC terminated unexpectedly" : "Workunit terminated unexpectedly");
+    exceptionText.append(" (").append(sessionMessage).append(")");
+    e->setExceptionMessage(exceptionText);
 }
 
 static CriticalSection deleteDllLock;
@@ -6125,6 +6157,11 @@ public:
         query.append('"').append(value).append("\"]");
     };
 
+    static void appendMinCostToQueryString(StringBuffer& query, WUSortField filter, const char* value)
+    {
+        query.append('[').append(queryFilterXPath(filter)).append(">=\"").append(money2cost_type(atof(value))).append("\"]");
+    };
+
     IConstWorkUnitIterator* getWorkUnitsSorted( WUSortField sortorder, // field to sort by (and flags for desc sort etc)
                                                 WUSortField *filters,   // NULL or list of fields to filter on (terminated by WUSFterm)
                                                 const void *filterbuf,  // (appended) string values for filters
@@ -6211,7 +6248,7 @@ public:
             IMPLEMENT_IINTERFACE_USING(CSimpleInterface);
 
             CWorkUnitsPager(const char* _xPath, CQueryOrFilter* _orFilter, const char *_sortOrder, const char* _nameFilterLo, const char* _nameFilterHi, StringArray& _unknownAttributes)
-                : xPath(_xPath), orFilter(_orFilter), sortOrder(_sortOrder), nameFilterLo(_nameFilterLo), nameFilterHi(_nameFilterHi)
+                : xPath(_xPath), sortOrder(_sortOrder), nameFilterLo(_nameFilterLo), nameFilterHi(_nameFilterHi), orFilter(_orFilter)
             {
                 ForEachItemIn(x, _unknownAttributes)
                     unknownAttributes.append(_unknownAttributes.item(x));
@@ -6337,6 +6374,10 @@ public:
                     else
                         query.append("[@protected!=\"1\"]"); //The @protected is set to '0' or not set.
                 }
+                else if (subfmt==WUSFcostcompile || subfmt==WUSFcostexecute || subfmt==WUSFcostfileaccess )
+                {
+                    appendMinCostToQueryString(query, (WUSortField)subfmt, fv);
+                }
                 else if (!*fv)
                 {
                     unknownAttributes.append(getEnumText(subfmt,workunitSortFields));
@@ -6412,12 +6453,15 @@ public:
             return WUStateUnknown;
         }
 
-        Owned<WorkUnitWaiter> waiter = new WorkUnitWaiter(wuid, SubscribeOptionState);
+        Owned<WorkUnitWaiter> waiter = new WorkUnitWaiter(wuid, (WUSubscribeOptions)(SubscribeOptionState|SubscribeOptionAbort));
         LocalIAbortHandler abortHandler(*waiter);
         if (conn)
         {
-            SessionId agent = -1;
+            SessionId agentSessionID = -1;
+            SessionId engineSessionID = -1;
             bool agentSessionStopped = false;
+            bool engineSessionStopped = false;
+            bool queryRuntimeSessionStopped = false;
             unsigned start = msTick();
             for (;;)
             {
@@ -6446,29 +6490,44 @@ public:
                 case WUStateAborting:
                     if (agentSessionStopped)
                     {
-                        reportAbnormalTermination(wuid, ret, agent);
+                        reportAbnormalTermination(wuid, ret, agentSessionID, "Agent");
+                        return ret;
+                    }
+                    if (engineSessionStopped)
+                    {
+                        reportAbnormalTermination(wuid, ret, engineSessionID, "Engine");
                         return ret;
                     }
                     if (queryDaliServerVersion().compare("2.1")>=0)
                     {
-                        agent = conn->queryRoot()->getPropInt64("@agentSession", -1);
-                        if((agent>0) && querySessionManager().sessionStopped(agent, 0))
+                        agentSessionID = conn->queryRoot()->getPropInt64("@agentSession", -1);
+                        if((agentSessionID>0) && querySessionManager().sessionStopped(agentSessionID, 0))
                         {
                             agentSessionStopped = true;
+                            conn->reload();
+                            continue;
+                        }
+                        engineSessionID = conn->queryRoot()->getPropInt64("@engineSession", -1);
+                        if((engineSessionID>0) && querySessionManager().sessionStopped(engineSessionID, 0))
+                        {
+                            engineSessionStopped = true;
                             conn->reload();
                             continue;
                         }
                     }
                     break;
                 }
-                agentSessionStopped = false; // reset for state changes such as WUStateWait then WUStateRunning again
+                 // reset for state changes such as WUStateWait then WUStateRunning again
+                agentSessionStopped = false;
+                engineSessionStopped = false;
+
                 unsigned waited = msTick() - start;
                 if (timeout==-1 || waited + 20000 < timeout)
                 {
                     waiter->wait(20000);  // recheck state every 20 seconds, in case eclagent has crashed.
                     if (waiter->isAborted())
                     {
-                        ret = WUStateUnknown;  // MORE - throw an exception?
+                        ret = WUStateAborting;
                         break;
                     }
                 }
@@ -6684,11 +6743,11 @@ public:
         if (!secUser) secUser = defaultSecUser.get();
         return baseFactory->deleteWorkUnitEx(wuid, throwException, secMgr, secUser);
     }
-    virtual IConstWorkUnit* openWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser)
+    virtual IConstWorkUnit* openWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser, bool expected)
     {
         if (!secMgr) secMgr = defaultSecMgr.get();
         if (!secUser) secUser = defaultSecUser.get();
-        return baseFactory->openWorkUnit(wuid, secMgr, secUser);
+        return baseFactory->openWorkUnit(wuid, secMgr, secUser, expected);
     }
     virtual IWorkUnit* updateWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser)
     {
@@ -6850,7 +6909,7 @@ public:
     {
         throwUnexpected();
     }
-    virtual IConstWorkUnit* openWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser) override
+    virtual IConstWorkUnit* openWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser, bool expected) override
     {
         throwUnexpected();
     }
@@ -7688,6 +7747,12 @@ void CLocalWorkUnit::setAgentSession(__int64 sessionId)
     p->setPropInt64("@agentSession", sessionId);
 }
 
+void CLocalWorkUnit::setEngineSession(__int64 sessionId)
+{
+    CriticalBlock block(crit);
+    p->setPropInt64("@engineSession", sessionId);
+}
+
 bool CLocalWorkUnit::getIsQueryService() const
 {
     CriticalBlock block(crit);
@@ -7787,6 +7852,12 @@ __int64 CLocalWorkUnit::getAgentSession() const
 {
     CriticalBlock block(crit);
     return p->getPropInt64("@agentSession", -1);
+}
+
+__int64 CLocalWorkUnit::getEngineSession() const
+{
+    CriticalBlock block(crit);
+    return p->getPropInt64("@engineSession", -1);
 }
 
 unsigned CLocalWorkUnit::getAgentPID() const
@@ -8665,7 +8736,7 @@ void CLocalWorkUnit::addProcess(const char *type, const char *instance, unsigned
     }
 }
 
-bool CLocalWorkUnit::setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *sequence)
+bool CLocalWorkUnit::setContainerizedProcessInfo(const char *type, const char *instance, const char *podName, const char *containerName, const char *graphName, const char *sequence)
 {
     VStringBuffer processType("Process/%s", type);
     CriticalBlock block(crit);
@@ -8676,20 +8747,32 @@ bool CLocalWorkUnit::setContainerizedProcessInfo(const char *type, const char *i
     if (sequence)
         instanceXPath.appendf("[@sequence='%s']", sequence);
 
-    VStringBuffer instancePodXPath("%s[@podName='%s']", instanceXPath.str(), podName);
+    VStringBuffer instancePodXPath("%s[@podName='%s'][@containerName='%s']", instanceXPath.str(), podName, containerName);
     IPropertyTree *instanceNode = node->queryPropTree(instancePodXPath);
-    if (instanceNode)
-        return false;
-
-    // NB: instanceNum represents separate instances of {type,instance,sequence}
-    // e.g. if there are multiple Thor instances, each will have a distinct "instanceNum"
-    unsigned instanceNum = node->getCount(instanceXPath)+1;
-    instanceNode = node->addPropTree(instance);
-    if (sequence)
-        instanceNode->setProp("@sequence", sequence); // instance specific, e.g. worker #
-    instanceNode->setPropInt("@instanceNum", instanceNum);
-    instanceNode->setProp("@podName", podName);
-    return true;
+    bool existingInstance = nullptr != instanceNode;
+    IPropertyTree *graphs = nullptr;
+    if (existingInstance)
+    {
+        if (graphName)
+            graphs = instanceNode->queryPropTree("graphs");
+    }
+    else
+    {
+        // NB: instanceNum represents separate instances of {type,instance,sequence}
+        // e.g. if there are multiple Thor instances, each will have a distinct "instanceNum"
+        unsigned instanceNum = node->getCount(instanceXPath)+1;
+        instanceNode = node->addPropTree(instance);
+        if (sequence)
+            instanceNode->setProp("@sequence", sequence); // instance specific, e.g. worker #
+        instanceNode->setPropInt("@instanceNum", instanceNum);
+        instanceNode->setProp("@podName", podName);
+        instanceNode->setProp("@containerName", containerName);
+        if (graphName)
+            graphs = ensurePTree(instanceNode, "graphs");
+    }
+    if (graphs)
+        graphs->setPropTree(graphName);
+    return !existingInstance;
 }
 
 void CLocalWorkUnit::setDebugValue(const char *propname, const char *value, bool overwrite)
@@ -8698,15 +8781,95 @@ void CLocalWorkUnit::setDebugValue(const char *propname, const char *value, bool
     lower.append(propname);
     if (!strchr(lower, ':'))
         lower.toLowerCase();
-    CriticalBlock block(crit);
-    StringBuffer prop("Debug/");
-    prop.append(lower);
-    if (overwrite || !p->hasProp(prop.str()))
+    try
     {
-        // MORE - not sure this line should be needed....
-        p->setProp("Debug", "");
-        p->setProp(prop.str(), value);
+        CriticalBlock block(crit);
+        StringBuffer prop("Debug/");
+        prop.append(lower);
+        if (overwrite || !p->hasProp(prop.str()))
+        {
+            // MORE - not sure this line should be needed....
+            p->setProp("Debug", "");
+            p->setProp(prop.str(), value);
+        }
     }
+    catch (IException * e)
+    {
+        if (!validateXMLTag(propname))
+        {
+            e->Release();
+            throw makeStringExceptionV(WUERR_InvalidDebugValueName, "Attempt to set debug value with invalid name: %s", propname);
+        }
+        throw;
+    }
+}
+
+static const char *summaryTypeName(SummaryType type)
+{
+    switch (type)
+    {
+    case SummaryType::ReadFile: return "ReadFile";
+    case SummaryType::ReadIndex: return "ReadIndex";
+    case SummaryType::WriteFile: return "WriteFile";
+    case SummaryType::WriteIndex: return "WriteIndex";
+    case SummaryType::PersistFile: return "PersistFile";
+    case SummaryType::SpillFile: return "SpillFile";
+    case SummaryType::JobTemp: return "JobTemp";
+    case SummaryType::Service: return "Service";
+    default:
+        throwUnexpected();
+    }
+};
+
+bool CLocalWorkUnit::getSummary(SummaryType type, SummaryMap &map) const
+{
+    VStringBuffer xpath("Summaries/%s", summaryTypeName(type));
+    StringArray s;
+    {
+        CriticalBlock block(crit);
+        IPropertyTree * match = p->queryPropTree(xpath);
+        //If there is not entry then the information is not recorded in the workunit
+        if (!match)
+            return false;
+
+        const char *list = match->queryProp(nullptr);
+        //If the information was recorded return true, even if ther are no results
+        if (!list)
+            return true;
+        s.appendList(list, "\n");
+    }
+    ForEachItemIn(idx, s)
+    {
+        const char *name = s.item(idx);
+        if (name && *name)
+        {
+            char *end = nullptr;
+            SummaryFlags flags = (SummaryFlags) strtol(name, &end, 16);
+            if (*end!=':')
+                return false; // unrecognized format
+            name = end+1;
+            auto match = map.find(name);
+            if (match == map.end())
+                map[name] = flags;
+            else
+                match->second &= flags;
+        }
+    }
+    return true;
+}
+
+void CLocalWorkUnit::setSummary(SummaryType type, const SummaryMap &map)
+{
+    StringBuffer list;
+    for (const auto& [name, flags] : map)
+    {
+        if (list.length())
+            list.append('\n');
+        list.appendf("%01x:%s", (unsigned) flags, name.c_str());    
+    }
+    CriticalBlock block(crit);
+    IPropertyTree *summaries = ensurePTree(p, "Summaries");
+    summaries->setProp(summaryTypeName(type), list);
 }
 
 void CLocalWorkUnit::setDebugValueInt(const char *propname, int value, bool overwrite)
@@ -8715,14 +8878,26 @@ void CLocalWorkUnit::setDebugValueInt(const char *propname, int value, bool over
     lower.append(propname);
     if (!strchr(lower, ':'))
         lower.toLowerCase();
-    CriticalBlock block(crit);
-    StringBuffer prop("Debug/");
-    prop.append(lower);
-    if (overwrite || !p->hasProp(prop.str()))
+    try
     {
-        // MORE - not sure this line should be needed....
-        p->setProp("Debug", "");
-        p->setPropInt(prop.str(), value);
+        CriticalBlock block(crit);
+        StringBuffer prop("Debug/");
+        prop.append(lower);
+        if (overwrite || !p->hasProp(prop.str()))
+        {
+            // MORE - not sure this line should be needed....
+            p->setProp("Debug", "");
+            p->setPropInt(prop.str(), value);
+        }
+    }
+    catch (IException * e)
+    {
+        if (!validateXMLTag(propname))
+        {
+            e->Release();
+            throw makeStringExceptionV(WUERR_InvalidDebugValueName, "Attempt to set debug value with invalid name: %s", propname);
+        }
+        throw;
     }
 }
 
@@ -8941,7 +9116,7 @@ void CLocalWorkUnit::setStatistic(StatisticCreatorType creatorType, const char *
     if (mergeAction != StatsMergeAppend)
     {
         StringBuffer xpath;
-        xpath.append("Statistic[@creator='").append(creator).append("'][@scope='").append(scope).append("'][@kind='").append(kindName).append("']");
+        xpath.append("Statistic[@scope='").append(scope).append("'][@kind='").append(kindName).append("']");
         statTree = stats->queryPropTree(xpath.str());
     }
 
@@ -8969,6 +9144,7 @@ void CLocalWorkUnit::setStatistic(StatisticCreatorType creatorType, const char *
         mergeAction = StatsMergeAppend;
     }
 
+    unsigned __int64 deltaValue = 0;
     if (mergeAction != StatsMergeAppend) // RKC->GH Is this right??
     {
         unsigned __int64 oldValue = statTree->getPropInt64("@value", 0);
@@ -8977,14 +9153,18 @@ void CLocalWorkUnit::setStatistic(StatisticCreatorType creatorType, const char *
         if (oldMax < oldValue)
             oldMax = oldValue;
 
-        statTree->setPropInt64("@value", mergeStatisticValue(oldValue, value, mergeAction));
+        unsigned __int64 newValue = mergeStatisticValue(oldValue, value, mergeAction);
+        statTree->setPropInt64("@value", newValue);
         statTree->setPropInt64("@count", count + oldCount);
         if (maxValue > oldMax)
             statTree->setPropInt64("@max", maxValue);
+        deltaValue = newValue - oldValue;
     }
     else
     {
         statTree->setPropInt64("@value", value);
+        deltaValue = value;
+
         statTree->setPropInt64("@count", count);
         if (maxValue)
             statTree->setPropInt64("@max", maxValue);
@@ -9016,6 +9196,22 @@ void CLocalWorkUnit::setStatistic(StatisticCreatorType creatorType, const char *
     }
     if (kind == StCostCompile)
         p->setPropInt64("@costCompile", value);
+
+    // Special case - update aggregates for dfu FileAccessCost.  This is needed because although
+    // fileservices can update dfu cost in the workunit, it does not have a mechanism to update
+    // the aggregates for this stat.
+    if (scopeType == SSTdfuworkunit && kind == StCostFileAccess && deltaValue)
+    {
+        StringBuffer currentScope(scope), parent;
+        while (getParentScope(parent.clear(), currentScope.str()))
+        {
+            currentScope.set(parent);
+            StatisticScopeType sst = getScopeType(queryScopeTail(currentScope.str()));
+            if (sst!=SSTnone)
+                setStatistic(creatorType, creator, sst, currentScope.str(), StCostFileAccess, "", deltaValue, 1, 0, StatsMergeSum);
+        }
+        setStatistic(creatorType, creator, SSTglobal, "", StCostFileAccess, "", deltaValue, 1, 0, StatsMergeSum);
+    }
 }
 
 void CLocalWorkUnit::_loadStatistics() const
@@ -9987,7 +10183,7 @@ WUGraphType getGraphTypeFromString(const char* type)
     return (WUGraphType) getEnum(type, graphTypes);
 }
 
-CLocalWUGraph::CLocalWUGraph(const CLocalWorkUnit &_owner, IPropertyTree *props) : p(props), owner(_owner)
+CLocalWUGraph::CLocalWUGraph(const CLocalWorkUnit &_owner, IPropertyTree *props) : owner(_owner), p(props)
 {
     wuidVersion = owner.getWuidVersion();
 }
@@ -10188,7 +10384,7 @@ template <class T, class U> class CFilteredGraphIteratorOf : public CInterfaceOf
     }
 public:
     CFilteredGraphIteratorOf<T,U>(T *_base, WUGraphType _type)
-        : base(_base), type(_type)
+        : type(_type), base(_base)
     {
     }
     bool first()
@@ -10325,9 +10521,9 @@ void CLocalWUGraph::setXGMMLTree(IPropertyTree *_graph)
     IPropertyTree *xgmml = p->setPropTree("xgmml");
     MemoryBuffer mb;
     _graph->serialize(mb);
-    // Note - we could compress further but that would introduce compatibility concerns, so don't bother
-    // Cassandra workunit code actually lzw compresses the parent anyway
-    xgmml->setPropBin("graphBin", mb.length(), mb.toByteArray());
+    // Compress using LZ4HC because it significantly reduces the size of the graph, and
+    // expands much faster - which is a notable part of the roxie startup time.
+    xgmml->setPropBin("graphBin", mb.length(), mb.toByteArray(), COMPRESS_METHOD_LZ4HC);
     graph.setown(_graph);
 }
 
@@ -10413,8 +10609,11 @@ IPropertyTree * CLocalWUGraph::getXGMMLTreeRaw() const
     return p->getPropTree("xgmml");
 }
 
+bool workunitGraphCacheEnabled = false;
+
 IPropertyTree * CLocalWUGraph::getXGMMLTree(bool doMergeProgress, bool doFormatStats) const
 {
+    Owned<IPropertyTree> localGraph;
     {
         CriticalBlock block(owner.crit);
         if (!graph)
@@ -10423,18 +10622,28 @@ IPropertyTree * CLocalWUGraph::getXGMMLTree(bool doMergeProgress, bool doFormatS
             // daliadmin can retrospectively compress existing graphs, so need to check for all versions
             MemoryBuffer mb;
             if (p->getPropBin("xgmml/graphBin", mb))
-                graph.setown(createPTree(mb, ipt_lowmem));
+            {
+                //Protect against empty graphBin fixed by HPCC-34368
+                if (mb.length())
+                    localGraph.setown(createPTree(mb, ipt_lowmem));
+            }
             else
-                graph.setown(p->getBranch("xgmml/graph"));
-            if (!graph)
-                return NULL;
+                localGraph.setown(p->getBranch("xgmml/graph"));
+
+            if (!localGraph)
+                throw makeStringExceptionV(WUERR_MissingGraph, "Graph %s not found in workunit", p->queryProp("@name"));
+
+            if (workunitGraphCacheEnabled)
+                graph.set(localGraph);
         }
+        else
+            localGraph.set(graph);
     }
     if (!doMergeProgress)
-        return graph.getLink();
+        return localGraph.getClear();
     else
     {
-        Owned<IPropertyTree> copy = createPTreeFromIPT(graph, ipt_lowmem);
+        Owned<IPropertyTree> copy = workunitGraphCacheEnabled ? createPTreeFromIPT(localGraph, ipt_lowmem) : LINK(localGraph) ;
         Owned<IConstWUGraphProgress> progress = owner.getGraphProgress(p->queryProp("@name"));
         if (progress)
         {
@@ -13859,17 +14068,32 @@ extern WORKUNIT_API void gatherLibraryNames(StringArray &names, StringArray &unr
     }
 }
 
+// Evaluates if wuid matches the pattern:
+//   firstChar # # # # # # # # "-" # # # # # # [ "-" #+ ]
+// All other deviations from the pattern, including an incomplete match or the use of wildcard
+// characters, will return false.
 bool looksLikeAWuid(const char * wuid, const char firstChar)
 {
     if (!wuid)
         return false;
-    if (wuid[0] != firstChar)
+    // pattern match required content
+    if ((toupper(wuid[0]) != toupper(firstChar)) ||
+        !isdigit(wuid[1]) || !isdigit(wuid[2]) || !isdigit(wuid[3]) || !isdigit(wuid[4]) ||
+        !isdigit(wuid[5]) || !isdigit(wuid[6]) || !isdigit(wuid[7]) || !isdigit(wuid[8]) ||
+        ('-' != wuid[9]) ||
+        !isdigit(wuid[10]) || !isdigit(wuid[11]) || !isdigit(wuid[12]) ||
+        !isdigit(wuid[13]) || !isdigit(wuid[14]) || !isdigit(wuid[15]))
         return false;
-    if (!isdigit(wuid[1]) || !isdigit(wuid[2]) || !isdigit(wuid[3]) || !isdigit(wuid[4]))
-        return false;
-    if (!isdigit(wuid[5]) || !isdigit(wuid[6]) || !isdigit(wuid[7]) || !isdigit(wuid[8]))
-        return false;
-    return (wuid[9]=='-');
+    // pattern match optional content
+    size_t idx = 16;
+    if ('-' == wuid[16] && isdigit(wuid[17]))
+    {
+        idx += 2;
+        while (isdigit(wuid[idx]))
+            idx++;
+    }
+    // expect the NULL terminator
+    return ('\0' == wuid[idx]);
 }
 
 IPropertyTree * resolveDefinitionInArchive(IPropertyTree * archive, const char * path)
@@ -13911,7 +14135,7 @@ extern WORKUNIT_API void associateLocalFile(IWUQuery * query, WUFileType type, c
             OwnedIFile target = createIFile(destPathName);
             if (!target->exists())
             {
-                source->copyTo(target, 0, NULL, true);
+                source->copyTo(target, 0, NULL, false);
             }
             query->addAssociatedFile(type, destPathName, "localhost", description, crc, minActivity, maxActivity);
             // Should we delete the local files? No - they may not be finished with
@@ -13938,6 +14162,11 @@ extern WORKUNIT_API void descheduleWorkunit(char const * wuid)
         workunit->deschedule();
     else
         doDescheduleWorkkunit(wuid);
+}
+
+extern WORKUNIT_API void addWorkunitSummary(IWorkUnit * wu, SummaryType summaryType, SummaryMap &map)
+{
+    wu->setSummary(summaryType, map);
 }
 
 extern WORKUNIT_API void updateWorkunitStat(IWorkUnit * wu, StatisticScopeType scopeType, const char * scope, StatisticKind kind, const char * description, unsigned __int64 value, unsigned wfid)
@@ -13967,7 +14196,6 @@ protected:
     StatisticScopeType scopeType;
     StatisticKind kind;
 };
-
 
 extern WORKUNIT_API void updateWorkunitTimings(IWorkUnit * wu, ITimeReporter *timer)
 {
@@ -14029,6 +14257,11 @@ extern WORKUNIT_API double getThorWorkerRate()
     // return cpu affinity for the manager, rather than for the worker).  This needs rethinking.
     double numCpus = isContainerized() ? getResourcedCpus("workerResources") : getAffinityCpus();
     return getCostCpuHour() * numCpus;
+}
+
+extern WORKUNIT_API double getThorRate(unsigned numberOfWorkers)
+{
+    return getThorManagerRate() + getThorWorkerRate() * numberOfWorkers;
 }
 
 extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned numberOfWorkers)
@@ -14274,17 +14507,36 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
         CCycleTimer elapsedTimer;
 
         bool multiJobLinger = config.getPropBool("@multiJobLinger", defaultThorMultiJobLinger);
+        bool thisThor = true;
+        const char *queue = config.queryProp("@queue");
+        const char *tgt = workunit.queryClusterName();
+        if (!isEmptyString(tgt)) // don't think should ever happen
+        {
+            if (!streq(tgt, queue))
+            {
+                Owned<IStringIterator> thorTarget = config::getContainerTargets("thor", tgt);
+                if (!thorTarget->first())
+                    throw makeStringExceptionV(0, "Thor target not found: %s", tgt);
+                thisThor = false;
+                queue = tgt;
+            }
+        }
 
         // NB: executeGraphOnLingeringThor looks for existing Thor instance that has been used for the same job,
         // and communicates with it directly
         if (!multiJobLinger && executeGraphOnLingeringThor(workunit, wfid, graphName))
+        {
+            if (!thisThor)
+                throw makeStringExceptionV(0, "multiJobLinger mode required to target other thor instances. Target: %s", tgt);
             PROGLOG("Existing lingering Thor handled graph: %s", graphName);
+        }
         else
         {
             // If no existing Thor instance, or for a multi linger configuration,
             // queue the graph, either the thor agent will pick it up and launch a new Thor (up to maxGraphs),
             // or an existing idle Thor listening on the same queue will pick it up.
-            VStringBuffer queueName("%s.thor", config.queryProp("@queue"));
+
+            VStringBuffer queueName("%s.thor", queue);
             DBGLOG("Queueing wuid=%s, graph=%s, on queue=%s, timelimit=%u seconds", wuid.str(), graphName, queueName.str(), timelimit);
 
             {
@@ -14303,13 +14555,13 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
         unsigned runningTimeLimit = workunit.getDebugValueInt("maxRunTime", 0);
         runningTimeLimit = runningTimeLimit ? runningTimeLimit : INFINITE;
 
-        std::list<WUState> expectedStates = { WUStateRunning, WUStateWait, WUStateFailed };
+        std::list<WUState> expectedStates = { WUStateRunning, WUStateWait, WUStateAborting, WUStateFailed };
         unsigned __int64 blockedTime = 0;
         for (unsigned i=0; i<2; i++)
         {
             WUState state = waitForWorkUnitToComplete(wuid, timelimit*1000, expectedStates);
             DBGLOG("Got state: %s", getWorkunitStateStr(state));
-            if ((WUStateWait == state) || (WUStateFailed == state)) // already finished or failed
+            if ((WUStateWait == state) || (WUStateFailed == state) || (WUStateAborting == state)) // already finished or failed or aborting
             {
                 // workunit may have spent time in blocked state, but then transitioned to
                 // wait or failed state quickly such that this code did not see its running state.
@@ -14334,8 +14586,17 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
     }
     else
     {
+        std::list<std::pair<std::string, std::string>> params = { };
+        params.push_back({ "graphName", graphName });
+        params.push_back({ "wfid", std::to_string(wfid) });
+
+        SCMStringBuffer optPlatformVersion;
+        workunit.getDebugValue("platformVersion", optPlatformVersion);
+        if (optPlatformVersion.length())
+            params.push_back({ "_HPCC_JOB_VERSION_", optPlatformVersion.str() });
+
         VStringBuffer job("%s-%s", wuid.str(), graphName);
-        k8s::runJob("thormanager", wuid, job, { { "graphName", graphName} });
+        k8s::runJob("thormanager", wuid, job, params);
     }
 
     /* In k8s, Thor feeds back the terminating exception via the workunit.
@@ -14367,16 +14628,28 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
             }
         }
     }
-    else
-    {
-        Owned<IWorkUnit> w = &workunit.lock();
-        WUState state = w->getState();
-        if (WUStateFailed == state)
-            throw makeStringException(0, "Workunit failed");
-    }
 
+    // NB: check for expected success state (WUStateWait). If any other state, abort.
     {
         Owned<IWorkUnit> w = &workunit.lock();
+        //If the thor instance crashed, make sure that the workunit is no longer associated with it - otherwise a
+        //failure clause that causes a graph to run can abort because the instances has stopped.
+        if (w->getEngineSession() > 0)
+            w->setEngineSession(-1);
+
+        WUState state = w->getState();
+        if (WUStateWait != state) // expected state from successful Thor run from above
+        {
+            switch (state)
+            {
+                case WUStateAborting:
+                    throw new WorkflowException(0, "Workunit abort requested", 0, WorkflowException::ABORT, MSGAUD_user);
+                case WUStateFailed:
+                    throw makeStringException(0, "Workunit failed");
+                default:
+                    throw makeStringExceptionV(0, "Workunit failed. Unexpected state: %s", getWorkunitStateStr(state));
+            }
+        }
         w->setState(WUStateRunning);
     }
 #else
@@ -14743,4 +15016,13 @@ void recordTraceDebugOptions(IWorkUnit * target, const IProperties * source)
             target->setDebugValue(debugOption, value, true);
         }
     }
+}
+
+WuidPattern::WuidPattern(const char* _pattern)
+    : pattern(_pattern)
+{
+    if (!pattern.isEmpty())
+        pattern.trim();
+    if (!pattern.isEmpty() && islower(pattern.charAt(0)))
+        pattern.setCharAt(0, toupper(pattern.charAt(0)));
 }

@@ -513,6 +513,7 @@ public:
     void checkAggregateRecords(IHqlExpression * expr, IHqlExpression * record, attribute & errpos);
     void checkExportedModule(const attribute & errpos, IHqlExpression * scopeExpr);
     bool checkCompatibleSymbol(const attribute & errpos, IHqlExpression * prevValue, IHqlExpression * newValue);
+    bool insideSignedMacro();
     bool checkAllowed(const attribute & errpos, const char *category, const char *description);
     void saveDiskAccessInformation(const attribute & errpos, HqlExprArray & options);
     void saveDiskAccessInformation(const attribute & errpos, OwnedHqlExpr & options);
@@ -555,6 +556,7 @@ public:
     void ensureString(attribute &a);
     void ensureTypeCanBeIndexed(attribute &a);
     void ensureUnicode(attribute &a);
+    void ensureUTF8(attribute &a);
     void ensureData(attribute &a);
     void ensureTransformTypeMatch(attribute & tattr, IHqlExpression * ds);
     bool checkTransformTypeMatch(const attribute & errpos, IHqlExpression * ds, IHqlExpression * transform);
@@ -1221,6 +1223,8 @@ class HqlLex
             legacyWhenMode = _legacyWhenMode;
         }
 
+        bool isImplicitlySigned();
+
     protected:
         void init(IFileContents * _text);
 
@@ -1352,7 +1356,6 @@ private:
         int yyStartPos;
         char *yyBuffer;
 
-        static unsigned hex2digit(char c);
         static __uint64 str2uint64(unsigned len, const char * digits, unsigned base);
         static void hex2str(char * target, const char * digits, unsigned len);
 };

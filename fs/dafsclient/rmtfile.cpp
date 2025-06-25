@@ -286,13 +286,13 @@ public:
 #endif
 #else
             if (!noport)            // expect all filenames that specify port to be dafilesrc or daliservix
-                return createDaliServixFile(filename);  
+                return createDaliServixFile(filename);
             if (filename.isUnixPath()
-#ifdef TEST_DAFILESRV_FOR_UNIX_PATHS        
+#ifdef TEST_DAFILESRV_FOR_UNIX_PATHS
                 &&testDaliServixPresent(ep)
 #endif
                 )
-                return createDaliServixFile(filename);  
+                return createDaliServixFile(filename);
 #endif
         }
         else if (forceRemotePattern)
@@ -360,6 +360,7 @@ public:
     }
     virtual StringBuffer &getSecretBased(StringBuffer &storageSecret, const RemoteFilename & filename) override
     {
+        CLeavableCriticalBlock b(secretCrit);
         if (!endpointMap.empty())
         {
             const SocketEndpoint &ep = filename.queryEndpoint();
@@ -367,11 +368,11 @@ public:
             StringBuffer endpointStr;
             ep.getEndpointHostText(endpointStr);
 
-            CriticalBlock b(secretCrit);
             auto it = endpointMap.find(endpointStr.str());
             if (it != endpointMap.end())
             {
                 storageSecret.append(std::get<1>(it->second).c_str());
+                b.leave();
                 if (0 == storageSecret.length())
                 {
                     VStringBuffer secureUrl("https://%s", endpointStr.str());
@@ -1421,6 +1422,9 @@ public:
 
     size32_t read(offset_t pos, size32_t len, void * data)
     {
+        if (0 == len)
+            return 0;
+        dbgassertex(data);
         size32_t got;
         MemoryBuffer replyBuffer;
         CCycleTimer timer;
@@ -1758,20 +1762,21 @@ void setDafsLocalMountRedirect(const IpAddress &ip,const char *dir,const char *m
     }
 }
 
-IFile *createFileLocalMount(const IpAddress &ip, const char * filename)
+IFile *createFileLocalMount(const IpAddress &ip, const char *filename)
 {
     CriticalBlock block(localMountCrit);
-    ForEachItemInRev(i,localMounts) {
+    ForEachItemInRev(i, localMounts) {
         CLocalMountRec &mount = localMounts.item(i);
         if (mount.ip.ipequals(ip)) {
             size32_t bl = mount.dir.length();
-            if (isPathSepChar(mount.dir[bl-1]))
+            dbgassertex(bl > 0);
+            if (isPathSepChar(mount.dir[bl - 1]))
                 bl--;
-            if ((memcmp((void *)filename,(void *)mount.dir.get(),bl)==0)&&(isPathSepChar(filename[bl])||!filename[bl])) { // match
+            if ((memcmp((void *)filename, (void *)mount.dir.get(), bl) == 0) && (isPathSepChar(filename[bl]) || !filename[bl])) { // match
                 StringBuffer locpath(mount.local);
                 if (filename[bl])
-                    addPathSepChar(locpath).append(filename+bl+1);
-                locpath.replace((PATHSEPCHAR=='\\')?'/':'\\',PATHSEPCHAR);
+                    addPathSepChar(locpath).append(filename + bl + 1);
+                locpath.replace((PATHSEPCHAR == '\\') ? '/' : '\\', PATHSEPCHAR);
                 return createIFile(locpath.str());
             }
         }
@@ -1850,7 +1855,7 @@ void disconnectRemoteIoOnExit(IFileIO *fileio,bool set)
 
 bool resetRemoteFilename(IFile *file, const char *newname)
 {
-    return clientResetFilename(file,newname); 
+    return clientResetFilename(file,newname);
 }
 
 
@@ -1937,7 +1942,7 @@ public:
             : eps(_eps), sockets(_sockets), failures(_failures),
               failedmessages(_failedmessages), failedcodes(_failedcodes), sect(_sect),
               dataDir(_dataDir), mirrorDir(_mirrorDir)
-        { 
+        {
             chkv = _chkv;
             filename = _filename;
         }
@@ -2239,7 +2244,7 @@ public:
     IMPLEMENT_IINTERFACE_O_USING(CRemoteBase);
 
     // Really a stream, but life (maybe) easier elsewhere if looks like a file
-    // Sometime should refactor to be based on ISerialStream instead - or maybe IRowStream.
+    // Sometime should refactor to be based on IBufferedSerialInputStream instead - or maybe IRowStream.
     CRemoteFilteredFileIOBase(SocketEndpoint &ep, const char *filename, IOutputMetaData *actual, IOutputMetaData *projected, const RowFilter &fieldFilters, unsigned __int64 chooseN)
         : CRemoteBase(ep, filename)
     {
@@ -2395,9 +2400,19 @@ protected:
         mrequest.append((RemoteFileCommandType)RFCStreamRead);
         VStringBuffer json("{ \"handle\" : %u, \"format\" : \"binary\" }", handle);
         mrequest.append(json.length(), json.str());
-        sendRemoteCommand(mrequest, newReply);
-        unsigned newHandle;
-        newReply.read(newHandle);
+        unsigned newHandle = 0;
+        try
+        {
+            sendRemoteCommand(mrequest, newReply, false);
+            newReply.read(newHandle);
+        }
+        catch (IJSOCK_Exception *e)
+        {
+            // will trigger new request with cursor
+            EXCLOG(e, "CRemoteFilteredFileIOBase:: socket failure whilst streaming, will attempt to reconnect with cursor");
+            newHandle = 0;
+            e->Release();
+        }
         if (newHandle == handle)
         {
             reply.swapWith(newReply);
@@ -2463,7 +2478,7 @@ class CRemoteFilteredFileIO : public CRemoteFilteredFileIOBase
 {
 public:
     // Really a stream, but life (maybe) easier elsewhere if looks like a file
-    // Sometime should refactor to be based on ISerialStream instead - or maybe IRowStream.
+    // Sometime should refactor to be based on IBufferedSerialInputStream instead - or maybe IRowStream.
     CRemoteFilteredFileIO(SocketEndpoint &ep, const char *filename, IOutputMetaData *actual, IOutputMetaData *projected, const RowFilter &fieldFilters, bool compressed, bool grouped, unsigned __int64 chooseN)
         : CRemoteFilteredFileIOBase(ep, filename, actual, projected, fieldFilters, chooseN)
     {
@@ -2528,7 +2543,7 @@ class CRemoteFilteredKeyIO : public CRemoteFilteredFileIOBase
 {
 public:
     // Really a stream, but life (maybe) easier elsewhere if looks like a file
-    // Sometime should refactor to be based on ISerialStream instead - or maybe IRowStream.
+    // Sometime should refactor to be based on IBufferedSerialInputStream instead - or maybe IRowStream.
     CRemoteFilteredKeyIO(SocketEndpoint &ep, const char *filename, unsigned crc, IOutputMetaData *actual, IOutputMetaData *projected, const RowFilter &fieldFilters, unsigned __int64 chooseN)
         : CRemoteFilteredFileIOBase(ep, filename, actual, projected, fieldFilters, chooseN)
     {
@@ -2541,7 +2556,7 @@ class CRemoteFilteredKeyCountIO : public CRemoteFilteredFileIOBase
 {
 public:
     // Really a stream, but life (maybe) easier elsewhere if looks like a file
-    // Sometime should refactor to be based on ISerialStream instead - or maybe IRowStream.
+    // Sometime should refactor to be based on IBufferedSerialInputStream instead - or maybe IRowStream.
     CRemoteFilteredKeyCountIO(SocketEndpoint &ep, const char *filename, unsigned crc, IOutputMetaData *actual, const RowFilter &fieldFilters, unsigned __int64 rowLimit)
         : CRemoteFilteredFileIOBase(ep, filename, actual, actual, fieldFilters, rowLimit)
     {
@@ -2556,7 +2571,7 @@ class CRemoteKey : public CSimpleInterfaceOf<IIndexLookup>
     offset_t pos = 0;
     Owned<ISourceRowPrefetcher> prefetcher;
     CThorContiguousRowBuffer prefetchBuffer;
-    Owned<ISerialStream> strm;
+    Owned<IBufferedSerialInputStream> strm;
     bool pending = false;
     SocketEndpoint ep;
     StringAttr filename;

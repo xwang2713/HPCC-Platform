@@ -23,6 +23,7 @@
 #####################################################
 
 project( remote ) 
+SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STRICT_CXX_FLAGS}")
 
 HPCC_ADD_SUBDIRECTORY(hooks)
 
@@ -71,7 +72,7 @@ target_link_libraries ( remote
     hql   
     mp
     ${URIPARSER_LIBRARIES}
-    ${CPPUNIT_LIBRARIES}
+    ${CppUnit_LIBRARIES}
     )
 
 IF (USE_OPENSSL)

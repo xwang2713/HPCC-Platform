@@ -87,6 +87,7 @@ enum MDFSRequestKind
     MDFS_ITERATE_FILTEREDFILES,
     MDFS_ITERATE_FILTEREDFILES2,
     MDFS_GET_FILE_TREE2,
+    MDFS_ITERATE_FILTEREDFILES3,
     MDFS_MAX
 };
 
@@ -116,6 +117,19 @@ inline unsigned groupDistance(IGroup *grp1,IGroup *grp2)
     if (!grp1||!grp2)
         return (unsigned)-1;
     return grp1->distance(grp2);
+}
+
+inline StringBuffer &appendEnsurePathSepChar(StringBuffer &dest, StringBuffer &newPart, char psc)
+{
+    addPathSepChar(dest, psc);
+    if (newPart.length() > 0)
+    {
+        if (isPathSepChar(newPart.charAt(0)))
+            dest.append(newPart.str()+1);
+        else
+            dest.append(newPart);
+    }
+    return dest;
 }
 
 
@@ -216,6 +230,8 @@ extern da_decl cost_type calcFileAccessCost(const char * cluster, __int64 numDis
 
 extern da_decl cost_type calcFileAccessCost(IDistributedFile *f, __int64 numDiskWrites, __int64 numDiskReads)
 {
+    if (!numDiskWrites && !numDiskReads)
+        return 0;
     StringBuffer clusterName;
     // Should really specify the cluster number too, but this is the best we can do for now
     f->getClusterName(0, clusterName);
@@ -232,7 +248,28 @@ extern da_decl cost_type calcDiskWriteCost(const StringArray & clusters, stat_ty
     return writeCost;
 }
 
-RemoteFilename &constructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,unsigned copy,ClusterPartDiskMapSpec &mspec,RemoteFilename &rfn)
+// Update logical file's costs and numReads
+// (numDiskReads and curReadCost required)
+extern da_decl cost_type updateCostAndNumReads(IDistributedFile *file, stat_type numDiskReads, cost_type curReadCost)
+{
+    const IPropertyTree & fileAttr = file->queryAttributes();
+
+    cost_type legacyReadCost = 0;
+    if (!fileAttr.hasProp(getDFUQResultFieldName(DFUQRFreadCost)))
+    {
+        if (!isFileKey(fileAttr))
+        {
+            stat_type prevDiskReads = fileAttr.getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), 0);
+            legacyReadCost = calcFileAccessCost(file, 0, prevDiskReads);
+        }
+    }
+    file->addAttrValues({makeAttrValuePair(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + curReadCost),
+                         makeAttrValuePair(getDFUQResultFieldName(DFUQRFnumDiskReads), (unsigned __int64)numDiskReads)});
+    return curReadCost;
+}
+
+// Deprecated and should be removed and new feature tested
+RemoteFilename &deprecatedConstructPartFilename(IGroup *grp,unsigned partno,unsigned partmax,const char *name,const char *partmask,const char *partdir,unsigned copy,ClusterPartDiskMapSpec &mspec,RemoteFilename &rfn)
 {
     partno--;
     StringBuffer tmp;
@@ -255,6 +292,46 @@ RemoteFilename &constructPartFilename(IGroup *grp,unsigned partno,unsigned partm
     if (grp)
         ep=grp->queryNode(n).endpoint();
     rfn.setPath(ep,fullname.toLowerCase().str());
+    return rfn;
+}
+
+RemoteFilename &constructPartFilename(IGroup *grp,unsigned partNo,unsigned copy,unsigned max,unsigned lfnHash,int replicateOffset,bool dirPerPart,const char *lname,const char *prefix,const char *pmask,unsigned numDevices,RemoteFilename &rfn)
+{
+    partNo--;
+    StringBuffer partName;
+    if (!lname||!*lname)
+    {
+        if (!pmask)
+        {
+            pmask = "!ERROR!._$P$_of_$N$";
+            IERRLOG("No partmask for constructPartFilename");
+        }
+        lname = expandMask(partName, pmask, partNo, max);
+    }
+
+    // NB: calcStripeNumber expects a 0-based part number. 'partNo' is already decremented earlier to make it 0-based.
+    unsigned stripeNum = calcStripeNumber(partNo, lfnHash, numDevices);
+
+    StringBuffer fullname;
+    makePhysicalPartName(lname, partNo+1, max, fullname, 0, DFD_OSdefault, prefix, dirPerPart, stripeNum);
+
+    // revisit: constructPartFilename should be refactored not to deal with replicate directories, by pre-determining the alternate prefix if copy>0
+    // If copy>0 it could do calcPartLocation, find the replicate plane, get it's prefix, and pass to makePhysicalPartName
+    unsigned n = 0;
+    if (!isContainerized())
+    {
+        ClusterPartDiskMapSpec mspec;
+        mspec.replicateOffset = replicateOffset;
+        unsigned d;
+        mspec.calcPartLocation(partNo, max, copy, grp?grp->ordinality():max, n, d);
+        setReplicateFilename(fullname, d);
+    }
+
+    SocketEndpoint ep;
+    if (grp)
+        ep = grp->queryNode(n).endpoint();
+    rfn.setPath(ep, fullname.str());
+
     return rfn;
 }
 
@@ -936,7 +1013,7 @@ public:
             item(clusternum).queryPartDiskMapping() = spec;
     }
 
-    StringBuffer &getName(unsigned clusternum,StringBuffer &name)
+    StringBuffer &getName(unsigned clusternum,StringBuffer &name) const
     {
         if (clusternum<ordinality())
             item(clusternum).getClusterLabel(name);
@@ -1130,6 +1207,14 @@ interface IDistributedFileTransactionExt : extends IDistributedFileTransaction
     virtual void commitAndClearup()=0;
     virtual ICodeContext *queryCodeContext()=0;
 };
+
+static IDistributedFileTransactionExt *queryTransactionExt(IDistributedFileTransaction *transaction)
+{
+    IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
+    verifyex(_transaction); // _transaction cannot be null as all IDistributedFileTransaction instances
+                            //  are IDistributedFileTransactionExtinstances.
+    return _transaction;
+}
 
 class CDistributedFileDirectory: implements IDistributedFileDirectory, public CInterface
 {
@@ -1545,7 +1630,7 @@ class CDistributedFileTransaction: implements IDistributedFileTransactionExt, pu
             IDistributedFile *file;
             StringAttr name;
         public:
-            HTMapping(const char *_name, IDistributedFile *_file) : name(_name), file(_file) { }
+            HTMapping(const char *_name, IDistributedFile *_file) : file(_file), name(_name) { }
             IDistributedFile &query() { return *file; }
             const char *queryFindString() const { return name; }
             const void *queryFindParam() const { return &file; }
@@ -1710,7 +1795,7 @@ public:
     IMPLEMENT_IINTERFACE;
 
     CDistributedFileTransaction(IUserDescriptor *user, IDistributedSuperFile *_owner=NULL, ICodeContext *_codeCtx=NULL)
-        : isactive(false), depth(0), prepared(0), owner(_owner), codeCtx(_codeCtx)
+        : isactive(false), depth(0), prepared(0), codeCtx(_codeCtx), owner(_owner)
     {
         setUserDescriptor(udesc,user);
     }
@@ -2628,7 +2713,7 @@ class CDistributedFileIterator: public CDistributedFileIteratorBase<IDistributed
 
 public:
     CDistributedFileIterator(IDistributedFileDirectory *_dir,const char *wildname,bool includesuper,IUserDescriptor *user,bool _isPrivilegedUser, IDistributedFileTransaction *_transaction=NULL)
-        : isPrivilegedUser(_isPrivilegedUser), transaction(_transaction)
+        : transaction(_transaction), isPrivilegedUser(_isPrivilegedUser)
     {
         setUserDescriptor(udesc,user);
         if (!wildname||!*wildname)
@@ -2674,7 +2759,7 @@ class CDistributedSuperFileIterator: public CDistributedFileIteratorBase<IDistri
 
 public:
     CDistributedSuperFileIterator(IDistributedFile *_owner, CDistributedFileDirectory *_parent,IPropertyTree *root,IUserDescriptor *user, IDistributedFileTransaction *_transaction)
-        : owner(_owner), transaction(_transaction)
+        : transaction(_transaction), owner(_owner)
     {
         setUserDescriptor(udesc,user);
         parent = _parent;
@@ -2814,7 +2899,7 @@ protected:
     Owned<IPropertyTree> root;
     Owned<IRemoteConnection> conn;                  // kept connected during lifetime for attributes
     CDfsLogicalFileName logicalName;
-    CriticalSection sect;
+    mutable CriticalSection sect;
     CDistributedFileDirectory *parent;
     unsigned proplockcount;
     unsigned transactionnest;
@@ -2897,7 +2982,7 @@ public:
         if (history)
             queryAttributes().removeTree(history);
     }
-    void lockFileAttrLock(CFileAttrLock & attrLock)
+    virtual void lockFileAttrLock(CFileAttrLock & attrLock)
     {
         if (!attrLock.init(logicalName, DXB_File, RTM_LOCK_WRITE, conn, defaultTimeout, "CDistributedFile::lockFileAttrLock"))
         {
@@ -3285,6 +3370,29 @@ public:
         }
     }
 
+    virtual void addAttrValues(std::initializer_list<AttrValuePair> attrs) override
+    {
+        if (logicalName.isForeign())
+        {
+            // Note: it is not possible to update foreign attributes at the moment, so ignoring
+            return;
+        }
+
+        CFileAttrLock attrLock;
+        if (conn)
+            lockFileAttrLock(attrLock);
+        for (const auto& attr : attrs)
+        {
+            const char* attrName = attr.first;
+            unsigned __int64 value = attr.second;
+
+            if (0 == value)
+                continue;
+            unsigned __int64 currentVal = queryAttributes().getPropInt64(attrName);
+            queryAttributes().setPropInt64(attrName, currentVal + value);
+        }
+    }
+
     virtual StringBuffer &getColumnMapping(StringBuffer &mapping)
     {
         queryAttributes().getProp("@columnMapping",mapping);
@@ -3436,6 +3544,10 @@ protected:
                     pt->setProp("@name",override);
                 else {
                     pt->removeProp("@name");
+
+                    // JCSMORE - this makes little sense. @name -> overridename
+                    // It is being set here specifically for a 1 part file, but without it (tested) it will construct
+                    // the name from the mask as normal.
                     const char *mask=queryPartMask();
                     if (mask&&*mask) {
                         StringBuffer tmp;
@@ -3452,7 +3564,6 @@ protected:
             for (i1=0;i1<n;i1++) {
                 if (parts.item(i1).clearDirty()||force) {
                     MemoryBuffer mb;
-                    CriticalBlock block (sect);
                     ForEachItemIn(i2,parts)
                         serializePartAttr(mb,parts.item(i2).queryAttr());
                     root->setPropBin("Parts",mb.length(),mb.toByteArray());
@@ -3566,23 +3677,33 @@ protected:
 
         offset_t maxPartSz = 0, minPartSz = (offset_t)-1, totalPartSz = 0;
 
-        maxSkewPart = 0;
-        minSkewPart = 0;
-        for (unsigned p=0; p<np; p++)
+        try
         {
-            IDistributedFilePart &part = queryPart(p);
-            offset_t size = part.getFileSize(true, false);
-            if (size > maxPartSz)
+            maxSkewPart = 0;
+            minSkewPart = 0;
+            for (unsigned p=0; p<np; p++)
             {
-                maxPartSz = size;
-                maxSkewPart = p;
+                IDistributedFilePart &part = queryPart(p);
+                offset_t size = part.getFileSize(true, false);
+                if (size > maxPartSz)
+                {
+                    maxPartSz = size;
+                    maxSkewPart = p;
+                }
+                if (size < minPartSz)
+                {
+                    minPartSz = size;
+                    minSkewPart = p;
+                }
+                totalPartSz += size;
             }
-            if (size < minPartSz)
-            {
-                minPartSz = size;
-                minSkewPart = p;
-            }
-            totalPartSz += size;
+        }
+        catch (IException *e)
+        {
+            // guard against getFileSize throwing an exception (if parts missing)
+            EXCLOG(e);
+            e->Release();
+            return false;
         }
         offset_t avgPartSz = totalPartSz / np;
         if (0 == avgPartSz)
@@ -3754,6 +3875,47 @@ public:
         clusters.kill();
     }
 
+    //Ensure that enough time has passed from when the file was last modified for reads to be consistent
+    //Important for blob storage or remote, geographically synchronized storage
+    void checkWriteSync()
+    {
+        time_t modifiedTime = 0;
+        time_t now = 0;
+
+        Owned<IPropertyTreeIterator> iter = root->getElements("Cluster");
+        ForEach(*iter)
+        {
+            const char * name = iter->query().queryProp("@name");
+            unsigned marginMs = getWriteSyncMarginMs(name);
+            if (marginMs)
+            {
+                if (0 == modifiedTime)
+                {
+                    CDateTime modified;
+                    if (!getModificationTime(modified))
+                        return;
+                    modifiedTime = modified.getSimple();
+                }
+
+                if (0 == now)
+                    now = time(&now);
+
+                //Round the elapsed time down - so that a change on the last ms of one time period does not count as a whole second of elapsed time
+                //This could be avoided if the modified time was more granular
+                unsigned __int64 elapsedMs = (now - modifiedTime) * 1000;
+                if (elapsedMs >= 1000)
+                    elapsedMs -= 999;
+
+                if (unlikely(elapsedMs < marginMs))
+                {
+                    LOG(MCuserProgress, "Delaying access to %s on %s for %ums to ensure write sync", queryLogicalName(), name, (unsigned)(marginMs - elapsedMs));
+                    MilliSleep(marginMs - elapsedMs);
+                    now = 0; // re-evaluate now - unlikely to actually happen
+                }
+            }
+        }
+    }
+
     bool hasDirPerPart() const
     {
         return FileDescriptorFlags::none != (fileFlags & FileDescriptorFlags::dirperpart);
@@ -3827,6 +3989,9 @@ public:
         unsigned nc = fdesc->numClusters();
         if (nc)
         {
+            unsigned flags = 0;
+            if (FileDescriptorFlags::none != (FileDescriptorFlags::foreign & fdesc->getFlags()))
+                flags = IFDSF_FOREIGN_GROUP;
             for (unsigned i=0;i<nc;i++)
             {
                 StringBuffer cname;
@@ -3845,7 +4010,8 @@ public:
                                   nullptr,
                                   fdesc->queryClusterGroup(i),
                                   fdesc->queryPartDiskMapping(i),
-                                  &queryNamedGroupStore()
+                                  &queryNamedGroupStore(),
+                                  flags
                                );
 
                     if (!cluster->queryGroup(&queryNamedGroupStore()))
@@ -4032,7 +4198,7 @@ public:
     }
 
 
-    virtual StringBuffer &getClusterName(unsigned clusternum,StringBuffer &name) override
+    virtual StringBuffer &getClusterName(unsigned clusternum,StringBuffer &name) const override
     {
         return clusters.getName(clusternum,name);
     }
@@ -4458,7 +4624,8 @@ public:
         if (isPathSepChar(newPath.charAt(newPath.length()-1)))
             newPath.setLength(newPath.length()-1);
         newPath.remove(0, myBase.length());
-        newdir.append(baseDir).append(newPath);
+        newdir.append(baseDir);
+        appendEnsurePathSepChar(newdir, newPath, psc);
         StringBuffer fullname;
         CIArrayOf<CIStringArray> newNames;
         unsigned i;
@@ -4477,7 +4644,8 @@ public:
 
                 StringBuffer copyDir(baseDir);
                 adjustClusterDir(i, copy, copyDir);
-                fullname.clear().append(copyDir).append(newPath);
+                fullname.clear().append(copyDir);
+                appendEnsurePathSepChar(fullname, newPath, psc);
                 newNames.item(i).append(fullname);
             }
         }
@@ -4504,7 +4672,7 @@ public:
             IException *except;
 
             casyncforbase(IDistributedFile *_file,CIArrayOf<CIStringArray> &_newNames,unsigned _width,IMultiException *_mexcept,CriticalSection &_crit,bool *_ignoreprim,bool *_ignorerep)
-                : newNames(_newNames),crit(_crit)
+                : crit(_crit), newNames(_newNames)
             {
                 width = _width;
                 file = _file;
@@ -4954,49 +5122,85 @@ public:
     }
     virtual void getCost(const char * cluster, cost_type & atRestCost, cost_type & accessCost) override
     {
+        atRestCost = 0;
+        accessCost = 0;
         CDateTime dt;
         getModificationTime(dt);
         double fileAgeDays = difftime(time(nullptr), dt.getSimple())/(24*60*60);
         double sizeGB = getDiskSize(true, false) / ((double)1024 * 1024 * 1024);
         const IPropertyTree *attrs = root->queryPropTree("Attr");
-        bool doLegacyAccessCostCalc = false;
-        __int64 numDiskWrites = 0, numDiskReads = 0;
-        if (attrs)
-        {
-            if (hasReadWriteCostFields(*attrs))
-            {
-                // Newer files have readCost and writeCost attributes
-                accessCost = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFreadCost)) + attrs->getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost));
-            }
-            else
-            {
-                // Costs need to be calculated from numDiskReads and numDiskWrites for legacy files
-                numDiskWrites = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites));
-                doLegacyAccessCostCalc = true;
-                // NB: Costs of index reading can not be reliably estimated based on 'numDiskReads'
-                if (!isFileKey(*attrs))
-                    numDiskReads = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads));
-            }
-        }
+
+        //This array must still exist when getReadCost() etc. is called, otherwise cluster will have been freed.
+        StringArray clusterNames;
         if (isEmptyString(cluster))
         {
-            StringArray clusterNames;
             unsigned countClusters = getClusterNames(clusterNames);
             for (unsigned i = 0; i < countClusters; i++)
                 atRestCost += calcFileAtRestCost(clusterNames[i], sizeGB, fileAgeDays);
-            if (countClusters && doLegacyAccessCostCalc)
-            {
-                // NB: numDiskReads/numDiskWrites are stored at the file level, not per cluster.
-                // So cannot calculate accessCost per cluster, assume cost is based on 1st.
-                accessCost = calcFileAccessCost(clusterNames[0], numDiskWrites, numDiskReads);
-            }
+            if (countClusters)
+                cluster = clusterNames[0];
         }
         else
         {
-            atRestCost += calcFileAtRestCost(cluster, sizeGB, fileAgeDays);
-            if (doLegacyAccessCostCalc)
-                accessCost = calcFileAccessCost(cluster, numDiskWrites, numDiskReads);
+            atRestCost = calcFileAtRestCost(cluster, sizeGB, fileAgeDays);
         }
+        if (attrs)
+            accessCost = ::getReadCost(*attrs, cluster) + ::getWriteCost(*attrs, cluster);
+    }
+
+    virtual bool getNumReads(stat_type &numReads) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        numReads = attrs ? attrs->getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads)) : 0;
+        return numReads > 0;
+    }
+
+    virtual bool getNumWrites(stat_type &numWrites) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        numWrites = attrs ? attrs->getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites)) : 0;
+        return numWrites > 0;
+    }
+
+    virtual bool getReadCost(cost_type &cost, bool calculateIfMissing=false) const override
+    {
+        IPropertyTree *attrs = root->queryPropTree("Attr");
+        if (attrs)
+        {
+            cost = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), (unsigned __int64)-1);
+            if ((unsigned __int64)-1 != cost)
+                return true;
+            if (calculateIfMissing)
+            {
+                StringBuffer clusterName;
+                getClusterName(0, clusterName);
+                cost = calcLegacyReadCost(*attrs, clusterName.str());
+                return true;
+            }
+        }
+        cost = 0;
+        return false;
+    }
+
+    virtual bool getWriteCost(cost_type &cost, bool calculateIfMissing=false) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        if (attrs)
+        {
+            cost = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), (unsigned __int64)-1);
+            if ((unsigned __int64)-1 != cost)
+                return true;
+            if (calculateIfMissing)
+            {
+                StringBuffer clusterName;
+                // getClusterName isn't const function, so need to cast this to non-const
+                getClusterName(0, clusterName);
+                cost = calcLegacyWriteCost(*attrs, clusterName.str());
+                return true;
+            }
+        }
+        cost = 0;
+        return false;
     }
 };
 
@@ -5538,7 +5742,7 @@ protected:
                         subfile.setown(queryDistributedFileDirectory().createNewSuperFile(dummySuperRoot, subname));
                         if (transaction)
                         {
-                            IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
+                            IDistributedFileTransactionExt *_transaction = queryTransactionExt(transaction);
                             _transaction->ensureFile(subfile);
                         }
                     }
@@ -5851,7 +6055,7 @@ public:
         subfiles.kill();
     }
 
-    virtual StringBuffer &getClusterName(unsigned clusternum,StringBuffer &name) override
+    virtual StringBuffer &getClusterName(unsigned clusternum,StringBuffer &name) const override
     {
         // returns the cluster name if all the same
         CriticalBlock block (sect);
@@ -5926,7 +6130,7 @@ public:
         }
 
         // need common attributes
-        Owned<ISuperFileDescriptor> fdesc=createSuperFileDescriptor(at.getClear());
+        Owned<ISuperFileDescriptor> fdesc=createSuperFileDescriptor(at.getClear(), logicalName.isForeign() ? FileDescriptorFlags::foreign : FileDescriptorFlags::none);
         if (interleaved&&(interleaved!=2))
             IWARNLOG("getFileDescriptor: Unsupported interleave value (1)");
         fdesc->setSubMapping(subcounts,interleaved!=0);
@@ -5960,10 +6164,6 @@ public:
             fdesc->setPart(n,part.getFilename(rfn,copy),&part.queryAttributes());
             n++;
         }
-        // turn off dirperpart (if present) because the super descriptor has already encoded the common parent dir + tails above.
-        FileDescriptorFlags flags = static_cast<FileDescriptorFlags>(fdesc->queryProperties().getPropInt("@flags"));
-        flags &= ~FileDescriptorFlags::dirperpart;
-        fdesc->queryProperties().setPropInt("@flags", static_cast<int>(flags));
         fdesc->queryProperties().setPropInt("@accessMode", static_cast<int>(accessMode));
         ClusterPartDiskMapSpec mspec;
         if (subfiles.ordinality()) {
@@ -6263,6 +6463,74 @@ public:
         return true;
     }
 
+    virtual bool getNumReads(stat_type &numReads) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        numReads = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), (stat_type) -1);
+        if (numReads == (stat_type) -1)
+        {
+            numReads = 0;
+            ForEachItemIn(i,subfiles)
+            {
+                stat_type c;
+                if (subfiles.item(i).getNumReads(c))
+                    numReads += c;
+            }
+        }
+        return numReads > 0;
+    }
+
+    virtual bool getNumWrites(stat_type &numWrites) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        numWrites = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), (stat_type) -1);
+        if (numWrites == (stat_type) -1)
+        {
+            numWrites = 0;
+            ForEachItemIn(i,subfiles)
+            {
+                stat_type c;
+                if (subfiles.item(i).getNumWrites(c))
+                    numWrites += c;
+            }
+        }
+        return numWrites > 0;
+    }
+
+    virtual bool getReadCost(cost_type &cost, bool calculateIfMissing=false) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        cost = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFreadCost), (cost_type) -1);
+        if (cost == (stat_type) -1)
+        {
+            cost = 0;
+            ForEachItemIn(i,subfiles)
+            {
+                cost_type c;
+                if (subfiles.item(i).getReadCost(c,calculateIfMissing))
+                    cost += c;
+            }
+        }
+        return cost > 0;
+    }
+
+    virtual bool getWriteCost(cost_type &cost, bool calculateIfMissing=false) const override
+    {
+        const IPropertyTree *attrs = root->queryPropTree("Attr");
+        cost = attrs->getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), (cost_type) -1);
+        if (cost == (stat_type) -1)
+        {
+            cost = 0;
+            ForEachItemIn(i,subfiles)
+            {
+                cost_type c;
+                if (subfiles.item(i).getWriteCost(c,calculateIfMissing))
+                    cost += c;
+            }
+        }
+        return cost > 0;
+    }
+
     virtual IDistributedSuperFile *querySuperFile() override
     {
         return this;
@@ -6451,6 +6719,19 @@ public:
         return new cSubFileIterator(subfiles,supersub);
     }
 
+    virtual void lockFileAttrLock(CFileAttrLock & attrLock) override
+    {
+        if (!attrLock.init(logicalName, DXB_SuperFile, RTM_LOCK_WRITE, conn, defaultTimeout, "CDistributedFile::lockFileAttrLock"))
+        {
+            // In unlikely event File/Attr doesn't exist, must ensure created, commited and root connection is reloaded.
+            verifyex(attrLock.init(logicalName, DXB_SuperFile, RTM_LOCK_WRITE|RTM_CREATE_QUERY, conn, defaultTimeout, "CDistributedFile::lockFileAttrLock"));
+            attrLock.commit();
+            conn->commit();
+            conn->reload();
+            root.setown(conn->getRoot());
+        }
+    }
+
     void updateFileAttrs()
     {
         if (subfiles.ordinality()==0) {
@@ -6476,6 +6757,11 @@ public:
         attrs.removeProp("@minSkew");
         attrs.removeProp("@maxSkewPart");
         attrs.removeProp("@minSkewPart");
+        attrs.removeProp(getDFUQResultFieldName(DFUQRFnumDiskReads));
+        attrs.removeProp(getDFUQResultFieldName(DFUQRFnumDiskWrites));
+        attrs.removeProp(getDFUQResultFieldName(DFUQRFreadCost));
+        attrs.removeProp(getDFUQResultFieldName(DFUQRFwriteCost));
+        attrs.removeProp("@lfnHash");
 
         __int64 fs = getFileSize(false,false);
         if (fs!=-1)
@@ -6503,6 +6789,16 @@ public:
             attrs.setPropBin("_record_layout", mb.length(), mb.bufferBase());
         if (getRecordLayout(mb, "_rtlType"))
             attrs.setPropBin("_rtlType", mb.length(), mb.bufferBase());
+        stat_type numReads, numWrites;
+        getNumReads(numReads);
+        attrs.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskReads), numReads);
+        getNumWrites(numWrites);
+        attrs.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), numWrites);
+        cost_type readCost, writeCost;
+        getReadCost(readCost, true);
+        attrs.setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), readCost);
+        getWriteCost(writeCost, true);
+        attrs.setPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), writeCost);
         const char *kind = nullptr;
         Owned<IDistributedFileIterator> subIter = getSubFileIterator(true);
         ForEach(*subIter)
@@ -6719,8 +7015,7 @@ public:
         Linked<IDistributedFileTransactionExt> localtrans;
         if (transaction)
         {
-            IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-            localtrans.set(_transaction);
+            localtrans.set(queryTransactionExt(transaction));
         }
         else
             localtrans.setown(new CDistributedFileTransaction(udesc, this));
@@ -6766,8 +7061,7 @@ public:
         Linked<IDistributedFileTransactionExt> localtrans;
         if (transaction)
         {
-            IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-            localtrans.set(_transaction);
+            localtrans.set(queryTransactionExt(transaction));
         }
         else
             localtrans.setown(new CDistributedFileTransaction(udesc, this));
@@ -6823,8 +7117,7 @@ public:
         Linked<IDistributedFileTransactionExt> localtrans;
         if (transaction)
         {
-            IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-            localtrans.set(_transaction);
+            localtrans.set(queryTransactionExt(transaction));
         }
         else
             localtrans.setown(new CDistributedFileTransaction(udesc, this));
@@ -6853,8 +7146,7 @@ public:
         Linked<IDistributedFileTransactionExt> localtrans;
         if (transaction)
         {
-            IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-            localtrans.set(_transaction);
+            localtrans.set(queryTransactionExt(transaction));
         }
         else
             localtrans.setown(new CDistributedFileTransaction(udesc, this));
@@ -7137,7 +7429,7 @@ offset_t CDistributedFilePart::getSize(bool checkCompressed)
                 Owned<IFileIO> partFileIO = partfile->open(IFOread);
                 if (partFileIO)
                 {
-                    Owned<ICompressedFileIO> compressedIO = createCompressedFileReader(partFileIO);
+                    Owned<IFileIO> compressedIO = createCompressedFileReader(partFileIO);
                     if (compressedIO)
                         ret = compressedIO->size();
                     else
@@ -7242,45 +7534,45 @@ StringBuffer &CDistributedFilePart::getPartDirectory(StringBuffer &ret,unsigned 
     else
     {
         parent.adjustClusterDir(partIndex,copy,dir);
-
-// NB: could be compiled in bare-metal,
-// but bare-metal components without a config would complain as this calls getGlobalConfig()
         unsigned cn = copyClusterNum(copy, nullptr);
         IClusterInfo &cluster = parent.clusters.item(cn);
-        const char *planeName = cluster.queryGroupName();
-        if (!isEmptyString(planeName))
-        {
-            Owned<IStoragePlane> plane;
-#ifdef _CONTAINERIZED
-            plane.setown(getDataStoragePlane(planeName, false));
-#else
-            // this is for the remote useDafilesrv case,
-            // where the remote storage plane may be needed to remap/stripe, see below.
-            IPropertyTree *remoteStoragePlane = parent.queryAttributes().queryPropTree("_remoteStoragePlane");
-            if (remoteStoragePlane)
-                plane.setown(createStoragePlane(remoteStoragePlane));
-#endif
-            if (plane)
-            {
-                StringBuffer planePrefix(plane->queryPrefix());
-                Owned<IStoragePlaneAlias> alias = plane->getAliasMatch(parent.accessMode);
-                if (alias)
-                {
-                    StringBuffer tmp;
-                    StringBuffer newPlanePrefix(alias->queryPrefix());
-                    if (setReplicateDir(dir, tmp, false, planePrefix, newPlanePrefix))
-                    {
-                        planePrefix.swapWith(newPlanePrefix);
-                        dir.swapWith(tmp);
-                    }
-                }
+        Owned<IStoragePlane> plane;
 
-                StringBuffer stripeDir;
-                unsigned numStripedDevices = parent.queryPartDiskMapping(cn).numStripedDevices;
-                addStripeDirectory(stripeDir, dir, planePrefix, partIndex, parent.lfnHash, numStripedDevices);
-                if (!stripeDir.isEmpty())
-                    dir.swapWith(stripeDir);
+        // this is for the remote useDafilesrv case,
+        // where the remote storage plane may be needed to remap/stripe, see below.
+        // NB: striping only supported in containerized environments.
+        IPropertyTree *remoteStoragePlane = parent.queryAttributes().queryPropTree("_remoteStoragePlane");
+        if (remoteStoragePlane) // implies from containerized environment
+            plane.setown(createStoragePlane(remoteStoragePlane));
+        else // local environment
+        {
+            if (isContainerized())
+            {
+                const char *planeName = cluster.queryGroupName();
+                if (!isEmptyString(planeName))
+                    plane.setown(getDataStoragePlane(planeName, false));
             }
+        }
+        if (plane)
+        {
+            StringBuffer planePrefix(plane->queryPrefix());
+            Owned<IStoragePlaneAlias> alias = plane->getAliasMatch(parent.accessMode);
+            if (alias)
+            {
+                StringBuffer tmp;
+                StringBuffer newPlanePrefix(alias->queryPrefix());
+                if (setReplicateDir(dir, tmp, false, planePrefix, newPlanePrefix))
+                {
+                    planePrefix.swapWith(newPlanePrefix);
+                    dir.swapWith(tmp);
+                }
+            }
+
+            StringBuffer stripeDir;
+            unsigned numStripedDevices = parent.queryPartDiskMapping(cn).numStripedDevices;
+            addStripeDirectory(stripeDir, dir, planePrefix, partIndex, parent.lfnHash, numStripedDevices);
+            if (!stripeDir.isEmpty())
+                dir.swapWith(stripeDir);
         }
         if (parent.hasDirPerPart())
             addPathSepChar(dir).append(partIndex+1); // part subdir 1 based
@@ -7454,8 +7746,20 @@ class CNamedGroupIterator: implements INamedGroupIterator, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
     CNamedGroupIterator(IRemoteConnection *_conn,IGroup *_matchgroup=NULL,bool _exactmatch=false)
-        : conn(_conn), matchgroup(_matchgroup)
+        : conn(_conn)
     {
+        if (_matchgroup)
+        {
+            // the matchgroup may contain ports, but they are never part of published groups and are not to be used for matching
+            SocketEndpointArray epa;
+            for (unsigned i=0; i<_matchgroup->ordinality(); i++)
+            {
+                SocketEndpoint ep = _matchgroup->queryNode(i).endpoint();
+                ep.port = 0;
+                epa.append(ep);
+            }
+            matchgroup.setown(createIGroup(epa));
+        }
         exactmatch = _exactmatch;
         pe.setown(conn->queryRoot()->getElements("Group"));
     }
@@ -7532,7 +7836,7 @@ public:
     }
 
     CNamedGroupCacheEntry(IException *_exception, const char *_name)
-    : exception(_exception), name(_name), groupType(grp_unknown)
+    : name(_name), groupType(grp_unknown), exception(_exception)
     {
         cachedtime = msTick();
     }
@@ -8142,20 +8446,21 @@ private:
 
 };
 
-static CNamedGroupStore *groupStore = NULL;
+static std::atomic<CNamedGroupStore *> groupStore{nullptr};
 static CriticalSection groupsect;
+
 
 bool CNamedGroupIterator::match()
 {
     if (conn.get()) {
         if (matchgroup.get()) {
-            if (!groupStore)
+            if (!groupStore.load())
                 return false;
             const char *name = pe->query().queryProp("@name");
             if (!name||!*name)
                 return false;
             GroupType dummy;
-            Owned<IGroup> lgrp = groupStore->dolookup(name, conn, NULL, dummy);
+            Owned<IGroup> lgrp = groupStore.load()->dolookup(name, conn, NULL, dummy);
             if (lgrp) {
                 if (exactmatch)
                     return lgrp->equals(matchgroup);
@@ -8169,14 +8474,15 @@ bool CNamedGroupIterator::match()
     return false;
 }
 
-INamedGroupStore  &queryNamedGroupStore()
+INamedGroupStore &queryNamedGroupStore()
 {
-    if (!groupStore) {
+    if (!groupStore.load())
+    {
         CriticalBlock block(groupsect);
-        if (!groupStore)
-            groupStore = new CNamedGroupStore();
+        if (!groupStore.load())
+            groupStore.store(new CNamedGroupStore());
     }
-    return *groupStore;
+    return *(groupStore.load());
 }
 
 // --------------------------------------------------------
@@ -8243,6 +8549,7 @@ IDistributedFile *CDistributedFileDirectory::dolookup(CDfsLogicalFileName &_logi
                     }
                     CDistributedFile *ret = new CDistributedFile(this,fcl.detach(),*logicalname,accessMode,user);  // found
                     ret->setSuperOwnerLock(superOwnerLock.detach());
+                    ret->checkWriteSync();
                     return ret;
                 }
                 // now super file
@@ -8450,7 +8757,7 @@ public:
                            IUserDescriptor *_user,
                            const char *_flname,
                            bool _interleaved)
-        : parent(_parent), user(_user), created(false), interleaved(_interleaved)
+        : parent(_parent), user(_user), interleaved(_interleaved), created(false)
     {
         tracing.appendf("CreateSuperFile: super: %s", _flname);
         logicalname.set(_flname);
@@ -8656,7 +8963,7 @@ public:
                       IUserDescriptor *_user,
                       const char *_flname,
                       const char *_newname)
-        : user(_user), parent(_parent)
+        : parent(_parent), user(_user)
     {
         tracing.appendf("RenameFile: name: %s, newname: %s", _flname, _newname);
         fromName.set(_flname);
@@ -8855,8 +9162,7 @@ IDistributedSuperFile *CDistributedFileDirectory::createSuperFile(const char *_l
     Linked<IDistributedFileTransactionExt> localtrans;
     if (transaction)
     {
-        IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-        localtrans.set(_transaction);
+        localtrans.set(queryTransactionExt(transaction));
     }
     else
         localtrans.setown(new CDistributedFileTransaction(user));
@@ -8893,8 +9199,7 @@ void CDistributedFileDirectory::removeSuperFile(const char *_logicalname, bool d
     Linked<IDistributedFileTransactionExt> localtrans;
     if (transaction)
     {
-        IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-        localtrans.set(_transaction);
+        localtrans.set(queryTransactionExt(transaction));
     }
     else
         localtrans.setown(new CDistributedFileTransaction(user));
@@ -8915,8 +9220,7 @@ bool CDistributedFileDirectory::removeEntry(const char *name, IUserDescriptor *u
     Linked<IDistributedFileTransactionExt> localtrans;
     if (transaction)
     {
-        IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-        localtrans.set(_transaction);
+        localtrans.set(queryTransactionExt(transaction));
     }
     else
         localtrans.setown(new CDistributedFileTransaction(user));
@@ -8969,8 +9273,7 @@ void CDistributedFileDirectory::renamePhysical(const char *oldname,const char *n
     Linked<IDistributedFileTransactionExt> localtrans;
     if (transaction)
     {
-        IDistributedFileTransactionExt *_transaction = dynamic_cast<IDistributedFileTransactionExt *>(transaction);
-        localtrans.set(_transaction);
+        localtrans.set(queryTransactionExt(transaction));
     }
     else
         localtrans.setown(new CDistributedFileTransaction(user));
@@ -9106,7 +9409,7 @@ GetFileClusterNamesType CDistributedFileDirectory::getFileClusterNames(const cha
 // --------------------------------------------------------
 
 
-static CDistributedFileDirectory *DFdir = NULL;
+static std::atomic<CDistributedFileDirectory *> DFdir{nullptr};
 static CriticalSection dfdirCrit;
 
 /**
@@ -9116,38 +9419,43 @@ static CriticalSection dfdirCrit;
  */
 IDistributedFileDirectory &queryDistributedFileDirectory()
 {
-    if (!DFdir) {
+    if (!DFdir.load())
+    {
         CriticalBlock block(dfdirCrit);
-        if (!DFdir)
-            DFdir = new CDistributedFileDirectory();
+        if (!DFdir.load())
+            DFdir.store(new CDistributedFileDirectory());
     }
-    return *DFdir;
+    return *DFdir.load();
 }
 
 /**
  * Shutdown distributed file system (root directory).
  */
-void closedownDFS()  // called by dacoven
+void closedownDFS() // called by dacoven
 {
-    CriticalBlock block(dfdirCrit);
-    try {
-        delete DFdir;
+    CriticalBlock bDFdir(dfdirCrit);
+    try
+    {
+        delete DFdir.load();
     }
-    catch (IMP_Exception *e) {
-        if (e->errorCode()!=MPERR_link_closed)
+    catch (IMP_Exception *e)
+    {
+        if (e->errorCode() != MPERR_link_closed)
             throw;
-        PrintExceptionLog(e,"closedownDFS");
+        PrintExceptionLog(e, "closedownDFS");
         e->Release();
     }
-    catch (IDaliClient_Exception *e) {
-        if (e->errorCode()!=DCERR_server_closed)
+    catch (IDaliClient_Exception *e)
+    {
+        if (e->errorCode() != DCERR_server_closed)
             throw;
         e->Release();
     }
-    DFdir = NULL;
-    CriticalBlock block2(groupsect);
-    ::Release(groupStore);
-    groupStore = NULL;
+    DFdir.store(nullptr);
+
+    CriticalBlock bGroupStore(groupsect);
+    ::Release(groupStore.load());
+    groupStore.store(nullptr);
 }
 
 class CDFPartFilter : implements IDFPartFilter, public CInterface
@@ -9193,9 +9501,11 @@ public:
                         partincluded[i] = true;
                     start = 0;
                 }
+                else if (pn == 0)
+                    throw makeStringExceptionV(0, "Invalid part filter: %s", filter);
                 else
-                    partincluded[pn-1] = true;
-                if (*s==0)
+                    partincluded[pn - 1] = true;
+                if (*s == 0)
                     break;
                 pn = 0;
             }
@@ -9287,7 +9597,7 @@ const char* DFUQFilterFieldNames[] = { "", "@description", "@directory", "@group
     "@partmask", "@OrigName", "Attr", "Attr/@job", "Attr/@owner", "Attr/@recordCount", "Attr/@recordSize", "Attr/@size",
     "Attr/@compressedsize", "Attr/@workunit", "Cluster", "Cluster/@defaultBaseDir", "Cluster/@defaultReplDir", "Cluster/@mapFlags",
     "Cluster/@name", "Part", "Part/@name", "Part/@num", "Part/@size", "SuperOwner", "SuperOwner/@name",
-    "SubFile", "SubFile/@name", "SubFile/@num", "Attr/@kind", "Attr/@accessed", "Attr/@maxSkew", "Attr/@minSkew" };
+    "SubFile", "SubFile/@name", "SubFile/@num", "Attr/@kind", "Attr/@accessed", "Attr/@maxSkew", "Attr/@minSkew", "Attr/@expireDays" };
 
 extern da_decl const char* getDFUQFilterFieldName(DFUQFilterField feild)
 {
@@ -9314,9 +9624,9 @@ public:
     CDFUSFFilter(DFUQFilterType _filterType, const char *_attrPath, const char *_filterValue, const char *_filterValueHigh)
         : filterType(_filterType), attrPath(_attrPath), filterValue(_filterValue), filterValueHigh(_filterValueHigh) {};
     CDFUSFFilter(DFUQFilterType _filterType, const char *_attrPath, bool _hasFilter, const int _filterValue, bool _hasFilterHigh, const int _filterValueHigh)
-        : filterType(_filterType), attrPath(_attrPath), hasFilter(_hasFilter), filterValueInt(_filterValue), hasFilterHigh(_hasFilterHigh), filterValueHighInt(_filterValueHigh) {};
+        : filterType(_filterType), attrPath(_attrPath), hasFilter(_hasFilter), hasFilterHigh(_hasFilterHigh), filterValueInt(_filterValue), filterValueHighInt(_filterValueHigh) {};
     CDFUSFFilter(DFUQFilterType _filterType, const char *_attrPath, bool _hasFilter, const __int64 _filterValue, bool _hasFilterHigh, const __int64 _filterValueHigh)
-        : filterType(_filterType), attrPath(_attrPath), hasFilter(_hasFilter), filterValueInt64(_filterValue), hasFilterHigh(_hasFilterHigh), filterValueHighInt64(_filterValueHigh) {};
+        : filterType(_filterType), attrPath(_attrPath), hasFilter(_hasFilter), hasFilterHigh(_hasFilterHigh), filterValueInt64(_filterValue), filterValueHighInt64(_filterValueHigh) {};
     CDFUSFFilter(DFUQFilterType _filterType, const char *_attrPath, bool _filterValue)
         : filterType(_filterType), attrPath(_attrPath), filterValueBoolean(_filterValue) {};
     CDFUSFFilter(DFUQFilterType _filterType, const char *_attrPath, const char *_filterValue, const char *_sep, StringArray& _filterArray)
@@ -10658,10 +10968,11 @@ public:
 
     void constructStorageGroups(bool force, StringBuffer &messages)
     {
-        Owned<IPropertyTree> storage = getGlobalConfigSP()->getPropTree("storage");
+        Owned<IPropertyTree> globalConfig = getGlobalConfig();
+        IPropertyTree * storage = globalConfig->queryPropTree("storage");
         if (storage)
         {
-            normalizeHostGroups();
+            normalizeHostGroups(globalConfig);
 
             Owned<IPropertyTreeIterator> planes = storage->getElements("planes");
             ForEach(*planes)
@@ -10965,23 +11276,45 @@ public:
         mb.writeDirect(0,sizeof(count),&count);
     }
 
-    void iterateFilteredFiles(TransactionLog &transactionLog, CMessageBuffer &mb,StringBuffer &trc, bool returnAllFilesFlag)
+    IPropertyTree *createLegacyIterFilesRequest(MemoryBuffer &mb)
     {
+        Owned<IPropertyTree> request = createPTree();
         Owned<IUserDescriptor> udesc;
         StringAttr filters;
         bool recursive;
         mb.read(filters).read(recursive);
-        trc.appendf("iterateFilteredFiles(%s,%s)",filters.str(),recursive?"recursive":"");
-        if (queryTransactionLogging())
-            transactionLog.log("%s", trc.str());
         if (mb.getPos()<mb.length())
         {
             udesc.setown(createUserDescriptor());
             udesc->deserialize(mb);
+            StringBuffer userName;
+            udesc->getUserName(userName);
+            request->setProp("@user", userName);
         }
+        request->setProp("@filters", filters);
+        request->setPropBool("@recursive", recursive);
+        return request.getClear();
+    }
 
-        mb.clear();
+    void iterateFilteredFilesCommon(TransactionLog &transactionLog, const IPropertyTree *request, CMessageBuffer &mb, StringBuffer &trc)
+    {
+        StringAttr filters = request->queryProp("@filters");
+        bool recursive = request->getPropBool("@recursive");
+        const char *userName = request->queryProp("@user");
+        Owned<IUserDescriptor> udesc;
+        if (!isEmptyString(userName))
+        {
+            udesc.setown(createUserDescriptor());
+            udesc->set(userName, nullptr);
+        }
+        bool suppressAllFilesFlag = request->getPropBool("@suppressAllFilesFlag");
+
+        trc.appendf("iterateFilteredFiles(%s,%s)",filters.str(),recursive?"recursive":"");
+        if (queryTransactionLogging())
+            transactionLog.log("%s", trc.str());
+
         unsigned count=0;
+        unsigned startPos = mb.length();
         mb.append(count);
 
         Owned<CIterateFileFilterContainer> iterateFileFilterContainer =  new CIterateFileFilterContainer();
@@ -11012,7 +11345,7 @@ public:
             e->Release();
             returnAllMatchingFiles = false;
         }
-        if (returnAllFilesFlag)
+        if (!suppressAllFilesFlag)
             mb.append(returnAllMatchingFiles);
 
         tookMs = msTick()-start;
@@ -11042,19 +11375,32 @@ public:
         if (tookMs>100)
             PROGLOG("TIMING(filescan-serialization): %s: took %dms, %d files",trc.str(), tookMs, count);
 
-        mb.writeDirect(0,sizeof(count),&count);
+        mb.writeDirect(startPos, sizeof(count), &count);
     }
 
-    void iterateFilteredFiles(CMessageBuffer &mb,StringBuffer &trc)
+    void iterateFilteredFiles(CMessageBuffer &mb, StringBuffer &trc)
     {
         TransactionLog transactionLog(*this, MDFS_ITERATE_FILTEREDFILES, mb.getSender());
-        iterateFilteredFiles(transactionLog, mb, trc, false);
+        Owned<IPropertyTree> request = createLegacyIterFilesRequest(mb);
+        request->setPropBool("@suppressAllFilesFlag", true); // because client doesn't support
+        mb.clear();
+        iterateFilteredFilesCommon(transactionLog, request, mb, trc);
     }
 
-    void iterateFilteredFiles2(CMessageBuffer &mb,StringBuffer &trc)
+    void iterateFilteredFiles2(CMessageBuffer &mb, StringBuffer &trc)
     {
         TransactionLog transactionLog(*this, MDFS_ITERATE_FILTEREDFILES2, mb.getSender());
-        iterateFilteredFiles(transactionLog, mb, trc, true);
+        Owned<IPropertyTree> request = createLegacyIterFilesRequest(mb);
+        mb.clear();
+        iterateFilteredFilesCommon(transactionLog, request, mb, trc);
+    }
+
+    void iterateFilteredFiles3(CMessageBuffer &mb, StringBuffer &trc)
+    {
+        TransactionLog transactionLog(*this, MDFS_ITERATE_FILTEREDFILES3, mb.getSender());
+        Owned<IPropertyTree> request = createPTree(mb);
+        mb.clear();
+        iterateFilteredFilesCommon(transactionLog, request, mb, trc);
     }
 
     void iterateRelationships(CMessageBuffer &mb,StringBuffer &trc)
@@ -11395,6 +11741,11 @@ public:
                     iterateFilteredFiles2(mb, trc);
                     break;
                 }
+                case MDFS_ITERATE_FILTEREDFILES3:
+                {
+                    iterateFilteredFiles3(mb, trc);
+                    break;
+                }
                 case MDFS_ITERATE_RELATIONSHIPS:
                 {
                     iterateRelationships(mb, trc);
@@ -11465,6 +11816,8 @@ public:
             return ret.append("MDFS_ITERATE_FILTEREDFILES");
         case MDFS_ITERATE_FILTEREDFILES2:
             return ret.append("MDFS_ITERATE_FILTEREDFILES2");
+        case MDFS_ITERATE_FILTEREDFILES3:
+            return ret.append("MDFS_ITERATE_FILTEREDFILES3");
         case MDFS_ITERATE_RELATIONSHIPS:
             return ret.append("MDFS_ITERATE_RELATIONSHIPS");
         case MDFS_GET_FILE_TREE:
@@ -11997,95 +12350,6 @@ void CDistributedFileDirectory::setDefaultPreferredClusters(const char *clusters
 {
     defprefclusters.set(clusters);
 }
-
-bool removePhysicalFiles(IGroup *grp,const char *_filemask,unsigned short port,ClusterPartDiskMapSpec &mspec,IMultiException *mexcept)
-{
-    // TBD this won't remove repeated parts
-
-
-    PROGLOG("removePhysicalFiles(%s)",_filemask);
-    if (!isAbsolutePath(_filemask))
-        throw MakeStringException(-1,"removePhysicalFiles: Filename %s must be complete path",_filemask);
-
-    size32_t l = strlen(_filemask);
-    while (l&&isdigit(_filemask[l-1]))
-        l--;
-    unsigned width=0;
-    if (l&&(_filemask[l-1]=='_'))
-        width = atoi(_filemask+l);
-    if (!width)
-        width = grp->ordinality();
-
-    CriticalSection errcrit;
-    class casyncfor: public CAsyncFor
-    {
-        unsigned short port;
-        CriticalSection &errcrit;
-        IMultiException *mexcept;
-        unsigned width;
-        StringAttr filemask;
-        IGroup *grp;
-        ClusterPartDiskMapSpec &mspec;
-    public:
-        bool ok;
-        casyncfor(IGroup *_grp,const char *_filemask,unsigned _width,unsigned short _port,ClusterPartDiskMapSpec &_mspec,IMultiException *_mexcept,CriticalSection &_errcrit)
-            : mspec(_mspec),filemask(_filemask),errcrit(_errcrit)
-        {
-            grp = _grp;
-            port = _port;
-            ok = true;
-            mexcept = _mexcept;
-            width = _width;
-        }
-        void Do(unsigned i)
-        {
-            for (unsigned copy = 0; copy < 2; copy++)   // ** TBD
-            {
-                RemoteFilename rfn;
-                constructPartFilename(grp,i+1,width,NULL,filemask,"",copy>0,mspec,rfn);
-                if (port)
-                    rfn.setPort(port); // if daliservix
-                Owned<IFile> partfile = createIFile(rfn);
-                StringBuffer eps;
-                try
-                {
-                    unsigned start = msTick();
-#if 1
-                    if (partfile->remove()) {
-                        PROGLOG("Removed '%s'",partfile->queryFilename());
-                        unsigned t = msTick()-start;
-                        if (t>5*1000)
-                            DBGLOG("Removing %s from %s took %ds", partfile->queryFilename(), rfn.queryEndpoint().getEndpointHostText(eps).str(), t/1000);
-                    }
-                    else
-                        IWARNLOG("Failed to remove file part %s from %s", partfile->queryFilename(),rfn.queryEndpoint().getEndpointHostText(eps).str());
-#else
-                    if (partfile->exists())
-                        PROGLOG("Would remove '%s'",partfile->queryFilename());
-#endif
-
-                }
-                catch (IException *e)
-                {
-                    CriticalBlock block(errcrit);
-                    if (mexcept)
-                        mexcept->append(*e);
-                    else {
-                        StringBuffer s("Failed to remove file part ");
-                        s.append(partfile->queryFilename()).append(" from ");
-                        rfn.queryEndpoint().getEndpointHostText(s);
-                        EXCLOG(e, s.str());
-                        e->Release();
-                    }
-                    ok = false;
-                }
-            }
-        }
-    } afor(grp,_filemask,width,port,mspec,mexcept,errcrit);
-    afor.For(width,10,false,true);
-    return afor.ok;
-}
-
 
 IDaliServer *createDaliDFSServer(IPropertyTree *config)
 {
@@ -13315,7 +13579,7 @@ bool CDistributedFileDirectory::publishMetaFileXML(const CDfsLogicalFileName &lo
         SocketEndpointArray &ips;
     public:
         casyncfor(IPropertyTree* _file,SocketEndpointArray &_ips,Owned<IException> &_exc,CriticalSection &_errcrit)
-            : ips(_ips), exc(_exc), errcrit(_errcrit)
+            : errcrit(_errcrit), exc(_exc), ips(_ips)
         {
             file = _file;
         }
@@ -13489,25 +13753,10 @@ IPropertyTreeIterator *deserializeFileAttrIterator(MemoryBuffer& mb, unsigned nu
             cost_type atRestCost = calcFileAtRestCost(nodeGroup, sizeGB, fileAgeDays);
             file->setPropInt64(getDFUQResultFieldName(DFUQRFatRestCost), atRestCost);
 
-            // Dyamically calc and set the access cost field and for legacy files set read/write cost fields
-            cost_type accessCost = 0;
-            if (hasReadWriteCostFields(*file))
-            {
-                accessCost = file->getPropInt64(getDFUQResultFieldName(DFUQRFreadCost)) + file->getPropInt64(getDFUQResultFieldName(DFUQRFwriteCost));
-            }
-            else // Calc access cost from numDiskRead & numDiskWrites for Legacy files
-            {
-                cost_type legacyReadCost = getLegacyReadCost(*file, nodeGroup);
-                file->setPropInt64(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost);
-
-                cost_type legacyWriteCost = getLegacyWriteCost(*file, nodeGroup);
-                file->setPropInt64(getDFUQResultFieldName(DFUQRFwriteCost), legacyWriteCost);
-
-                accessCost = legacyReadCost + legacyWriteCost;
-            }
+            cost_type readCost = getReadCost(*file, nodeGroup, true);
+            cost_type writeCost = getWriteCost(*file, nodeGroup, true);
+            cost_type accessCost = readCost + writeCost;
             file->setPropInt64(getDFUQResultFieldName(DFUQRFaccessCost), accessCost);
-
-            // Dymically calc and set the total cost field
             file->setPropInt64(getDFUQResultFieldName(DFUQRFcost), atRestCost + accessCost);
         }
 
@@ -13642,14 +13891,41 @@ IPropertyTreeIterator *CDistributedFileDirectory::getDFAttributesTreeIterator(co
     CMessageBuffer mb;
     CDaliVersion serverVersionNeeded("3.13");
     bool legacy = (queryDaliServerVersion().compare(serverVersionNeeded) < 0);
+    bool iptRquestFmtSupport = false;
     if (legacy)
         mb.append((int)MDFS_ITERATE_FILTEREDFILES);
     else
-        mb.append((int)MDFS_ITERATE_FILTEREDFILES2);
-    mb.append(filters).append(recursive);
-    if (user)
     {
-        user->serializeWithoutPassword(mb);
+        if (!foreigndali)
+        {
+            CDaliVersion serverVersionNeeded("3.18");
+            iptRquestFmtSupport = (queryDaliServerVersion().compare(serverVersionNeeded) >= 0);
+        }
+        if (!iptRquestFmtSupport)
+            mb.append((int)MDFS_ITERATE_FILTEREDFILES2);
+        else
+            mb.append((int)MDFS_ITERATE_FILTEREDFILES3);
+    }
+    if (iptRquestFmtSupport)
+    {
+        Owned<IPropertyTree> request = createPTree();
+        request->setProp("@filters", filters);
+        request->setPropBool("@recursive", recursive);
+        if (user)
+        {
+            StringBuffer userName;
+            user->getUserName(userName);
+            request->setProp("@user", userName.str());
+        }
+        request->serialize(mb); // maybe I should serialize as xml or yaml
+    }
+    else
+    {
+        mb.append(filters).append(recursive);
+        if (user)
+        {
+            user->serializeWithoutPassword(mb);
+        }
     }
 
     if (foreigndali)
@@ -13839,6 +14115,72 @@ void configurePreferredPlanes()
         PROGLOG("Preferred read planes: %s", preferredPlanes.str());
     }
 }
+
+static bool doesPhysicalMatchMeta(IPropertyTree &partProps, IFile &iFile, offset_t expectedSize, offset_t &actualSize)
+{
+    constexpr unsigned delaySecs = 5;
+    // NB: temporary workaround for 'narrow' files publishing extra empty parts with the wrong @compressedSize(0)
+    // causing a new check introduced in HPCC-33064 to be hit (fixed in HPCC-33113, but will continue to affect exiting files)
+    unsigned __int64 size = partProps.getPropInt64("@size", unknownFileSize);
+    unsigned __int64 compressedSize = partProps.getPropInt64("@compressedSize", unknownFileSize);
+    if ((0 == size) && (0 == compressedSize))
+    {
+        // either this is a file from 9.10 where empty compressed files can be zero length (no header)
+        // or it's a pre 9.10 (and pre HPCC-33133 fix) dummy part created with incorrect a @compressedSize of 0
+        // (also in future empty physical files may legitimately not exist)
+        // If file exists check that the size is either 0, or the compressed header size (the size of an empty compressed file pre 9.10)
+        actualSize = iFile.size();
+        if (unknownFileSize != actualSize) // file exists. NB: ok not to exist for future compatibility where 0-length files not written
+        {
+            if (0 != actualSize) // could be zero if file from >= 9.10
+            {
+                constexpr size32_t nonEmptyCompressedFileSize = 56; // min size of a non-empty compressed file (with header) - 56 bytes
+                if (nonEmptyCompressedFileSize != actualSize)
+                {
+                    // in >= 9.8 - this could 1st check getWriteSyncMarginMs() and only check if not set.
+                    WARNLOG("Empty compressed file %s's size (%" I64F "u) is not expected size of 0 or %u - retry after %u second delay", iFile.queryFilename(), actualSize, nonEmptyCompressedFileSize, delaySecs);
+                    MilliSleep(delaySecs * 1000);
+                    actualSize = iFile.size();
+                    if ((0 != actualSize) && (nonEmptyCompressedFileSize != actualSize))
+                        return false; // including if unknownFileSize - no longer exists!
+                }
+            }
+        }
+        return true;
+    }
+    else if (expectedSize != unknownFileSize)
+    {
+        actualSize = iFile.size();
+        if (actualSize != expectedSize)
+        {
+            // in >= 9.8 - this could 1st check getWriteSyncMarginMs() and only check if not set.
+            WARNLOG("File %s's size (%" I64F "u) does not match meta size (%" I64F "u) - retry after %u second delay", iFile.queryFilename(), actualSize, expectedSize, delaySecs);
+            MilliSleep(delaySecs * 1000);
+            actualSize = iFile.size();
+            if (actualSize != expectedSize)
+                return false;
+        }
+    }
+    else
+        actualSize = unknownFileSize;
+
+    return true;
+}
+
+bool doesPhysicalMatchMeta(IPartDescriptor &partDesc, IFile &iFile, offset_t &expectedSize, offset_t &actualSize)
+{
+    IPropertyTree &partProps = partDesc.queryProperties();
+    expectedSize = partDesc.getDiskSize(false, false);
+    return doesPhysicalMatchMeta(partProps, iFile, expectedSize, actualSize);
+}
+
+bool doesPhysicalMatchMeta(IDistributedFilePart &part, IFile &iFile, offset_t &expectedSize, offset_t &actualSize)
+{
+    IPropertyTree &partProps = part.queryAttributes();
+    expectedSize = part.getDiskSize(false, false);
+    return doesPhysicalMatchMeta(partProps, iFile, expectedSize, actualSize);
+}
+
 
 #ifdef _USE_CPPUNIT
 /*

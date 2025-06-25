@@ -2811,8 +2811,8 @@ int rtlCompareEStrEStr(unsigned l1, const char * p1, unsigned l2, const char * p
     return diff;
 }
 
-const static UChar nullUStr = 0;
 #ifdef _USE_ICU
+const static UChar nullUStr = 0;
 int rtlCompareUnicodeUnicode(unsigned l1, UChar const * p1, unsigned l2, UChar const * p2, char const * locale)
 {
     while(l1 && (p1[l1-1] == ' ')) l1--;
@@ -4960,6 +4960,19 @@ unsigned rtlUtf8Size(unsigned len, const void * _data)
     return offset;
 }
 
+unsigned rtlUtf8Length(const void * _data)
+{
+    const byte * data = (const byte *)_data;
+    size32_t length = 0;
+    unsigned offset = 0;
+    while (data[offset])
+    {
+        offset += readUtf8Size(data+offset);
+        length++;
+    }
+    return length;
+}
+
 unsigned rtlUtf8Length(unsigned size, const void * _data)
 {
     const byte * data = (const byte *)_data;
@@ -6053,7 +6066,7 @@ void rtlAddExceptionTag(StringBuffer & errorText, const char * tag, const char *
 void rtlSubstituteEmbeddedScript(size32_t &__lenResult, char * &__result, size32_t scriptChars, const char *script, size32_t outFieldsChars, const char *outFields, size32_t searchChars, const char *search)
 {
     StringBuffer result;
-    ::replaceString(result, rtlUtf8Size(scriptChars, script), script, rtlUtf8Size(searchChars, search), search, rtlUtf8Size(outFieldsChars, outFields), outFields);
+    ::replaceString(result, rtlUtf8Size(scriptChars, script), script, rtlUtf8Size(searchChars, search), search, rtlUtf8Size(outFieldsChars, outFields), outFields, false);
     __lenResult = result.lengthUtf8();
     __result = result.detach();
 }

@@ -15,6 +15,8 @@
     limitations under the License.
 ############################################################################## */
 
+#include <string>
+
 #ifndef _WIN32
 #include <sys/types.h>
 #include <dirent.h>
@@ -23,11 +25,14 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "jcontainerized.hpp"
 #include "jexcept.hpp"
 #include "jfile.hpp"
 #include "jmisc.hpp"
 #include "jsocket.hpp"
 #include "jmutex.hpp"
+
+#include "jhtree.hpp"
 
 #include "commonext.hpp"
 #include "dadfs.hpp"
@@ -67,32 +72,42 @@ static Owned<IGroup> localGroup;   // used as a placeholder in IFileDescriptors 
 static Owned<ICommunicator> nodeComm; // communicator based on nodeGroup (master+slave processes)
 
 
-mptag_t masterSlaveMpTag;
+mptag_t managerWorkerMpTag;
 mptag_t kjServiceMpTag;
 Owned<IPropertyTree> globals;
 static Owned<IMPtagAllocator> ClusterMPAllocator;
 
 // stat. mappings shared between master and slave activities
-const StatisticsMapping spillStatistics({StTimeSpillElapsed, StTimeSortElapsed, StNumSpills, StSizeSpillFile});
-const StatisticsMapping soapcallStatistics({StTimeSoapcall});
-const StatisticsMapping basicActivityStatistics({StTimeTotalExecute, StTimeLocalExecute, StTimeBlocked});
+const StatisticsMapping spillStatistics({StTimeSpillElapsed, StTimeSortElapsed, StNumSpills, StSizeSpillFile, StSizePeakTempDisk});
+const StatisticsMapping executeStatistics({StWhenFirstRow, StTimeElapsed, StTimeTotalExecute, StTimeLocalExecute, StTimeBlocked});
+const StatisticsMapping soapcallStatistics({StTimeSoapcall, StTimeSoapcallDNS, StTimeSoapcallConnect, StNumSoapcallConnectFailures});
+const StatisticsMapping basicActivityStatistics({StNumParallelExecute, StTimeLookAhead}, executeStatistics, spillStatistics);
 const StatisticsMapping groupActivityStatistics({StNumGroups, StNumGroupMax}, basicActivityStatistics);
-const StatisticsMapping hashJoinActivityStatistics({StNumLeftRows, StNumRightRows}, basicActivityStatistics);
 const StatisticsMapping indexReadFileStatistics({}, diskReadRemoteStatistics, jhtreeCacheStatistics);
 const StatisticsMapping indexReadActivityStatistics({StNumRowsProcessed}, indexReadFileStatistics, basicActivityStatistics);
-const StatisticsMapping indexWriteActivityStatistics({StPerReplicated, StNumLeafCacheAdds, StNumNodeCacheAdds, StNumBlobCacheAdds }, basicActivityStatistics, diskWriteRemoteStatistics);
+const StatisticsMapping indexWriteActivityStatistics({StPerReplicated, StNumLeafCacheAdds, StNumNodeCacheAdds, StNumBlobCacheAdds, StNumDuplicateKeys, StSizeOffsetBranches, StSizeBranchMemory, StSizeLeafMemory, StSizeLargestExpandedLeaf}, basicActivityStatistics, diskWriteRemoteStatistics);
 const StatisticsMapping keyedJoinActivityStatistics({ StNumIndexAccepted, StNumPreFiltered, StNumDiskSeeks, StNumDiskAccepted, StNumDiskRejected}, basicActivityStatistics, indexReadFileStatistics);
-const StatisticsMapping loopActivityStatistics({StNumIterations}, basicActivityStatistics);
-const StatisticsMapping lookupJoinActivityStatistics({StNumSmartJoinSlavesDegradedToStd, StNumSmartJoinDegradedToLocal}, basicActivityStatistics);
-const StatisticsMapping joinActivityStatistics({StNumLeftRows, StNumRightRows}, basicActivityStatistics, spillStatistics);
+const StatisticsMapping commonJoinActivityStatistics({StNumMatchLeftRowsMax, StNumMatchRightRowsMax, StNumMatchCandidates, StNumMatchCandidatesMax}, basicActivityStatistics);
+const StatisticsMapping hashJoinActivityStatistics({StNumLeftRows, StNumRightRows}, commonJoinActivityStatistics);
+const StatisticsMapping allJoinActivityStatistics({}, commonJoinActivityStatistics);
+const StatisticsMapping lookupJoinActivityStatistics({StNumSmartJoinSlavesDegradedToStd, StNumSmartJoinDegradedToLocal}, commonJoinActivityStatistics);
+const StatisticsMapping joinActivityStatistics({StNumLeftRows, StNumRightRows}, commonJoinActivityStatistics);
 const StatisticsMapping diskReadActivityStatistics({StNumDiskRowsRead, }, basicActivityStatistics, diskReadRemoteStatistics);
 const StatisticsMapping diskWriteActivityStatistics({StPerReplicated}, basicActivityStatistics, diskWriteRemoteStatistics);
-const StatisticsMapping sortActivityStatistics({}, basicActivityStatistics, spillStatistics);
-const StatisticsMapping graphStatistics({StNumExecutions, StSizeSpillFile, StSizeGraphSpill, StTimeUser, StTimeSystem, StNumContextSwitches, StSizeMemory, StSizePeakMemory, StSizeRowMemory, StSizePeakRowMemory}, basicActivityStatistics);
+const StatisticsMapping sortActivityStatistics({}, basicActivityStatistics);
 const StatisticsMapping diskReadPartStatistics({StNumDiskRowsRead}, diskReadRemoteStatistics);
-const StatisticsMapping indexDistribActivityStatistics({}, basicActivityStatistics, jhtreeCacheStatistics);
 const StatisticsMapping soapcallActivityStatistics({}, basicActivityStatistics, soapcallStatistics);
-const StatisticsMapping hashDedupActivityStatistics({StNumSpills, StSizeSpillFile, StTimeSortElapsed}, diskWriteRemoteStatistics, basicActivityStatistics);
+const StatisticsMapping hashDistribActivityStatistics({StNumLocalRows, StNumRemoteRows, StSizeRemoteWrite}, basicActivityStatistics);
+const StatisticsMapping hashDedupActivityStatistics({}, hashDistribActivityStatistics, diskWriteRemoteStatistics);
+const StatisticsMapping indexDistribActivityStatistics({}, hashDistribActivityStatistics, jhtreeCacheStatistics);
+const StatisticsMapping loopActivityStatistics({StNumIterations}, basicActivityStatistics);
+const StatisticsMapping graphStatistics({StNumExecutions, StSizeSpillFile, StSizeGraphSpill, StSizePeakTempDisk, StSizePeakEphemeralDisk, StTimeUser, StTimeSystem, StNumContextSwitches, StSizeMemory, StSizePeakMemory, StSizeRowMemory, StSizePeakRowMemory}, executeStatistics);
+const StatisticsMapping tempFileStatistics({StNumSpills}, diskRemoteStatistics);
+
+const StatKindMap diskToTempStatsMap
+={ {StSizeDiskWrite, StSizeSpillFile},
+   {StTimeDiskWriteIO, StTimeSpillElapsed}
+ };
 
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
@@ -323,8 +338,13 @@ public:
     {
         if (!origin.length() || 0 != stricmp("user", origin.get())) // don't report slave in user message
         {
-            if (graphId)
-                str.append("Graph ").append(graphName).append("[").append(graphId).append("], ");
+            if (graphName.length())
+            {
+                str.append("Graph ").append(graphName);
+                if (graphId)
+                    str.append("[").append(graphId).append("]");
+                str.append(", ");
+            }
             if (kind)
                 str.append(activityKindStr(kind));
             if (id)
@@ -345,7 +365,7 @@ public:
                 }
                 else
                 {
-                    str.appendf("SLAVE #%d [", slave);
+                    str.appendf("WORKER #%d [", slave);
                     queryClusterGroup().queryNode(slave).endpoint().getEndpointHostText(str);
                     str.append("]: ");
                 }
@@ -383,6 +403,12 @@ CThorException *_ThorWrapException(IException *e, const char *format, va_list ar
     e->errorMessage(eStr).append(" : ");
     eStr.limited_valist_appendf(2048, format, args);
     CThorException *te = new CThorException(e->errorAudience(), e->errorCode(), eStr.str());
+    if (QUERYINTERFACE(e, IMP_Exception))
+    {
+        IMP_Exception *me = QUERYINTERFACE(e, IMP_Exception);
+        unsigned workerNum = queryNodeComm().queryGroup().rank(me->queryEndpoint());
+        te->setSlave(workerNum);
+    }
     return te;
 }
 
@@ -447,6 +473,12 @@ IThorException *_MakeActivityException(CGraphElementBase &container, IException 
     IThorException *e2 = new CThorException(e->errorAudience(), e->errorCode(), msg.str());
     e2->setOriginalException(e);
     setExceptionActivityInfo(container, e2);
+    if (QUERYINTERFACE(e, IMP_Exception))
+    {
+        IMP_Exception *me = QUERYINTERFACE(e, IMP_Exception);
+        unsigned workerNum = queryNodeComm().queryGroup().rank(me->queryEndpoint());
+        e2->setSlave(workerNum);
+    }
     return e2;
 }
 
@@ -589,51 +621,6 @@ IThorException *MakeGraphException(CGraphBase *graph, IException *e)
     return e2;
 }
 
-#if 0
-void SetLogName(const char *prefix, const char *logdir, const char *thorname, bool master) 
-{
-    StringBuffer logname;
-    if (logdir && *logdir !='\0')
-    {
-        if (!recursiveCreateDirectory(logdir))
-        {
-            OWARNLOG("Failed to use %s as log directory, using current working directory", logdir); // default working directory should be open already
-            return;
-        }
-        logname.append(logdir);
-    }
-    else
-    {
-        char cwd[1024];
-        GetCurrentDirectory(1024, cwd);
-        logname.append(cwd);
-    }
-
-    if (logname.length() && logname.charAt(logname.length()-1) != PATHSEPCHAR)
-        logname.append(PATHSEPCHAR);
-    logname.append(prefix);
-#if 0
-    time_t tNow;
-    time(&tNow);
-    char timeStamp[32];
-#ifdef _WIN32
-    struct tm *ltNow;
-    ltNow = localtime(&tNow);
-    strftime(timeStamp, 32, ".%m_%d_%y_%H_%M_%S", ltNow);
-#else
-    struct tm ltNow;
-    localtime_r(&tNow, &ltNow);
-    strftime(timeStamp, 32, ".%m_%d_%y_%H_%M_%S", &ltNow);
-#endif
-    logname.append(timeStamp);
-#endif
-    logname.append(".log");
-    StringBuffer lf;
-    openLogFile(lf, logname.str());
-    PROGLOG("Opened log file %s", lf.str());
-    PROGLOG("Build %s", hpccBuildInfo.buildTag);
-}
-#endif
 
 class CTempNameHandler
 {
@@ -660,7 +647,7 @@ public:
             if (file.isFile()==fileBool::foundYes)
             {
                 if (log)
-                    LOG(MCdebugInfo, "Deleting %s", file.queryFilename());
+                    DBGLOG("Deleting %s", file.queryFilename());
                 try { file.remove(); }
                 catch (IException *e)
                 {
@@ -688,7 +675,7 @@ public:
         {
             // temp dir. should not exist, but if it does issue warning only.
             if (checkDirExists(subDirPath))
-                WARNLOG("Existing temp directory %s already exists", subDirPath.str());
+                IWARNLOG("Existing temp directory %s already exists", subDirPath.str());
             else
                 throw MakeThorException(0, "%s", msg.str());
         }
@@ -711,9 +698,8 @@ public:
         try
         {
             Owned<IFile> dirIFile = createIFile(subDirPath);
-            bool success = dirIFile->remove();
-            if (log)
-                PROGLOG("%s to delete temp directory: %s", subDirPath.str(), success ? "succeeded" : "failed");
+            if (!dirIFile->remove() && log)
+                IWARNLOG("Failed to delete temp directory: %s", subDirPath.str());
         }
         catch (IException *e)
         {
@@ -757,7 +743,7 @@ void GetTempFilePath(StringBuffer &name, const char *suffix)
 void SetTempDir(const char *rootTempDir, const char *uniqueSubDir, const char *tempPrefix, bool clearDir)
 {
     TempNameHandler.setTempDir(rootTempDir, uniqueSubDir, tempPrefix, clearDir);
-    LOG(MCdebugProgress, "temporary rootTempdir: %s, uniqueSubDir: %s, prefix: %s", rootTempDir, uniqueSubDir, tempPrefix);
+    DBGLOG("temporary rootTempdir: %s, uniqueSubDir: %s, prefix: %s", rootTempDir, uniqueSubDir, tempPrefix);
 }
 
 void ClearTempDir()
@@ -769,7 +755,7 @@ void ClearTempDir()
     }
     catch (IException *e)
     {
-        EXCLOG(e, "ClearTempDir");
+        IERRLOG(e, "ClearTempDir");
         e->Release();
     }
 }
@@ -822,7 +808,7 @@ void ensureDirectoryForFile(const char *fName)
 // Not recommended to be used from slaves as tend to be one or more trying at same time.
 void reportExceptionToWorkunit(IConstWorkUnit &workunit,IException *e, ErrorSeverity severity)
 {
-    LOG(MCwarning, e, "Reporting exception to WU");
+    LOG(MCprogress, e, "Reporting exception to WU");
     Owned<IWorkUnit> wu = &workunit.lock();
     if (wu)
     {
@@ -1044,7 +1030,11 @@ bool getBestFilePart(CActivityBase *activity, IPartDescriptor &partDesc, OwnedIF
     RemoteFilename rfn;
     StringBuffer locationName, primaryName;
     //First check for local matches
-    for (l=0; l<partDesc.numCopies(); l++)
+    unsigned copies = partDesc.numCopies();
+    unsigned localCopies = 0;
+    Owned<IException> accessException;
+    IMultiException *multiException = nullptr;
+    for (l=0; l<copies; l++)
     {
         rfn.clear();
         partDesc.getFilename(l, rfn);
@@ -1057,13 +1047,14 @@ bool getBestFilePart(CActivityBase *activity, IPartDescriptor &partDesc, OwnedIF
         }
         if (rfn.isLocal())
         {
+            localCopies++;
             rfn.getPath(locationName.clear());
             assertex(locationName.length());
 
             Owned<IFile> file;
             if (activity->getOptBool("forceDafilesrv"))
             {
-                PROGLOG("Using dafilesrv for: %s", locationName.str());
+                DBGLOG("Using dafilesrv for: %s", locationName.str());
                 file.setown(createDaliServixFile(rfn));
             }
             else
@@ -1081,44 +1072,76 @@ bool getBestFilePart(CActivityBase *activity, IPartDescriptor &partDesc, OwnedIF
             catch (IException *e)
             {
                 ActPrintLog(&activity->queryContainer(), e, "getBestFilePart");
-                e->Release();
+                if (!accessException)
+                    accessException.setown(e);
+                else
+                {
+                    if (!multiException)
+                    {
+                        multiException = makeMultiException();
+                        multiException->append(*accessException.getClear());
+                        accessException.setown(multiException);
+                    }
+                    multiException->append(*e);
+                }
             }
         }
     }
 
-    //Now check for a remote match...
-    for (l=0; l<partDesc.numCopies(); l++)
+    if (localCopies < copies)
     {
-        rfn.clear();
-        partDesc.getFilename(l, rfn);
-        if (!rfn.isLocal())
+        //Now check for a remote match...
+        for (l=0; l<partDesc.numCopies(); l++)
         {
-            rfn.getPath(locationName.clear());
-            assertex(locationName.length());
-            Owned<IFile> file = createIFile(locationName.str());
-            try
+            rfn.clear();
+            partDesc.getFilename(l, rfn);
+            if (!rfn.isLocal())
             {
-                if (file->exists())
+                rfn.getPath(locationName.clear());
+                assertex(locationName.length());
+                Owned<IFile> file = createIFile(locationName.str());
+                try
                 {
-                    ifile.set(file);
-                    location = l;
-                    if (0 != l)
+                    if (file->exists())
                     {
-                        Owned<IThorException> e = MakeActivityWarning(activity, 0, "Primary file missing: %s, using remote copy: %s", primaryName.str(), locationName.str());
-                        if (!eHandler)
-                            throw e.getClear();
-                        eHandler->fireException(e);
+                        ifile.set(file);
+                        location = l;
+                        if (0 != l)
+                        {
+                            Owned<IThorException> e = MakeActivityWarning(activity, 0, "Primary file missing: %s, using remote copy: %s", primaryName.str(), locationName.str());
+                            if (!eHandler)
+                                throw e.getClear();
+                            eHandler->fireException(e);
+                        }
+                        path.append(locationName);
+                        return true;
                     }
-                    path.append(locationName);
-                    return true;
+                }
+                catch (IException *e)
+                {
+                    ActPrintLog(&activity->queryContainer(), e, "In getBestFilePart");
+                    if (!accessException)
+                        accessException.setown(e);
+                    else
+                    {
+                        if (!multiException)
+                        {
+                            multiException = makeMultiException();
+                            multiException->append(*accessException.getClear());
+                            accessException.setown(multiException);
+                        }
+                        multiException->append(*e);
+                    }
                 }
             }
-            catch (IException *e)
-            {
-                ActPrintLog(&activity->queryContainer(), e, "In getBestFilePart");
-                e->Release();
-            }
         }
+    }
+    if (accessException)
+    {
+        if (!eHandler)
+            throw accessException.getClear();
+
+        eHandler->fireException(accessException);
     }
     return false;
 }
@@ -1189,7 +1212,7 @@ void CFifoFileCache::add(const char *filename)
     if (files.ordinality() > limit)
     {
         const char *toRemoveFname = files.item(limit);
-        PROGLOG("Removing %s from fifo cache", toRemoveFname);
+        DBGLOG("Removing %s from fifo cache", toRemoveFname);
         OwnedIFile ifile = createIFile(toRemoveFname);
         deleteFile(*ifile);
         files.remove(limit);
@@ -1224,7 +1247,7 @@ class CRowStreamFromNode : public CSimpleInterface, implements IRowStream
     bool eos;
     const bool &abortSoon;
     mptag_t mpTag, replyTag;
-    Owned<ISerialStream> bufferStream;
+    Owned<IBufferedSerialInputStream> bufferStream;
     CThorStreamDeserializerSource memDeserializer;
     CMessageBuffer msg;
 
@@ -1623,7 +1646,7 @@ void checkAndDumpAbortInfo(const char *cmd)
     }
     catch (IException *e)
     {
-        EXCLOG(e, nullptr);
+        IERRLOG(e);
         e->Release();
     }
 }
@@ -1651,14 +1674,14 @@ void CThorPerfTracer::start(const char *_workunit, unsigned _subGraphId, double 
 {
     workunit.set(_workunit);
     subGraphId = _subGraphId;
-    PROGLOG("Starting perf trace of subgraph %u, with interval %.3g seconds", subGraphId, interval);
+    DBGLOG("Starting perf trace of subgraph %u, with interval %.3g seconds", subGraphId, interval);
     perf.setInterval(interval);
     perf.start();    
 }
 
 void CThorPerfTracer::stop()
 {
-    PROGLOG("Stopping perf trace of subgraph %u", subGraphId);
+    DBGLOG("Stopping perf trace of subgraph %u", subGraphId);
     perf.stop();
     StringBuffer flameGraphName;
     if (getConfigurationDirectory(globals->queryPropTree("Directories"), "debug", "thor", globals->queryProp("@name"), flameGraphName))
@@ -1678,7 +1701,7 @@ void CThorPerfTracer::stop()
     }
     catch (IException *E)
     {
-        EXCLOG(E);
+        IERRLOG(E);
         ::Release(E);
     }
 }
@@ -1691,4 +1714,97 @@ void saveWuidToFile(const char *wuid)
     if (!wuidFileIO)
         throw makeStringException(0, "Failed to create file 'wuid' to store current workunit for post mortem script");
     wuidFileIO->write(0, strlen(wuid), wuid);
+    wuidFileIO->close();
+}
+
+bool hasTLK(IDistributedFile &file, CActivityBase *activity)
+{
+    unsigned np = file.numParts();
+    if (np<=1) // NB: a better test would be to only continue if this is a width that is +1 of group it's based on, but not worth checking
+        return false;
+    IDistributedFilePart &part = file.queryPart(np-1);
+    bool keyHasTlk = strisame("topLevelKey", part.queryAttributes().queryProp("@kind"));
+    if (!keyHasTlk)
+    {
+        // See HPCC-32845 - check if TLK flag is missing from TLK part
+        // It is very likely the last part should be a TLK. Even a local key (>1 parts) has a TLK by default (see buildLocalTlks)
+        RemoteFilename rfn;
+        part.getFilename(rfn);
+        StringBuffer filename;
+        rfn.getPath(filename);
+        Owned<IKeyIndex> index = createKeyIndex(filename, 0, false, 0);
+        dbgassertex(index);
+        if (index->isTopLevelKey())
+        {
+            if (activity)
+            {
+                Owned<IException> e = MakeActivityException(activity, 0, "TLK file part of file %s is missing kind=\"topLevelKey\" flag. The meta data should be fixed!", file.queryLogicalName());
+                reportExceptionToWorkunitCheckIgnore(activity->queryJob().queryWorkUnit(), e, SeverityWarning);
+                StringBuffer errMsg;
+                UWARNLOG("%s", e->errorMessage(errMsg).str());
+            }
+            keyHasTlk = true;
+        }
+    }
+    return keyHasTlk;
+}
+
+std::vector<std::string> captureDebugInfo(const char *_dir, const char *prefix, const char *suffix)
+{
+    if (!recursiveCreateDirectory(_dir))
+    {
+        IWARNLOG("Failed to create debug directory: %s", _dir);
+        return {};
+    }
+
+    StringBuffer dir(_dir);
+    addPathSepChar(dir);
+
+    // utility function to build filename based on prefix, suffix, and extension
+    auto getFilename = [&](StringBuffer &result, const char *name, const char *ext) -> StringBuffer &
+    {
+        result.append(dir);
+        if (!isEmptyString(prefix))
+        {
+            result.append(prefix);
+            result.append('_');
+        }
+        result.append(name);
+        if (!isEmptyString(suffix))
+        {
+            result.append('_');
+            result.append(suffix);
+        }
+        if (!isEmptyString(ext))
+        {
+            result.append('.');
+            result.append(ext);
+        }
+        return result;
+    };
+    StringBuffer stacksFName;
+    getFilename(stacksFName, "stacks", "txt");
+    StringBuffer gdbCmd;
+    getDebuggerGetStacksCmd(gdbCmd);
+    gdbCmd.append(" > ").append(stacksFName);
+    if (0 != system(gdbCmd.str()))
+    {
+        OWARNLOG("Failed to run gdb to capture stack info. Cmd = %s", gdbCmd.str());
+        return { };
+    }
+    return { stacksFName.str() }; // JCSMORE capture/return other files
+}
+
+// NB: this mirrors the directory structure formed in collect_postmortem.sh
+StringBuffer &addInstanceContextPaths(StringBuffer &dst)
+{
+    addPathSepChar(dst);
+    dst.append(k8s::queryMyPodName());
+    addPathSepChar(dst);
+    dst.append(k8s::queryMyContainerName());
+    addPathSepChar(dst);
+    RemoteFilename rfn;
+    rfn.setLocalPath(queryCurrentProcessPath());
+    rfn.getTail(dst);
+    return dst;
 }

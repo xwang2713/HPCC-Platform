@@ -37,7 +37,7 @@ class CXmlReadSlaveActivity : public CDiskReadSlaveActivityBase
     typedef CDiskReadSlaveActivityBase PARENT;
 
     IHThorXmlReadArg *helper;
-    IRowStream *out;
+    Owned<CSeqPartHandler> partSequencer;
     rowcount_t limit;
     rowcount_t stopAfter;
 
@@ -46,7 +46,6 @@ class CXmlReadSlaveActivity : public CDiskReadSlaveActivityBase
         CXmlReadSlaveActivity &activity;
         IXmlToRowTransformer *xmlTransformer;
         Linked<IColumnProvider> lastMatch;
-        Owned<ICrcIOStream> crcStream;
         Owned<IXMLParse> xmlParser;
         CRC32 inputCRC;
         OwnedIFileIO iFileIO;
@@ -75,7 +74,6 @@ class CXmlReadSlaveActivity : public CDiskReadSlaveActivityBase
                 partFileIO.setown(createCompressedFileReader(iFile, activity.eexp));
                 if (!partFileIO)
                     throw MakeActivityException(&activity, 0, "Failed to open block compressed file '%s'", filename.get());
-                checkFileCrc = false;
             }
             else
                 partFileIO.setown(iFile->open(IFOread));
@@ -86,11 +84,6 @@ class CXmlReadSlaveActivity : public CDiskReadSlaveActivityBase
             }
 
             Owned<IIOStream> stream = createIOStream(iFileIO);
-            if (stream && checkFileCrc)
-            {
-                crcStream.setown(createCrcPipeStream(stream));
-                stream.set(crcStream);
-            }
             inputIOstream.setown(createBufferedIOStream(stream));
             OwnedRoxieString xmlIterator(activity.helper->getXmlIteratorPath());
             if (activity.queryContainer().getKind()==TAKjsonread)
@@ -103,11 +96,6 @@ class CXmlReadSlaveActivity : public CDiskReadSlaveActivityBase
         {
             xmlParser.clear();
             inputIOstream.clear();
-            if (checkFileCrc)
-            {
-                fileCRC.reset(~crcStream->queryCrc()); // MORE should prob. change stream to use CRC32
-                crcStream.clear();
-            }
             Owned<IFileIO> partFileIO;
             {
                 CriticalBlock block(inputCs);
@@ -214,7 +202,6 @@ class CXmlReadSlaveActivity : public CDiskReadSlaveActivityBase
 public:
     CXmlReadSlaveActivity(CGraphElementBase *_container) : CDiskReadSlaveActivityBase(_container, nullptr)
     {
-        out = NULL;
         helper = (IHThorXmlReadArg *)queryHelper();
         stopAfter = (rowcount_t)helper->getChooseNLimit();
         if (helper->getFlags() & TDRlimitskips)
@@ -225,7 +212,6 @@ public:
     }
     ~CXmlReadSlaveActivity()
     {
-        ::Release(out);
     }
     virtual void init(MemoryBuffer &data, MemoryBuffer &slaveData) override
     {
@@ -234,11 +220,7 @@ public:
     }
     virtual void kill()
     {
-        if (out)
-        {
-            out->Release();
-            out = NULL;
-        }
+        partSequencer.clear();
         CDiskReadSlaveActivityBase::kill();
     }
     
@@ -247,14 +229,14 @@ public:
     {
         ActivityTimer s(slaveTimerStats, timeActivities);
         CDiskReadSlaveActivityBase::start();
-        out = createSequentialPartHandler(partHandler, partDescs, false);
+        partSequencer.setown(createSequentialPartHandler(partHandler, partDescs, false));
     }
     virtual void stop() override
     {
-        if (out)
+        if (partSequencer)
         {
-            out->Release();
-            out = NULL;
+            partSequencer->stop();
+            partSequencer.clear();
         }
         PARENT::stop();
     }
@@ -262,8 +244,8 @@ public:
     CATCH_NEXTROW()
     {
         ActivityTimer t(slaveTimerStats, timeActivities);
-        OwnedConstThorRow row = out->nextRow();
-        if (!row)
+        OwnedConstThorRow row = partSequencer->nextRow();
+        if (unlikely(!row))
             return NULL;
         rowcount_t c = getDataLinkCount();
         if (stopAfter && (c >= stopAfter)) // NB: only slave limiter, global performed in chained choosen activity 

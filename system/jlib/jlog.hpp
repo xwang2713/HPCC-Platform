@@ -318,7 +318,9 @@ typedef enum
     MSGFIELD_component   = 0x010000,
     MSGFIELD_quote       = 0x020000,
     MSGFIELD_prefix      = 0x040000,
-    MSGFIELD_last        = 0x040000,
+    MSGFIELD_trace       = 0x080000,
+    MSGFIELD_span        = 0x100000,
+    MSGFIELD_last        = 0x100000,
     MSGFIELD_all         = 0xFFFFFF
 } LogMsgField;
 
@@ -326,11 +328,10 @@ typedef enum
 #define MSGFIELD_STANDARD LogMsgField(MSGFIELD_timeDate | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix | MSGFIELD_audience)
 #define MSGFIELD_LEGACY LogMsgField(MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix)
 #else
-
 #ifdef _CONTAINERIZED
-#define MSGFIELD_STANDARD LogMsgField(MSGFIELD_job | MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_class | MSGFIELD_audience)
+#define MSGFIELD_STANDARD LogMsgField( MSGFIELD_job | MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_class | MSGFIELD_audience)
 #else
-#define MSGFIELD_STANDARD LogMsgField(MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix | MSGFIELD_audience)
+#define MSGFIELD_STANDARD LogMsgField( MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix | MSGFIELD_audience)
 #endif
 #define MSGFIELD_LEGACY LogMsgField(MSGFIELD_timeDate | MSGFIELD_milliTime | MSGFIELD_msgID | MSGFIELD_process | MSGFIELD_thread | MSGFIELD_code | MSGFIELD_quote | MSGFIELD_prefix)
 #endif
@@ -375,6 +376,10 @@ inline const char * LogMsgFieldToString(LogMsgField field)
         return("Component");
     case MSGFIELD_quote:
         return("Quote");
+    case MSGFIELD_trace:
+        return("Trace ID");
+    case MSGFIELD_span:
+        return("Span ID");
     default:
         return("UNKNOWN");
     }
@@ -404,6 +409,10 @@ inline unsigned LogMsgFieldFromAbbrev(char const * abbrev)
         return MSGFIELD_job;
     if(strnicmp(abbrev, "USE", 3)==0)
         return MSGFIELD_user;
+    if(strnicmp(abbrev, "TRC", 3)==0)
+        return MSGFIELD_trace;
+    if(strnicmp(abbrev, "SPN", 3)==0)
+        return MSGFIELD_span;
     if(strnicmp(abbrev, "SES", 3)==0)
         return MSGFIELD_session;
     if(strnicmp(abbrev, "COD", 3)==0)
@@ -588,6 +597,41 @@ private:
     bool                      isDeserialized = false;
 };
 
+#define UNK_LOG_ENTRY "UNK"
+class jlib_decl LogMsgTraceInfo
+{
+public:
+    LogMsgTraceInfo() = default;
+    LogMsgTraceInfo(ISpan * _span) : span(_span)
+    {
+    }
+
+    const char * queryTraceID() const
+    {
+        if (span && span->isValid())
+        {
+            const char * traceId = span->queryTraceId();
+            if (traceId)
+                return traceId;
+        }
+        return UNK_LOG_ENTRY;
+    }
+
+    const char * querySpanID() const
+    {
+        if (span && span->isValid())
+        {
+            const char * spanId = span->querySpanId();
+            if (spanId)
+                return spanId;
+        }
+        return UNK_LOG_ENTRY;
+    }
+
+private:
+    Linked<ISpan> span;
+};
+
 class jlib_decl LogMsg : public CInterface
 {
 public:
@@ -615,6 +659,7 @@ protected:
     LogMsgCategory            category;
     LogMsgSysInfo             sysInfo;
     LogMsgJobInfo             jobInfo;
+    LogMsgTraceInfo           traceInfo;
     LogMsgCode                msgCode = NoLogMsgCode;
     StringBuffer              text;
     bool                      remoteFlag = false;
@@ -646,6 +691,7 @@ interface jlib_decl ILogMsgFilter : public IInterface
 
 typedef enum
 {
+    LOGFORMAT_undefined,
     LOGFORMAT_xml,
     LOGFORMAT_json,
     LOGFORMAT_table
@@ -663,6 +709,7 @@ interface jlib_decl ILogMsgHandler : public IInterface
     virtual int               flush() { return 0; }
     virtual bool              getLogName(StringBuffer &name) const = 0;
     virtual offset_t          getLogPosition(StringBuffer &logFileName) const = 0;
+    virtual LogHandlerFormat  queryFormatType() const = 0;
 };
 
 // Class on manager's list of children which sends new filters to children, and holds thread which receives log messages
@@ -710,7 +757,7 @@ interface jlib_decl ILogMsgListener : public IInterface
 
 interface jlib_decl ILogMsgManager : public ILogMsgListener
 {
- public:    
+ public:
     virtual void              enterQueueingMode() = 0;
     virtual void              setQueueBlockingLimit(unsigned lim) = 0;
     virtual void              setQueueDroppingLimit(unsigned lim, unsigned numToDrop) = 0;
@@ -864,6 +911,8 @@ inline LogMsgCategory MCexception(IException * e, LogMsgClass cls = MSGCLS_error
 
 extern jlib_decl ILogMsgManager * queryLogMsgManager();
 extern jlib_decl ILogMsgHandler * queryStderrLogMsgHandler();
+extern jlib_decl ILogMsgHandler * queryPostMortemLogMsgHandler();
+extern jlib_decl bool copyPostMortemLogging(const char *target, bool clear);
 extern jlib_decl void setupContainerizedLogMsgHandler();
 
 //extern jlib_decl ILogMsgManager * createLogMsgManager(); // use with care! (needed by mplog listener facility)
@@ -1227,7 +1276,7 @@ interface jlib_decl IContextLogger : extends IInterface
     virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const __attribute__((format(printf,5,0))) = 0;
     virtual void noteStatistic(StatisticKind kind, unsigned __int64 value) const = 0;
     virtual void setStatistic(StatisticKind kind, unsigned __int64 value) const = 0;
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const = 0;
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const = 0;
     virtual unsigned queryTraceLevel() const = 0;
 
     virtual const char *queryGlobalId() const = 0;
@@ -1344,6 +1393,8 @@ typedef enum
     LOGACCESS_FILTER_host,
     LOGACCESS_FILTER_column,
     LOGACCESS_FILTER_pod,
+    LOGACCESS_FILTER_trace,
+    LOGACCESS_FILTER_span,
     LOGACCESS_FILTER_unknown
 } LogAccessFilterType;
 
@@ -1365,6 +1416,10 @@ inline const char * logAccessFilterTypeToString(LogAccessFilterType field)
         return "instance";
     case LOGACCESS_FILTER_host:
         return "host";
+    case LOGACCESS_FILTER_trace:
+        return "trace";
+    case LOGACCESS_FILTER_span:
+        return "span";
     case LOGACCESS_FILTER_or:
         return "OR";
     case LOGACCESS_FILTER_and:
@@ -1393,6 +1448,10 @@ inline unsigned logAccessFilterTypeFromName(char const * name)
         return LOGACCESS_FILTER_pod;
     if(strieq(name, "instance"))
         return LOGACCESS_FILTER_instance;
+    if(strieq(name, "trace"))
+        return LOGACCESS_FILTER_trace;
+    if(strieq(name, "span"))
+        return LOGACCESS_FILTER_span;
     if(strieq(name, "host"))
         return LOGACCESS_FILTER_host;
     if(strieq(name, "OR"))
@@ -1443,8 +1502,45 @@ enum LogAccessMappedField
     LOGACCESS_MAPPEDFIELD_instance,
     LOGACCESS_MAPPEDFIELD_pod,
     LOGACCESS_MAPPEDFIELD_host,
+    LOGACCESS_MAPPEDFIELD_traceid,
+    LOGACCESS_MAPPEDFIELD_spanid,
+    LOGACCESS_MAPPEDFIELD_global,
+    LOGACCESS_MAPPEDFIELD_container,
+    LOGACCESS_MAPPEDFIELD_message,
     LOGACCESS_MAPPEDFIELD_unmapped
 };
+
+inline const char * MappedFieldTypeToString(LogAccessMappedField mappedField)
+{
+    if (mappedField == LOGACCESS_MAPPEDFIELD_timestamp)
+        return "timestamp";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_jobid)
+        return "jobid";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_component)
+        return "component";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_class)
+        return "class";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_audience)
+        return "audience";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_instance)
+        return "instance";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_pod)
+        return "pod";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_host)
+        return "host";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_traceid)
+        return "traceID";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_spanid)
+        return "spanID";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_global)
+        return "global";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_container)
+        return "container";
+    else if (mappedField == LOGACCESS_MAPPEDFIELD_message)
+        return "message";
+    else
+        return "UNKNOWNFIELDTYPE";
+}
 
 enum SortByDirection
 {
@@ -1619,6 +1715,88 @@ struct LogQueryResultDetails
     unsigned int totalAvailable;
 };
 
+typedef enum
+{
+    LOGACCESS_STATUS_unknown = 0,
+    LOGACCESS_STATUS_success = 1,
+    LOGACCESS_STATUS_warning = 2,
+    LOGACCESS_STATUS_fail = 3
+} LogAccessHealthStatusCode;
+
+struct LogAccessHealthStatus
+{
+private:
+    LogAccessHealthStatusCode code = LOGACCESS_STATUS_unknown;
+    std::vector<std::string> messages;
+
+public:
+    LogAccessHealthStatus(LogAccessHealthStatusCode code_)
+    {
+        code = code_;
+    }
+
+
+    void appendMessage(const char * message)
+    {
+        if (!isEmptyString(message))
+             messages.push_back(message);
+    }
+
+    std::vector<std::string> queryMessages()
+    {
+        return messages;
+    }
+
+
+    bool escalateStatusCode(LogAccessHealthStatusCode newCode)
+    {
+        if (newCode <= code) //Takes advantage of enum value assignment
+            return false; //not escalated
+        else
+            code = newCode;
+
+        return true; //escalated
+    }
+
+    LogAccessHealthStatusCode getCode() const {return code;}
+};
+
+inline const char * LogAccessHealthStatusToString(LogAccessHealthStatusCode statusCode)
+{
+    switch(statusCode)
+    {
+    case LOGACCESS_STATUS_success:
+        return "Success";
+    case LOGACCESS_STATUS_warning:
+        return "Warning";
+    case LOGACCESS_STATUS_fail:
+        return "Fail";
+    default:
+        return "Unknown";
+    }
+};
+
+struct LogAccessDebugReport
+{
+    StringBuffer SampleQueryReport;
+    StringBuffer PluginDebugReport;
+    StringBuffer ServerDebugReport;
+};
+
+struct LogAccessHealthReportDetails
+{
+    LogAccessHealthStatus status = LOGACCESS_STATUS_unknown;
+    LogAccessDebugReport DebugReport;
+    StringAttr Configuration;
+};
+
+struct LogAccessHealthReportOptions
+{
+    bool IncludeConfiguration = true;
+    bool IncludeDebugReport = true;
+    bool IncludeSampleQuery = true;
+};
+
 // Log Access Interface - Provides filtered access to persistent logging - independent of the log storage mechanism
 //                      -- Declares method to retrieve log entries based on options set
 //                      -- Declares method to retrieve remote log access type (eg elasticstack, etc)
@@ -1633,6 +1811,7 @@ interface IRemoteLogAccess : extends IInterface
     virtual IPropertyTree * queryLogMap() const = 0;
     virtual const char * fetchConnectionStr() const = 0;
     virtual bool supportsResultPaging() const = 0;
+    virtual void healthReport(LogAccessHealthReportOptions options, LogAccessHealthReportDetails & report) = 0;
 };
 
 // Helper functions to construct log access filters
@@ -1642,10 +1821,13 @@ extern jlib_decl ILogAccessFilter * getHostLogAccessFilter(const char * host);
 extern jlib_decl ILogAccessFilter * getJobIDLogAccessFilter(const char * jobId);
 extern jlib_decl ILogAccessFilter * getComponentLogAccessFilter(const char * component);
 extern jlib_decl ILogAccessFilter * getPodLogAccessFilter(const char * podName);
+extern jlib_decl ILogAccessFilter * getTraceIDLogAccessFilter(const char * traceId);
+extern jlib_decl ILogAccessFilter * getSpanIDLogAccessFilter(const char * spanId);
 extern jlib_decl ILogAccessFilter * getAudienceLogAccessFilter(MessageAudience audience);
 extern jlib_decl ILogAccessFilter * getClassLogAccessFilter(LogMsgClass logclass);
 extern jlib_decl ILogAccessFilter * getBinaryLogAccessFilter(ILogAccessFilter * arg1, ILogAccessFilter * arg2, LogAccessFilterType type);
 extern jlib_decl ILogAccessFilter * getBinaryLogAccessFilterOwn(ILogAccessFilter * arg1, ILogAccessFilter * arg2, LogAccessFilterType type);
+extern jlib_decl ILogAccessFilter * getCompoundLogAccessFilter(ILogAccessFilter * arg1, ILogAccessFilter * arg2, LogAccessFilterType type);
 extern jlib_decl ILogAccessFilter * getWildCardLogAccessFilter();
 extern jlib_decl ILogAccessFilter * getWildCardLogAccessFilter(const char * wildcardfilter);
 extern jlib_decl ILogAccessFilter * getColumnLogAccessFilter(const char * columnName, const char * value);
@@ -1655,7 +1837,7 @@ extern jlib_decl bool fetchLog(LogQueryResultDetails & resultDetails, StringBuff
 extern jlib_decl bool fetchJobIDLog(LogQueryResultDetails & resultDetails, StringBuffer & returnbuf, IRemoteLogAccess & logAccess, const char *jobid, LogAccessTimeRange timeRange, StringArray & cols, LogAccessLogFormat format);
 extern jlib_decl bool fetchComponentLog(LogQueryResultDetails & resultDetails, StringBuffer & returnbuf, IRemoteLogAccess & logAccess, const char * component, LogAccessTimeRange timeRange, StringArray & cols, LogAccessLogFormat format);
 extern jlib_decl bool fetchLogByAudience(LogQueryResultDetails & resultDetails, StringBuffer & returnbuf, IRemoteLogAccess & logAccess, MessageAudience audience, LogAccessTimeRange timeRange, StringArray & cols, LogAccessLogFormat format);
-extern jlib_decl bool  fetchLogByClass(LogQueryResultDetails & resultDetails, StringBuffer & returnbuf, IRemoteLogAccess & logAccess, LogMsgClass logclass, LogAccessTimeRange timeRange, StringArray & cols, LogAccessLogFormat format);
+extern jlib_decl bool fetchLogByClass(LogQueryResultDetails & resultDetails, StringBuffer & returnbuf, IRemoteLogAccess & logAccess, LogMsgClass logclass, LogAccessTimeRange timeRange, StringArray & cols, LogAccessLogFormat format);
 extern jlib_decl IRemoteLogAccess * queryRemoteLogAccessor();
 
 #endif

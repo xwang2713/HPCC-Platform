@@ -489,13 +489,6 @@ bool CResultSetMetaData::isBigEndian(int column) const
 }
 
 
-unsigned CResultSetMetaData::getColumnRawType(int column) const
-{
-    assertex(columns.isItem(column));
-    return getClarionResultType(columns.item(column).type);
-}
-
-
 unsigned CResultSetMetaData::getColumnRawSize(int column) const
 {
     assertex(columns.isItem(column));
@@ -1586,21 +1579,6 @@ IExtendedResultSetCursor * DelayedFilteredResultSetCursor::queryBase()
 }
 
 //---------------------------------------------------------------------------
-
-inline byte hex2digit(char c)
-{
-    if (c >= 'a')
-        return (c - 'a' + 10);
-    else if (c >= 'A')
-        return (c - 'A' + 10);
-    return (c - '0');
-}
-
-inline byte getHexPair(const char * s)
-{
-    return hex2digit(s[0]) << 4 | hex2digit(s[1]);
-}
-
 
 static unsigned getSubstringMatchLength(size32_t len, const void * data)
 {

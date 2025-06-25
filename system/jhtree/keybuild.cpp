@@ -133,9 +133,10 @@ protected:
 
 private:
     unsigned __int64 duplicateCount;
-    unsigned __int64 numLeaves = 0;
-    unsigned __int64 numBranches = 0;
-    unsigned __int64 numBlobs = 0;
+    RelaxedAtomic<__uint64> numLeaves{0};
+    RelaxedAtomic<__uint64> numBranches{0};
+    RelaxedAtomic<__uint64> numBlobs{0};
+    unsigned __int64 maxNodeMemorySize = 0;
     __uint64 partitionFieldMask = 0;
     CWriteNode *activeNode = nullptr;
     CBlobWriteNode *activeBlobNode = nullptr;
@@ -271,16 +272,9 @@ public:
     }
 
 protected:
-    offset_t endLevel(bool close)
+    void nextLevel()
     {
-        return 0;
-    }
-
-    offset_t nextLevel()
-    {
-        offset_t ret = endLevel(false);
         levels++;
-        return 0;
     }
 
     void writeFileHeader(bool fixHdr, CRC32 *crc)
@@ -369,6 +363,10 @@ protected:
         }
         else
             node->write(out, nullptr);
+
+        size32_t memorySize = node->getMemorySize();
+        if (memorySize > maxNodeMemorySize)
+            maxNodeMemorySize = memorySize;
     }
 
     void flushNode(CWriteNode *node, NodeInfoArray &nodeInfo)
@@ -415,15 +413,8 @@ protected:
         if (children.ordinality() != 1)
         {
             // Note that we used to always create at least 2 levels as various places used to assume this.
-            offset_t offset = nextLevel();
-            if (offset)
-            {
-                ForEachItemIn(idx, children)
-                {
-                    CNodeInfo &info = children.item(idx);
-                    info.pos += offset;
-                }
-            }
+            nextLevel();
+
             NodeInfoArray parentInfo;
             buildLevel(children, parentInfo);
             buildTree(parentInfo);
@@ -441,7 +432,7 @@ protected:
         }
     }
 
-    void finish(IPropertyTree * metadata, unsigned * fileCrc, size32_t maxRecordSizeSeen)
+    virtual void finish(IPropertyTree * metadata, unsigned * fileCrc, size32_t maxRecordSizeSeen, const BloomFilterArray * optBloomFilters) override
     {
         if (maxRecordSizeSeen)
             keyHdr->setMaxKeyLength(maxRecordSizeSeen);
@@ -491,7 +482,14 @@ protected:
                 if (bloomBuilder.valid())
                 {
                     Owned<const BloomFilter> filter = bloomBuilder.build();
-                    writeBloomFilter(*filter, rowHashers.item(idx).queryFields());
+                    writeBloomFilter(*filter);
+                }
+            }
+            if (optBloomFilters)
+            {
+                for (auto bloom : *optBloomFilters)
+                {
+                    writeBloomFilter(*bloom);
                 }
             }
         }
@@ -499,7 +497,7 @@ protected:
         keyHdr->getHdrStruct()->partitionFieldMask = partitionFieldMask;
         CRC32 headerCrc;
         writeFileHeader(false, &headerCrc);
-
+        out->flush();
         if (fileCrc)
         {
             if (doCrc)
@@ -517,12 +515,13 @@ protected:
         }
     }
 
-    void addLeafInfo(CNodeInfo *info)
+    //MORE: I don't think this function is used any more.
+    virtual void addLeafInfo(CNodeInfo *info) override
     {
         leafInfo.append(* info);
     }
 
-    void processKeyData(const char *keyData, offset_t pos, size32_t recsize)
+    virtual void processKeyData(const char *keyData, offset_t pos, size32_t recsize) override
     {
         records++;
         if (NULL == activeNode)
@@ -590,7 +589,7 @@ protected:
         }
     }
 
-    virtual unsigned __int64 createBlob(size32_t size, const char * ptr)
+    virtual unsigned __int64 createBlob(size32_t size, const char * ptr) override
     {
         if (!size)
             return 0;
@@ -612,14 +611,30 @@ protected:
         return head;
     }
 
-    virtual unsigned __int64 getDuplicateCount() const override { return duplicateCount; };
-    virtual unsigned __int64 getNumLeafNodes() const override { return numLeaves; };
-    virtual unsigned __int64 getNumBranchNodes() const override { return numBranches; }
-    virtual unsigned __int64 getNumBlobNodes() const override { return numBlobs; }
-    virtual unsigned __int64 getOffsetBranches() const override { return offsetBranches; }
-    virtual unsigned __int64 getBranchMemorySize() const override { return indexCompressor->queryBranchMemorySize(); }
-    virtual unsigned __int64 getLeafMemorySize() const override { return indexCompressor->queryLeafMemorySize(); }
-
+    virtual unsigned __int64 getStatistic(StatisticKind kind) const override
+    {
+        switch (kind)
+        {
+        case StNumDuplicateKeys:
+            return duplicateCount;
+        case StSizeOffsetBranches:
+            return offsetBranches;
+        case StSizeBranchMemory:
+            return indexCompressor->queryBranchMemorySize();
+        case StSizeLeafMemory:
+            return indexCompressor->queryLeafMemorySize();
+        case StNumLeafCacheAdds:
+            return numLeaves;
+        case StNumNodeCacheAdds:
+            return numBranches;
+        case StNumBlobCacheAdds:
+            return numBlobs;
+        case StSizeLargestExpandedLeaf:
+            return maxNodeMemorySize;
+        default:
+            return out->getStatistic(kind);
+        }
+    }
 protected:
     void writeMetadata(char const * data, size32_t size)
     {
@@ -644,7 +659,7 @@ protected:
         writeNode(prevNode, prevNode->getFpos());
     }
 
-    void writeBloomFilter(const BloomFilter &filter, __uint64 fields)
+    void writeBloomFilter(const BloomFilter &filter)
     {
         size32_t size = filter.queryTableSize();
         if (!size)
@@ -656,7 +671,7 @@ protected:
         // Table info is serialized into first page. Note that we assume that it fits (would need to have a crazy-small page size for that to not be true)
         node->put8(prevBloom);
         node->put4(filter.queryNumHashes());
-        node->put8(fields);
+        node->put8(filter.queryFields());
         node->put4(size);
         const byte *data = filter.queryTable();
         while (size)

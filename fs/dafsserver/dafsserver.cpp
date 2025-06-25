@@ -108,7 +108,7 @@ public:
     const char *    privateKey;
     const char *    passPhrase;
 
-    _securitySettingsServer()
+    void init()
     {
         queryDafsSecSettings(&connectMethod, &daFileSrvPort, &daFileSrvSSLPort, &certificate, &privateKey, &passPhrase);
     }
@@ -116,10 +116,18 @@ public:
     const IPropertyTree * getSecureConfig()
     {
         //Later: return a synced tree...
-        return createSecureSocketConfig(certificate, privateKey, passPhrase);
+        return createSecureSocketConfig(certificate, privateKey, passPhrase, false);
     }
 
 } securitySettings;
+
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    // initialize after other dependent (in jlib) objects are initialized.
+    securitySettings.init();
+    return true;
+}
+
 #endif
 
 static CriticalSection              secureContextCrit;
@@ -134,10 +142,10 @@ static ISecureSocket *createSecureSocket(ISocket *sock, bool disableClientCertVe
         {
 #ifdef _CONTAINERIZED
             /* Connections are expected from 3rd parties via TLS,
-             * we do not expect them to provide a valid certificate for verification.
-             * Currently the server (this dafilesrv), will use either the "public" certificate issuer,
-             * unless it's visibility is "cluster" (meaning internal only)
-             */
+            * we do not expect them to provide a valid certificate for verification.
+            * Currently the server (this dafilesrv), will use either the "public" certificate issuer,
+            * unless it's visibility is "cluster" (meaning internal only)
+            */
 
             const char *certScope = strsame("cluster", getComponentConfigSP()->queryProp("service/@visibility")) ? "local" : "public";
             Owned<const ISyncedPropertyTree> info = getIssuerTlsSyncedConfig(certScope, nullptr, disableClientCertVerification);
@@ -145,7 +153,14 @@ static ISecureSocket *createSecureSocket(ISocket *sock, bool disableClientCertVe
                 throw makeStringException(-1, "createSecureSocket() : missing MTLS configuration");
             secureContextServer.setown(createSecureSocketContextSynced(info, ServerSocket));
 #else
-            secureContextServer.setown(createSecureSocketContextEx2(securitySettings.getSecureConfig(), ServerSocket));
+            Owned<IPropertyTree> cert = getComponentConfigSP()->getPropTree("cert");
+            if (cert)
+            {
+                Owned<ISyncedPropertyTree> certSyncedWrapper = createSyncedPropertyTree(cert);
+                secureContextServer.setown(createSecureSocketContextSynced(certSyncedWrapper, ServerSocket));
+            }
+            else
+                secureContextServer.setown(createSecureSocketContextEx2(securitySettings.getSecureConfig(), ServerSocket));
 #endif
         }
     }
@@ -828,16 +843,36 @@ interface IRemoteWriteActivity : extends IRemoteActivity
     virtual void write(size32_t sz, const void *row) = 0;
 };
 
+class AccumulatingTimeScope
+{
+    unsigned __int64 &timeNS;
+    unsigned __int64 startTimeNS;
+public:
+    AccumulatingTimeScope(unsigned __int64 &_timeNS) : timeNS(_timeNS)
+    {
+        startTimeNS = nsTick();
+    }
+
+    ~AccumulatingTimeScope()
+    {
+        timeNS += (nsTick() - startTimeNS);
+    }
+};
+
 class CRemoteRequest : public CSimpleInterfaceOf<IInterface>
 {
     int cursorHandle;
     OutputFormat format;
+    unsigned __int64 processingTimeNS = 0;
     unsigned __int64 replyLimit = defaultDaFSReplyLimitKB * 1024;
     Linked<IRemoteActivity> activity;
     Linked<ICompressor> compressor;
     Linked<IExpander> expander;
     MemoryBuffer expandMb;
     Owned<IXmlWriterExt> responseWriter; // for xml or json response
+
+    OwnedSpanLifetime requestSpan;
+    std::string requestTraceParent;
 
     bool handleFull(MemoryBuffer &inMb, size32_t inPos, MemoryBuffer &compressMb, ICompressor *compressor, size32_t replyLimit, size32_t &totalSz)
     {
@@ -1079,9 +1114,18 @@ class CRemoteRequest : public CSimpleInterfaceOf<IInterface>
         writeActivity->write(rowDataSz, rowData);
     }
 
+    void closeRequestSpan()
+    {
+        if (requestSpan != nullptr)
+        {
+            requestSpan->setSpanAttribute("ProcessingTime", processingTimeNS);
+            requestSpan->setSpanStatusSuccess(true);
+        }
+    }
+
 public:
     CRemoteRequest(int _cursorHandle, OutputFormat _format, ICompressor *_compressor, IExpander *_expander, IRemoteActivity *_activity)
-        : cursorHandle(_cursorHandle), format(_format), compressor(_compressor), expander(_expander), activity(_activity)
+        : cursorHandle(_cursorHandle), format(_format), activity(_activity), compressor(_compressor), expander(_expander)
     {
         if (outFmt_Binary != format)
         {
@@ -1092,13 +1136,53 @@ public:
             responseWriter->outputUInt(cursorHandle, sizeof(cursorHandle), "handle");
         }
     }
+
+    ~CRemoteRequest()
+    {
+        closeRequestSpan();
+    }
+
     OutputFormat queryFormat() const { return format; }
     unsigned __int64 queryReplyLimit() const { return replyLimit; }
     IRemoteActivity *queryActivity() const { return activity; }
     ICompressor *queryCompressor() const { return compressor; }
+    ISpan* queryRequestSpan() const { return requestSpan == nullptr ? queryNullSpan() : requestSpan.query(); }
 
     void process(IPropertyTree *requestTree, MemoryBuffer &restMb, MemoryBuffer &responseMb, CClientStats &stats)
     {
+        bool traceParentChanged = false;
+        const char* fullTraceContext = requestTree->queryProp("_trace/traceparent");
+        if (fullTraceContext != nullptr)
+        {
+            // We only want to compare the trace-id & span-id, so ignore the last sampling group after the '-'
+            const char* lastHyphen = strchr(fullTraceContext, '-');
+            if (lastHyphen != nullptr)
+            {
+                size_t lastHyphenIdx = lastHyphen - fullTraceContext;
+                traceParentChanged = strncmp(fullTraceContext, requestTraceParent.c_str(), lastHyphenIdx) != 0;
+            }
+        }
+
+        if (traceParentChanged)
+        {
+            // Close existing span if we have one
+            closeRequestSpan(); 
+
+            Owned<IProperties> traceHeaders = createProperties();
+            traceHeaders->setProp("traceparent", fullTraceContext);
+
+            const char* requestSpanName = nullptr;
+            if (activity->queryIsReadActivity())
+                requestSpanName = "ReadRequest";
+            else
+                requestSpanName = "WriteRequest";
+
+            requestSpan.setown(queryTraceManager().createServerSpan(requestSpanName, traceHeaders));
+            requestTraceParent = fullTraceContext;
+        }
+
+        ActiveSpanScope activeSpan(requestSpan.query());
+
         if (requestTree->hasProp("replyLimit"))
             replyLimit = requestTree->getPropInt64("replyLimit", defaultDaFSReplyLimitKB) * 1024;
 
@@ -1115,10 +1199,15 @@ public:
             activity->restoreCursor(cursorMb);
         }
 
-        if (activity->queryIsReadActivity())
-            processRead(requestTree, responseMb);
-        else if (activity->queryIsWriteActivity())
-            processWrite(requestTree, restMb, responseMb);
+        {
+            AccumulatingTimeScope processTimeScope(processingTimeNS);
+
+            if (activity->queryIsReadActivity())
+                processRead(requestTree, responseMb);
+            else if (activity->queryIsWriteActivity())
+                processWrite(requestTree, restMb, responseMb);
+        }
+
         activity->flushStatistics(stats);
 
         if (outFmt_Binary != format)
@@ -1135,9 +1224,9 @@ enum OpenFileFlag { of_null=0x0, of_key=0x01 };
 struct OpenFileInfo
 {
     OpenFileInfo() { }
-    OpenFileInfo(int _handle, IFileIO *_fileIO, StringAttrItem *_filename) : handle(_handle), fileIO(_fileIO), filename(_filename) { }
+    OpenFileInfo(int _handle, IFileIO *_fileIO, StringAttrItem *_filename) : fileIO(_fileIO), filename(_filename), handle(_handle) { }
     OpenFileInfo(int _handle, CRemoteRequest *_remoteRequest, StringAttrItem *_filename)
-        : handle(_handle), remoteRequest(_remoteRequest), filename(_filename) { }
+        : remoteRequest(_remoteRequest), filename(_filename), handle(_handle) { }
     Linked<IFileIO> fileIO;
     Linked<CRemoteRequest> remoteRequest;
     Linked<StringAttrItem> filename; // for debug
@@ -1176,7 +1265,7 @@ protected:
     bool opened = false;
     bool eofSeen = false;
     const RtlRecord *record = nullptr;
-    RowFilter filters;
+    RowFilter filter;
     RtlDynRow *filterRow = nullptr;
     // virtual field values
     StringAttr logicalFilename;
@@ -1186,8 +1275,8 @@ protected:
     {
         if (filterRow)
         {
-            filterRow->setRow(buffer, filters.getNumFieldsRequired());
-            return filters.matches(*filterRow);
+            filterRow->setRow(buffer, filter.getNumFieldsRequired());
+            return filter.matches(*filterRow);
         }
         else
             return true;
@@ -1217,7 +1306,7 @@ public:
             filterRow = new RtlDynRow(*record);
             Owned<IPropertyTreeIterator> filterIter = config.getElements("keyFilter");
             ForEach(*filterIter)
-                filters.addFilter(*record, filterIter->query().queryProp(nullptr));
+                filter.addFilter(*record, filterIter->query().queryProp(nullptr));
         }
     }
 // IRemoteReadActivity impl.
@@ -1280,12 +1369,12 @@ public:
 };
 
 
-class CRemoteStreamReadBaseActivity : public CRemoteDiskBaseActivity, implements IFileSerialStreamCallback
+class CRemoteStreamReadBaseActivity : public CRemoteDiskBaseActivity
 {
     typedef CRemoteDiskBaseActivity PARENT;
 
 protected:
-    Owned<ISerialStream> inputStream;
+    Owned<IBufferedSerialInputStream> inputStream;
     Owned<IFileIO> iFileIO;
     unsigned __int64 chooseN = 0;
     unsigned __int64 startPos = 0;
@@ -1293,6 +1382,7 @@ protected:
     bool cursorDirty = false;
     bool fetching = false;
     unsigned __int64 bytesRead = 0;
+    unsigned __int64 lastBytesRead = 0;
     // virtual field values
     unsigned partNum = 0;
     offset_t baseFpos = 0;
@@ -1301,7 +1391,7 @@ protected:
     {
         if (inputStream->tell() != startPos)
         {
-            inputStream->reset(startPos);
+            inputStream->reset(startPos, UnknownOffset);
             return true;
         }
         return false;
@@ -1346,7 +1436,7 @@ protected:
                 compressed = false;
             }
         }
-        inputStream.setown(createFileSerialStream(iFileIO, startPos, (offset_t)-1, (size32_t)-1, this));
+        inputStream.setown(createFileSerialStream(iFileIO, startPos, (offset_t)-1, (size32_t)-1));
 
         opened = true;
         eofSeen = false;
@@ -1354,14 +1444,11 @@ protected:
     }
     void close()
     {
+        if (iFileIO)
+            bytesRead += iFileIO->getStatistic(StSizeDiskRead);
         iFileIO.clear();
         opened = false;
         eofSeen = true;
-    }
-// IFileSerialStreamCallback impl.
-    virtual void process(offset_t ofs, size32_t sz, const void *buf) override
-    {
-        bytesRead += sz;
     }
 public:
     CRemoteStreamReadBaseActivity(IPropertyTree &config, IFileDescriptor *fileDesc) : PARENT(config, fileDesc)
@@ -1375,8 +1462,11 @@ public:
     virtual void flushStatistics(CClientStats &stats) override
     {
         // NB: will be called by same thread that is reading.
-        stats.addRead(bytesRead);
-        bytesRead = 0;
+        offset_t totalBytesRead = bytesRead;
+        if (iFileIO)
+            totalBytesRead += iFileIO->getStatistic(StSizeDiskRead);
+        stats.addRead(totalBytesRead - lastBytesRead);
+        lastBytesRead = totalBytesRead;
     }
 // IRemoteReadActivity impl.
     virtual void seek(offset_t pos) override
@@ -1411,7 +1501,7 @@ class CRemoteDiskReadActivity : public CRemoteStreamReadBaseActivity
     {
         if (prefetchBuffer.tell() != startPos)
         {
-            inputStream->reset(startPos);
+            inputStream->reset(startPos, UnknownOffset);
             prefetchBuffer.clearStream();
             prefetchBuffer.setStream(inputStream);
             return true;
@@ -1850,7 +1940,7 @@ class CRemoteMarkupReadActivity : public CRemoteExternalFormatReadActivity, impl
                 Linked<IColumnProvider> parentMatch;
                 const RtlRecord &nestedRecInfo;
             public:
-                CIterator(const RtlRecord &_nestedRecInfo, IColumnProvider *_parentMatch, const char *xpath) : nestedRecInfo(_nestedRecInfo), parentMatch(_parentMatch)
+                CIterator(const RtlRecord &_nestedRecInfo, IColumnProvider *_parentMatch, const char *xpath) : parentMatch(_parentMatch), nestedRecInfo(_nestedRecInfo)
                 {
                     xmlIter.initOwn(parentMatch->getChildIterator(xpath));
                 }
@@ -1901,9 +1991,9 @@ class CRemoteMarkupReadActivity : public CRemoteExternalFormatReadActivity, impl
 
         class CSimpleStream : public CSimpleInterfaceOf<ISimpleReadStream>
         {
-            Linked<ISerialStream> stream;
+            Linked<IBufferedSerialInputStream> stream;
         public:
-            CSimpleStream(ISerialStream *_stream) : stream(_stream)
+            CSimpleStream(IBufferedSerialInputStream *_stream) : stream(_stream)
             {
             }
         // ISimpleReadStream impl.
@@ -2228,6 +2318,7 @@ protected:
     unsigned fileCrc = 0;
     Owned<IKeyIndex> keyIndex;
     Owned<IKeyManager> keyManager;
+    RowFilter keyFilter;
 
     void checkOpen()
     {
@@ -2241,9 +2332,9 @@ protected:
         crc32.tally(sizeof(time_t), &modTimeTT);
         unsigned crc = crc32.get();
 
-        keyIndex.setown(createKeyIndex(fileName, crc, isTlk));
+        keyIndex.setown(createKeyIndex(fileName, crc, isTlk, 0));
         keyManager.setown(createLocalKeyManager(*record, keyIndex, nullptr, true, false));
-        filters.createSegmentMonitors(keyManager);
+        keyFilter.createSegmentMonitors(keyManager);
         keyManager->finishSegmentMonitors();
         keyManager->reset();
 
@@ -2260,6 +2351,7 @@ public:
     CRemoteIndexBaseActivity(IPropertyTree &config, IFileDescriptor *fileDesc) : PARENT(config, fileDesc)
     {
         setupInputMeta(config, getTypeInfoOutputMetaData(config, "input", false));
+        filter.splitIntoKeyFilter(*record, keyFilter);
 
         isTlk = config.getPropBool("isTlk");
         fileCrc = config.getPropInt("crc");
@@ -2276,6 +2368,7 @@ class CRemoteIndexReadActivity : public CRemoteIndexBaseActivity
 
     Owned<const IDynamicTransform> translator;
     unsigned __int64 chooseN = 0;
+    bool cleanupBlobs = false;
 public:
     CRemoteIndexReadActivity(IPropertyTree &config, IFileDescriptor *fileDesc) : PARENT(config, fileDesc)
     {
@@ -2314,6 +2407,12 @@ public:
                         }
                         dbgassertex(retSz);
 
+                        if (cleanupBlobs)
+                        {
+                            keyManager->releaseBlobs();
+                            cleanupBlobs = false;
+                        }
+
                         const void *ret = outBuilder.getSelf();
                         outBuilder.finishRow(retSz);
                         ++processed;
@@ -2348,6 +2447,13 @@ public:
     {
         return out.appendf("indexread[%s]", fileName.get());
     }
+
+    virtual const byte * lookupBlob(unsigned __int64 id) override
+    {
+        size32_t dummy;
+        cleanupBlobs = true;
+        return (byte *) keyManager->loadBlob(id, dummy, nullptr);
+    }
 };
 
 
@@ -2366,7 +2472,11 @@ protected:
 
     void close()
     {
-        iFileIO.clear();
+        if (iFileIO)
+        {
+            iFileIO->close();
+            iFileIO.clear();
+        }
         opened = false;
         eofSeen = true;
     }
@@ -2452,7 +2562,11 @@ class CRemoteDiskWriteActivity : public CRemoteWriteBaseActivity
          * Would need mutex per physical filename active.
          */
         if (compressionFormat)
-            iFileIO.setown(createCompressedFileWriter(iFile, recordSize, append, true, nullptr, compressionFormat));
+        {
+            size32_t compBlockSize = 0; // i.e. default
+            size32_t blockedIoSize = -1; // i.e. default
+            iFileIO.setown(createCompressedFileWriter(iFile, recordSize, append, true, nullptr, compressionFormat, compBlockSize, blockedIoSize, IFEnone));
+        }
         else
         {
             iFileIO.setown(iFile->open(append ? IFOwrite : IFOcreate));
@@ -2599,14 +2713,24 @@ IFileDescriptor *verifyMetaInfo(IPropertyTree &actNode, bool authorizedOnly, con
 
     bool isSigned = metaInfoBlob.length() != 0;
     if (authorizedOnly && !isSigned)
-        throw createDafsException(DAFSERR_cmd_unauthorized, "createRemoteActivity: unathorized");
+    {
+        const char *fileGroup = metaInfoEnvelope->queryProp("group");
+        if (!fileGroup)
+            fileGroup = "(undefined)";
+        throw createDafsExceptionV(DAFSERR_cmd_unauthorized, "createRemoteActivity: unauthorized (file group=%s)", fileGroup);
+    }
 
     if (isSigned)
     {
         metaInfo.setown(createPTree(metaInfoBlob));
+        const char *keyPairName = metaInfo->queryProp("keyPairName");
+        dbgassertex(keyPairName); // because it's signed cannot be missing
+        const char *fileGroup = metaInfo->queryProp("group");
+        if (!fileGroup) // conceivably an older esp service constructed this metainfo without this field
+            fileGroup = "(undefined)";
         StringBuffer metaInfoSignature;
-        if (!metaInfoEnvelope->getProp("signature", metaInfoSignature))
-            throw createDafsException(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing signature");
+        if (!metaInfoEnvelope->getProp("signature", metaInfoSignature)) // should not be possible (metaInfoBlob and signature are set at same time)
+            throw createDafsExceptionV(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing signature (file group=%s, keyPairName=%s)", fileGroup, keyPairName);
 
 #ifdef _CONTAINERIZED
         /* This public key that is sent with request will be verified as being issued by same CA
@@ -2614,22 +2738,20 @@ IFileDescriptor *verifyMetaInfo(IPropertyTree &actNode, bool authorizedOnly, con
          */
         const char *certificate = metaInfoEnvelope->queryProp("certificate");
         if (isEmptyString(certificate))
-            throw createDafsException(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing certificate");
+            throw createDafsExceptionV(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing certificate (file group=%s, keyPairName=%s)", fileGroup, keyPairName);
         Owned<CLoadedKey> publicKey = loadPublicKeyFromCertMemory(certificate);
 #else
-        const char *keyPairName = metaInfo->queryProp("keyPairName");
-
         VStringBuffer keyPairPath("KeyPair[@name=\"%s\"]", keyPairName);
         IPropertyTree *keyPair = keyPairInfo->queryPropTree(keyPairPath);
         if (!keyPair)
-            throw createDafsException(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing key pair definition");
+            throw createDafsExceptionV(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing key pair definition (file group=%s, keyPairName=%s)", fileGroup, keyPairName);
         const char *publicKeyFName = keyPair->queryProp("@publicKey");
         if (isEmptyString(publicKeyFName))
-            throw createDafsException(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing public key definition");
+            throw createDafsExceptionV(DAFSERR_cmd_unauthorized, "createRemoteActivity: missing public key definition (file group=%s, keyPairName=%s)", fileGroup, keyPairName);
         Owned<CLoadedKey> publicKey = loadPublicKeyFromFile(publicKeyFName); // NB: if cared could cache loaded keys
 #endif
         if (!digiVerify(metaInfoSignature, metaInfoBlob.length(), metaInfoBlob.bytes(), *publicKey))
-            throw createDafsException(DAFSERR_cmd_unauthorized, "createRemoteActivity: signature verification failed");
+            throw createDafsExceptionV(DAFSERR_cmd_unauthorized, "createRemoteActivity: signature verification failed (file group=%s, keyPairName=%s)", fileGroup, keyPairName);
         checkExpiryTime(*metaInfo);
     }
     else
@@ -2663,6 +2785,7 @@ IFileDescriptor *verifyMetaInfo(IPropertyTree &actNode, bool authorizedOnly, con
             break;
         }
         case 2: // serialized compact IFileDescriptor
+        case 3: // same as v2 with additional 'group' meta info within metaInfo
         {
             IPropertyTree *fileInfo = metaInfo->queryPropTree("FileInfo");
 
@@ -2678,7 +2801,7 @@ IFileDescriptor *verifyMetaInfo(IPropertyTree &actNode, bool authorizedOnly, con
             break;
         }
         default:
-            throwUnexpected();
+            throw createDafsExceptionV(DAFSERR_cmdstream_protocol_failure, "createRemoteActivity: unsupported meta info version %u", metaInfoVersion);
     }
 
     verifyex(actNode.removeProp("metaInfo")); // no longer needed
@@ -2866,7 +2989,7 @@ class CRemoteFileServer : implements IRemoteFileServer, public CInterface
         IMPLEMENT_IINTERFACE;
 
         CRemoteClientHandler(CRemoteFileServer *_parent,ISocket *_socket,std::atomic<unsigned> &_globallasttick, bool _calledByRowService)
-            : socket(_socket), globallasttick(_globallasttick), calledByRowService(_calledByRowService)
+            : calledByRowService(_calledByRowService), socket(_socket), globallasttick(_globallasttick)
         {
             previdx = (unsigned)-1;
             StringBuffer peerBuf;
@@ -2934,68 +3057,87 @@ class CRemoteFileServer : implements IRemoteFileServer, public CInterface
             touch();
             try
             {
-                if (!gotSize)
+                while (true)
                 {
-                    // left represents amount we have read of leading size32_t (normally expect to be read in 1 go)
-                    if (0 == msg.length()) // 1st time
-                        msgWritePtr = (byte *)msg.reserveTruncate(sizeof(size32_t));
-                    size32_t szRead;
-                    sock->read(msgWritePtr, 1, sizeof(size32_t)-left, szRead);
-                    left += szRead;
-                    msgWritePtr += szRead;
-                    if (left == sizeof(size32_t))
+                    if (!gotSize)
                     {
-                        gotSize = true;
-                        msg.read(left);
-                        msg.clear();
-                        try
+                        // left represents amount we have read of leading size32_t (normally expect to be read in 1 go)
+                        if (0 == msg.length()) // 1st time
+                            msgWritePtr = (byte *)msg.reserveTruncate(sizeof(size32_t));
+                        size32_t szRead;
+                        sock->read(msgWritePtr, 0, sizeof(size32_t)-left, szRead, WAIT_FOREVER, false);
+
+                        left += szRead;
+                        msgWritePtr += szRead;
+                        if (left == sizeof(size32_t)) // if not, we exit, and rely on next notifySelected
                         {
-                            msgWritePtr = (byte *)msg.reserveTruncate(left);
-                        }
-                        catch (IException *e)
-                        {
-                            EXCLOG(e,"notifySelected(1)");
-                            e->Release();
-                            left = 0;
-                            // if too big then suggest corrupted packet, try to consume
-                            // JCSMORE this seems a bit pointless, and it used to only read last 'avail',
-                            // which is not necessarily everything that was sent
-                            char fbuf[1024];
-                            while (true)
+                            gotSize = true;
+                            msg.read(left);
+                            msg.clear();
+                            try
                             {
-                                try
+                                msgWritePtr = (byte *)msg.reserveTruncate(left);
+                            }
+                            catch (IException *e)
+                            {
+                                EXCLOG(e,"notifySelected(1)");
+                                e->Release();
+                                left = 0;
+                                // if too big then suggest corrupted packet, try to consume
+                                // JCSMORE this seems a bit pointless, and it used to only read last 'avail',
+                                // which is not necessarily everything that was sent
+                                char fbuf[1024];
+                                while (true)
                                 {
-                                    size32_t szRead;
-                                    sock->read(fbuf, 1, 1024, szRead);
-                                }
-                                catch (IException *e)
-                                {
-                                    EXCLOG(e,"notifySelected(2)");
-                                    e->Release();
-                                    break;
+                                    try
+                                    {
+                                        size32_t szRead;
+                                        sock->read(fbuf, 0, 1024, szRead, WAIT_FOREVER, true);
+                                    }
+                                    catch (IException *e)
+                                    {
+                                        EXCLOG(e,"notifySelected(2)");
+                                        e->Release();
+                                        break;
+                                    }
                                 }
                             }
+                            if (0 == left)
+                            {
+                                gotSize = false;
+                                msg.clear();
+                                parent->onCloseSocket(this, 5);
+                                return true;
+                            }
                         }
-                        if (0 == left)
-                        {
-                            gotSize = false;
-                            msg.clear();
-                            parent->onCloseSocket(this, 5);
-                            return true;
-                        }
+                        else
+                            break; // wait for rest via subsequent notifySelected's
                     }
-                }
-                else // left represents length of message remaining to receive
-                {
-                    size32_t szRead;
-                    sock->read(msgWritePtr, 1, left, szRead);
-                    msgWritePtr += szRead;
-                    left -= szRead;
-                    if (0 == left) // NB: only ever here if original size was >0
+                    bool gc = false;
+                    if (gotSize) // left represents length of message remaining to receive
                     {
-                        gotSize = false; // reset for next packet
-                        parent->handleCompleteMessage(this, msg); // consumes msg
+                        size32_t szRead;
+                        gc = readtmsAllowClose(sock, msgWritePtr, 0, left, szRead, WAIT_FOREVER);
+                        msgWritePtr += szRead;
+                        left -= szRead;
+                        if (0 == left) // NB: only ever here if original size was >0
+                        {
+                            gotSize = false; // reset for next packet
+                            parent->handleCompleteMessage(this, msg); // consumes msg
+                            if (gc)
+                                THROWJSOCKEXCEPTION(JSOCKERR_graceful_close);
+                        }
+                        else
+                        {
+                            if (gc)
+                                THROWJSOCKEXCEPTION(JSOCKERR_graceful_close);
+                            break; // wait for rest via subsequent notifySelected's
+                        }
                     }
+                    else if (gc)
+                        THROWJSOCKEXCEPTION(JSOCKERR_graceful_close);
+                    // to be here, implies handled full message, loop around to see if more on the wire.
+                    // will break out if nothing/partial.
                 }
             }
             catch (IJSOCK_Exception *e)
@@ -3420,8 +3562,8 @@ class CRemoteFileServer : implements IRemoteFileServer, public CInterface
     Owned<ISocketSelectHandler> selecthandler;
     Owned<IThreadPool>  threads;    // for commands
     bool stopping;
-    unsigned clientcounttick;
-    unsigned closedclients;
+    unsigned clientcounttick;   // is only touched/read by checkTimeout() that is not contended itself.
+    unsigned closedclients;   // is only touched/read by checkTimeout() that is not contended itself.
     CAsyncCommandManager asyncCommandManager;
     CThrottler stdCmdThrottler, slowCmdThrottler;
     CClientStatsTable clientStatsTable;
@@ -3629,7 +3771,7 @@ public:
     IMPLEMENT_IINTERFACE
 
     CRemoteFileServer(unsigned maxThreads, unsigned maxThreadsDelayMs, unsigned maxAsyncCopy, IPropertyTree *_keyPairInfo)
-        : asyncCommandManager(maxAsyncCopy), stdCmdThrottler("stdCmdThrotlter"), slowCmdThrottler("slowCmdThrotlter"), keyPairInfo(_keyPairInfo)
+        : asyncCommandManager(maxAsyncCopy), stdCmdThrottler("stdCmdThrottler"), slowCmdThrottler("slowCmdThrottler"), keyPairInfo(_keyPairInfo)
     {
         lasthandle = 0;
         selecthandler.setown(createSocketSelectHandler(NULL));
@@ -3700,9 +3842,9 @@ public:
 
     //MORE: The file handles should timeout after a while, and accessing an old (invalid handle)
     // should throw a different exception
-    bool checkFileIOHandle(int handle, IFileIO *&fileio, bool del=false)
+    bool checkFileIOHandle(int handle, Owned<IFileIO> & fileio, bool del=false)
     {
-        fileio = NULL;
+        fileio.clear();
         if (handle<=0)
             return false;
         CriticalBlock block(sect);
@@ -3721,7 +3863,7 @@ public:
             }
             else
             {
-               fileio = client.openFiles.item(handleidx).fileIO;
+               fileio.set(client.openFiles.item(handleidx).fileIO);
                client.previdx = handleidx;
             }
             return true;
@@ -3729,7 +3871,7 @@ public:
         return false;
     }
 
-    void checkFileIOHandle(MemoryBuffer &reply, int handle, IFileIO *&fileio, bool del=false)
+    void checkFileIOHandle(MemoryBuffer &reply, int handle, Owned<IFileIO> & fileio, bool del=false)
     {
         if (!checkFileIOHandle(handle, fileio, del))
             throw createDafsException(RFSERR_InvalidFileIOHandle, nullptr);
@@ -3788,7 +3930,10 @@ public:
         }
         IFEflags extraFlags = (IFEflags)extra;
         // none => nocache for remote (hint)
-        // can revert to previous behavior with conf file setting "allow_pgcache_flush=false"
+        // can change this default setting with:
+        //  bare-metal legacy - conf file setting: allow_pgcache_flush=false
+        //  bare-metal - environment.xml dafilesrv expert setting: disableIFileMask=0x1 (IFEnocache)
+        //  containerized - values.yaml dafilesrv expert setting: disableIFileMask: 0x1 (IFEnocache)
         if (extraFlags == IFEnone)
             extraFlags = IFEnocache;
         Owned<IFile> file = createIFile(name->text);
@@ -3895,7 +4040,7 @@ public:
     {
         int handle;
         msg.read(handle);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio, true);
         if (TF_TRACE)
             PROGLOG("close file, handle = %d",handle);
@@ -3909,7 +4054,7 @@ public:
         __int64 pos;
         size32_t len;
         msg.read(handle).read(pos).read(len);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
 
         //arrange it so we read directly into the reply buffer...
@@ -3933,7 +4078,7 @@ public:
     {
         int handle;
         msg.read(handle);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
         __int64 size = fileio->size();
         reply.append((unsigned)RFEnoerror).append(size);
@@ -3946,9 +4091,9 @@ public:
         int handle;
         offset_t size;
         msg.read(handle).read(size);
-        IFileIO *fileio;
         if (TF_TRACE)
             PROGLOG("set size file, handle = %d, size = %" I64F "d",handle,size);
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
         fileio->setSize(size);
         reply.append((unsigned)RFEnoerror);
@@ -3960,7 +4105,7 @@ public:
         __int64 pos;
         size32_t len;
         msg.read(handle).read(pos).read(len);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
         const byte *data = (const byte *)msg.readDirect(len);
         if (TF_TRACE_PRE_IO)
@@ -4055,7 +4200,7 @@ public:
         __int64 len;
         StringAttr srcname;
         msg.read(handle).read(srcname).read(pos).read(len);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
 
         Owned<IFile> file = createIFile(srcname.get());
@@ -4776,7 +4921,7 @@ public:
          *   }
          *  }
          * }
-         * 
+         *
          * fetch continuation:
          * {
          *  "format" : "binary",
@@ -4901,16 +5046,37 @@ public:
             }
             case StreamCmd::CONTINUE:
             {
+                ISpan* requestSpan = queryNullSpan();
+                if (fileInfo.remoteRequest)
+                    requestSpan = fileInfo.remoteRequest->queryRequestSpan();
+
                 if (0 == cursorHandle)
-                    throw createDafsException(DAFSERR_cmdstream_protocol_failure, "cursor handle not supplied to 'continue' command");
+                {
+                    IException* except = createDafsException(DAFSERR_cmdstream_protocol_failure, "cursor handle not supplied to 'continue' command");
+                    requestSpan->recordException(except);
+                    throw except;
+                }
 
                 if (lookupFileIOHandle(cursorHandle, fileInfo)) // known handle, continuation
                 {
                     remoteRequest.set(fileInfo.remoteRequest);
                     outputFormat = fileInfo.remoteRequest->queryFormat();
 
-                    remoteRequest->process(requestTree, rest, reply, stats);
+                    try
+                    {
+                        remoteRequest->process(requestTree, rest, reply, stats);
+                    }
+                    catch (IException* e)
+                    {
+                        requestSpan->recordException(e);
+                        throw e;
+                    }
+
                     return;
+                }
+                else
+                {
+                    requestSpan->recordError("Unable to find cursor handle");
                 }
 
                 cursorHandle = 0; // challenge response ..
@@ -4918,9 +5084,25 @@ public:
             }
             case StreamCmd::CLOSE:
             {
+                OwnedActiveSpanScope closeSpan;
+                const char* traceParent = requestTree->queryProp("_trace/traceparent");
+                if (traceParent != nullptr)
+                {
+                    Owned<IProperties> traceHeaders = createProperties();
+                    traceHeaders->setProp("traceparent", traceParent);
+
+                    closeSpan.setown(queryTraceManager().createServerSpan("CloseRequest", traceHeaders));
+                }
+
                 if (0 == cursorHandle)
-                    throw createDafsException(DAFSERR_cmdstream_protocol_failure, "cursor handle not supplied to 'close' command");
-                IFileIO *dummy;
+                {
+                    IDAFS_Exception* exception = createDafsException(DAFSERR_cmdstream_protocol_failure, "cursor handle not supplied to 'close' command");
+                    if (closeSpan)
+                        closeSpan->recordException(exception);
+                    throw exception;
+                }
+
+                Owned<IFileIO> dummy;
                 checkFileIOHandle(cursorHandle, dummy, true);
                 break;
             }
@@ -4948,6 +5130,16 @@ public:
         {
             case StreamCmd::VERSION:
             {
+                OwnedActiveSpanScope versionSpan;
+                const char* traceParent = requestTree->queryProp("_trace/traceparent");
+                if (traceParent != nullptr)
+                {
+                    Owned<IProperties> traceHeaders = createProperties();
+                    traceHeaders->setProp("traceparent", traceParent);
+
+                    versionSpan.setown(queryTraceManager().createServerSpan("VersionRequest", traceHeaders));
+                }
+
                 if (outFmt_Binary == outputFormat)
                     reply.append(DAFILESRV_VERSIONSTRING);
                 else
@@ -5285,7 +5477,7 @@ public:
             handleTracer.traceIfReady();
     }
 
-    virtual void run(IPropertyTree *componentConfig, DAFSConnectCfg _connectMethod, const SocketEndpoint &listenep, unsigned sslPort, const SocketEndpoint *rowServiceEp, bool _rowServiceSSL, bool _rowServiceOnStdPort) override
+    virtual void run(IPropertyTree *componentConfig, DAFSConnectCfg _connectMethod, const SocketEndpoint &listenep, unsigned sslPort, unsigned listenQueueLimit, const SocketEndpoint *rowServiceEp, bool _rowServiceSSL, bool _rowServiceOnStdPort) override
     {
         SocketEndpoint sslep(listenep);
 #ifndef _CONTAINERIZED
@@ -5302,12 +5494,12 @@ public:
                 throw createDafsException(DAFSERR_serverinit_failed, "dafilesrv port not specified");
 
             if (listenep.isNull())
-                acceptSock.setown(ISocket::create(listenep.port));
+                acceptSock.setown(ISocket::create(listenep.port, listenQueueLimit));
             else
             {
                 StringBuffer ips;
                 listenep.getHostText(ips);
-                acceptSock.setown(ISocket::create_ip(listenep.port,ips.str()));
+                acceptSock.setown(ISocket::create_ip(listenep.port, ips.str(), listenQueueLimit));
             }
         }
 
@@ -5334,17 +5526,21 @@ public:
                     securitySettings.privateKey = nullptr;
                 }
             }
-            else
+            else if (!isContainerized() && getComponentConfigSP()->hasProp("cert"))
+            {
+                // validated when context is created in createSecureSocket
+            }
+            else // using environment.conf HPCCCertificateFile etc.
                 validateSSLSetup();
 #endif
 
             if (sslep.isNull())
-                secureSock.setown(ISocket::create(sslep.port));
+                secureSock.setown(ISocket::create(sslep.port, listenQueueLimit));
             else
             {
                 StringBuffer ips;
                 sslep.getHostText(ips);
-                secureSock.setown(ISocket::create_ip(sslep.port,ips.str()));
+                secureSock.setown(ISocket::create_ip(sslep.port, ips.str(), listenQueueLimit));
             }
         }
 
@@ -5354,12 +5550,12 @@ public:
             rowServiceOnStdPort = _rowServiceOnStdPort;
 
             if (rowServiceEp->isNull())
-                rowServiceSock.setown(ISocket::create(rowServiceEp->port));
+                rowServiceSock.setown(ISocket::create(rowServiceEp->port, listenQueueLimit));
             else
             {
                 StringBuffer ips;
                 rowServiceEp->getHostText(ips);
-                rowServiceSock.setown(ISocket::create_ip(rowServiceEp->port, ips.str()));
+                rowServiceSock.setown(ISocket::create_ip(rowServiceEp->port, ips.str(), listenQueueLimit));
             }
 
 #ifndef _CONTAINERIZED
@@ -5617,14 +5813,14 @@ public:
                     addClient(sockSSL.getClear(), true, false);
                 }
 
-                if (rowServiceSockAvail)
+                if (!isContainerized() && rowServiceSockAvail) // in contaierized each service is on a single dedicated port, the below 2 cases are for BM only
                 {
 #ifdef _DEBUG
                     acceptedRSSock->getPeerEndpoint(eps);
                     eps.getEndpointHostText(peerURL.clear());
                     PROGLOG("Server accepting row service socket from %s", peerURL.str());
 #endif
-                    addClient(acceptedRSSock.getClear(), true, true);
+                    addClient(acceptedRSSock.getClear(), rowServiceSSL, true);
                 }
             }
             else
@@ -5656,10 +5852,7 @@ public:
             clients.append(*client.getLink());
         }
         // JCSMORE - perhaps cap # added here... ?
-        unsigned mode = SELECTMODE_READ;
-        if (secure)
-            mode |= SELECTMODE_WRITE;
-        selecthandler->add(sock, mode, client);
+        selecthandler->add(sock, SELECTMODE_READ, client);
     }
 
     void stop()
@@ -5694,41 +5887,43 @@ public:
 
     void checkTimeout()
     {
-        if (msTick()-clientcounttick>1000*60*60)
+        if (msTick() - clientcounttick > 1000 * 60 * 60)
         {
-            CriticalBlock block(ClientCountSect);
-            if (TF_TRACE_CLIENT_STATS && (ClientCount || MaxClientCount))
-                PROGLOG("Client count = %d, max = %d", ClientCount, MaxClientCount);
-            clientcounttick = msTick();
-            MaxClientCount = ClientCount;
+            {
+                CriticalBlock block(ClientCountSect);
+                if (TF_TRACE_CLIENT_STATS && (ClientCount || MaxClientCount))
+                    PROGLOG("Client count = %d, max = %d", ClientCount, MaxClientCount);
+                MaxClientCount = ClientCount;
+            }
             if (closedclients)
             {
                 if (TF_TRACE_CLIENT_STATS)
-                    PROGLOG("Closed client count = %d",closedclients);
+                    PROGLOG("Closed client count = %d", closedclients);
                 closedclients = 0;
             }
+            clientcounttick = msTick();
         }
         CriticalBlock block(sect);
-        ForEachItemInRev(i,clients)
+        ForEachItemInRev(i, clients)
         {
             CRemoteClientHandler &client = clients.item(i);
             if (client.timedOut())
             {
                 StringBuffer s;
-                bool ok = client.getInfo(s);    // will spot duff sockets
-                if (ok&&(client.openFiles.ordinality()!=0))
+                bool ok = client.getInfo(s); // will spot duff sockets
+                if (ok && (client.openFiles.ordinality() != 0))
                 {
                     if (TF_TRACE_CLIENT_CONN && client.inactiveTimedOut())
-                        WARNLOG("Inactive %s",s.str());
+                        WARNLOG("Inactive %s", s.str());
                 }
                 else
                 {
 #ifndef _DEBUG
                     if (TF_TRACE_CLIENT_CONN)
 #endif
-                        PROGLOG("Timing out %s",s.str());
+                        PROGLOG("Timing out %s", s.str());
                     closedclients++;
-                    onCloseSocket(&client,4);   // removes owned handles
+                    onCloseSocket(&client, 4); // removes owned handles
                 }
             }
         }
@@ -5927,7 +6122,7 @@ protected:
             Owned<CRemoteFileServer> server;
             Linked<ISocket> socket;
         public:
-            CServerThread(CRemoteFileServer *_server, ISocket *_socket) : server(_server), socket(_socket), threaded("CServerThread")
+            CServerThread(CRemoteFileServer *_server, ISocket *_socket) : threaded("CServerThread"), server(_server), socket(_socket)
             {
                 threaded.init(this, false);
             }
@@ -6124,7 +6319,7 @@ protected:
             StringAttr filePath;
             Semaphore doneSem;
         public:
-            CDelayedFileCreate(const char *_filePath) : filePath(_filePath), threaded("CDelayedFileCreate")
+            CDelayedFileCreate(const char *_filePath) : threaded("CDelayedFileCreate"), filePath(_filePath)
             {
                 threaded.init(this, false);
             }

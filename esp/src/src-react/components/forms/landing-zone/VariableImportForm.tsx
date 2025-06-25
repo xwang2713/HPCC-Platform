@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Checkbox, DefaultButton, Dropdown, mergeStyleSets, PrimaryButton, Stack, TextField } from "@fluentui/react";
+import { Checkbox, DefaultButton, Dropdown, IDropdownOption, mergeStyleSets, PrimaryButton, Spinner, Stack, TextField } from "@fluentui/react";
 import { scopedLogger } from "@hpcc-js/util";
 import { useForm, Controller } from "react-hook-form";
 import * as FileSpray from "src/FileSpray";
@@ -18,6 +18,7 @@ interface VariableImportFormValues {
     namePrefix: string;
     selectedFiles?: {
         TargetName: string,
+        NumParts: string,
         SourceFile: string,
         SourcePlane: string,
         SourceIP: string
@@ -65,6 +66,8 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
     const [, { isContainer }] = useBuildInfo();
 
     const { handleSubmit, control, reset } = useForm<VariableImportFormValues>({ defaultValues });
+    const [submitDisabled, setSubmitDisabled] = React.useState(false);
+    const [spinnerHidden, setSpinnerHidden] = React.useState(true);
 
     const closeForm = React.useCallback(() => {
         setShowForm(false);
@@ -73,6 +76,8 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
     const onSubmit = React.useCallback(() => {
         handleSubmit(
             (data, evt) => {
+                setSubmitDisabled(true);
+                setSpinnerHidden(false);
                 let request = {};
                 const files = data.selectedFiles;
 
@@ -91,6 +96,7 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
                         data.namePrefix && data.namePrefix.substring(-2) !== "::" &&
                         file.TargetName && file.TargetName.substring(0, 2) !== "::"
                     ) ? "::" : "") + file.TargetName;
+                    request["destNumParts"] = file.NumParts;
                     requests.push(FileSpray.SprayFixed({
                         request: request
                     }));
@@ -117,6 +123,8 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
                             }
                         });
                         if (errors.length === 0) {
+                            setSubmitDisabled(false);
+                            setSpinnerHidden(true);
                             closeForm();
                         }
                     }
@@ -144,6 +152,7 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
             selection.forEach((file: { [id: string]: any }, idx) => {
                 newValues.selectedFiles[idx] = {
                     TargetName: file["name"],
+                    NumParts: "",
                     SourceFile: file["fullPath"],
                     SourcePlane: file?.DropZone?.Name ?? "",
                     SourceIP: file["NetAddress"]
@@ -155,7 +164,8 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
 
     return <MessageBox title={nlsHPCC.Import} show={showForm} setShow={closeForm}
         footer={<>
-            <PrimaryButton text={nlsHPCC.Import} onClick={handleSubmit(onSubmit)} />
+            <Spinner label={nlsHPCC.Loading} labelPosition="right" style={{ display: spinnerHidden ? "none" : "inherit" }} />
+            <PrimaryButton text={nlsHPCC.Import} disabled={submitDisabled} onClick={handleSubmit(onSubmit)} />
             <DefaultButton text={nlsHPCC.Cancel} onClick={() => closeForm()} />
         </>}>
         <Stack>
@@ -170,7 +180,7 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
                         required={true}
                         selectedKey={value}
                         placeholder={nlsHPCC.SelectValue}
-                        onChange={(evt, option) => {
+                        onChange={(evt, option: IDropdownOption) => {
                             onChange(option.key);
                         }}
                         errorMessage={error && error?.message}
@@ -190,7 +200,7 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
                         required={true}
                         selectedKey={value}
                         placeholder={nlsHPCC.SelectValue}
-                        onChange={(evt, option) => {
+                        onChange={(evt, option: IDropdownOption) => {
                             onChange(option.key);
                         }}
                         errorMessage={error && error?.message}
@@ -225,6 +235,7 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
                 <thead>
                     <tr>
                         <th>{nlsHPCC.TargetName}</th>
+                        <th>{nlsHPCC.NumberofParts}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -247,6 +258,26 @@ export const VariableImportForm: React.FunctionComponent<VariableImportFormProps
                                         pattern: {
                                             value: /^[-a-z0-9_]+[-a-z0-9 _\.]+$/i,
                                             message: nlsHPCC.ValidationErrorTargetNameInvalid
+                                        }
+                                    }}
+                                />
+                            </td>
+                            <td>
+                                <Controller
+                                    control={control} name={`selectedFiles.${idx}.NumParts` as const}
+                                    render={({
+                                        field: { onChange, name: fieldName, value },
+                                        fieldState: { error }
+                                    }) => <TextField
+                                            name={fieldName}
+                                            onChange={onChange}
+                                            value={value}
+                                            errorMessage={error && error?.message}
+                                        />}
+                                    rules={{
+                                        pattern: {
+                                            value: /^[0-9]+$/i,
+                                            message: nlsHPCC.ValidationErrorEnterNumber
                                         }
                                     }}
                                 />

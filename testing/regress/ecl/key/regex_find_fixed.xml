@@ -1,0 +1,12 @@
+<Dataset name='first_word_0'>
+ <Row><bounded_s>Colorless </bounded_s><bounded_u>Colorless </bounded_u></Row>
+</Dataset>
+<Dataset name='two_words_1'>
+ <Row><bounded_s>Colorless </bounded_s><bounded_u>Colorless </bounded_u></Row>
+</Dataset>
+<Dataset name='two_words_2'>
+ <Row><bounded_s>green     </bounded_s><bounded_u>green     </bounded_u></Row>
+</Dataset>
+<Dataset name='two_words_3'>
+ <Row><bounded_s>          </bounded_s><bounded_u>          </bounded_u></Row>
+</Dataset>

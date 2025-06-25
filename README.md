@@ -9,6 +9,49 @@ HPCC Systems offers an enterprise ready, open source supercomputing platform to 
 * [Installation and Running](https://hpccsystems.com/training/documentation/installation-and-administration)
 * [Developer Documentation](https://hpcc-systems.github.io/HPCC-Platform/)
 
+# Release + Support Policy
+
+In general, a new version of the HPCC Platform is released every 3 months. These releases can be either Major (with breaking changes) or Minor (with new features). Maintenance and security releases (point releases) are typically made weekly, and may occasionally include technical previews.
+
+Maintenance releases are supported for the current and previous release, while security releases are supported for the current and previous two releases:
+
+```mermaid
+---
+displayMode: compact
+---
+gantt
+    title Release Schedule
+    axisFormat %Y-Q%q
+    tickInterval 3month
+    dateFormat YYYY-MM-DD
+    section v9.2.x
+        Active:          active, 2023-07-04, 9M
+        Critical:        3M
+        Security:        3M
+    section v9.4.x
+        Active:          active, 2023-10-04, 9M
+        Critical:        3M
+        Security:        6M
+    section v9.6.x
+        Active:          active, 2024-04-04, 6M
+        Critical:        3M
+        Security:        6M
+    section v9.8.x
+        Active:          active, 2024-07-02, 9M
+        Critical:        3M
+        Security:        3M
+    section v9.10.x
+        Active:          active, 2025-01-01, 6M
+        Critical:        3M
+        Security:        3M
+    section v9.12.x
+        Active:          active, 2025-05-01, 5M
+        Critical:        3M
+        Security:        3M
+    section v10.0.x
+        Expected:        milestone, 2025-07-01, 0M
+```
+
 # Architecture
 
 The HPCC Systems architecture incorporates the Thor and Roxie clusters as well as common middleware components, an external communications layer, client interfaces which provide both end-user services and system management tools, and auxiliary components to support monitoring and to facilitate loading and storing of filesystem data from external sources. An HPCC environment can include only Thor clusters, or both Thor and Roxie clusters. Each of these cluster types is described in more detail in the following sections below the architecture diagram.
@@ -17,7 +60,7 @@ The HPCC Systems architecture incorporates the Thor and Roxie clusters as well a
 
 Thor (the Data Refinery Cluster) is responsible for consuming vast amounts of data, transforming, linking and indexing that data. It functions as a distributed file system with parallel processing power spread across the nodes. A cluster can scale from a single node to thousands of nodes.
 
-* Single-threaded
+* Single job at a time
 * Distributed parallel processing
 * Distributed file system
 * Powerful parallel processing programming language (ECL)
@@ -28,7 +71,7 @@ Thor (the Data Refinery Cluster) is responsible for consuming vast amounts of da
 
 Roxie (the Query Cluster) provides separate high-performance online query processing and data warehouse capabilities.  Roxie (Rapid Online XML Inquiry Engine) is the data delivery engine used in HPCC to serve data quickly and can support many thousands of requests per node per second. 
 
-* Multi-threaded
+* Multiple queries in parallel
 * Distributed parallel processing
 * Distributed file system
 * Powerful parallel processing programming language (ECL)

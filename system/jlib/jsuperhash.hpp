@@ -28,10 +28,17 @@
 #include "jstring.hpp"
 #include "jmutex.hpp"
 
+constexpr unsigned fnvInitialHash32 = 0x811C9DC5;
+constexpr unsigned fnvPrime32 = 0x01000193;
+
 extern jlib_decl unsigned hashc( const unsigned char *k, unsigned length, unsigned initval);
 extern jlib_decl unsigned hashnc( const unsigned char *k, unsigned length, unsigned initval);
 extern jlib_decl unsigned hashcz( const unsigned char *k, unsigned initval);
 extern jlib_decl unsigned hashncz( const unsigned char *k, unsigned initval);
+extern jlib_decl unsigned hashc_fnv1a(const unsigned char *k, unsigned length, unsigned initval);
+extern jlib_decl unsigned hashnc_fnv1a(const unsigned char *k, unsigned length, unsigned initval);
+extern jlib_decl unsigned hashcz_fnv1a(const unsigned char *k, unsigned initval);
+extern jlib_decl unsigned hashncz_fnv1a(const unsigned char *k, unsigned initval);
 
 class jlib_decl SuperHashTable : public CInterface
 {
@@ -88,7 +95,7 @@ private:
     void             doKill(void);
     void             expand();
     void             expand(unsigned newsize);
-    void             note_searchlen(int) const;
+    void             note_searchlen(unsigned) const;
 
     virtual void     onAdd(void *et) = 0;
     virtual void     onRemove(void *et) = 0;
@@ -105,9 +112,9 @@ protected:
     unsigned         tablesize;
     unsigned         tablecount;
 #ifdef TRACE_HASH
-    mutable int      search_tot;
-    mutable int      search_num;
-    mutable int      search_max;
+    mutable unsigned __int64 search_tot;
+    mutable unsigned search_num;
+    mutable unsigned search_max;
 #endif
 };
 
@@ -461,7 +468,7 @@ template <class ET>
 class StringHTMapping : public CInterface
 {
 public:
-    StringHTMapping(const char *_fp, ET &_et) : fp(_fp), et(_et) { }
+    StringHTMapping(const char *_fp, ET &_et) : et(_et), fp(_fp) { }
     const char *queryFindString() const { return fp; }
 
 protected:
@@ -514,9 +521,9 @@ public:
         HashKeyElement *hke = (HashKeyElement *) checked_malloc(sizeof(HashKeyElement)+l+1,-605);
         memcpy((void *) (hke->keyPtr()), key, l+1);
         if (nocase)
-            hke->hashValue = hashnc((const unsigned char *)key, l, 0);
+            hke->hashValue = hashnc_fnv1a((const unsigned char *)key, l, fnvInitialHash32);
         else
-            hke->hashValue = hashc((const unsigned char *)key, l, 0);
+            hke->hashValue = hashc_fnv1a((const unsigned char *)key, l, fnvInitialHash32);
         hke->linkCount = 0;
         return hke;
     }
@@ -609,9 +616,9 @@ protected:
     virtual unsigned getHashFromFindParam(const void *fp) const
     {
         if (nocase)
-            return hashncz((const unsigned char *)fp, 0);
+            return hashncz_fnv1a((const unsigned char *)fp, fnvInitialHash32);
         else
-            return hashcz((const unsigned char *)fp, 0);
+            return hashcz_fnv1a((const unsigned char *)fp, fnvInitialHash32);
     }
 
     virtual const void *getFindParam(const void *e) const

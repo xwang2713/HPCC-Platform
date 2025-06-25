@@ -83,6 +83,7 @@ protected:
     time_t lastSessionCleanUpTime = 0;
 
     int unsupported();
+    int unsupported(StringBuffer& httpRequestMethod);
     EspHttpBinding* getBinding();
     EspAuthState checkUserAuth();
     void readAuthRequest(EspAuthRequest& req);
@@ -130,10 +131,12 @@ protected:
     IRemoteConnection* getSDSConnection(const char* xpath, unsigned mode, unsigned timeout);
     bool isMalformedUserName(const char *userName);
 
+    void traceRequest(IEspContext* ctx, const char* normalizedMethod);
+
 public:
     IMPLEMENT_IINTERFACE;
 
-    CEspHttpServer(ISocket& sock, CEspApplicationPort* apport, bool viewConfig, int maxRequestEntityLength);
+    CEspHttpServer(ISocket& sock, CEspApplicationPort& apport, bool viewConfig, int maxRequestEntityLength);
     virtual ~CEspHttpServer();
 
     //IEspService

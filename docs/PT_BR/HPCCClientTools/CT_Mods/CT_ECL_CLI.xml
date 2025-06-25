@@ -165,6 +165,13 @@
                 <entry>retorna uma lista de todos os IDs de usuário-chave que
                 podem ser usados pelo comando sign.</entry>
               </row>
+
+              <row>
+                <entry>url-secret-name</entry>
+
+                <entry>gerar um nome secreto a partir de uma URL para
+                mapeamento automático de URL</entry>
+              </row>
             </tbody>
           </tgroup>
         </informaltable>
@@ -1016,10 +1023,11 @@ ecl publish roxie ArchiveQuery.xml --query-name=FindPersonService --no-activate
                 </row>
 
                 <row>
-                  <entry>--wait=&lt;sec&gt;</entry>
+                  <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>Tempo máximo de espera pela conclusão da atualização
-                  do cluster</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -1617,8 +1625,9 @@ ecl run thor findperson.ecl -I C:\MyECL\
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>Define o valor de entrada armazenado
-                  (stored('name'))</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -2845,8 +2854,9 @@ ecl queries copy //192.168.1.10:8010/thor/findperson thor
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>Tempo máximo de espera pela atualização do término do
-                  cluster (em ms)</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.)</entry>
                 </row>
 
                 <row>
@@ -3412,10 +3422,11 @@ ecl queries copy-set roxie1 roxie2 --clone-active-state</programlisting>
                 </row>
 
                 <row>
-                  <entry>--wait=&lt;sec&gt;</entry>
+                  <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>Tempo máximo de espera pela atualização do término do
-                  cluster (em ms)</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.)</entry>
                 </row>
 
                 <row>
@@ -3760,10 +3771,11 @@ ecl queries recreate roxie findpeople roxie2</programlisting>
                 </row>
 
                 <row>
-                  <entry>--wait=&lt;sec&gt;</entry>
+                  <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>Tempo máximo de espera pela conclusão da atualização
-                  do cluster</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -6586,7 +6598,7 @@ ecl packagemap copy //192.168.0.100:8010/roxie/MyPkg roxie2
                 </row>
 
                 <row>
-                  <entry>--wait-connect=&lt;Ms&gt;</entry>
+                  <entry>--wait-connect=&lt;ms&gt;</entry>
 
                   <entry>Tempo limite ao conectar ao servidor (em
                   milissegundos)</entry>
@@ -6644,7 +6656,9 @@ ecl packagemap copy //192.168.0.100:8010/roxie/MyPkg roxie2
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>O tempo máximo de espera em milissegundos</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -6775,7 +6789,9 @@ ecl packagemap copy //192.168.0.100:8010/roxie/MyPkg roxie2
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>O tempo máximo de espera em milissegundos</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -6906,7 +6922,9 @@ ecl packagemap copy //192.168.0.100:8010/roxie/MyPkg roxie2
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>O tempo máximo de espera em milissegundos</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -7039,7 +7057,9 @@ ecl packagemap copy //192.168.0.100:8010/roxie/MyPkg roxie2
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>O tempo máximo de espera em milissegundos</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -7215,7 +7235,9 @@ ecl roxie xref myroxie --queryids=myquery.1,myotherquery.1</programlisting>
                 <row>
                   <entry>--wait=&lt;ms&gt;</entry>
 
-                  <entry>O tempo máximo de espera em milissegundos</entry>
+                  <entry>Tempo máximo (em milissegundos) para esperar que o
+                  cluster termine de atualizar. Qualquer valor inferior ao
+                  mínimo de 1000 é ignorado.</entry>
                 </row>
 
                 <row>
@@ -8559,6 +8581,65 @@ ecl getname -wu W201407*
               </tbody>
             </tgroup>
           </informaltable></para>
+      </sect2>
+
+      <sect2 id="CT-url-secret-name" role="brk">
+        <title>ecl url-secret-name</title>
+
+        <para><emphasis role="bold">ecl url-secret-name url</emphasis>
+        [--<emphasis>username</emphasis>=&lt;username&gt;]</para>
+
+        <para><informaltable colsep="1" frame="all" rowsep="1">
+            <tgroup cols="2">
+              <colspec align="left" colwidth="125.55pt"/>
+
+              <colspec/>
+
+              <tbody>
+                <row>
+                  <entry>ecl url-secret-name</entry>
+
+                  <entry>Gera um nome secreto a partir de uma URL para
+                  mapeamento automático de URL</entry>
+                </row>
+
+                <row>
+                  <entry>url</entry>
+
+                  <entry>URL para convert em um nome secreto.</entry>
+                </row>
+
+                <row>
+                  <entry><emphasis>--username</emphasis></entry>
+
+                  <entry>Opcional. O username associado a URL. Isto sobrepõe
+                  qualquer username inserida na URL.</entry>
+                </row>
+              </tbody>
+            </tgroup>
+          </informaltable>O comando <emphasis>ecl url-secret-name</emphasis>
+        gera um nome secreto a partir de uma URL que pode ser usado para
+        suportar o mapeamento automático da URL para segredo no ECL
+        SOAPCALL/HTTPCALL.</para>
+
+        <para>Um nome de usuário pode ser inserido na URL, como
+        https://username@example.com, ou passado como um parâmetro usando a
+        opção --username=username. Se um nome de usuário for passado como
+        parâmetro, ele substitui um nome de usuário na URL.</para>
+
+        <para>As senhas inseridas na URL não são necessárias e serão
+        ignoradas.</para>
+
+        <para>Quando o mapeamento secreto de URL do ECL SOAPCALL está ativado,
+        SOAPCALL converterá a URL fornecida em um nome deste formato. ECL,
+        então, tentará localizar o segredo e, se encontrado, usará o conteúdo
+        do segredo, ao invés da URL original.</para>
+
+        <para>Exemplos:</para>
+
+        <programlisting lang="bash">ecl url-secret-name https://example.com --username jimi
+ecl url-secret-name http://example.com --username jimi
+</programlisting>
       </sect2>
 
       <sect2 id="CT-RCTL-MEMLOCK" role="brk">

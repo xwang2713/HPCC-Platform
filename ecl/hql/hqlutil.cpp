@@ -3282,6 +3282,7 @@ bool isDependentOnParameter(IHqlExpression * expr)
     return checker.isDependent(expr);
 }
 
+// Returns true only when we need to build timing mechanisms around the calls
 bool isTimed(IHqlExpression * expr)
 {
     switch (expr->getOperator())
@@ -10212,6 +10213,15 @@ IHqlExpression * convertSetToExpression(bool isAll, size32_t len, const void * p
                 presult += numUChars;
             };
             break;
+        case type_utf8:
+            while (presult < presult_end)
+            {
+                const size32_t numUChars = *((size32_t *) presult);
+                presult += sizeof(size32_t);
+                results.append(*createConstant(createUtf8Value((unsigned)numUChars, (const char*)presult, makeUtf8Type(numUChars, NULL))));
+                presult += rtlUtf8Size(numUChars, presult);
+            };
+            break;
         default:
             UNIMPLEMENTED;
     }
@@ -10709,19 +10719,21 @@ IException * checkRegexSyntax(IHqlExpression * expr)
         {
             try
             {
-                if (isUnicodeType(expr->queryType()))
+                if (isUTF8Type(expr->queryType()))
+                {
+                    rtlSyntaxCheckU8StrRegExpr(rtlUtf8Length(value->getSize(), value->queryValue()), (const char *)value->queryValue());
+                }
+                else if (isUnicodeType(expr->queryType()))
                 {
                     Owned<ITypeInfo> unknownVarUnicodeType = makeVarUnicodeType(UNKNOWN_LENGTH, nullptr);
                     Owned<IValue> castValue = value->castTo(unknownVarUnicodeType);
-                    ICompiledUStrRegExpr * compiled = rtlCreateCompiledUStrRegExpr((const UChar *)castValue->queryValue(), false);
-                    rtlDestroyCompiledUStrRegExpr(compiled);
+                    rtlSyntaxCheckUStrRegExpr((const UChar *)castValue->queryValue());
                 }
                 else
                 {
                     Owned<ITypeInfo> unknownVarStringType = makeVarStringType(UNKNOWN_LENGTH);
                     Owned<IValue> castValue = value->castTo(unknownVarStringType);
-                    ICompiledStrRegExpr * compiled = rtlCreateCompiledStrRegExpr((const char *)castValue->queryValue(), false);
-                    rtlDestroyCompiledStrRegExpr(compiled);
+                    rtlSyntaxCheckStrRegExpr((const char *)castValue->queryValue());
                 }
             }
             catch (IException * e)

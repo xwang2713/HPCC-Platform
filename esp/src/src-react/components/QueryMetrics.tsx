@@ -1,5 +1,5 @@
 import * as React from "react";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import nlsHPCC from "src/nlsHPCC";
 import { useQuerySnapshots } from "../hooks/query";
 import { pushUrl } from "../util/history";
@@ -42,16 +42,16 @@ export const QueryMetrics: React.FunctionComponent<QueryMetricsProps> = ({
         return retVal;
     }, [snapshots, wuid]);
 
-    return <SizeMe monitorHeight>{({ size }) =>
+    return <SizeMe>{({ size }) =>
         <div style={{ height: "100%" }}>
             <OverflowTabList tabs={tabs} selected={tab} onTabSelect={onTabSelect} size="medium" />
             <DelayLoadedPanel visible={tab === "statistics"} size={size}>
-                <Metrics wuid={wuid} querySet={querySet} queryId={queryId} parentUrl={`/queries/${querySet}/${queryId}/metrics/statistics`} selection={selection} />
+                <Metrics wuid={wuid} querySet={querySet} queryId={queryId} parentUrl={`/queries/${querySet}/${queryId}/metrics/statistics`} selection={selection?.split(",")} />
             </DelayLoadedPanel>
             {
                 snapshots?.filter(snapshot => snapshot.Wuid !== wuid).map(snapshot => {
                     return <DelayLoadedPanel visible={tab === snapshot.Wuid} size={size}>
-                        <Metrics wuid={snapshot.Wuid} parentUrl={`/queries/${querySet}/${queryId}/metrics/${snapshot.Wuid}`} selection={selection} />
+                        <Metrics wuid={snapshot.Wuid} parentUrl={`/queries/${querySet}/${queryId}/metrics/${snapshot.Wuid}`} selection={selection?.split(",")} />
                     </DelayLoadedPanel>;
                 })
             }

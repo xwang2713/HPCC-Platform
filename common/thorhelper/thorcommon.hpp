@@ -88,7 +88,6 @@ extern THORHELPER_API IRowInterfaces *createRowInterfaces(IOutputMetaData *meta,
 enum RowReaderWriterFlags
 {
     rw_grouped        = 0x1,
-    rw_crc            = 0x2,
     rw_extend         = 0x4,
     rw_compress       = 0x8,
     rw_compressblkcrc = 0x10, // block compression, this sets/checks crc's at block level
@@ -155,23 +154,18 @@ inline unsigned getCompMethod(const char *compStr)
 
 interface IExtRowStream: extends IRowStream
 {
-    virtual offset_t getOffset() const = 0;
-    virtual offset_t getLastRowOffset() const = 0;
-    virtual unsigned __int64 queryProgress() const = 0;
-    using IRowStream::stop;
-    virtual void stop(CRC32 *crcout) = 0;
-    virtual const byte *prefetchRow() = 0;
+    virtual offset_t getOffset() const = 0;                 // Used by merge to limit the size read from disk in CMergeSlave::getRows()
+    virtual offset_t getLastRowOffset() const = 0;          // Used by disk read to deal with virtual file positions.
+    virtual const void *prefetchRow(size32_t & size) = 0;   // Used when row does not need to be cloned - e.g. when it will be transformed
     virtual void prefetchDone() = 0;
-    virtual void reinit(offset_t offset,offset_t len,unsigned __int64 maxrows) = 0;
     virtual unsigned __int64 getStatistic(StatisticKind kind) = 0;
-    virtual void setFilters(IConstArrayOf<IFieldFilter> &filters) = 0;
+    virtual void setFilters(IConstArrayOf<IFieldFilter> &filters) = 0;      // Possibly cleaner as a parameter to createRowStream()
+    virtual CRC32 queryCRC() const = 0;
 };
 
-interface IExtRowWriter: extends IRowWriter
+interface ILogicalRowWriter: extends IRowWriter
 {
     virtual offset_t getPosition() = 0;
-    using IRowWriter::flush;
-    virtual void flush(CRC32 *crcout) = 0;
     virtual unsigned __int64 getStatistic(StatisticKind kind) = 0;
 };
 
@@ -210,9 +204,9 @@ extern THORHELPER_API IExtRowStream *createRowStreamEx(IFileIO *fileIO, IRowInte
 extern THORHELPER_API IExtRowStream *createRowStream(IFile *file, IRowInterfaces *rowif, unsigned flags=DEFAULT_RWFLAGS, IExpander *eexp=nullptr, ITranslator *translatorContainer=nullptr, IVirtualFieldCallback * _fieldCallback=nullptr);
 extern THORHELPER_API IExtRowStream *createRowStreamEx(IFile *file, IRowInterfaces *rowif, offset_t offset=0, offset_t len=(offset_t)-1, unsigned __int64 maxrows=(unsigned __int64)-1, unsigned flags=DEFAULT_RWFLAGS, IExpander *eexp=nullptr, ITranslator *translatorContainer=nullptr, IVirtualFieldCallback * _fieldCallback = nullptr);
 interface ICompressor;
-extern THORHELPER_API IExtRowWriter *createRowWriter(IFile *file, IRowInterfaces *rowIf, unsigned flags=DEFAULT_RWFLAGS, ICompressor *compressor=NULL, size32_t compressorBlkSz=0);
-extern THORHELPER_API IExtRowWriter *createRowWriter(IFileIO *iFileIO, IRowInterfaces *rowIf, unsigned flags=DEFAULT_RWFLAGS, ICompressor *compressor=nullptr, size32_t compressorBlkSz=0);
-extern THORHELPER_API IExtRowWriter *createRowWriter(IFileIOStream *strm, IRowInterfaces *rowIf, unsigned flags=DEFAULT_RWFLAGS); // strm should be unbuffered
+extern THORHELPER_API ILogicalRowWriter *createRowWriter(IFile *file, IRowInterfaces *rowIf, unsigned flags=DEFAULT_RWFLAGS, ICompressor *compressor=NULL, size32_t compressorBlkSz=0);
+extern THORHELPER_API ILogicalRowWriter *createRowWriter(IFileIO *iFileIO, IRowInterfaces *rowIf, unsigned flags=DEFAULT_RWFLAGS, ICompressor *compressor=nullptr, size32_t compressorBlkSz=0);
+extern THORHELPER_API ILogicalRowWriter *createRowWriter(IFileIOStream *strm, IRowInterfaces *rowIf, unsigned flags=DEFAULT_RWFLAGS); // strm should be unbuffered
 
 interface THORHELPER_API IDiskMerger : extends IInterface
 {
@@ -246,6 +240,7 @@ public:
     unsigned __int64 firstRow; // Timestamp of first row (nanoseconds since epoch)
     cycle_t firstExitCycles;    // Wall clock time of first exit from this activity
     cycle_t blockedCycles;  // Time spent blocked
+    cycle_t lookAheadCycles;  // Time spent by lookahead thread
 
     // Return the total amount of time (in nanoseconds) spent in this activity (first entry to last exit)
     inline unsigned __int64 elapsed() const { return cycle_to_nanosec(endCycles-startCycles); }
@@ -265,6 +260,7 @@ public:
         firstRow = 0;
         firstExitCycles = 0;
         blockedCycles = 0;
+        lookAheadCycles = 0;
     }
 };
 
@@ -336,34 +332,24 @@ public:
     }
 };
 
-class BlockedActivityTimer
+class BlockedActivityTimer : public SimpleActivityTimer
 {
-    unsigned __int64 startCycles;
-    ActivityTimeAccumulator &accumulator;
-protected:
-    const bool enabled;
 public:
     BlockedActivityTimer(ActivityTimeAccumulator &_accumulator, const bool _enabled)
-        : accumulator(_accumulator), enabled(_enabled)
-    {
-        if (enabled)
-            startCycles = get_cycles_now();
-        else
-            startCycles = 0;
-    }
-
-    ~BlockedActivityTimer()
-    {
-        if (enabled)
-        {
-            cycle_t elapsedCycles = get_cycles_now() - startCycles;
-            accumulator.blockedCycles += elapsedCycles;
-        }
-    }
+        : SimpleActivityTimer(_accumulator.blockedCycles, _enabled) { }
 };
-#else
-struct ActivityTimer
+
+class LookAheadTimer : public SimpleActivityTimer
 {
+public:
+    inline LookAheadTimer(ActivityTimeAccumulator &_accumulator, const bool _enabled)
+    : SimpleActivityTimer(_accumulator.lookAheadCycles, _enabled) { }
+};
+
+#else
+class ActivityTimer
+{
+public:
     inline ActivityTimer(ActivityTimeAccumulator &_accumulator, const bool _enabled) { }
 };
 struct SimpleActivityTimer
@@ -373,7 +359,13 @@ struct SimpleActivityTimer
 struct BlockedActivityTimer
 {
     inline BlockedActivityTimer(ActivityTimeAccumulator &_accumulator, const bool _enabled) { }
+
 };
+struct LookAheadTimer
+{
+    inline LookAheadTimer(ActivityTimeAccumulator &_accumulator, const bool _enabled){ }
+};
+
 #endif
 
 class THORHELPER_API IndirectCodeContextEx : public IndirectCodeContext
@@ -430,7 +422,7 @@ public:
     {
         stats.setStatistic(kind, value);
     }
-    virtual void mergeStats(const CRuntimeStatisticCollection &from) const override
+    virtual void mergeStats(unsigned activityId, const CRuntimeStatisticCollection &from) const override
     {
         stats.merge(from);
     }

@@ -76,16 +76,19 @@ public:
                const char* sshUser, const char* sshKeyFile, const char* sshKeyPassphrase,
                bool useSsh, EnvMachineOS os, const char* processName=NULL)
     : m_caption(caption), m_compName(comp), 
-      m_instanceName(instance), m_processed(false), m_errorCode(0), 
-      m_abort(false), m_dummy(false), m_machineOS(os), m_flags(0),
-      m_processType(processType),
-      m_processName(processName),
-      m_targetFileWithWrongCase(false),
-      m_sshUser(sshUser),
+      m_instanceName(instance),
+      m_sshUser(sshUser), 
       m_sshKeyFile(sshKeyFile),
       m_sshKeyPassphrase(sshKeyPassphrase),
+      m_processed(false),
+      m_errorCode(0),
+      m_targetFileWithWrongCase(false),
+      m_abort(false),
+      m_dummy(false),
+      m_updateProgress(true),
       m_useSsh(useSsh),
-      m_updateProgress(true)
+      m_machineOS(os),
+      m_flags(0)
    {
       m_pCallback.set(&callback);
       m_fileSpec[DT_SOURCE].set(source ? source : "");
@@ -752,7 +755,7 @@ public:
          // Prompt to retry on error
          m_errorString.appendf("Cannot copy %s to %s: ", source, target);
 
-         synchronized block(s_monitor);
+         MonitorBlock block(s_monitor);
          if (m_pCallback->getAbortStatus())//has some other thread set the global abort flag?
            break; //go back to beginning of loop where we exit on abort
 
@@ -822,7 +825,7 @@ public:
 
      if (m_msgBoxOwner)//did this thread show the message box in last iteration of this loop?
      {
-       synchronized block(s_monitor);
+       MonitorBlock block(s_monitor);
        s_msgBoxActive = false;
        m_msgBoxOwner = false;//up for grabs by other threads
        s_monitor.notifyAll();

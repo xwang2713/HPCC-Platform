@@ -11,7 +11,7 @@
 
     <mediaobject>
       <imageobject>
-        <imagedata fileref="images/redswooshWithLogo3.jpg" />
+        <imagedata fileref="images/redswooshWithLogo3.jpg"/>
       </imageobject>
     </mediaobject>
 
@@ -39,26 +39,26 @@
       example data used in this manual are fictitious. Any similarity to
       actual persons, living or dead, is purely coincidental.</para>
 
-      <para></para>
+      <para/>
     </legalnotice>
 
     <xi:include href="common/Version.xml"
                 xpointer="xpointer(//*[@id='FooterInfo'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
     <xi:include href="common/Version.xml"
                 xpointer="xpointer(//*[@id='DateVer'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
     <corpname>HPCC Systems<superscript>®</superscript></corpname>
 
     <xi:include href="common/Version.xml"
                 xpointer="xpointer(//*[@id='Copyright'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
     <mediaobject role="logo">
       <imageobject>
-        <imagedata fileref="images/LN_Rightjustified.jpg" />
+        <imagedata fileref="images/LN_Rightjustified.jpg"/>
       </imageobject>
     </mediaobject>
   </bookinfo>
@@ -99,13 +99,13 @@
         <?dbfo keep-together="always"?>
 
         <tgroup cols="2">
-          <colspec colwidth="49.50pt" />
+          <colspec colwidth="49.50pt"/>
 
-          <colspec />
+          <colspec/>
 
           <tbody>
             <row>
-              <entry><inlinegraphic fileref="images/OSSgr3.png" /></entry>
+              <entry><inlinegraphic fileref="images/OSSgr3.png"/></entry>
 
               <entry>We suggest reading this document in its entirety before
               beginning. The entire process can take an hour or two, depending
@@ -114,6 +114,11 @@
           </tbody>
         </tgroup>
       </informaltable></para>
+
+    <para><emphasis role="bold">NOTE</emphasis>: This document focuses
+    primarily on the bare-metal implementation, for cloud and containerized
+    deployments refer to the <emphasis>Containerized HPCC
+    Systems<superscript>®</superscript> Platform </emphasis>document.</para>
 
     <sect1 id="Quick_Start">
       <title>Quick Start Guide</title>
@@ -138,7 +143,7 @@
           <para><programlisting> sudo yum install hpccsystems-platform&lt;rpm_file_name&gt;</programlisting>On
           Ubuntu/Debian:</para>
 
-          <programlisting> sudo dpkg -i &lt;deb filename&gt; </programlisting>
+          <programlisting> sudo apt install &lt;filename&gt; </programlisting>
 
           <para>Then to update dependencies:</para>
 
@@ -150,7 +155,7 @@
 
           <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStart.xml"
                       xpointer="element(/1)"
-                      xmlns:xi="http://www.w3.org/2001/XInclude" />
+                      xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
           <para><emphasis role="bold">NOTE</emphasis>: We provide sample
           scripts (see <link linkend="Example-Scripts">Appendix:Example
@@ -234,7 +239,7 @@
 
         <mediaobject>
           <imageobject>
-            <imagedata fileref="images/GS-Thor01.jpg" />
+            <imagedata fileref="images/GS-Thor01.jpg"/>
           </imageobject>
         </mediaobject>
       </figure><figure>
@@ -242,7 +247,7 @@
 
         <mediaobject>
           <imageobject>
-            <imagedata fileref="images/GS-Roxie01.jpg" />
+            <imagedata fileref="images/GS-Roxie01.jpg"/>
           </imageobject>
         </mediaobject>
       </figure></para>
@@ -295,10 +300,9 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
         <sect3 id="Installing_Ubuntu-Debian">
           <title>Ubuntu/Debian</title>
 
-          <para>For Ubuntu installations a Debian package is provided. To
-          install the package, use:</para>
+          <para>For Ubuntu installations, to install the package, use:</para>
 
-          <programlisting>sudo dpkg -i &lt;deb filename&gt;</programlisting>
+          <programlisting>sudo apt install &lt;filename&gt;</programlisting>
 
           <para>After installing the package, run the following to update any
           dependencies.</para>
@@ -309,66 +313,10 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
         <sect3 id="HPCC_Plug-Ins" role="brk">
           <title>Plugins</title>
 
-          <para>There are several optional plugins that you could choose to
-          add to your installation.</para>
+          <para>As of version 9.10, the plugins are automatically included.
+          There is no need to install separately.</para>
 
-          <para>For RPM based systems, you can install using yum.</para>
-
-          <para><programlisting>sudo yum install &lt;hpccsystems plugin plugin_name&gt;  </programlisting></para>
-
-          <para>To install the optional plug ins for a Ubuntu/Debian package,
-          use:</para>
-
-          <programlisting>sudo dpkg -i &lt;hpccsystems plugin plugin_name&gt;  </programlisting>
-
-          <para>The optional plugins are:</para>
-
-          <para><informaltable>
-              <tgroup cols="2">
-                <tbody>
-                  <row>
-                    <entry><itemizedlist>
-                        <listitem>
-                          <para>JAVA : javaembed</para>
-                        </listitem>
-
-                        <listitem>
-                          <para>JavaScript : v8embed</para>
-                        </listitem>
-
-                        <listitem>
-                          <para>R : rembed</para>
-                        </listitem>
-
-                        <listitem>
-                          <para>MySql : mysqlembed</para>
-                        </listitem>
-                      </itemizedlist></entry>
-
-                    <entry><itemizedlist>
-                        <listitem>
-                          <para>Kafka : kafka</para>
-                        </listitem>
-
-                        <listitem>
-                          <para>MemCache : memcached</para>
-                        </listitem>
-
-                        <listitem>
-                          <para>Redis : redis</para>
-                        </listitem>
-
-                        <listitem>
-                          <para>SQL Lite : sqlite3embed</para>
-                        </listitem>
-                      </itemizedlist></entry>
-                  </row>
-                </tbody>
-              </tgroup>
-            </informaltable></para>
-
-          <para>Some other technologies, such as Python and Cassandra support
-          are included in the platform package.</para>
+          <para/>
         </sect3>
       </sect2>
 
@@ -381,20 +329,20 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
             <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStart.xml"
                         xpointer="element(/1)"
-                        xmlns:xi="http://www.w3.org/2001/XInclude" />
+                        xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
             <para><informaltable colsep="1" frame="all" rowsep="1">
                 <?dbfo keep-together="always"?>
 
                 <tgroup cols="2">
-                  <colspec colwidth="49.50pt" />
+                  <colspec colwidth="49.50pt"/>
 
-                  <colspec />
+                  <colspec/>
 
                   <tbody>
                     <row>
                       <entry><inlinegraphic
-                      fileref="images/OSSgr3.png" /></entry>
+                      fileref="images/OSSgr3.png"/></entry>
 
                       <entry>There are log files for each component in
                       directories below <emphasis
@@ -410,9 +358,9 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                 </tgroup>
               </informaltable></para>
 
-            <para><emphasis role="bold">Note:</emphasis> If you are using Cent
-            OS 6, Ubuntu 14.04, or another System V based system, please see
-            the <link linkend="hpcc-init">Appendix: System V</link>.</para>
+            <para><emphasis role="bold">Note:</emphasis> If you are using
+            older System V based systems, please see the <link
+            linkend="hpcc-init">Appendix: System V</link>.</para>
           </listitem>
         </orderedlist>
       </sect2>
@@ -447,14 +395,14 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                     <?dbfo keep-together="always"?>
 
                     <tgroup cols="2">
-                      <colspec colwidth="49.50pt" />
+                      <colspec colwidth="49.50pt"/>
 
-                      <colspec />
+                      <colspec/>
 
                       <tbody>
                         <row>
                           <entry><inlinegraphic
-                          fileref="images/caution.png" /></entry>
+                          fileref="images/caution.png"/></entry>
 
                           <entry>Your IP address could be different from the
                           ones provided in the example images. Please use the
@@ -478,7 +426,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                     <mediaobject>
                       <imageobject>
                         <imagedata fileref="images/GS_1311.jpg"
-                                   vendor="eclwatchSS" />
+                                   vendor="eclwatchSS"/>
                       </imageobject>
                     </mediaobject>
                   </figure></para>
@@ -641,14 +589,14 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                   <?dbfo keep-together="always"?>
 
                   <tgroup cols="2">
-                    <colspec colwidth="49.50pt" />
+                    <colspec colwidth="49.50pt"/>
 
-                    <colspec />
+                    <colspec/>
 
                     <tbody>
                       <row>
                         <entry><inlinegraphic
-                        fileref="images/OSSgr3.png" /></entry>
+                        fileref="images/OSSgr3.png"/></entry>
 
                         <entry>You can create a shortcut on your desktop to
                         provide quick access to the ECL IDE.</entry>
@@ -670,7 +618,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
                   <mediaobject>
                     <imageobject>
-                      <imagedata fileref="images/vmimg06a.JPG" />
+                      <imagedata fileref="images/vmimg06a.JPG"/>
                     </imageobject>
                   </mediaobject>
                 </figure>
@@ -708,7 +656,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
                     <mediaobject>
                       <imageobject>
-                        <imagedata fileref="images/vmimg10.JPG" />
+                        <imagedata fileref="images/vmimg10.JPG"/>
                       </imageobject>
                     </mediaobject>
                   </figure></para>
@@ -725,7 +673,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
                     <mediaobject>
                       <imageobject>
-                        <imagedata fileref="images/vmimg09.JPG" />
+                        <imagedata fileref="images/vmimg09.JPG"/>
                       </imageobject>
                     </mediaobject>
                   </figure>A successful syntax check displays the "No Errors"
@@ -743,7 +691,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
                     <mediaobject>
                       <imageobject>
-                        <imagedata fileref="images/vmimg11.JPG" />
+                        <imagedata fileref="images/vmimg11.JPG"/>
                       </imageobject>
                     </mediaobject>
                   </figure>The green check mark indicates successful
@@ -761,7 +709,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
                     <mediaobject>
                       <imageobject>
-                        <imagedata fileref="images/vmimg12.JPG" />
+                        <imagedata fileref="images/vmimg12.JPG"/>
                       </imageobject>
                     </mediaobject>
                   </figure></para>
@@ -801,20 +749,20 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
             <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStop.xml"
                         xpointer="element(/1)"
-                        xmlns:xi="http://www.w3.org/2001/XInclude" />
+                        xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
             <para><informaltable colsep="1" frame="all" rowsep="1">
                 <?dbfo keep-together="always"?>
 
                 <tgroup cols="2">
-                  <colspec colwidth="49.50pt" />
+                  <colspec colwidth="49.50pt"/>
 
-                  <colspec />
+                  <colspec/>
 
                   <tbody>
                     <row>
                       <entry><inlinegraphic
-                      fileref="images/OSSgr3.png" /></entry>
+                      fileref="images/OSSgr3.png"/></entry>
 
                       <entry>You can use this command to confirm HPCC Systems
                       processes are stopped:<para><programlisting>sudo systemctl status hpccsystems-platform.target</programlisting></para></entry>
@@ -828,8 +776,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
             <para>Start the Configuration Manager service.<programlisting>sudo /opt/HPCCSystems/sbin/configmgr
 </programlisting></para>
 
-            <para><graphic
-            fileref="images/gs_img_configmgrStart.jpg" /></para>
+            <para><graphic fileref="images/gs_img_configmgrStart.jpg"/></para>
           </listitem>
 
           <listitem>
@@ -849,7 +796,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
             the wizard, select the Generate new environment using wizard
             button.</para>
 
-            <para><graphic fileref="images/GS_ConfigMgrWizStart.jpg" /></para>
+            <para><graphic fileref="images/GS_ConfigMgrWizStart.jpg"/></para>
           </listitem>
 
           <listitem>
@@ -883,7 +830,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
             192.168.55.1-125). IP Addresses can be specified individually
             using semi-colon delimiters.</para>
 
-            <para><graphic fileref="images/GS_ConfigMgrWiz002.jpg" /></para>
+            <para><graphic fileref="images/GS_ConfigMgrWiz002.jpg"/></para>
           </listitem>
 
           <listitem>
@@ -899,7 +846,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
 
             <para>Enter the appropriate values as indicated.</para>
 
-            <para><graphic fileref="images/GS_CMWiz003.jpg" /></para>
+            <para><graphic fileref="images/GS_CMWiz003.jpg"/></para>
 
             <variablelist>
               <varlistentry>
@@ -968,14 +915,14 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                 <?dbfo keep-together="always"?>
 
                 <tgroup cols="2">
-                  <colspec colwidth="49.50pt" />
+                  <colspec colwidth="49.50pt"/>
 
-                  <colspec />
+                  <colspec/>
 
                   <tbody>
                     <row>
                       <entry><inlinegraphic
-                      fileref="images/OSSgr3.png" /></entry>
+                      fileref="images/OSSgr3.png"/></entry>
 
                       <entry>Keep in mind, that your HPPC configuration may be
                       different depending on your needs. For example, you may
@@ -991,20 +938,20 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                 </tgroup>
               </informaltable></para>
 
-            <graphic fileref="images/GS_ConfigMgrWiz004.jpg" />
+            <graphic fileref="images/GS_ConfigMgrWiz004.jpg"/>
 
             <para><informaltable colsep="1" frame="all" rowsep="1">
                 <?dbfo keep-together="always"?>
 
                 <tgroup cols="2">
-                  <colspec colwidth="49.50pt" />
+                  <colspec colwidth="49.50pt"/>
 
-                  <colspec />
+                  <colspec/>
 
                   <tbody>
                     <row>
                       <entry><inlinegraphic
-                      fileref="images/OSSgr3.png" /></entry>
+                      fileref="images/OSSgr3.png"/></entry>
 
                       <entry>You can resize the Environment Summary by
                       clicking and dragging the lower right corner.</entry>
@@ -1018,7 +965,7 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
             <para>You will now be notified that you have completed the
             wizard.</para>
 
-            <para><graphic fileref="images/GS_ConfigMgrWiz005.jpg" /></para>
+            <para><graphic fileref="images/GS_ConfigMgrWiz005.jpg"/></para>
 
             <para>At this point the system has created a file named
             NewEnvironment.xml in the <emphasis
@@ -1035,14 +982,14 @@ sudo yum install -y &lt;hpccsystems platform rpm package&gt;</programlisting>
                 <?dbfo keep-together="always"?>
 
                 <tgroup cols="2">
-                  <colspec colwidth="49.50pt" />
+                  <colspec colwidth="49.50pt"/>
 
-                  <colspec />
+                  <colspec/>
 
                   <tbody>
                     <row>
                       <entry><inlinegraphic
-                      fileref="images/caution.png" /></entry>
+                      fileref="images/caution.png"/></entry>
 
                       <entry>Be sure system is stopped before attempting to
                       move the environment.xml file.</entry>
@@ -1064,14 +1011,14 @@ sudo cp /etc/HPCCSystems/source/NewEnvironment.xml /etc/HPCCSystems/environment.
                 <?dbfo keep-together="always"?>
 
                 <tgroup cols="2">
-                  <colspec colwidth="49.50pt" />
+                  <colspec colwidth="49.50pt"/>
 
-                  <colspec />
+                  <colspec/>
 
                   <tbody>
                     <row>
                       <entry><inlinegraphic
-                      fileref="images/caution.png" /></entry>
+                      fileref="images/caution.png"/></entry>
 
                       <entry>Make sure that you have sufficient privileges to
                       write file(s) to the destination directory before
@@ -1131,20 +1078,20 @@ sudo cp /etc/HPCCSystems/source/NewEnvironment.xml /etc/HPCCSystems/environment.
 
             <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStart.xml"
                         xpointer="element(/1)"
-                        xmlns:xi="http://www.w3.org/2001/XInclude" />
+                        xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
             <informaltable colsep="1" frame="all" rowsep="1">
               <?dbfo keep-together="always"?>
 
               <tgroup cols="2">
-                <colspec colwidth="49.50pt" />
+                <colspec colwidth="49.50pt"/>
 
-                <colspec />
+                <colspec/>
 
                 <tbody>
                   <row>
                     <entry><inlinegraphic
-                    fileref="images/OSSgr3.png" /></entry>
+                    fileref="images/OSSgr3.png"/></entry>
 
                     <entry><para>You may want to use a script to push this
                     command out to every node. A sample script is provided
@@ -1219,9 +1166,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
           <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStart.xml"
                       xpointer="element(/1)"
-                      xmlns:xi="http://www.w3.org/2001/XInclude" />
+                      xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
-          <para>For a CentOS 6 or other System V based systems see <link
+          <para>For older System V based systems see <link
           linkend="hpcc-init">Appendix: hpcc-init</link>.</para>
         </sect3>
 
@@ -1233,23 +1180,23 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
           <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStop.xml"
                       xpointer="element(/1)"
-                      xmlns:xi="http://www.w3.org/2001/XInclude" />
+                      xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
-          <para>For a CentOS 6 or other System V based systems see <link
+          <para>For older System V based systems see <link
           linkend="hpcc-init">Appendix: hpcc-init</link>.</para>
 
           <para><informaltable colsep="1" frame="all" rowsep="1">
               <?dbfo keep-together="always"?>
 
               <tgroup cols="2">
-                <colspec colwidth="49.50pt" />
+                <colspec colwidth="49.50pt"/>
 
-                <colspec />
+                <colspec/>
 
                 <tbody>
                   <row>
                     <entry><inlinegraphic
-                    fileref="images/OSSgr3.png" /></entry>
+                    fileref="images/OSSgr3.png"/></entry>
 
                     <entry>You can use a script to start or stop multiple
                     nodes in the system. See <emphasis><link
@@ -1272,7 +1219,7 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
           <programlisting>systemctl stop &lt;component-type&gt;@&lt;component-name&gt;.service</programlisting>
 
-          <para>For a CentOS 6 or other System V based systems see <link
+          <para>For older System V based systems see <link
           linkend="hpcc-init">Appendix: hpcc-init</link>.</para>
         </sect3>
       </sect2>
@@ -1292,7 +1239,7 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
             <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStop.xml"
                         xpointer="element(/1)"
-                        xmlns:xi="http://www.w3.org/2001/XInclude" />
+                        xmlns:xi="http://www.w3.org/2001/XInclude"/>
           </listitem>
 
           <listitem>
@@ -1315,11 +1262,11 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
     <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/hpcc_ldap.xml"
                 xpointer="element(/1)"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
     <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/UserSecurityMaint.xml"
                 xpointer="element(/1)"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
     <!-- <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/ssl-esp.xml"
                 xpointer="element(/1)"
@@ -1327,11 +1274,11 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
     <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/ssl-esp.xml"
                 xpointer="xpointer(//*[@id='ssl4esp'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
     <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/ssl-esp.xml"
                 xpointer="xpointer(//*[@id='ssl4Roxie'])"
-                xmlns:xi="http://www.w3.org/2001/XInclude" />
+                xmlns:xi="http://www.w3.org/2001/XInclude"/>
   </chapter>
 
   <chapter id="Installing_MoreECLExamples">
@@ -1350,11 +1297,11 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
       <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/anagram1.xml"
                   xpointer="xpointer(//*[@id='ECLExample_Anagram1'])"
-                  xmlns:xi="http://www.w3.org/2001/XInclude" />
+                  xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
       <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/anagram2.xml"
                   xpointer="xpointer(//*[@id='ECLRoxieExample_Anagram2'])"
-                  xmlns:xi="http://www.w3.org/2001/XInclude" />
+                  xmlns:xi="http://www.w3.org/2001/XInclude"/>
     </sect1>
   </chapter>
 
@@ -1372,7 +1319,7 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <mediaobject>
           <imageobject>
-            <imagedata fileref="images/vmimg07.JPG" />
+            <imagedata fileref="images/vmimg07.JPG"/>
           </imageobject>
         </mediaobject>
       </figure></para>
@@ -1448,13 +1395,13 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
           <?dbfo keep-together="always"?>
 
           <tgroup cols="2">
-            <colspec colwidth="49.50pt" />
+            <colspec colwidth="49.50pt"/>
 
-            <colspec />
+            <colspec/>
 
             <tbody>
               <row>
-                <entry><inlinegraphic fileref="images/caution.png" /></entry>
+                <entry><inlinegraphic fileref="images/caution.png"/></entry>
 
                 <entry>Make sure that you have the sufficient privileges to
                 sudo as an administrator to use the install-cluster.sh script.
@@ -1475,9 +1422,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para><informaltable colsep="0" frame="none" rowsep="0">
             <tgroup cols="2">
-              <colspec colwidth="150pt" />
+              <colspec colwidth="150pt"/>
 
-              <colspec />
+              <colspec/>
 
               <tbody>
                 <row>
@@ -1602,9 +1549,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para><informaltable colsep="0" frame="none" rowsep="0">
             <tgroup cols="2">
-              <colspec colwidth="100.50pt" />
+              <colspec colwidth="100.50pt"/>
 
-              <colspec />
+              <colspec/>
 
               <tbody>
                 <row>
@@ -1730,9 +1677,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para><informaltable colsep="0" frame="none" rowsep="0">
             <tgroup cols="2">
-              <colspec colwidth="150pt" />
+              <colspec colwidth="150pt"/>
 
-              <colspec />
+              <colspec/>
 
               <tbody>
                 <row>
@@ -1791,9 +1738,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para><informaltable colsep="0" frame="none" rowsep="0">
             <tgroup cols="2">
-              <colspec colwidth="100.50pt" />
+              <colspec colwidth="100.50pt"/>
 
-              <colspec />
+              <colspec/>
 
               <tbody>
                 <row>
@@ -1870,9 +1817,9 @@ sudo /opt/HPCCSystems/sbin/hpcc-push.sh \
 
         <para><informaltable colsep="0" frame="none" rowsep="0">
             <tgroup cols="2">
-              <colspec colwidth="100.50pt" />
+              <colspec colwidth="100.50pt"/>
 
-              <colspec />
+              <colspec/>
 
               <tbody>
                 <row>
@@ -1963,6 +1910,10 @@ init_start_thor--></property></para>
       </itemizedlist>
 
       <para><?hard-pagebreak ?></para>
+
+      <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/ZAP.xml"
+                  xpointer="xpointer(//*[@id='ZAP'])"
+                  xmlns:xi="http://www.w3.org/2001/XInclude"/>
     </sect1>
 
     <sect1 id="hpcc-init">
@@ -1978,9 +1929,9 @@ init_start_thor--></property></para>
 
       <para><informaltable colsep="0" frame="none" rowsep="0">
           <tgroup cols="2">
-            <colspec colwidth="80.50pt" />
+            <colspec colwidth="80.50pt"/>
 
-            <colspec />
+            <colspec/>
 
             <tbody>
               <row>
@@ -2089,10 +2040,11 @@ sudo /etc/init.d/hpcc-init -c esp start
         <title>HPCC Systems systemd services</title>
 
         <para>HPCC Systems is extending support and development to more
-        systemd services. We intend to continue support for Cent OS 6 and
-        other System V based systems through the hpcc-init. The hpcc-init
-        system service will support "start", "stop" and "restart"
-        options.</para>
+        systemd services. We intend to continue support for older System V
+        based systems through the hpcc-init. </para>
+
+        <para>The hpcc-init system service will support "start", "stop" and
+        "restart" options.</para>
 
         <para>The reporting and logging for HPCC Systems systemd will differ
         from the previous hpcc-init type. The systemd logs do not have any
@@ -2124,65 +2076,6 @@ sudo /etc/init.d/hpcc-init -c esp start
         <para>HPCC Systems uninstall will automatically remove HPCC Systems
         services from active list and /etc/systemd/system/ directory.</para>
       </sect2>
-    </sect1>
-
-    <sect1 id="Running-HPCC-Tools-Under-WINE">
-      <title>Running the ECL IDE under WINE</title>
-
-      <para>To run the ECL IDE under WINE in Linux, follow these steps.</para>
-
-      <orderedlist>
-        <listitem>
-          <para>Install wine1.2 (this corresponds to Wine version 1.1.31) and
-          its dependencies.</para>
-        </listitem>
-
-        <listitem>
-          <para>Download msxml3.msi from Microsoft (Service Pack 7 or
-          later).</para>
-
-          <para><emphasis role="underline"><ulink
-          url="http://www.microsoft.com/en-us/download/details.aspx?id=3988">http://www.microsoft.com/en-us/download/details.aspx?id=3988</ulink></emphasis></para>
-        </listitem>
-
-        <listitem>
-          <para>Install msxml3.msi in Wine (Double-click the msi file and Wine
-          will install it).</para>
-        </listitem>
-
-        <listitem>
-          <para>Open Configure Wine (Applications/Wine/Configure Wine):</para>
-        </listitem>
-
-        <listitem>
-          <para>Select the Libraries tab.</para>
-        </listitem>
-
-        <listitem>
-          <para>In the New override for library drop list, select
-          <emphasis>msxml3</emphasis>, then press the add button.</para>
-        </listitem>
-
-        <listitem>
-          <para>Select <emphasis> msxml3</emphasis> in the Existing overrides
-          list and press Edit.</para>
-        </listitem>
-
-        <listitem>
-          <para>Select the <emphasis>Native (Windows)</emphasis> option and
-          press the OK button.</para>
-        </listitem>
-
-        <listitem>
-          <para>Press the OK button to close the Wine Configuration
-          window.</para>
-        </listitem>
-
-        <listitem>
-          <para>Install the HPCC Systems ECL IDE (Double-click the
-          installation file and Wine will install it).</para>
-        </listitem>
-      </orderedlist>
     </sect1>
 
     <sect1 id="ExternLang_Support">
@@ -2229,15 +2122,7 @@ sudo /etc/init.d/hpcc-init -c esp start
         </listitem>
 
         <listitem>
-          <para>JavaScript</para>
-        </listitem>
-
-        <listitem>
           <para>Python (full support is already built-in)</para>
-        </listitem>
-
-        <listitem>
-          <para>R</para>
         </listitem>
       </itemizedlist>
 
@@ -2246,9 +2131,9 @@ sudo /etc/init.d/hpcc-init -c esp start
 
       <para>In addition to these languages, you can add support for additional
       languages by creating your own plugin. This is not very difficult to do.
-      For example the JavaScript plugin is about 500 lines of C++ code. You
-      can use that as a template to write your own and, if desired, you can
-      contribute it back to the open source initiative.</para>
+      For example the Java plugin is about 500 lines of C++ code. You can use
+      that as a template to write your own and, if desired, you can contribute
+      it back to the open source initiative.</para>
 
       <sect2 id="Add_On_Java" role="brk">
         <title>Java</title>
@@ -2314,7 +2199,7 @@ sudo /etc/init.d/hpcc-init -c esp start
 
             <xi:include href="Installing_and_RunningTheHPCCPlatform/Inst-Mods/SysDStart.xml"
                         xpointer="element(/1)"
-                        xmlns:xi="http://www.w3.org/2001/XInclude" />
+                        xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
             <para>For more information see the <link
             linkend="Starting-and-stopping">Starting-and-stopping</link> the
@@ -2353,70 +2238,7 @@ add1(10);
         at:</para>
 
         <para><ulink
-        url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl</ulink></para>
-      </sect2>
-
-      <sect2 id="Add_On_Javascript" role="brk">
-        <title>JavaScript</title>
-
-        <para>To enable JavaScript support within the HPCC
-        Systems<superscript>®</superscript> Platform:</para>
-
-        <orderedlist>
-          <listitem>
-            <para>Install the appropriate dependencies for your
-            platform.</para>
-
-            <para><emphasis role="bold">RPM-based systems:</emphasis></para>
-
-            <para>On an RPM-based system (CentOS/Red Hat) install <emphasis
-            role="bold">v8embed.</emphasis></para>
-
-            <para><emphasis role="bold">Debian-based
-            systems:</emphasis></para>
-
-            <para>For a Debian-based system (Ubuntu) install the <emphasis
-            role="bold">libv8-dev</emphasis> package.</para>
-          </listitem>
-
-          <listitem>
-            <para>Test the JavaScript integration.</para>
-
-            <para>JavaScript does multi-thread, as a result this can be the
-            fastest of the currently supported embedded languages.</para>
-
-            <para>You can now execute some JavaScript code either in your ECL
-            IDE or the ECL Playground.</para>
-
-            <para>For example:</para>
-
-            <para><programlisting format="linespecific">//nothor
-
-IMPORT javascript;
-
-javascript.Language.syntaxcheck('1+2');
-
-integer add1(integer val) := EMBED(javascript) val+1; ENDEMBED;
-
-data testData(data val) := EMBED(javascript) val[0] = val[0] + 1; val; ENDEMBED;
-set of integer testSet(set of integer val) := EMBED(javascript)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-add1(10);
-</programlisting>If this successfully executes, you have correctly set up
-            JavaScript to work with your HPCC Systems platform.</para>
-
-            <para>Additional examples of HPCC Systems code can be found
-            at:</para>
-
-            <para><ulink
-            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/embedjava.ecl</ulink></para>
-          </listitem>
-        </orderedlist>
+        url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed">https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed</ulink></para>
       </sect2>
 
       <sect2 id="Add_Python_support" role="brk">
@@ -2470,11 +2292,11 @@ split_words('Once upon a time');
             Python anywhere you would use ECL within with your HPCC Systems
             platform.</para>
 
-            <para>Additional examples of HPCC Systems code can be found
-            at:</para>
+            <para>Additional examples of using Python with HPCC Systems code
+            can be found at:</para>
 
             <para><ulink
-            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/regress/ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/regress/ecl/</ulink></para>
+            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed">https://github.com/hpcc-systems/HPCC-Platform/tree/master/initfiles/examples/embed</ulink></para>
           </listitem>
         </orderedlist>
 
@@ -2484,229 +2306,6 @@ split_words('Once upon a time');
 
         <sect3>
           <title>Python Scope Options</title>
-
-          <para><emphasis role="bold">GLOBALSCOPE</emphasis> - This option
-          allows independent EMBED attributes to share globals with each other
-          if they specify the same name for the GLOBALSCOPE parameter.</para>
-
-          <para><emphasis role="bold">PERSIST</emphasis> - This option
-          controls how long such a shared global scope will persist and
-          exactly how far it will be shared.</para>
-
-          <para>The value passed to GLOBALSCOPE can be any string you like,
-          allowing you to share globals between related EMBED sections while
-          keeping them distinct from unrelated ones.</para>
-
-          <para>PERSIST can take one of the following values:</para>
-
-          <para><emphasis role="bold">global</emphasis> - The values persist
-          indefinitely (until the process terminates) and are shared with any
-          other embeds using the same GLOBALSCOPE value, even in other
-          workunits.</para>
-
-          <para><emphasis role="bold">query</emphasis> - The values persist
-          until the query is unloaded, and are shared with other instances of
-          the query that might be running at the same time in Roxie, but not
-          with other queries.</para>
-
-          <para><emphasis role="bold">workunit</emphasis> - The values persist
-          until the end of the current workunit or the current instance of a
-          Roxie deployed query, and are not shared with other
-          instances.</para>
-        </sect3>
-      </sect2>
-
-      <sect2 id="R" role="brk">
-        <title>R</title>
-
-        <para>The HPCC Systems platform supports embedded R code. To enable R
-        support within The HPCC Systems<superscript>®</superscript>
-        Platform:</para>
-
-        <orderedlist>
-          <listitem>
-            <para>Download the <emphasis role="bold">R Embed</emphasis> plugin
-            available from the HPCC Systems portal.</para>
-
-            <para><ulink
-            url="https://hpccsystems.com/download/hpcc-platform">https://hpccsystems.com/download/hpcc-platform</ulink></para>
-
-            <para>Choose the appropriate plugin for your distribution.</para>
-          </listitem>
-
-          <listitem>
-            <para>Install the plugin.</para>
-
-            <para><emphasis role="bold">RPM-based systems: </emphasis>Install
-            using <emphasis>yum install</emphasis>.</para>
-
-            <para><emphasis role="bold">Debian-based systems:
-            </emphasis>Install using <emphasis>dkpg -i</emphasis> then
-            <emphasis>apt-get</emphasis> <emphasis>install
-            -f</emphasis></para>
-
-            <para>If you use these methods to install the plugins, all the
-            required libraries and dependencies will also be installed.</para>
-          </listitem>
-        </orderedlist>
-
-        <orderedlist continuation="continues">
-          <listitem>
-            <para>Test the R integration.</para>
-
-            <para>R is not multi-thread aware, so the plugin has to wrap all
-            calls to R for critical sections. Scripts are compiled with every
-            call to R. The default runs each embedded R call in a local
-            environment. This environment can persist between embedded R calls
-            in the same environment.</para>
-
-            <para>You can now execute some R code either in your ECL IDE or
-            the ECL Playground.</para>
-
-            <para>For example:</para>
-
-            <para><programlisting>IMPORT R;
-
-integer add1(integer val) := EMBED(R)
-val+1
-ENDEMBED;
-
-string cat(varstring what, string who) := EMBED(R)
-paste(what,who)
-ENDEMBED;
-
-data testData(data val) := EMBED(R)
-val[1] = val[2];
-val;
-ENDEMBED;
-
-set of integer testSet(set of integer val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of unsigned2 testSet0(set of unsigned2 val) := EMBED(R)
-sort(val);
-ENDEMBED;
-
-set of string testSet2(set of string val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of string testSet3(set of string8 val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of varstring testSet4(set of varstring val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of varstring8 testSet5(set of varstring8 val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of boolean testSet6(set of boolean val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of real4 testSet7(set of real4 val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of real8 testSet8(set of real8 val) := EMBED(R)
-t = val [1];
-val[1] = val[2];
-val[2] = t;
-val;
-ENDEMBED;
-
-set of integer2 testSet9(set of integer2 val) := EMBED(R)
-sort(val);
-ENDEMBED;
-
-add1(10);
-cat('Hello', 'World');
-testData(D'ab');
-testSet([1,2,3]);
-testSet0([30000,40000,50000]);
-testSet2(['one','two','three']);
-testSet3(['uno','dos','tre']);
-testSet4(['un','deux','trois']);
-testSet5(['ein','zwei','drei']);
-testSet6([false,true,false,true]);
-testSet7([1.1,2.2,3.3]);
-testSet8([1.2,2.3,3.4]);
-testSet9([-111,0,113]);
-
-s1 :=DATASET(250000, TRANSFORM({ integer a }, SELF.a := add1(COUNTER)));
-s2 :=DATASET(250000, TRANSFORM({ integer a }, SELF.a := add1(COUNTER/2)));
-SUM(NOFOLD(s1 + s2), a);
-
-s1b :=DATASET(250000, TRANSFORM({ integer a }, SELF.a := COUNTER+1));
-s2b :=DATASET(250000, TRANSFORM({ integer a }, SELF.a := (COUNTER/2)+1));
-SUM(NOFOLD(s1b + s2b), a); 
-</programlisting>If this successfully executes, you have correctly set up R to
-            work with your HPCC Systems platform.</para>
-
-            <para>Additional examples of HPCC Systems code can be found
-            at:</para>
-
-            <para><ulink
-            url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/regress/embedR.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/regress/ecl/embedR.ecl</ulink></para>
-          </listitem>
-        </orderedlist>
-
-        <para></para>
-
-        <sect3 id="R_DataTypes">
-          <title>Mapping Datatypes</title>
-
-          <para>Some additional considerations for mapping data types in
-          R.</para>
-
-          <para>In HPCC Systems the ECL <emphasis
-          role="bold">RECORD</emphasis> maps to an R
-          <emphasis>list</emphasis>.</para>
-
-          <para>An ECL <emphasis role="bold">DATASET</emphasis> including a
-          nested dataset is mapped to an R
-          <emphasis>dataframe</emphasis>.</para>
-
-          <para>An ECL <emphasis role="bold">SET</emphasis> is mapped to an R
-          <emphasis>vector</emphasis>.</para>
-
-          <para>These principals apply to passing data from HPCC Systems to R
-          or data returning to HPCC Systems from R. There are usage examples
-          of these concepts available at:</para>
-
-          <para><ulink
-          url="https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/ecl/regress/embedR2.ecl">https://github.com/hpcc-systems/HPCC-Platform/tree/master/testing/regress/ecl/embedR2.ecl</ulink></para>
-
-          <para></para>
-        </sect3>
-
-        <sect3>
-          <title>R Scope Options</title>
 
           <para><emphasis role="bold">GLOBALSCOPE</emphasis> - This option
           allows independent EMBED attributes to share globals with each other

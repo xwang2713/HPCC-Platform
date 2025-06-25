@@ -1,5 +1,5 @@
 import * as React from "react";
-import { DetailsList, DetailsListLayoutMode, Dropdown, IColumn as _IColumn, ICommandBarItemProps, IDetailsHeaderProps, IDetailsListStyles, mergeStyleSets, Selection, Stack, TooltipHost, TooltipOverflowMode } from "@fluentui/react";
+import { DetailsListLayoutMode, Dropdown, IColumn as _IColumn, ICommandBarItemProps, IDetailsHeaderProps, IDetailsListStyles, mergeStyleSets, Selection, Stack, TooltipHost, TooltipOverflowMode, IRenderFunction, IDetailsRowProps, SelectionMode, ConstrainMode, ISelection, ScrollablePane, ShimmeredDetailsList, Sticky } from "@fluentui/react";
 import { Pagination } from "@fluentui/react-experiments/lib/Pagination";
 import { useConst } from "@fluentui/react-hooks";
 import { BaseStore, Memory, QueryRequest, QuerySortItem } from "src/store/Memory";
@@ -32,7 +32,9 @@ export interface FluentColumn {
     hidden?: boolean;
     justify?: JustifyType;
     formatter?: (value: any, row: any) => any;
+    csvFormatter?: (value: any, row: any) => string;
     className?: (value: any, row: any) => string;
+    fluentColumn?: Partial<_IColumn>;
 }
 
 export type FluentColumns = { [key: string]: FluentColumn };
@@ -71,25 +73,42 @@ function columnsAdapter(columns: FluentColumns, columnWidths: Map<string, any>):
         const column = columns[key];
         const width = columnWidths.get(key) ?? column.width;
         if (column?.selectorType === undefined && column?.hidden !== true) {
-            retVal.push({
-                key,
-                name: column.label ?? key,
-                fieldName: column.field ?? key,
-                minWidth: width ?? 70,
-                maxWidth: width,
-                isResizable: true,
-                isSorted: false,
-                isSortedDescending: false,
-                iconName: column.headerIcon,
-                isIconOnly: !!column.headerIcon,
-                data: column,
-                styles: { root: { width, ":hover": { cursor: column?.sortable !== false ? "pointer" : "default" } } },
-                onRender: (item: any, index: number, col: IColumn) => {
-                    col.minWidth = column.width ?? 70;
-                    col.maxWidth = column.width;
-                    return tooltipItemRenderer(item, index, col);
-                }
-            } as IColumn);
+            if (column?.fluentColumn) {
+                retVal.push({
+                    key,
+                    name: column.label ?? key,
+                    fieldName: column.field ?? key,
+                    iconName: column.headerIcon,
+                    isIconOnly: !!column.headerIcon,
+                    data: column,
+                    styles: { root: { width, ":hover": { cursor: column?.sortable !== false ? "pointer" : "default" } } },
+                    onRender: (item: any, index: number, col: IColumn) => {
+                        col.minWidth = column.width ?? 70;
+                        return tooltipItemRenderer(item, index, col);
+                    },
+                    ...column.fluentColumn
+                } as IColumn);
+            } else {
+                retVal.push({
+                    key,
+                    name: column.label ?? key,
+                    fieldName: column.field ?? key,
+                    minWidth: width ?? 70,
+                    maxWidth: width,
+                    isResizable: true,
+                    isSorted: false,
+                    isSortedDescending: false,
+                    iconName: column.headerIcon,
+                    isIconOnly: !!column.headerIcon,
+                    data: column,
+                    styles: { root: { width, ":hover": { cursor: column?.sortable !== false ? "pointer" : "default" } } },
+                    onRender: (item: any, index: number, col: IColumn) => {
+                        col.minWidth = column.width ?? 70;
+                        col.maxWidth = column.width;
+                        return tooltipItemRenderer(item, index, col);
+                    }
+                } as IColumn);
+            }
         }
     }
     return retVal;
@@ -103,6 +122,8 @@ const gridStyles = (height: string): Partial<IDetailsListStyles> => {
             maxHeight: height,
             selectors: {
                 ".ms-DetailsHeader-cellName": { fontSize: "13.5px" },
+                ".ms-DetailsRow": { userSelect: "text", borderBottom: "1px solid var(--colorNeutralBackground5)" },
+                ".ms-DetailsRow-cell": { borderRight: "1px solid var(--colorNeutralBackground5)" },
                 ".ms-DetailsRow-cell:has(.bgFilled)": { color: "white", boxShadow: "inset 1px 0 var(--colorNeutralBackground1), inset -1px 1px var(--colorNeutralBackground1)" },
                 ".ms-DetailsRow-cell:has(.bgGreen)": { background: "green" },
                 ".ms-DetailsRow-cell:has(.bgOrange)": { background: "orange" },
@@ -149,6 +170,10 @@ export interface FluentStoreStateProps {
     page?: number
 }
 
+function isISelection(selection: any): selection is ISelection {
+    return typeof selection === "object" && "setAllSelected" in selection;
+}
+
 export interface FluentStoreStateResponse {
     selection: any[];
     setSelection: (selection: any[]) => void;
@@ -180,8 +205,10 @@ interface FluentStoreGridProps {
     columns: FluentColumns,
     height: string,
     refresh: RefreshTable,
-    setSelection: (selection: any[]) => void,
+    selectionMode?: SelectionMode,
+    setSelection: ISelection | ((selection: any[]) => void),
     setTotal: (total: number) => void,
+    onRenderRow?: IRenderFunction<IDetailsRowProps>
 }
 
 const FluentStoreGrid: React.FunctionComponent<FluentStoreGridProps> = ({
@@ -193,38 +220,55 @@ const FluentStoreGrid: React.FunctionComponent<FluentStoreGridProps> = ({
     columns,
     height,
     refresh,
+    selectionMode = SelectionMode.multiple,
     setSelection,
     setTotal,
+    onRenderRow
 }) => {
     const memoizedColumns = useDeepMemo(() => columns, [], [columns]);
     const [sorted, setSorted] = React.useState<QuerySortItem>(sort);
     const [items, setItems] = React.useState<any[]>([]);
+    const [loaded, setLoaded] = React.useState(false);
     const [columnWidths] = useNonReactiveEphemeralPageStore("columnWidths");
 
-    const selectionHandler = useConst(() => new Selection({
-        onSelectionChanged: () => {
-            setSelection(selectionHandler.getSelection());
+    const selectionHandler = useConst(() => {
+        return isISelection(setSelection) ? setSelection : new Selection({
+            onSelectionChanged: () => {
+                setSelection(selectionHandler.getSelection());
+            }
+        });
+    });
+
+    const abortController = React.useRef<AbortController>();
+
+    useDeepEffect(() => {
+        if (abortController.current) {
+            abortController.current.abort({ message: nlsHPCC.GridAbortMessage });
         }
-    }));
+        abortController.current = new AbortController();
+    }, [], [query, sorted]);
 
     const refreshTable = useDeepCallback((clearSelection = false) => {
         if (isNaN(start) || isNaN(count)) return;
+        setLoaded(false);
         if (clearSelection) {
             selectionHandler.setItems([], true);
         }
-        const storeQuery = store.query({ ...query }, { start, count, sort: sorted ? [sorted] : undefined });
+        const storeQuery = store.query({ ...query }, { start, count, sort: sorted ? [sorted] : undefined }, abortController.current.signal);
         storeQuery.total.then(total => {
             setTotal(total);
         });
         storeQuery.then(items => {
+            const selectedIndices = selectionHandler.getSelectedIndices();
+            setLoaded(true);
             setItems(items);
-            setSelection(selectionHandler.getSelection());
+            selectedIndices.forEach(index => selectionHandler.setIndexSelected(index, true, false));
         });
     }, [count, selectionHandler, start, store], [query, sorted]);
 
     React.useEffect(() => {
-        //  Dummy line to ensure its included in the dependency array  ---
-        refresh.value;
+        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+        refresh.value; // Dummy line to ensure its included in the dependency array
         refreshTable(refresh.clear);
     }, [refresh.clear, refresh.value, refreshTable]);
 
@@ -262,33 +306,42 @@ const FluentStoreGrid: React.FunctionComponent<FluentStoreGridProps> = ({
     }, [memoizedColumns]);
 
     const renderDetailsHeader = React.useCallback((props: IDetailsHeaderProps, defaultRender?: any) => {
-        return defaultRender({
-            ...props,
-            onRenderColumnHeaderTooltip: (tooltipHostProps) => {
-                return <TooltipHost {...tooltipHostProps} content={tooltipHostProps?.column?.data?.headerTooltip ?? ""} />;
-            },
-            styles: { root: { paddingTop: 1 } }
-        });
+        return <Sticky>
+            {defaultRender({
+                ...props,
+                onRenderColumnHeaderTooltip: (tooltipHostProps) => {
+                    return <TooltipHost {...tooltipHostProps} content={tooltipHostProps?.column?.data?.headerTooltip ?? ""} />;
+                },
+                styles: { root: { paddingTop: 1 } }
+            })}
+        </Sticky>;
     }, []);
 
     const columnResize = React.useCallback((column: IColumn, newWidth: number, columnIndex?: number) => {
         columnWidths.set(column.key, newWidth);
     }, [columnWidths]);
 
-    return <DetailsList
-        compact={true}
-        items={items}
-        columns={fluentColumns}
-        setKey="set"
-        layoutMode={DetailsListLayoutMode.justified}
-        selection={selectionHandler}
-        isSelectedOnFocus={false}
-        selectionPreservedOnEmptyClick={true}
-        onColumnHeaderClick={onColumnClick}
-        onRenderDetailsHeader={renderDetailsHeader}
-        onColumnResize={columnResize}
-        styles={gridStyles(height)}
-    />;
+    return <div style={{ position: "relative", height: "100%" }}>
+        <ScrollablePane>
+            <ShimmeredDetailsList
+                compact={true}
+                enableShimmer={!loaded}
+                items={items}
+                columns={fluentColumns}
+                layoutMode={DetailsListLayoutMode.fixedColumns}
+                constrainMode={ConstrainMode.unconstrained}
+                selection={selectionHandler}
+                isSelectedOnFocus={false}
+                selectionPreservedOnEmptyClick={true}
+                onColumnHeaderClick={onColumnClick}
+                onRenderDetailsHeader={renderDetailsHeader}
+                onColumnResize={columnResize}
+                onRenderRow={onRenderRow}
+                detailsListStyles={gridStyles(height)}
+                selectionMode={selectionMode}
+            />
+        </ScrollablePane>
+    </div>;
 };
 
 interface FluentGridProps {
@@ -298,9 +351,12 @@ interface FluentGridProps {
     sort?: QuerySortItem,
     columns: FluentColumns,
     height?: string,
-    setSelection: (selection: any[]) => void,
+    selectionMode?: SelectionMode,
+    defaultSelection?: any[],
+    setSelection: ISelection | ((selection: any[]) => void),
     setTotal: (total: number) => void,
-    refresh: RefreshTable
+    refresh: RefreshTable,
+    onRenderRow?: IRenderFunction<IDetailsRowProps>
 }
 
 export const FluentGrid: React.FunctionComponent<FluentGridProps> = ({
@@ -310,9 +366,12 @@ export const FluentGrid: React.FunctionComponent<FluentGridProps> = ({
     sort,
     columns,
     height,
+    selectionMode = SelectionMode.multiple,
+    defaultSelection,
     setSelection,
     setTotal,
-    refresh
+    refresh,
+    onRenderRow
 }) => {
 
     const constStore = useConst(() => new Memory(primaryID, alphaNumColumns));
@@ -323,7 +382,7 @@ export const FluentGrid: React.FunctionComponent<FluentGridProps> = ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [constStore, data, /*refresh*/]);
 
-    return <FluentStoreGrid store={constStore} columns={columns} sort={sort} start={0} count={data.length} height={height} setSelection={setSelection} setTotal={setTotal} refresh={refresh}>
+    return <FluentStoreGrid store={constStore} columns={columns} sort={sort} start={0} count={data.length} height={height} selectionMode={selectionMode} setSelection={setSelection} setTotal={setTotal} refresh={refresh} onRenderRow={onRenderRow}>
     </FluentStoreGrid>;
 };
 
@@ -336,9 +395,11 @@ interface FluentPagedGridProps {
     total: number,
     columns: FluentColumns,
     height?: string,
-    setSelection: (selection: any[]) => void,
+    selectionMode?: SelectionMode,
+    setSelection: ISelection | ((selection: any[]) => void),
     setTotal: (total: number) => void,
-    refresh: RefreshTable
+    refresh: RefreshTable,
+    onRenderRow?: IRenderFunction<IDetailsRowProps>
 }
 
 export const FluentPagedGrid: React.FunctionComponent<FluentPagedGridProps> = ({
@@ -350,9 +411,11 @@ export const FluentPagedGrid: React.FunctionComponent<FluentPagedGridProps> = ({
     total,
     columns,
     height,
+    selectionMode = SelectionMode.multiple,
     setSelection,
     setTotal,
-    refresh
+    refresh,
+    onRenderRow
 }) => {
     const [page, setPage] = React.useState(pageNum - 1);
     const [sortBy, setSortBy] = React.useState(sort);
@@ -373,7 +436,7 @@ export const FluentPagedGrid: React.FunctionComponent<FluentPagedGridProps> = ({
         setPage(_page);
     }, [pageNum]);
 
-    return <FluentStoreGrid store={store} query={query} columns={columns} sort={sortBy} start={page * pageSize} count={pageSize} height={height} setSelection={setSelection} setTotal={setTotal} refresh={refresh}>
+    return <FluentStoreGrid store={store} query={query} columns={columns} sort={sortBy} start={page * pageSize} count={pageSize} height={height} selectionMode={selectionMode} setSelection={setSelection} setTotal={setTotal} refresh={refresh} onRenderRow={onRenderRow}>
     </FluentStoreGrid>;
 };
 

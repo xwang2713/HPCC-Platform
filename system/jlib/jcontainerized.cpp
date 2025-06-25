@@ -20,11 +20,21 @@
 
 namespace k8s {
 
-static StringBuffer myPodName;
+static StringBuffer myPodName, myContainerName, myJobName;
 
 const char *queryMyPodName()
 {
     return myPodName;
+}
+
+const char *queryMyContainerName()
+{
+    return myContainerName;
+}
+
+const char *queryMyJobName()
+{
+    return myJobName;
 }
 
 KeepJobs translateKeepJobs(const char *keepJob)
@@ -179,7 +189,18 @@ void waitJob(const char *componentName, const char *resourceType, const char *jo
     {
         // Delete jobs unless the pod failed and keepJob==podfailures
         if ((nullptr == exception) || (KeepJobs::podfailures != keepJob) || schedulingTimeout)
-            deleteResource(componentName, "job", job);
+        {
+            try
+            {
+                deleteResource(componentName, "job", job);
+            }
+            catch(IException *e)
+            {
+                // we do not want this error to propagate to the workunit and cause it to fail, and mask other errors
+                OWARNLOG(e, "Failed to delete job");
+                e->Release();
+            }
+        }
     }
     if (exception)
         throw exception.getClear();
@@ -204,25 +225,56 @@ bool applyYaml(const char *componentName, const char *wuid, const char *job, con
     }
     jobYaml.replaceString("_HPCC_JOBNAME_", jobName.str());
 
-    VStringBuffer args("\"--workunit=%s\"", wuid);
+    StringBuffer args;
+    if (wuid)
+        args.appendf("\"--workunit=%s\"", wuid);
     args.append(" \"--k8sJob=true\"");
+    const char *baseImageVersion = getenv("baseImageVersion");
+    const char *runtimeImageVersion = baseImageVersion; // runtime image version will equal base version unless changed dynamically below
     for (const auto &p: extraParams)
     {
-        if (hasPrefix(p.first.c_str(), "_HPCC_", false)) // job yaml substitution
+        // special handling _HPCC_JOB_VERSION_, not just a straight substitution
+        if (streq(p.first.c_str(), "_HPCC_JOB_VERSION_") && !isEmptyString(baseImageVersion)) // NB: if baseImageVersion is empty implies incompatible helm chart/runtime image mismatch
+        {
+            const char *newVersion = p.second.c_str();
+            if (!isEmptyString(newVersion))
+            {
+                // locates "image: <baseImageRootName>:<baseImageVersion>" and replaces with "image: <baseImageRootName>:<p.second>"
+                const char *baseImageRootName = getenv("baseImageRootName");
+                if (!isEmptyString(baseImageRootName)) // NB: should never be empty (given baseImageVersion is not empty)
+                {
+                    VStringBuffer oriImagePatternSpec("image: %s:%s", baseImageRootName, baseImageVersion);
+                    VStringBuffer newImagePatternSpec("image: %s:%s", baseImageRootName, newVersion);
+                    jobYaml.replaceString(oriImagePatternSpec, newImagePatternSpec);
+                    DBGLOG("Job image version changed from '%s' to '%s'", baseImageVersion, newVersion);
+                    runtimeImageVersion = newVersion; // used to substitute _HPCC_JOB_VERSION_ in jobYaml (in runtimeImageVersion env variable)
+                }
+            }
+        }
+        else if (hasPrefix(p.first.c_str(), "_HPCC_", false)) // job yaml substitution
             jobYaml.replaceString(p.first.c_str(), p.second.c_str());
         else
             args.append(" \"--").append(p.first.c_str()).append('=').append(p.second.c_str()).append("\"");
     }
+    // always substitute _HPCC_JOB_VERSION_ - (as long as runtimeImageVersion is set)
+    // It is either the original baseImageVersion or the one from _HPCC_JOB_VERSION_ from above
+    // If it is empty, it implies a helm chart/runtime image mismatch
+    if (!isEmptyString(runtimeImageVersion))
+        jobYaml.replaceString("_HPCC_JOB_VERSION_", runtimeImageVersion);
     jobYaml.replaceString("_HPCC_ARGS_", args.str());
 
-    runKubectlCommand(componentName, "kubectl replace --force -f -", jobYaml, nullptr);
+    // retrySecs=0 - I am not sure want to retry this command systematically..
+    runKubectlCommand(componentName, "kubectl replace --force -f -", jobYaml, nullptr, 0);
 
     if (autoCleanup)
     {
-        // touch a file, with naming convention { componentName },{ resourceType },{ jobName }.k8s
+        unsigned deleteJobGracePeriod = 0;
+        if (strcmp(resourceType, "job") == 0)
+            deleteJobGracePeriod = getComponentConfigSP()->getPropInt("@terminationGracePeriodSeconds", defaultDeleteJobGracePeriod);
+        // touch a file, with naming convention { componentName },{ resourceType },{ jobName },{ graceTimeSecs }.k8s
         // it will be used if the job fails ungracefully, to tidy up leaked resources
         // normally (during graceful cleanup) these resources and files will be deleted by deleteResource
-        VStringBuffer k8sResourcesFilename("%s,%s,%s.k8s", componentName, resourceType, jobName.str());
+        VStringBuffer k8sResourcesFilename("%s,%s,%s,%u.k8s", componentName, resourceType, jobName.str(), deleteJobGracePeriod);
         touchFile(k8sResourcesFilename);
     }
 
@@ -249,9 +301,40 @@ void runJob(const char *componentName, const char *wuid, const char *jobName, co
         exception.setown(e);
     }
     if (removeNetwork)
-        deleteResource(componentName, "networkpolicy", jobName);
+    {
+        try
+        {
+            deleteResource(componentName, "networkpolicy", jobName);
+        }
+        catch(IException *e)
+        {
+            // we do not want this error to propagate to the workunit and cause it to fail, and mask other errors
+            OWARNLOG(e, "Failed to delete networkpolicy");
+            e->Release();
+        }
+    }
     if (exception)
         throw exception.getClear();
+}
+
+// Returns a pointer to the replica and pod hashes from the pod name to be used as the job name suffix for uniqueness.
+const char *queryPodSuffix()
+{
+    // Unexpected parsing consequences:
+    //   If the rightmost "-" is not found in the pod name, then the whole pod name is used as the suffix.
+    //   If the penultimate rightmost "-" is not found in the pod name, then the pod hash will be used as the suffix.
+    const char *podName = k8s::queryMyPodName();
+    const char *lastDashPos = strrchr(podName, '-');
+    if (lastDashPos && lastDashPos > podName)
+    {
+        for (const char *penultimateDash = lastDashPos-1; penultimateDash > podName; --penultimateDash)
+            if (*penultimateDash == '-')
+                return penultimateDash + 1;
+
+        return lastDashPos + 1;
+    }
+
+    return podName;
 }
 
 // returns a vector of {pod-name, node-name} vectors,
@@ -307,7 +390,7 @@ std::vector<std::vector<std::string>> getPodNodes(const char *selector)
     }
 }
 
-void runKubectlCommand(const char *title, const char *cmd, const char *input, StringBuffer *output)
+void runKubectlCommand(const char *title, const char *cmd, const char *input, StringBuffer *output, unsigned retrySecs)
 {
 #ifndef _CONTAINERIZED
     UNIMPLEMENTED_X("runKubectlCommand");
@@ -317,16 +400,41 @@ void runKubectlCommand(const char *title, const char *cmd, const char *input, St
     StringBuffer _output, error;
     if (!output)
         output = &_output;
-    unsigned ret = runExternalCommand(title, *output, error, cmd, input, ".", nullptr);
-    if (output->length())
-        MLOG(MCdebugInfo, "%s: ret=%u, stdout=%s", cmd, ret, output->trimRight().str());
-    if (error.length())
-        MLOG(MCdebugError, "%s: ret=%u, stderr=%s", cmd, ret, error.trimRight().str());
-    if (ret)
+    CTimeMon tm(retrySecs * 1000);
+    unsigned remainingMs = 0;
+    Owned<IException> exception;
+    while (true)
     {
-        if (input)
-            MLOG(MCdebugError, "Using input %s", input);
-        throw makeStringExceptionV(0, "Failed to run %s: error %u: %s", cmd, ret, error.str());
+        try
+        {
+            unsigned ret = runExternalCommand(title, *output, error, cmd, input, ".", nullptr);
+            if (output->length())
+                MLOG(MCdebugInfo, "%s: ret=%u, stdout=%s", cmd, ret, output->trimRight().str());
+            if (error.length())
+                MLOG(MCdebugError, "%s: ret=%u, stderr=%s", cmd, ret, error.trimRight().str());
+            if (ret)
+            {
+                if (input)
+                    MLOG(MCdebugError, "Using input %s", input);
+                throw makeStringExceptionV(0, "Failed to run %s: error %u: %s", cmd, ret, error.str());
+            }
+            return;
+        }
+        catch (IException *e)
+        {
+            if (0 == retrySecs || tm.timedout(&remainingMs))
+                throw;
+            exception.setown(e);
+        }
+        unsigned sleepMs = remainingMs;
+        // sleep for 10s (or remaining time)
+        if (sleepMs > 10000)
+            sleepMs = 10000;
+        VStringBuffer msg("retrying %s in %u ms", cmd, sleepMs);
+        OWARNLOG(exception, msg);
+        MilliSleep(sleepMs);
+        error.clear();
+        output->clear();
     }
 }
 
@@ -417,7 +525,6 @@ std::pair<std::string, unsigned> getDafileServiceFromConfig(const char *applicat
     return { "", 0 };
 }
 
-
 static unsigned podInfoInitCBId = 0;
 MODULE_INIT(INIT_PRIORITY_STANDARD)
 {
@@ -427,6 +534,12 @@ MODULE_INIT(INIT_PRIORITY_STANDARD)
             return;
         // process pod information from environment
         getEnvVar("MY_POD_NAME", myPodName.clear());
+        getEnvVar("MY_CONTAINER_NAME", myContainerName.clear());
+        if (myContainerName.isEmpty())
+            myContainerName.set(myPodName); // if identical (standard case), not set by templates
+        getEnvVar("MY_JOB_NAME", myJobName.clear()); // only k8s jobs will have this set
+        if (myJobName.isEmpty())
+            myJobName.set(myPodName); // if no explicit job name (not a k8s job) then use pod name
     };
     if (isContainerized())
         podInfoInitCBId = installConfigUpdateHook(updateFunc, true);

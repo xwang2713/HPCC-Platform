@@ -51,7 +51,7 @@ interface jhtree_decl IKeyCursor : public IInterface
     virtual unsigned __int64 getSequence() = 0;
     virtual offset_t getFPos() const = 0;
     virtual const byte *loadBlob(unsigned __int64 blobid, size32_t &blobsize, IContextLogger *ctx) = 0;
-    virtual void reset() = 0;
+    virtual void reset(IContextLogger *ctx) = 0;
     virtual bool lookup(bool exact, IContextLogger *ctx) = 0;
     virtual bool next(IContextLogger *ctx) = 0;
     virtual bool lookupSkip(const void *seek, size32_t seekOffset, size32_t seeklen, IContextLogger *ctx) = 0;
@@ -91,6 +91,7 @@ interface jhtree_decl IKeyIndex : public IKeyIndexBase
     virtual size32_t keyedSize() = 0;
     virtual bool hasPayload() = 0;
     virtual const char *queryFileName() const = 0;
+    virtual unsigned queryId() const = 0;
     virtual offset_t queryBlobHead() = 0;
     virtual void resetCounts() = 0;
     virtual offset_t queryLatestGetNodeOffset() const = 0;
@@ -104,6 +105,7 @@ interface jhtree_decl IKeyIndex : public IKeyIndexBase
     virtual bool prewarmPage(offset_t offset, NodeType type) = 0;
     virtual void mergeStats(CRuntimeStatisticCollection & stats) const = 0;
     virtual offset_t queryFirstBranchOffset() = 0;
+    virtual const BloomFilter * queryBloom(unsigned i) const = 0;
 };
 
 interface IKeyArray : extends IInterface
@@ -136,17 +138,17 @@ extern jhtree_decl unsigned setKeyIndexCacheSize(unsigned limit);
 extern jhtree_decl void clearNodeCache();
 extern jhtree_decl void logCacheState();
 // these methods return previous values
-extern jhtree_decl size32_t setNodeCacheMem(size32_t cacheSize);
-extern jhtree_decl size32_t setLeafCacheMem(size32_t cacheSize);
-extern jhtree_decl size32_t setBlobCacheMem(size32_t cacheSize);
+extern jhtree_decl size_t setNodeCacheMem(size_t cacheSize);
+extern jhtree_decl size_t setLeafCacheMem(size_t cacheSize);
+extern jhtree_decl size_t setBlobCacheMem(size_t cacheSize);
 extern jhtree_decl void setNodeFetchThresholdNs(__uint64 thresholdNs);
 extern jhtree_decl void setIndexWarningThresholds(IPropertyTree * options);
 
 extern jhtree_decl void getNodeCacheInfo(ICacheInfoRecorder &cacheInfo);
 
-extern jhtree_decl IKeyIndex *createKeyIndex(const char *filename, unsigned crc, bool isTLK);
-extern jhtree_decl IKeyIndex *createKeyIndex(const char *filename, unsigned crc, IFileIO &ifile, unsigned fileIdx, bool isTLK);
-extern jhtree_decl IKeyIndex *createKeyIndex(const char *filename, unsigned crc, IDelayedFile &ifile, unsigned fileIdx, bool isTLK);
+extern jhtree_decl IKeyIndex *createKeyIndex(const char *filename, unsigned crc, bool isTLK, size32_t blockedIOSize);
+extern jhtree_decl IKeyIndex *createKeyIndex(const char *filename, unsigned crc, IFileIO &ifile, unsigned fileIdx, bool isTLK, size32_t blockedIOSize);
+extern jhtree_decl IKeyIndex *createKeyIndex(const char *filename, unsigned crc, IDelayedFile &ifile, unsigned fileIdx, bool isTLK, size32_t blockedIOSize);
 
 extern jhtree_decl bool isIndexFile(const char *fileName);
 extern jhtree_decl bool isIndexFile(IFile *file);
@@ -154,19 +156,9 @@ extern jhtree_decl IKeyIndexSet *createKeyIndexSet();
 extern jhtree_decl IKeyArray *createKeyArray();
 extern jhtree_decl StringBuffer &getIndexMetrics(StringBuffer &);
 extern jhtree_decl void resetIndexMetrics();
+extern jhtree_decl void recordEventIndexInformation();
 
 extern jhtree_decl RelaxedAtomic<unsigned> nodesLoaded;
-extern jhtree_decl RelaxedAtomic<unsigned> cacheHits;
-extern jhtree_decl RelaxedAtomic<unsigned> cacheAdds;
-extern jhtree_decl RelaxedAtomic<unsigned> blobCacheHits;
-extern jhtree_decl RelaxedAtomic<unsigned> blobCacheAdds;
-extern jhtree_decl RelaxedAtomic<unsigned> blobCacheDups;
-extern jhtree_decl RelaxedAtomic<unsigned> leafCacheHits;
-extern jhtree_decl RelaxedAtomic<unsigned> leafCacheAdds;
-extern jhtree_decl RelaxedAtomic<unsigned> leafCacheDups;
-extern jhtree_decl RelaxedAtomic<unsigned> nodeCacheHits;
-extern jhtree_decl RelaxedAtomic<unsigned> nodeCacheAdds;
-extern jhtree_decl RelaxedAtomic<unsigned> nodeCacheDups;
 
 extern std::atomic<unsigned __int64> branchSearchCycles;
 extern std::atomic<unsigned __int64> leafSearchCycles;
@@ -175,7 +167,7 @@ extern std::atomic<unsigned __int64> leafSearchCycles;
 extern jhtree_decl bool linuxYield;
 extern jhtree_decl bool flushJHtreeCacheOnOOM;
 extern jhtree_decl bool useMemoryMappedIndexes;
-extern jhtree_decl void clearNodeStats();
+extern jhtree_decl void logNodeCacheStats(const char *prefix);
 
 
 #define CHEAP_UCHAR_DEF
@@ -308,5 +300,31 @@ extern jhtree_decl bool isIndexFile(IFile *filename);
 extern jhtree_decl IIndexLookup *createIndexLookup(IKeyManager *keyManager);
 
 #define JHTREE_KEY_NOT_SORTED JHTREE_ERROR_START
+#define JHTREE_KEY_UNKNOWN_COMPRESSION (JHTREE_ERROR_START+1)
+
+constexpr bool isIndexReadActivity(ThorActivityKind actKind)
+{
+    switch (actKind)
+    {
+        case TAKindexread:
+        case TAKindexnormalize:
+        case TAKindexaggregate:
+        case TAKindexcount:
+        case TAKindexgroupaggregate:
+        case TAKindexexists:
+        case TAKindexgroupexists:
+        case TAKindexgroupcount:
+        case TAKkeyedjoin:
+        case TAKkeyeddistribute:
+        case TAKkeyeddenormalize:
+        case TAKkeyeddenormalizegroup:
+            return true;
+        default:
+            return false;
+    }
+}
+
+extern jhtree_decl void setDynamicPayloadExpansion(bool value);
+extern jhtree_decl const char * queryIndexNodeTypeText(NodeType type);
 
 #endif

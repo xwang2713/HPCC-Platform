@@ -50,6 +50,40 @@ using roxiemem::OwnedRoxieString;
 #define CONNECTION "Connection"
 
 unsigned soapTraceLevel = 1;
+static StringBuffer soapSepString;
+
+void setSoapSepString(const char *_soapSepString)
+{
+    soapSepString.set(_soapSepString);
+}
+
+static void multiLineAppendReplace(StringBuffer &origStr, StringBuffer &newStr)
+{
+    if (origStr.isEmpty())
+        return;
+
+    newStr.ensureCapacity(origStr.length());
+
+    const char *cursor = origStr;
+    while (*cursor)
+    {
+        switch (*cursor)
+        {
+            case '\r':
+                newStr.append(soapSepString);
+                if ('\n' == *(cursor+1))
+                    cursor++;
+                break;
+            case '\n':
+                newStr.append(soapSepString);
+                break;
+            default:
+                newStr.append(*cursor);
+                break;
+        }
+        ++cursor;
+    }
+}
 
 #define WSCBUFFERSIZE 0x10000
 #define MAXWSCTHREADS 50    //Max Web Service Call Threads
@@ -468,7 +502,7 @@ public:
             {
                 if (e->errorCode() == ROXIE_ABORT_EVENT)
                     throw;
-                // MCK - do we checkTimeLimitExceeded(&remainingMS) and possibly error out if timelimit exceeded ?
+                // TODO: do we checkTimeLimitExceeded(&remainingMS) and possibly error out if timelimit exceeded ?
                 if (numAttemptsRemaining > 0)
                 {
                     e->Release();
@@ -636,7 +670,7 @@ MODULE_EXIT()
 class ColumnProvider : public IColumnProvider, public CInterface
 {
 public:
-    ColumnProvider(unsigned _callLatencyMs) : callLatencyMs(_callLatencyMs), base(NULL) {}
+    ColumnProvider(unsigned _callLatencyMs) : base(NULL), callLatencyMs(_callLatencyMs) {}
     IMPLEMENT_IINTERFACE;
     virtual bool        getBool(const char * path) { return base->getBool(path); }
     virtual void        getData(size32_t len, void * text, const char * path) { base->getData(len, text, path); }
@@ -756,7 +790,7 @@ interface IWSCAsyncFor: public IInterface
     virtual void processException(const Url &url, ConstPointerArray &inputRows, IException *e) = 0;
     virtual void checkTimeLimitExceeded(unsigned * _remainingMS) = 0;
 
-    virtual void createHttpRequest(StringBuffer &request, const Url &url, const IProperties * traceHeaders) = 0;
+    virtual void createHttpRequest(StringBuffer &request, const Url &url, const IProperties * traceHeaders, StringBuffer &proxyHeaders) = 0;
     virtual int readHttpResponse(StringBuffer &response, ISocket *socket, bool &keepAlive, StringBuffer &contentType) = 0;
     virtual void processResponse(Url &url, StringBuffer &response, ColumnProvider * meta, const char *contentType) = 0;
 
@@ -789,7 +823,7 @@ class CMatchCB : implements IXMLSelect, public CInterface
 public:
     IMPLEMENT_IINTERFACE;
 
-    CMatchCB(IWSCAsyncFor &_parent, const Url &_url, const char *_tail, ColumnProvider * _meta, const char *_excPath, unsigned _excFlags) : parent(_parent), url(_url), tail(_tail), meta(_meta), excFlags(_excFlags), excPath(_excPath)
+    CMatchCB(IWSCAsyncFor &_parent, const Url &_url, const char *_tail, ColumnProvider * _meta, const char *_excPath, unsigned _excFlags) : parent(_parent), url(_url), tail(_tail), meta(_meta), excPath(_excPath), excFlags(_excFlags)
     {
     }
 
@@ -986,7 +1020,7 @@ public:
 
     CWSCHelper(IWSCRowProvider *_rowProvider, IEngineRowAllocator * _outputAllocator, const char *_authToken, WSCMode _wscMode, ClientCertificate *_clientCert,
                const IContextLogger &_logctx, IRoxieAbortMonitor *_roxieAbortMonitor, WSCType _wscType)
-        : logctx(_logctx), outputAllocator(_outputAllocator), clientCert(_clientCert), roxieAbortMonitor(_roxieAbortMonitor)
+        : clientCert(_clientCert), roxieAbortMonitor(_roxieAbortMonitor), outputAllocator(_outputAllocator), logctx(_logctx)
     {
         activitySpanScope.setown(logctx.queryActiveSpan()->createInternalSpan(_wscType == STsoap ? "SoapCall Activity": "HTTPCall Activity"));
         activitySpanScope->setSpanAttribute("activity_id", _rowProvider->queryActivityId());
@@ -1305,7 +1339,7 @@ public:
         {
             if (clientCert != NULL)
             {
-                Owned<IPropertyTree> config = createSecureSocketConfig(clientCert->certificate, clientCert->privateKey, clientCert->passphrase);
+                Owned<IPropertyTree> config = createSecureSocketConfig(clientCert->certificate, clientCert->privateKey, clientCert->passphrase, true);
                 ownedSC.setown(createSecureSocketContextEx2(config, ClientSocket));
             }
             else if (clientCertIssuer.length())
@@ -1602,7 +1636,7 @@ void CWSCHelperThread::createXmlSoapQuery(IXmlWriterExt &xmlWriter, ConstPointer
 class CWSUserLogCompletor
 {
 public:
-    CWSUserLogCompletor(CWSCHelper &wshelper, ConstPointerArray &rows) : helper(wshelper), inputRows(rows) {}
+    CWSUserLogCompletor(CWSCHelper &wshelper, ConstPointerArray &rows) : inputRows(rows), helper(wshelper) {}
     ~CWSUserLogCompletor()
     {
         //user log entries were output for the whole batch in the createXXXQuery routine above
@@ -1814,27 +1848,16 @@ class CWSCAsyncFor : implements IWSCAsyncFor, public CInterface, public CAsyncFo
             }
             else if (curPosn >= currLen)
             {   //nothing in buffer, read from socket
-                size32_t bytesRead=0;
-                count = 0;
-                do
-                {
-                    socket->readtms(buf + count, 0, len - count, bytesRead, timeoutMS);
-                    count += bytesRead;
-                } while (count != len);
+                socket->readtms(buf, len, len, count, timeoutMS);
                 currLen = curPosn = 0;
             }
             else
             {   //only some is in buffer, read rest from socket
-                size32_t bytesRead=0;
                 size32_t avail = currLen - curPosn;
                 memcpy(buf, (buffer + curPosn), avail);
                 count = avail;
-                do
-                {
-                    size32_t read;
-                    socket->readtms(buf+avail+bytesRead, 0, len-avail-bytesRead, read, timeoutMS);
-                    bytesRead += read;
-                } while (len != (bytesRead + avail));
+                size32_t bytesRead;
+                socket->readtms(buf+avail, len-avail, len-avail, bytesRead, timeoutMS);
                 count += bytesRead;
                 currLen = curPosn = 0;
             }
@@ -1951,20 +1974,35 @@ private:
     {
         if (soapTraceLevel > 6 || master->logXML)
         {
-            if (!contentEncoded)
-                master->logctx.mCTXLOG("%s: request(%s)", master->wscCallTypeText(), request.str());
+            StringBuffer contentStr;
+            if (contentEncoded)
+                contentStr.append(", content encoded.");
+            // Only do translation if soapcall LOG option set and soapSepString defined
+            if ( (master->logXML) && (soapSepString.length() > 0) )
+            {
+                StringBuffer request2;
+                multiLineAppendReplace(request, request2);
+                master->logctx.CTXLOG("%s: request(%s)%s", master->wscCallTypeText(), request2.str(), contentStr.str());
+            }
             else
-                master->logctx.mCTXLOG("%s: request(%s), content encoded.", master->wscCallTypeText(), request.str());
+                master->logctx.mCTXLOG("%s: request(%s)%s", master->wscCallTypeText(), request.str(), contentStr.str());
         }
     }
 
-    void createHttpRequest(StringBuffer &request, const Url &url, const IProperties * traceHeaders)
+    void createHttpRequest(StringBuffer &request, const Url &url, const IProperties * traceHeaders, StringBuffer &proxyHeaders)
     {
-        // Create the HTTP POST request
-        if (master->wscType == STsoap)
-            request.clear().append("POST ").append(url.path).append(" HTTP/1.1\r\n");
+        request.clear();
+
+        if (!proxyHeaders.isEmpty())
+            request.append(proxyHeaders);
         else
-            request.clear().append(master->service).append(" ").append(url.path).append(" HTTP/1.1\r\n");
+        {
+            // Create the HTTP POST request
+            if (master->wscType == STsoap)
+                request.append("POST ").append(url.path).append(" HTTP/1.1\r\n");
+            else
+                request.append(master->service).append(" ").append(url.path).append(" HTTP/1.1\r\n");
+        }
 
         const char *httpheaders = master->httpHeaders.get();
         if (httpheaders && *httpheaders)
@@ -2093,10 +2131,11 @@ private:
         StringBuffer dbgheader, contentEncoding;
         bool chunked = false;
         size32_t read = 0;
+        bool sockClosed = false;
         do {
             checkTimeLimitExceeded(&remainingMS);
             checkRoxieAbortMonitor(master->roxieAbortMonitor);
-            socket->readtms(buffer+read, 0, WSCBUFFERSIZE-read, bytesRead, MIN(master->timeoutMS,remainingMS));
+            sockClosed = readtmsAllowClose(socket, buffer+read, 1, WSCBUFFERSIZE-read, bytesRead, MIN(master->timeoutMS, remainingMS));
             checkTimeLimitExceeded(&remainingMS);
             checkRoxieAbortMonitor(master->roxieAbortMonitor);
 
@@ -2196,7 +2235,7 @@ private:
                     break;
                 }
             }
-            if (bytesRead == 0)         // socket closed
+            if ( (bytesRead == 0) || (sockClosed) )   // socket closed
                 break;
         } while (bytesRead&&(read<WSCBUFFERSIZE));
         if (!chunked)
@@ -2212,33 +2251,43 @@ private:
             }
             if (read)
                 response.append(read,payload);
-            if (payloadsize) {  // read directly into response
-                while (read<payloadsize) {
-                    checkTimeLimitExceeded(&remainingMS);
-                    checkRoxieAbortMonitor(master->roxieAbortMonitor);
-                    socket->readtms(response.reserve(payloadsize-read), 0, payloadsize-read, bytesRead, MIN(master->timeoutMS,remainingMS));
-                    checkTimeLimitExceeded(&remainingMS);
-                    checkRoxieAbortMonitor(master->roxieAbortMonitor);
-
-                    read += bytesRead;
-                    response.setLength(read);
-                    if (bytesRead==0) {
+            if (payloadsize) // read directly into response
+            {
+                while (read<payloadsize)
+                {
+                    bytesRead = 0;
+                    if (!sockClosed)
+                    {
+                        checkTimeLimitExceeded(&remainingMS);
+                        checkRoxieAbortMonitor(master->roxieAbortMonitor);
+                        sockClosed = readtmsAllowClose(socket, response.reserve(payloadsize-read), 1, payloadsize-read, bytesRead, MIN(master->timeoutMS, remainingMS));
+                        checkTimeLimitExceeded(&remainingMS);
+                        checkRoxieAbortMonitor(master->roxieAbortMonitor);
+                        read += bytesRead;
+                        response.setLength(read);
+                    }
+                    if ( (bytesRead==0) || (sockClosed && (read < payloadsize)) )
+                    {
                         master->logctx.CTXLOG("%s: Warning %sHTTP response terminated prematurely", getWsCallTypeName(master->wscType),chunked?"CHUNKED ":"");
                         break; // oops  looks likesocket closed early
                     }
                 }
             }
-            else {
-                for (;;) {
+            else if (!sockClosed)
+            {
+                for (;;)
+                {
                     checkTimeLimitExceeded(&remainingMS);
                     checkRoxieAbortMonitor(master->roxieAbortMonitor);
-                    socket->readtms(buffer, 0, WSCBUFFERSIZE, bytesRead, MIN(master->timeoutMS,remainingMS));
+                    sockClosed = readtmsAllowClose(socket, buffer, 1, WSCBUFFERSIZE, bytesRead, MIN(master->timeoutMS, remainingMS));
                     checkTimeLimitExceeded(&remainingMS);
                     checkRoxieAbortMonitor(master->roxieAbortMonitor);
 
                     if (bytesRead==0)
                         break;              // rely on socket closing to terminate message
                     response.append(bytesRead,buffer);
+                    if (sockClosed)
+                        break;
                 }
             }
         }
@@ -2250,9 +2299,18 @@ private:
         if (checkContentDecoding(dbgheader, response, contentEncoding))
             decodeContent(contentEncoding.str(), response);
         if (soapTraceLevel > 6 || master->logXML)
-            master->logctx.mCTXLOG("%s: LEN=%d %sresponse(%s%s)", getWsCallTypeName(master->wscType),response.length(),chunked?"CHUNKED ":"", dbgheader.str(), response.str());
-        else if (soapTraceLevel > 8)
-            master->logctx.mCTXLOG("%s: LEN=%d %sresponse(%s)", getWsCallTypeName(master->wscType),response.length(),chunked?"CHUNKED ":"", response.str()); // not sure this is that useful but...
+        {
+            // Only do translation if soapcall LOG option set and soapSepString defined
+            if ( (master->logXML) && (soapSepString.length() > 0) )
+            {
+                StringBuffer response2;
+                multiLineAppendReplace(dbgheader, response2);
+                multiLineAppendReplace(response, response2);
+                master->logctx.CTXLOG("%s: LEN=%d %sresponse(%s)", getWsCallTypeName(master->wscType),response.length(),chunked?"CHUNKED ":"", response2.str());
+            }
+            else
+                master->logctx.mCTXLOG("%s: LEN=%d %sresponse(%s%s)", getWsCallTypeName(master->wscType),response.length(),chunked?"CHUNKED ":"", dbgheader.str(), response.str());
+        }
         return rval;
     }
 
@@ -2417,7 +2475,7 @@ private:
     }
 
 public:
-    CWSCAsyncFor(CWSCHelper * _master, IXmlWriterExt &_xmlWriter, ConstPointerArray &_inputRows, PTreeReaderOptions _options): xmlWriter(_xmlWriter), inputRows(_inputRows), options(_options)
+    CWSCAsyncFor(CWSCHelper * _master, IXmlWriterExt &_xmlWriter, ConstPointerArray &_inputRows, PTreeReaderOptions _options): inputRows(_inputRows), xmlWriter(_xmlWriter), options(_options)
     {
         master = _master;
         outputAllocator = master->queryOutputAllocator();
@@ -2462,13 +2520,28 @@ public:
             SocketEndpoint ep;
             Owned<ISocket> socket;
             CCycleTimer timer;
+            StringBuffer proxyHeaders;
             for (;;)
             {
+                proxyHeaders.clear();
                 try
                 {
                     checkTimeLimitExceeded(&remainingMS);
                     Url &connUrl = master->proxyUrlArray.empty() ? url : master->proxyUrlArray.item(0);
-                    ep.set(connUrl.host.get(), connUrl.port);
+
+                    bool useProxy = false;
+                    if (!master->proxyUrlArray.empty())
+                        useProxy = true;
+
+                    CCycleTimer dnsTimer;
+
+                    // TODO: for DNS, do we use timeoutMS or remainingMS or remainingMS / maxRetries+1 or ?
+                    ep.set(connUrl.host.get(), connUrl.port, master->timeoutMS);
+
+                    unsigned __int64 dnsNs = dnsTimer.elapsedNs();
+                    master->logctx.noteStatistic(StTimeSoapcallDNS, dnsNs);
+                    master->activitySpanScope->setSpanAttribute("SoapcallDNSTimeNs", dnsNs);
+
                     if (ep.isNull())
                         throw MakeStringException(-1, "Failed to resolve host '%s'", nullText(connUrl.host.get()));
 
@@ -2488,11 +2561,63 @@ public:
                     {
                         isReused = false;
                         keepAlive = true;
+
+                        CCycleTimer connTimer;
+
+                        // TODO: for each connect attempt, do we use timeoutMS or remainingMS or remainingMS / maxRetries or ?
                         socket.setown(blacklist->connect(ep, master->logctx, (unsigned)master->maxRetries, master->timeoutMS, master->roxieAbortMonitor, master->rowProvider));
+
                         if (proto == PersistentProtocol::ProtoTLS)
                         {
 #ifdef _USE_OPENSSL
-                            Owned<ISecureSocket> ssock = master->createSecureSocket(socket.getClear(), connUrl.host);
+                            if (useProxy && strieq(connUrl.method.str(), "http"))
+                            {
+                                StringBuffer urlHost;
+                                if (streq(url.host.str(), "."))
+                                    urlHost.append(GetCachedHostName());
+                                else
+                                    urlHost.append(url.host.str());
+                                StringBuffer proxyText;
+                                proxyText.appendf("CONNECT %s:%d HTTP/1.1\r\n", urlHost.str(), url.port);
+                                proxyText.append("Proxy-Connection: Keep-Alive\r\n\r\n");
+                                socket->write(proxyText.str(),proxyText.length());
+
+                                checkTimeLimitExceeded(&remainingMS);
+                                unsigned proxyTimeout = MIN(remainingMS, master->timeoutMS);
+                                char proxyResponse[MAX_HTTP_HEADERSIZE + 1];
+                                unsigned proxyRemaining = proxyTimeout;
+                                CTimeMon tm(proxyTimeout);
+                                unsigned totalRead = 0;
+                                unsigned bytesRead = 0;
+                                bool sockClosed = false;
+                                while (!sockClosed && !tm.timedout(&proxyRemaining))
+                                {
+                                    unsigned maxPoss = MAX_HTTP_HEADERSIZE - totalRead;
+                                    sockClosed = readtmsAllowClose(socket, &proxyResponse[totalRead], 1, maxPoss, bytesRead, proxyRemaining);
+                                    totalRead += bytesRead;
+                                    proxyResponse[totalRead] = 0;
+
+                                    if (strstr(proxyResponse, "\r\n\r\n"))
+                                        break;
+                                    if (totalRead >= MAX_HTTP_HEADERSIZE)
+                                        break;
+                                }
+
+                                if (tm.timedout(&proxyRemaining))
+                                    throw makeStringException(-1, "Timed out waiting for proxy response");
+
+                                bool proxyTunnelOK = false;
+                                const char *okResp = strstr(proxyResponse, "HTTP/");
+                                if (okResp)
+                                {
+                                    if (strstr(okResp, " 200 "))
+                                        proxyTunnelOK = true;
+                                }
+                                if (!proxyTunnelOK)
+                                    throw makeStringException(-1, "Invalid response from proxy");
+                            }
+
+                            Owned<ISecureSocket> ssock = master->createSecureSocket(socket.getClear(), url.host);
                             if (ssock)
                             {
                                 checkTimeLimitExceeded(&remainingMS);
@@ -2514,13 +2639,32 @@ public:
                             err.append(": OpenSSL disabled in build");
                             throw makeStringException(0, err.str());
 #endif
-
                         }
+                        else if (useProxy && strieq(connUrl.method.str(), "http"))
+                        {
+                            StringBuffer urlHost;
+                            if (streq(url.host.str(), "."))
+                                urlHost.append(GetCachedHostName());
+                            else
+                                urlHost.append(url.host.str());
+
+                            if (master->wscType == STsoap)
+                                proxyHeaders.append("POST http://").appendf("%s:%d", urlHost.str(), url.port).append(url.path).append(" HTTP/1.1\r\n");
+                            else
+                                proxyHeaders.append(master->service).append(" http://").appendf("%s:%d", urlHost.str(), url.port).append(url.path).append(" HTTP/1.1\r\n");
+                            proxyHeaders.append("Proxy-Connection: Keep-Alive\r\n");
+                        }
+
+                        unsigned __int64 connNs = connTimer.elapsedNs();
+                        master->logctx.noteStatistic(StTimeSoapcallConnect, connNs);
+                        master->activitySpanScope->setSpanAttribute("SoapcallConnectTimeNs", connNs);
                     }
                     break;
                 }
                 catch (IException *e)
                 {
+                    master->logctx.noteStatistic(StNumSoapcallConnectFailures, 1);
+
                     if (master->timeLimitExceeded)
                     {
                         master->activitySpanScope->recordError(SpanError("Time Limit Exceeded", e->errorCode(), true, true));
@@ -2559,11 +2703,17 @@ public:
             {
                 checkTimeLimitExceeded(&remainingMS);
                 checkRoxieAbortMonitor(master->roxieAbortMonitor);
-                OwnedSpanScope socketOperationSpan = master->activitySpanScope->createClientSpan("Socket Write");
-                setSpanURLAttributes(socketOperationSpan, url);
 
-                Owned<IProperties> traceHeaders = ::getClientHeaders(socketOperationSpan);
-                createHttpRequest(request, url, traceHeaders);
+                StringBuffer spanName;
+                spanName.appendf("%s %s %s:%d", getWsCallTypeName(master->wscType), master->service.str(), url.host.str(), url.port);
+                OwnedActiveSpanScope requestSpan = master->activitySpanScope->createClientSpan(spanName.str());
+
+                setSpanURLAttributes(requestSpan, url);
+                requestSpan->setSpanAttribute("request.type", getWsCallTypeName(master->wscType));
+                requestSpan->setSpanAttribute("service.name", master->service.str());
+
+                Owned<IProperties> traceHeaders = ::getClientHeaders(requestSpan);
+                createHttpRequest(request, url, traceHeaders, proxyHeaders);
 
                 socket->write(request.str(), request.length());
 
@@ -2575,7 +2725,7 @@ public:
                 bool keepAlive2;
                 StringBuffer contentType;
                 int rval = readHttpResponse(response, socket, keepAlive2, contentType);
-                socketOperationSpan->setSpanAttribute("http.response.status_code", (int64_t)rval);
+                requestSpan->setSpanAttribute("http.response.status_code", (int64_t)rval);
                 keepAlive = keepAlive && keepAlive2;
 
                 if (soapTraceLevel > 4)
@@ -2583,22 +2733,22 @@ public:
 
                 if (rval != 200)
                 {
-                    socketOperationSpan->setSpanStatusSuccess(false);
+                    requestSpan->setSpanStatusSuccess(false);
                     if (rval == 503)
                     {
-                        socketOperationSpan->recordError(SpanError("Server Too Busy", 1001, true, true));
+                        requestSpan->recordError(SpanError("Server Too Busy", 1001, true, true));
                         throw new ReceivedRoxieException(1001, "Server Too Busy");
                     }
 
                     StringBuffer text;
                     text.appendf("HTTP error (%d) in processQuery",rval);
                     rtlAddExceptionTag(text, "soapresponse", response.str());
-                    socketOperationSpan->recordError(SpanError(text.str(), -1, true, true));
+                    requestSpan->recordError(SpanError(text.str(), -1, true, true));
                     throw MakeStringExceptionDirect(-1, text.str());
                 }
                 if (response.length() == 0)
                 {
-                    socketOperationSpan->recordError(SpanError("Zero length response in processQuery", -1, true, true));
+                    requestSpan->recordError(SpanError("Zero length response in processQuery", -1, true, true));
                     throw MakeStringException(-1, "Zero length response in processQuery");
                 }
                 checkTimeLimitExceeded(&remainingMS);
@@ -2614,7 +2764,7 @@ public:
                         persistentHandler->add(socket, &ep, proto);
                 }
 
-                socketOperationSpan->setSpanStatusSuccess(true);
+                requestSpan->setSpanStatusSuccess(true);
                 break;
             }
             catch (IReceivedRoxieException *e)
@@ -2642,12 +2792,11 @@ public:
                 {
                     // other roxie exception ...
                     master->logctx.CTXLOG("Exiting: received Roxie exception");
+                    master->activitySpanScope->recordException(e, true, true);
                     if (e->errorRow())
                         processException(url, e->errorRow(), e);
                     else
                         processException(url, inputRows, e);
-
-                    master->activitySpanScope->recordException(e, true, true);
                     break;
                 }
             }
@@ -2657,10 +2806,10 @@ public:
                     persistentHandler->doneUsing(socket, false);
                 if (master->timeLimitExceeded)
                 {
-                    processException(url, inputRows, e);
                     VStringBuffer msg("%s exiting: time limit (%ums) exceeded", getWsCallTypeName(master->wscType), master->timeLimitMS);
                     master->logctx.CTXLOG("%s", msg.str());
                     master->activitySpanScope->recordError(SpanError(msg.str(), e->errorCode(), true, true));
+                    processException(url, inputRows, e);
                     break;
                 }
 

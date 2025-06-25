@@ -108,6 +108,11 @@ interface IMetric
      * Query histogram bucket limits
      */
     virtual std::vector<__uint64> queryHistogramBucketLimits() const = 0;
+
+    /*
+     * Query the unique id for the metric
+     */
+    virtual unsigned int queryId() const = 0;
 };
 
 
@@ -126,6 +131,7 @@ public:
     StatisticMeasure queryUnits() const override { return units; }
     virtual std::vector<__uint64> queryHistogramValues() const override { return {}; }
     virtual std::vector<__uint64> queryHistogramBucketLimits() const override { return {}; }
+    unsigned int queryId() const { return myId; }
 
 
 protected:
@@ -135,7 +141,7 @@ protected:
         description{_desc},
         metricType{_metricType},
         units{_units},
-        metaData{_metaData} { }
+        metaData{_metaData} { myId = ++metricId; }
 
 protected:
     std::string name;
@@ -143,6 +149,10 @@ protected:
     MetricType metricType;
     StatisticMeasure units;
     MetricMetaData metaData;
+
+private:
+    static std::atomic<unsigned int> metricId;
+    unsigned int myId;
 };
 
 
@@ -333,7 +343,7 @@ public:
 
 protected:
     explicit PeriodicMetricSink(const char *_name, const char *_type, const IPropertyTree *_pSettingsTree);
-    virtual void prepareToStartCollecting() = 0;
+    virtual bool prepareToStartCollecting() = 0;
     virtual void collectingHasStopped() = 0;
     virtual void doCollection() = 0;
     void collectionThread();
@@ -381,6 +391,7 @@ protected:
     std::map<std::string, std::weak_ptr<IMetric>> metrics;
     std::mutex metricVectorMutex;
     std::regex nameValidator;
+    std::regex metaDataValidator;
 };
 
 jlib_decl std::shared_ptr<CounterMetric> registerCounterMetric(const char *name, const char* desc, StatisticMeasure units, const MetricMetaData &metaData = MetricMetaData());

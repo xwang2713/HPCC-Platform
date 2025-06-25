@@ -1,13 +1,13 @@
 import * as React from "react";
 import { Pivot, PivotItem } from "@fluentui/react";
-import { SizeMe } from "react-sizeme";
+import { SizeMe } from "../layouts/SizeMe";
 import { pushUrl } from "../util/history";
 import { Groups } from "./Groups";
 import { Permissions } from "./Permissions";
+import { PermissionsEditor } from "./PermissionsEditor";
 import { Users } from "./Users";
 import { useBuildInfo } from "../hooks/platform";
 import { pivotItemStyle } from "../layouts/pivot";
-import { DojoAdapter } from "../layouts/DojoAdapter";
 import nlsHPCC from "src/nlsHPCC";
 
 interface SecurityProps {
@@ -28,8 +28,22 @@ export const Security: React.FunctionComponent<SecurityProps> = ({
 
     const [, { opsCategory }] = useBuildInfo();
 
+    const [permissionTabTitle, setPermissionTabTitle] = React.useState(nlsHPCC.Permissions);
+
+    React.useEffect(() => {
+        setPermissionTabTitle(nlsHPCC.Permissions);
+        if (name === "_") {
+            if (baseDn === "File Scopes") setPermissionTabTitle(nlsHPCC.FileScopeDefaultPermissions);
+            else if (baseDn === "Workunit Scopes") setPermissionTabTitle(nlsHPCC.WorkUnitScopeDefaultPermissions);
+        } else if (name === "file") {
+            if (baseDn === "File Scopes") setPermissionTabTitle(nlsHPCC.PhysicalFiles);
+        } else if (name) {
+            setPermissionTabTitle(name);
+        }
+    }, [name, baseDn]);
+
     return <>
-        <SizeMe monitorHeight>{({ size }) =>
+        <SizeMe>{({ size }) =>
             <Pivot
                 overflowBehavior="menu" style={{ height: "100%" }} selectedKey={tab}
                 onLinkClick={evt => pushUrl(`/${opsCategory}/security/${evt.props.itemKey}`)}
@@ -40,12 +54,12 @@ export const Security: React.FunctionComponent<SecurityProps> = ({
                 <PivotItem headerText={nlsHPCC.Groups} itemKey="groups" style={pivotItemStyle(size)}>
                     <Groups page={page} />
                 </PivotItem>
-                <PivotItem headerText={nlsHPCC.Permissions} itemKey="permissions" style={pivotItemStyle(size)}>
+                <PivotItem headerText={permissionTabTitle} itemKey="permissions" style={pivotItemStyle(size)}>
                     {!name && !baseDn &&
                         <Permissions />
                     }
                     {name && baseDn &&
-                        <DojoAdapter widgetClassID="ShowIndividualPermissionsWidget" params={{ Basedn: baseDn, Name: name }} />
+                        <PermissionsEditor BaseDn={baseDn} Name={name} />
                     }
                 </PivotItem>
             </Pivot>

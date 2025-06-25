@@ -120,16 +120,28 @@ extern jlib_decl void _rev(size32_t len, void * ptr);
 #endif
 
 inline  void _cpyrev2(void * _tgt, const void * _src) { 
-    char * tgt = (char *)_tgt; const char * src = (const char *)_src; 
-    tgt[1]=src[0]; tgt[0] = src[1];
+    //Technically undefined behaviour because the _src is likely to be a byte stream
+    //but this will work on all known architectures
+    unsigned value = *(const unsigned short *)_src;
+    //NOTE: Optimized by the compiler
+    value = ((value & 0xFF00) >> 8) |
+            ((value & 0x00FF) << 8);
+    *(unsigned short *)_tgt = value;
 }
 inline  void _cpyrev3(void * _tgt, const void * _src) { 
     char * tgt = (char *)_tgt; const char * src = (const char *)_src; 
     tgt[2] = src[0]; tgt[1]=src[1]; tgt[0] = src[2];
 }
-inline  void _cpyrev4(void * _tgt, const void * _src) { 
-    char * tgt = (char *)_tgt; const char * src = (const char *)_src; 
-    tgt[3]=src[0]; tgt[2] = src[1]; tgt[1]=src[2]; tgt[0] = src[3];
+inline  void _cpyrev4(void * _tgt, const void * _src) {
+    //Technically undefined behaviour because the _src is likely to be a byte stream
+    //but this will work on all known architectures
+    unsigned value = *(const unsigned *)_src;
+    //NOTE: The compiler spots this pattern an optimizes it into a byte-swap operation
+    value = ((value & 0xFF000000) >> 24) |
+            ((value & 0x00FF0000) >> 8) |
+            ((value & 0x0000FF00) << 8) |
+            ((value & 0x000000FF) << 24);
+    *(unsigned *)_tgt = value;
 }
 inline  void _cpyrev5(void * _tgt, const void * _src) { 
     char * tgt = (char *)_tgt; const char * src = (const char *)_src; 
@@ -147,15 +159,44 @@ inline  void _cpyrev7(void * _tgt, const void * _src) {
     tgt[3] = src[3]; tgt[2]=src[4]; tgt[1]=src[5]; tgt[0]=src[6];
 }
 inline  void _cpyrev8(void * _tgt, const void * _src) { 
-    char * tgt = (char *)_tgt; const char * src = (const char *)_src; 
-    tgt[7]=src[0]; tgt[6] = src[1]; tgt[5]=src[2]; tgt[4] = src[3];
-    tgt[3]=src[4]; tgt[2] = src[5]; tgt[1]=src[6]; tgt[0] = src[7];
+    //Technically undefined behaviour because the _src is likely to be a byte stream
+    //but this will work on all known architectures
+    unsigned __int64 value = *(const unsigned __int64 *)_src;
+    //NOTE: The compiler spots this pattern an optimizes it into a byte-swap operation
+    value = ((value & 0xFF00000000000000ULL) >> 56) |
+            ((value & 0x00FF000000000000ULL) >> 40) |
+            ((value & 0x0000FF0000000000ULL) >> 24) |
+            ((value & 0x000000FF00000000ULL) >> 8) |
+            ((value & 0x00000000FF000000ULL) << 8) |
+            ((value & 0x0000000000FF0000ULL) << 24) |
+            ((value & 0x000000000000FF00ULL) << 40) |
+            ((value & 0x00000000000000FFULL) << 56);
+    *(unsigned __int64 *)_tgt = value;
 }
 inline  void _cpyrevn(void * _tgt, const void * _src, unsigned len) { 
-    char * tgt = (char *)_tgt; const char * src = (const char *)_src+len; 
-    for (;len;len--) {
-        *tgt++ = *--src;
+    char * tgt = (char *)_tgt; const char * src = (const char *)_src; 
+    for (unsigned i = 0; i < len; i++) {
+        tgt[i] = src[len - i - 1];
     }
+}
+
+//Define a template class to allow the common byte reversal operations to be optimized
+template <unsigned LEN>
+inline void doCopyRev(void * tgt, const void * src) {
+    _cpyrevn(tgt, src, LEN);
+}
+
+template <>
+inline void doCopyRev<2>(void * tgt, const void * src) {
+    _cpyrev2(tgt, src);
+}
+template <>
+inline void doCopyRev<4>(void * tgt, const void * src) {
+    _cpyrev4(tgt, src);
+}
+template <>
+inline void doCopyRev<8>(void * tgt, const void * src) {
+    _cpyrev8(tgt, src);
 }
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -333,5 +374,108 @@ extern jlib_decl char *mkdtemp(char *_template);
 extern jlib_decl char **getSystemEnv();
 
 extern jlib_decl char *getHPCCEnvVal(const char *name, const char *defaultValue);
+
+// class TimeDivisionTracker is useful for working out what a thread spends its time doing. See udptrrr.cpp for an example
+// of its usage
+
+template<unsigned NUMSTATES, bool reportOther> class TimeDivisionTracker
+{
+protected:
+    unsigned __int64 totals[NUMSTATES] = {0};
+    unsigned counts[NUMSTATES] = {0};
+    const char *stateNames[NUMSTATES] = {};
+    unsigned __int64 lastTick = get_cycles_now();
+    unsigned currentState = 0;
+    StringAttr name;
+    unsigned __int64 reportIntervalCycles = 0;
+    unsigned __int64 lastReport = 0;
+
+    unsigned enterState(unsigned newState)
+    {
+        unsigned prevState = currentState;
+        unsigned __int64 now = get_cycles_now();
+        if (reportIntervalCycles && now - lastReport >= reportIntervalCycles)
+        {
+            report(true);
+            now = get_cycles_now();
+        }
+        if (newState != prevState)
+        {
+            totals[currentState] += now - lastTick;
+            currentState = newState;
+            counts[newState]++;
+            lastTick = now;
+        }
+        return prevState;
+    }
+
+    void leaveState(unsigned backToState)
+    {
+        unsigned __int64 now = get_cycles_now();
+        if (reportIntervalCycles && now - lastReport >= reportIntervalCycles)
+            report(true);
+        if (backToState != currentState)
+        {
+            totals[currentState] += now - lastTick;
+            lastTick = now;
+            currentState = backToState;
+        }
+    }
+
+public:
+    TimeDivisionTracker(const char *_name, unsigned reportIntervalSeconds) : name(_name)
+    {
+        if (reportIntervalSeconds)
+            reportIntervalCycles = millisec_to_cycle(reportIntervalSeconds * 1000);
+    }
+
+    void report(bool reset)
+    {
+        VStringBuffer str("%s spent ", name.str());
+        auto now = get_cycles_now();
+        totals[currentState] += now - lastTick;
+        lastTick = now;
+        lastReport = now;
+        bool doneOne = false;
+        for (unsigned i = reportOther ? 0 : 1; i < NUMSTATES; i++)
+        {
+            if (counts[i])
+            {
+                if (doneOne)
+                    str.append(", ");
+                formatTime(str, cycle_to_nanosec(totals[i]));
+                str.appendf(" %s (%u times)", stateNames[i], counts[i]);
+                doneOne = true;
+            }
+            if (reset)
+            {
+                totals[i] = 0;
+                counts[i] = 0;
+            }
+        }
+        if (doneOne)
+            DBGLOG("%s", str.str());
+    }
+
+    class TimeDivision
+    {
+        unsigned prevState = 0;
+        TimeDivisionTracker &t;
+    public:
+        TimeDivision(TimeDivisionTracker &_t, unsigned newState) : t(_t)
+        {
+            prevState = t.enterState(newState);
+        }
+        ~TimeDivision()
+        {
+            t.leaveState(prevState);
+        }
+        void switchState(unsigned newState)
+        {
+            t.enterState(newState);
+        }
+    };
+};
+
 
 #endif

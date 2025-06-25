@@ -900,7 +900,6 @@ static void *suballoc_aligned(size32_t pages, bool returnNullWhenExhausted)
                         if (matches==pages)
                         {
                             unsigned start = i;
-                            heap_t startHbi = hbi;
                             char *ret = heapBase + (i*HEAP_BITS+b-1)*HEAP_ALIGNMENT_SIZE;
                             for (;;)
                             {
@@ -3356,6 +3355,7 @@ public:
 
     inline void updateDistanceScanned(unsigned __int64 distance)
     {
+        //Distance is the number of bytes, not the number of entries that have been skipped.
         stats.totalDistanceScanned += distance;
     }
 
@@ -3549,6 +3549,14 @@ public:
         : CHeap(_rowManager, _logctx, _allocatorCache, _flags), chunkSize(_chunkSize)
     {
         chunksPerPage  = FixedSizeHeaplet::dataAreaSize() / chunkSize;
+        if (flags & RHFscanning)
+        {
+            //Avoid pathological scans - limit the number of scans for an allocation to ~100.  At most this will waste 1% of memory
+            //although actual amount is likely to be much lower
+            const unsigned maxScanLength = 100;
+            //if 101..200 entries, then there should be at least 2 free slots to avoid an expected scan > 100
+            minScanFreeCount = ((chunksPerPage-1) / maxScanLength) + 1;
+        }
     }
 
     void * doAllocate(unsigned allocatorId, unsigned maxSpillCost);
@@ -3562,6 +3570,7 @@ public:
     const void * newCompactRow(const void * ptr, NewHeapCompactState & state);
 
     inline unsigned maxChunksPerPage() const { return chunksPerPage; }
+    inline unsigned minScanFree() const { return minScanFreeCount; }
 
     //No longer any external references to a unique heap.  Mark so it can be cleaned up early.
     void noteOrphaned()
@@ -3591,6 +3600,7 @@ protected:
     unsigned chunksPerPage;
     unsigned curCompactTarget = 0;
     unsigned __int64 totalAllocsLastScanCheck = 0;
+    unsigned minScanFreeCount = 0;
 };
 
 class CFixedChunkedHeap : public CChunkedHeap
@@ -3712,7 +3722,8 @@ char * ChunkedHeaplet::allocateSingle(unsigned allocated, bool incCounter, unsig
 
             CChunkedHeap * chunkHeap = static_cast<CChunkedHeap *>(heap);
             unsigned maxAllocs = chunkHeap->maxChunksPerPage();
-            if (numAllocs == maxAllocs)
+            unsigned minFree = chunkHeap->minScanFree(); // Scanning when there are only a few spare slots becomes pathological, so give up early.
+            if (numAllocs + minFree > maxAllocs)
             {
                 if (!(heapFlags & RHFdelayrelease))
                     return nullptr;
@@ -3829,7 +3840,6 @@ unsigned ChunkedHeaplet::allocateMultiChunk(unsigned max, char * * rows)
     unsigned alreadyIncremented = 0;
     do
     {
-        bool needIncrement = false;
         char * ret = allocateSingle(allocated, false, alreadyIncremented);
         if (!ret)
         {
@@ -4540,7 +4550,6 @@ private:
     unsigned dataBuffs;
     unsigned dataBuffPages;
     unsigned reportWalkFreeThreshold = 256;
-    unsigned attachSeq = 0;
     std::atomic_uint possibleGoers = {0};
     std::atomic_uint totalHeapPages = {0};
     Owned<IActivityMemoryUsageMap> peakUsageMap;
@@ -4566,7 +4575,7 @@ protected:
 
 public:
     CChunkingRowManager(memsize_t _memLimit, ITimeLimiter *_tl, const IContextLogger &_logctx, const IRowAllocatorCache *_allocatorCache, bool _outputOOMReports)
-        : hugeHeap(this, _logctx, _allocatorCache), logctx(_logctx), allocatorCache(_allocatorCache)
+        : hugeHeap(this, _logctx, _allocatorCache), allocatorCache(_allocatorCache), logctx(_logctx)
     {
         logctx.Link();
         //Use roundup() to calculate the sizes of the different heaps, and double check that the heap mapping
@@ -5146,18 +5155,23 @@ public:
             unsigned pageLimit = getPageLimit();
             if (totalPages <= pageLimit)
             {
+                unsigned newHeapPages;
                 if (pageLimit != UNLIMITED_PAGES)
                 {
                     //Use compare_exchange so that only one thread can increase the number of pages at a time.
                     //(Don't use atomic_add because we need to check the limit hasn't been exceeded.)
-                    if (!totalHeapPages.compare_exchange_weak(numHeapPages, numHeapPages + numRequested, std::memory_order_relaxed))
+                    newHeapPages = numHeapPages + numRequested;
+                    if (!totalHeapPages.compare_exchange_weak(numHeapPages, newHeapPages, std::memory_order_relaxed))
                         continue;
                 }
                 else
                 {
                     //Unlimited pages => just increment the total
-                    totalHeapPages.fetch_add(numRequested, std::memory_order_relaxed);
+                    newHeapPages = totalHeapPages.fetch_add(numRequested, std::memory_order_relaxed) + numRequested;
                 }
+
+                //Ensure the total is correct if two threads allocate big blocks of memory at the same time
+                totalPages = dataBuffPages + newHeapPages;
                 break;
             }
 
@@ -5194,9 +5208,15 @@ public:
 
         if (totalPages > peakPages)
         {
-            if (trackMemoryByActivity)
-                getPeakActivityUsage();
-            peakPages = totalPages;
+            unsigned value = totalPages;
+            //Atomically update the peak - this could temporarily reduce the value, but it will eventually be correct.
+            while (value > peakPages.load())
+                value = peakPages.exchange(value, std::memory_order_acq_rel);
+
+            //Check if this thread actually updated the peak value - or did another thread beat us to it.
+            if (totalPages == peakPages)
+                if (trackMemoryByActivity)
+                    getPeakActivityUsage();
         }
         return totalPages;
     }
@@ -6965,6 +6985,9 @@ extern void setDataAlignmentSize(unsigned size)
 
 } // namespace roxiemem
 
+//Worth knowning if the size of this object increases and reduces the memory available for rows.
+static_assert(sizeof(roxiemem::ChunkedHeaplet) <= 128);
+
 //============================================================================================================
 #ifdef _USE_CPPUNIT
 #include "unittests.hpp"
@@ -6979,7 +7002,7 @@ namespace roxiemem {
 class SimpleRowBuffer : implements IBufferedRowCallback
 {
 public:
-    SimpleRowBuffer(IRowManager * rowManager, unsigned _cost, unsigned _id) : cost(_cost), rows(rowManager, 0, 1, UNKNOWN_ROWSET_ID), id(_id)
+    SimpleRowBuffer(IRowManager * rowManager, unsigned _cost, unsigned _id) : rows(rowManager, 0, 1, UNKNOWN_ROWSET_ID), cost(_cost), id(_id)
     {
     }
 
@@ -7031,13 +7054,13 @@ protected:
 };
 
 // A row buffer which does not allocate memory for the row array from roxiemem
-class TestingRowBuffer : implements IBufferedRowCallback
+class TestingRowBuffer final : implements IBufferedRowCallback
 {
 public:
     TestingRowBuffer(unsigned _cost, unsigned _id) : cost(_cost), id(_id)
     {
     }
-    ~TestingRowBuffer() { kill(); }
+    virtual ~TestingRowBuffer() { kill(); }
 
 //interface IBufferedRowCallback
     virtual unsigned getSpillCost() const { return cost; }
@@ -7070,11 +7093,11 @@ protected:
 class CallbackBlockAllocator : implements IBufferedRowCallback
 {
 public:
-    CallbackBlockAllocator(IRowManager * _rowManager, memsize_t _size, unsigned _cost, unsigned _id) : cost(_cost), id(_id), rowManager(_rowManager), size(_size)
+    CallbackBlockAllocator(IRowManager * _rowManager, memsize_t _size, unsigned _cost, unsigned _id) : rowManager(_rowManager), size(_size), cost(_cost), id(_id)
     {
         rowManager->addRowBuffer(this);
     }
-    ~CallbackBlockAllocator()
+    virtual ~CallbackBlockAllocator()
     {
         rowManager->removeRowBuffer(this);
     }
@@ -7113,7 +7136,7 @@ protected:
 
 
 //Free the block as soon as requested
-class SimpleCallbackBlockAllocator : public CallbackBlockAllocator
+class SimpleCallbackBlockAllocator final : public CallbackBlockAllocator
 {
 public:
     SimpleCallbackBlockAllocator(IRowManager * _rowManager, memsize_t _size, unsigned _cost, unsigned _id)
@@ -7131,7 +7154,7 @@ public:
 };
 
 //Allocate another row before disposing of the first
-class NastyCallbackBlockAllocator : public CallbackBlockAllocator
+class NastyCallbackBlockAllocator final : public CallbackBlockAllocator
 {
 public:
     NastyCallbackBlockAllocator(IRowManager * _rowManager, unsigned _size, unsigned _cost, unsigned _id)
@@ -8169,7 +8192,6 @@ protected:
     void testRoundup()
     {
         Owned<IRowManager> rowManager = createRowManager(1, NULL, logctx, NULL, false);
-        CChunkingRowManager * managerObject = static_cast<CChunkingRowManager *>(rowManager.get());
         const unsigned maxFrac = firstFractionalHeap;
 
         const void * tempRow[MAX_FRAC_ALLOCATOR];
@@ -8228,7 +8250,7 @@ protected:
         }
         void * otherrow = rowManager->allocate(100, 0);
         savedRowHeap.setown(rowManager->createFixedRowHeap(8, ACTIVITY_FLAG_ISREGISTERED|0, RHFhasdestructor|RHFunique));
-        void * leakedRow = savedRowHeap->allocate();
+        [[maybe_unused]] void * leakedRow = savedRowHeap->allocate();
         ReleaseRoxieRow(otherrow);
         rowManager.clear();
     }
@@ -8414,7 +8436,8 @@ protected:
 
         for (unsigned pass=0; pass < 8; pass++)
         {
-            unsigned numPagesFull = rowManager->numPagesAfterCleanup(true);
+            //numPagesAfterCleanup() also has the side-effect of freeing up any empty pages.
+            [[maybe_unused]] unsigned numPagesFull = rowManager->numPagesAfterCleanup(true);
             unsigned numRowsLeft = 0;
             unsigned target=0;
             for (unsigned i2 = 0; i2 < numRows; i2++)
@@ -8744,8 +8767,6 @@ protected:
     void testResize()
     {
         Owned<IRowManager> rowManager = createRowManager(0, NULL, logctx, NULL, false);
-        memsize_t maxMemory = heapTotalPages * HEAP_ALIGNMENT_SIZE;
-        memsize_t wasted = 0;
 
         std::unique_ptr<void *[]> pages(new void * [heapTotalPages]);
         //Allocate a whole set of 1 page allocations
@@ -9120,7 +9141,7 @@ protected:
     {
     public:
         IncrementalRowBuffer(size_t _maxRows, const void * * _rowset, unsigned _delta) :
-            maxRows(_maxRows), rowset(_rowset), delta(_delta)
+            maxRows(_maxRows), delta(_delta), rowset(_rowset)
         {
         }
 
@@ -9179,7 +9200,6 @@ protected:
         {
             for (unsigned i=0; i < 10000; i++)
             {
-                unsigned total = 0;
                 for (unsigned j=0; j < numAllocs; j++)
                 {
                     unsigned blks = ((rand() % 4) + 1);
@@ -9189,7 +9209,6 @@ protected:
                         continue;
                     void * newrow = rowManager->allocate(size, 0);
                     rowset[target] = newrow;
-                    total += numAllocs;
                 }
             }
         }

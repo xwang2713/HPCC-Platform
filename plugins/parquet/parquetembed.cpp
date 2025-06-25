@@ -96,6 +96,42 @@ extern void fail(const char *message)
 }
 
 /**
+ * @brief Utility function for getting the xpath or field name from an RtlFieldInfo object.
+ *
+ * @param outXPath The buffer for storing output.
+ * @param field RtlFieldInfo object storing metadata for field.
+ */
+void xpathOrName(StringBuffer &outXPath, const RtlFieldInfo *field)
+{
+    outXPath.clear();
+
+    if (field->xpath)
+    {
+        if (field->xpath[0] == xpathCompoundSeparatorChar)
+        {
+            outXPath.append(field->xpath + 1);
+        }
+        else
+        {
+            const char *sep = strchr(field->xpath, xpathCompoundSeparatorChar);
+
+            if (!sep)
+            {
+                outXPath.append(field->xpath);
+            }
+            else
+            {
+                outXPath.append(field->xpath, 0, static_cast<size32_t>(sep - field->xpath));
+            }
+        }
+    }
+    else
+    {
+        outXPath.append(field->name);
+    }
+}
+
+/**
  * @brief Contructs a ParquetReader for a specific file location.
  *
  * @param option The read or write option as well as information about partitioning.
@@ -107,7 +143,7 @@ ParquetReader::ParquetReader(const char *option, const char *_location, int _max
     : ParquetReader(option, _location, _maxRowCountInTable, _partitionFields, _activityCtx, nullptr) {}
 
 // Constructs a ParquetReader with the expected record layout of the Parquet file
-ParquetReader::ParquetReader(const char *option, const char *_location, int _maxRowCountInTable, const char *_partitionFields, const IThorActivityContext *_activityCtx, const RtlRecord *_expectedRecord)
+ParquetReader::ParquetReader(const char *option, const char *_location, int _maxRowCountInTable, const char *_partitionFields, const IThorActivityContext *_activityCtx, const RtlTypeInfo * _expectedRecord)
     : partOption(option), location(_location), expectedRecord(_expectedRecord)
 {
     maxRowCountInTable = _maxRowCountInTable;
@@ -186,14 +222,25 @@ arrow::Status ParquetReader::openReadFile()
         ForEach (*itr)
         {
             IFile &file = itr->query();
+            const char *filename = file.queryFilename();
             parquet::arrow::FileReaderBuilder readerBuilder;
-            reportIfFailure(readerBuilder.OpenFile(file.queryFilename(), false, readerProperties));
+            reportIfFailure(readerBuilder.OpenFile(filename, false, readerProperties));
             readerBuilder.memory_pool(pool);
             readerBuilder.properties(arrowReaderProps);
             std::unique_ptr<parquet::arrow::FileReader> parquetFileReader;
             reportIfFailure(readerBuilder.Build(&parquetFileReader));
-            parquetFileReaders.push_back(std::move(parquetFileReader));
+            parquetFileReaders.emplace_back(filename, std::move(parquetFileReader));
         }
+
+        auto sortFileReaders = [](NamedFileReader &a, NamedFileReader &b) -> bool
+        {
+            return strcmp(std::get<0>(a).c_str(), std::get<0>(b).c_str()) < 0;
+        };
+
+        std::sort(parquetFileReaders.begin(), parquetFileReaders.end(), sortFileReaders);
+
+        if (parquetFileReaders.empty())
+            failx("Parquet file %s not found", location.c_str());
     }
     return arrow::Status::OK();
 }
@@ -274,14 +321,17 @@ void divide_row_groups(const IThorActivityContext *activityCtx, __int64 totalRow
 __int64 ParquetReader::readColumns(__int64 currTable)
 {
     auto rowGroupReader = queryCurrentTable(currTable); // Sets currentTableMetadata
-    for (int i = 0; i < expectedRecord->getNumFields(); i++)
+    int numFields = getNumFields(expectedRecord);
+    for (int i = 0; i < numFields; i++)
     {
-        int columnIndex = currentTableMetadata->schema()->ColumnIndex(expectedRecord->queryName(i));
+        StringBuffer fieldName;
+        xpathOrName(fieldName, expectedRecord->queryFields()[i]);
+        int columnIndex = currentTableMetadata->schema()->group_node()->FieldIndex(fieldName.str());
         if (columnIndex >= 0)
         {
             std::shared_ptr<arrow::ChunkedArray> column;
             reportIfFailure(rowGroupReader->Column(columnIndex)->Read(&column));
-            parquetTable.insert(std::make_pair(expectedRecord->queryName(i), column->chunk(0)));
+            parquetTable.insert(std::make_pair(fieldName.str(), column->chunk(0)));
         }
     }
 
@@ -319,8 +369,8 @@ std::shared_ptr<parquet::arrow::RowGroupReader> ParquetReader::queryCurrentTable
         tables += fileTableCounts[i];
         if (currTable < tables)
         {
-            currentTableMetadata = parquetFileReaders[i]->parquet_reader()->metadata()->Subset({static_cast<int>(currTable - offset)});
-            return parquetFileReaders[i]->RowGroup(currTable - offset);
+            currentTableMetadata = std::get<1>(parquetFileReaders[i])->parquet_reader()->metadata()->Subset({static_cast<int>(currTable - offset)});
+            return std::get<1>(parquetFileReaders[i])->RowGroup(currTable - offset);
         }
         offset = tables;
     }
@@ -342,15 +392,16 @@ arrow::Status ParquetReader::processReadFile()
         rbatchItr = arrow::RecordBatchReader::RecordBatchReaderIterator(rbatchReader.get());
         PARQUET_ASSIGN_OR_THROW(auto datasetRows, scanner->CountRows());
         // Divide the work among any number of workers
-        divide_row_groups(activityCtx, datasetRows, totalRowCount, startRowGroup);
+        divide_row_groups(activityCtx, datasetRows, totalRowCount, startRow);
     }
     else
     {
         __int64 totalTables = 0;
+        fileTableCounts.reserve(parquetFileReaders.size());
 
         for (int i = 0; i < parquetFileReaders.size(); i++)
         {
-            __int64 tables = parquetFileReaders[i]->num_row_groups();
+            __int64 tables = std::get<1>(parquetFileReaders[i])->num_row_groups();
             fileTableCounts.push_back(tables);
             totalTables += tables;
         }
@@ -390,7 +441,7 @@ arrow::Result<std::shared_ptr<arrow::Table>> ParquetReader::queryRows()
     {
         // Start by getting the number of rows in the first group and checking if it includes this workers startRow
         __int64 offset = (*rbatchItr)->get()->num_rows();
-        while (offset < startRow)
+        while (offset <= startRow)
         {
             rbatchItr++;
             offset += (*rbatchItr)->get()->num_rows();
@@ -423,6 +474,8 @@ __int64 ParquetReader::next(TableColumns *&nextTable)
         if (endsWithIgnoreCase(partOption.c_str(), "partition"))
         {
             PARQUET_ASSIGN_OR_THROW(table, queryRows()); // Sets rowsProcessed to current row in table corresponding to startRow
+            rowsCount = table->num_rows();
+            splitTable(table);
         }
         else
         {
@@ -517,7 +570,7 @@ void ParquetReader::setCursor(MemoryBuffer & cursor)
  * @param _activityCtx Additional context about the thor workers running.
  */
 ParquetWriter::ParquetWriter(const char *option, const char *_destination, int _maxRowCountInBatch, bool _overwrite, arrow::Compression::type _compressionOption, const char *_partitionFields, const IThorActivityContext *_activityCtx)
-    : partOption(option), destination(_destination), maxRowCountInBatch(_maxRowCountInBatch), overwrite(_overwrite), compressionOption(_compressionOption), activityCtx(_activityCtx)
+    : maxRowCountInBatch(_maxRowCountInBatch), partOption(option), destination(_destination), overwrite(_overwrite), activityCtx(_activityCtx), compressionOption(_compressionOption)
 {
     pool = arrow::default_memory_pool();
     if (activityCtx->querySlave() == 0 && startsWithIgnoreCase(partOption.c_str(), "write"))
@@ -573,6 +626,7 @@ arrow::Status ParquetWriter::openWriteFile()
             destination.insert(destination.find(".parquet"), std::to_string(activityCtx->querySlave()));
         }
 
+        recursiveCreateDirectoryForFile(destination.c_str());
         std::shared_ptr<arrow::io::FileOutputStream> outfile;
         PARQUET_ASSIGN_OR_THROW(outfile, arrow::io::FileOutputStream::Open(destination));
 
@@ -600,7 +654,7 @@ arrow::Status ParquetWriter::writePartition(std::shared_ptr<arrow::Table> table)
     auto dataset = std::make_shared<arrow::dataset::InMemoryDataset>(table);
 
     StringBuffer basenameTemplate;
-    basenameTemplate.appendf("part_%d{i}_%lld.parquet",activityCtx->querySlave(), tablesProcessed++);
+    basenameTemplate.appendf("part_{i}_of_table_%lld_from_worker_%d.parquet", tablesProcessed++, activityCtx->querySlave());
     writeOptions.basename_template = basenameTemplate.str();
 
     ARROW_ASSIGN_OR_RAISE(auto scannerBuilder, dataset->NewScan());
@@ -662,7 +716,7 @@ std::shared_ptr<arrow::NestedType> ParquetWriter::makeChildRecord(const RtlField
 
         for (int i = 0; i < count; i++, fields++)
         {
-            reportIfFailure(fieldToNode((*fields)->name, *fields, childFields));
+            reportIfFailure(fieldToNode(*fields, childFields));
         }
 
         return std::make_shared<arrow::StructType>(childFields);
@@ -673,84 +727,116 @@ std::shared_ptr<arrow::NestedType> ParquetWriter::makeChildRecord(const RtlField
         const RtlTypeInfo *child = typeInfo->queryChildType();
         const RtlFieldInfo childFieldInfo = RtlFieldInfo("", "", child);
         std::vector<std::shared_ptr<arrow::Field>> childField;
-        reportIfFailure(fieldToNode(childFieldInfo.name, &childFieldInfo, childField));
-        return std::make_shared<arrow::ListType>(childField[0]);
+        reportIfFailure(fieldToNode(&childFieldInfo, childField));
+        return std::make_shared<arrow::LargeListType>(childField[0]);
     }
 }
 
 /**
  * @brief Converts an RtlFieldInfo object into an arrow field and adds it to the output vector.
  *
- * @param name The name of the field
  * @param field The field containing metadata for the record.
  * @param arrowFields Output vector for pushing new nodes to.
  * @return Status of the operation
  */
-arrow::Status ParquetWriter::fieldToNode(const std::string &name, const RtlFieldInfo *field, std::vector<std::shared_ptr<arrow::Field>> &arrowFields)
+arrow::Status ParquetWriter::fieldToNode(const RtlFieldInfo *field, std::vector<std::shared_ptr<arrow::Field>> &arrowFields)
 {
-    unsigned len = field->type->length;
+    StringBuffer name;
+    xpathOrName(name, field);
 
     switch (field->type->getType())
     {
     case type_boolean:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::boolean()));
+        arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::boolean()));
         break;
     case type_int:
         if (field->type->isSigned())
         {
-            if (len > 4)
+            if (field->type->length > 4)
             {
-                arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::int64()));
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::int64()));
+            }
+            else if (field->type->length > 2)
+            {
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::int32()));
+            }
+            else if (field->type->length > 1)
+            {
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::int16()));
             }
             else
             {
-                arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::int32()));
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::int8()));
             }
         }
         else
         {
-            if (len > 4)
+            if (field->type->length > 4)
             {
-                arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::uint64()));
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::uint64()));
+            }
+            else if (field->type->length > 2)
+            {
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::uint32()));
+            }
+            else if (field->type->length > 1)
+            {
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::uint16()));
             }
             else
             {
-                arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::uint32()));
+                arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::uint8()));
             }
         }
         break;
     case type_real:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::float64()));
-        break;
-    case type_string:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8()));
+        if (field->type->length > 4)
+        {
+            arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::float64()));
+        }
+        else
+        {
+            arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::float32()));
+        }
         break;
     case type_char:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8()));
-        break;
+    case type_string:
     case type_varstring:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8()));
-        break;
     case type_qstring:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8()));
-        break;
-    case type_unicode:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8()));
-        break;
     case type_utf8:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8()));
+    case type_unicode:
+    case type_varunicode:
+        if (field->type->length > 4 || field->type->length == 0)
+        {
+            arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::large_utf8()));
+        }
+        else
+        {
+            arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::utf8()));
+        }
         break;
     case type_decimal:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::utf8())); //TODO add decimal encoding
+    {
+        int32_t precision = field->type->getDecimalDigits();
+        int32_t scale = field->type->getDecimalPrecision();
+        arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), precision <= arrow::Decimal128Type::kMaxPrecision ? arrow::decimal128(precision, scale) : arrow::decimal256(precision, scale)));
         break;
+    }
     case type_data:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, arrow::large_binary()));
+        if (field->type->length > 0)
+        {
+           arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::fixed_size_binary(field->type->length)));
+        }
+        else
+        {
+           arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), arrow::large_binary()));
+        }
         break;
     case type_record:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, makeChildRecord(field)));
+        arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), makeChildRecord(field)));
         break;
     case type_set:
-        arrowFields.push_back(std::make_shared<arrow::Field>(name, makeChildRecord(field)));
+        arrowFields.push_back(std::make_shared<arrow::Field>(name.str(), makeChildRecord(field)));
         break;
     default:
         failx("Datatype %i is not compatible with this plugin.", field->type->getType());
@@ -774,7 +860,7 @@ arrow::Status ParquetWriter::fieldsToSchema(const RtlTypeInfo *typeInfo)
 
     for (int i = 0; i < count; i++, fields++)
     {
-        ARROW_RETURN_NOT_OK(fieldToNode((*fields)->name, *fields, arrowFields));
+        ARROW_RETURN_NOT_OK(fieldToNode(*fields, arrowFields));
     }
 
     schema = std::make_shared<arrow::Schema>(arrowFields);
@@ -806,34 +892,34 @@ arrow::Status ParquetWriter::fieldsToSchema(const RtlTypeInfo *typeInfo)
 /**
  * @brief Gets the child ArrayBuilder from the recordBatchBuilder and adds it to the stack.
  */
-void ParquetWriter::beginSet(const char *fieldName)
+void ParquetWriter::beginSet(const RtlFieldInfo *field)
 {
     if (!recordBatchBuilder)
     {
         PARQUET_ASSIGN_OR_THROW(recordBatchBuilder, arrow::RecordBatchBuilder::Make(schema, pool, maxRowCountInBatch));
     }
     arrow::ArrayBuilder *childBuilder;
-    arrow::FieldPath match = getNestedFieldBuilder(fieldName, childBuilder);
-    fieldBuilderStack.push_back(std::make_shared<ArrayBuilderTracker>(fieldName, childBuilder, CPNTSet, match));
+    arrow::FieldPath match = getNestedFieldBuilder(field, childBuilder);
+    fieldBuilderStack.push_back(std::make_shared<ArrayBuilderTracker>(field, childBuilder, CPNTSet, std::move(match)));
 
-    arrow::ListBuilder *listBuilder = static_cast<arrow::ListBuilder *>(childBuilder);
-    reportIfFailure(listBuilder->Append());
+    arrow::LargeListBuilder *largeListBuilder = static_cast<arrow::LargeListBuilder *>(childBuilder);
+    reportIfFailure(largeListBuilder->Append());
 }
 
 /**
  * @brief Gets the child ArrayBuilder from the recordBatchBuilder and adds it to the stack.
  */
-void ParquetWriter::beginRow(const char *fieldName)
+void ParquetWriter::beginRow(const RtlFieldInfo *field)
 {
     if (!recordBatchBuilder)
     {
         PARQUET_ASSIGN_OR_THROW(recordBatchBuilder, arrow::RecordBatchBuilder::Make(schema, pool, maxRowCountInBatch));
     }
-    else if (!strieq(fieldName, "<row>"))
+    else if (!strieq(field->name, "<row>"))
     {
         arrow::ArrayBuilder *childBuilder;
-        arrow::FieldPath match = getNestedFieldBuilder(fieldName, childBuilder);
-        fieldBuilderStack.push_back(std::make_shared<ArrayBuilderTracker>(fieldName, childBuilder, CPNTDataset, match));
+        arrow::FieldPath match = getNestedFieldBuilder(field, childBuilder);
+        fieldBuilderStack.push_back(std::make_shared<ArrayBuilderTracker>(field, childBuilder, CPNTDataset, std::move(match)));
 
         arrow::StructBuilder *structBuilder = static_cast<arrow::StructBuilder *>(childBuilder);
         reportIfFailure(structBuilder->Append());
@@ -908,12 +994,16 @@ arrow::Status ParquetWriter::checkDirContents()
 /**
  * @brief Finds the correct field builder from the stack of nested field builders or from the RecordBatchBuilder.
  */
-arrow::ArrayBuilder *ParquetWriter::getFieldBuilder(const char *fieldName)
+arrow::ArrayBuilder *ParquetWriter::getFieldBuilder(const RtlFieldInfo *field)
 {
     if (fieldBuilderStack.empty())
-        return recordBatchBuilder->GetField(schema->GetFieldIndex(fieldName));
+    {
+        StringBuffer fieldName;
+        xpathOrName(fieldName, field);
+        return recordBatchBuilder->GetField(schema->GetFieldIndex(fieldName.str()));
+    }
     else if (fieldBuilderStack.back()->nodeType == CPNTSet)
-        return static_cast<arrow::ListBuilder *>(fieldBuilderStack.back()->structPtr)->value_builder();
+        return static_cast<arrow::LargeListBuilder *>(fieldBuilderStack.back()->structPtr)->value_builder();
     else
         return fieldBuilderStack.back()->structPtr->child(fieldBuilderStack.back()->childrenProcessed++);
 }
@@ -925,9 +1015,12 @@ arrow::ArrayBuilder *ParquetWriter::getFieldBuilder(const char *fieldName)
  * @param childBuilder Child builder for the nested field
  * @return arrow::FieldPath A vector of indices to the nested field.
  */
-arrow::FieldPath ParquetWriter::getNestedFieldBuilder(const char *fieldName, arrow::ArrayBuilder *&childBuilder)
+arrow::FieldPath ParquetWriter::getNestedFieldBuilder(const RtlFieldInfo *field, arrow::ArrayBuilder *&childBuilder)
 {
+    StringBuffer fieldName;
+    xpathOrName(fieldName, field);
     arrow::FieldPath match;
+
     if (fieldBuilderStack.empty())
     {
         PARQUET_ASSIGN_OR_THROW(match, arrow::FieldRef(fieldName).FindOne(*schema.get()));
@@ -951,25 +1044,37 @@ arrow::FieldPath ParquetWriter::getNestedFieldBuilder(const char *fieldName, arr
 /**
  * @brief Helper method for adding string type fields to the ArrayBuilder
  */
-void ParquetWriter::addFieldToBuilder(const char *fieldName, unsigned len, const char *data)
+void ParquetWriter::addFieldToBuilder(const RtlFieldInfo *field, unsigned len, const char *data)
 {
-    arrow::ArrayBuilder *fieldBuilder = getFieldBuilder(fieldName);
+    arrow::ArrayBuilder *fieldBuilder = getFieldBuilder(field);
     switch(fieldBuilder->type()->id())
     {
-        case arrow::Type::type::STRING:
+        case arrow::Type::STRING:
         {
             arrow::StringBuilder *stringBuilder = static_cast<arrow::StringBuilder *>(fieldBuilder);
             reportIfFailure(stringBuilder->Append(data, len));
             break;
         }
-        case arrow::Type::type::LARGE_BINARY:
+        case arrow::Type::LARGE_STRING:
+        {
+            arrow::LargeStringBuilder *largeStringBuilder = static_cast<arrow::LargeStringBuilder *>(fieldBuilder);
+            reportIfFailure(largeStringBuilder->Append(data, len));
+            break;
+        }
+        case arrow::Type::LARGE_BINARY:
         {
             arrow::LargeBinaryBuilder *largeBinaryBuilder = static_cast<arrow::LargeBinaryBuilder *>(fieldBuilder);
             reportIfFailure(largeBinaryBuilder->Append(data, len));
             break;
         }
+        case arrow::Type::FIXED_SIZE_BINARY:
+        {
+            arrow::FixedSizeBinaryBuilder *fixedSizeBinaryBuilder = static_cast<arrow::FixedSizeBinaryBuilder *>(fieldBuilder);
+            reportIfFailure(fixedSizeBinaryBuilder->Append(data));
+            break;
+        }
         default:
-            failx("Incorrect type for String/Large_Binary addFieldToBuilder: %s", fieldBuilder->type()->ToString().c_str());
+            failx("Incorrect type for String/Large_Binary/Fixed_Size_Binary addFieldToBuilder: %s", fieldBuilder->type()->ToString().c_str());
     }
 }
 
@@ -1011,42 +1116,6 @@ void ParquetRowStream::stop()
 {
     resultAllocator.clear();
     shouldRead = false;
-}
-
-/**
- * @brief Utility function for getting the xpath or field name from an RtlFieldInfo object.
- *
- * @param outXPath The buffer for storing output.
- * @param field RtlFieldInfo object storing metadata for field.
- */
-void ParquetRowBuilder::xpathOrName(StringBuffer &outXPath, const RtlFieldInfo *field) const
-{
-    outXPath.clear();
-
-    if (field->xpath)
-    {
-        if (field->xpath[0] == xpathCompoundSeparatorChar)
-        {
-            outXPath.append(field->xpath + 1);
-        }
-        else
-        {
-            const char *sep = strchr(field->xpath, xpathCompoundSeparatorChar);
-
-            if (!sep)
-            {
-                outXPath.append(field->xpath);
-            }
-            else
-            {
-                outXPath.append(field->xpath, 0, static_cast<size32_t>(sep - field->xpath));
-            }
-        }
-    }
-    else
-    {
-        outXPath.append(field->name);
-    }
 }
 
 /**
@@ -1177,7 +1246,18 @@ std::string_view ParquetRowBuilder::getCurrView(const RtlFieldInfo *field)
         case LargeStringType:
             return arrayVisitor->largeStringArr->GetView(currArrayIndex());
         case DecimalType:
-            return arrayVisitor->size == 128 ? arrayVisitor->decArr->GetView(currArrayIndex()) : arrayVisitor->largeDecArr->GetView(currArrayIndex());
+            if (arrayVisitor->size == 128)
+            {
+                serialized.append(arrayVisitor->decArr->FormatValue(currArrayIndex()).c_str());
+                return serialized.str();
+            }
+            else
+            {
+                serialized.append(arrayVisitor->largeDecArr->FormatValue(currArrayIndex()).c_str());
+                return serialized.str();
+            }
+        case FixedSizeBinaryType:
+            return arrayVisitor->fixedSizeBinaryArr->GetView(currArrayIndex());
         default:
             failx("Unimplemented Parquet type for field with name %s.", field->name);
     }
@@ -1459,8 +1539,13 @@ void ParquetRowBuilder::processBeginSet(const RtlFieldInfo *field, bool &isAll)
 
     if (arrayVisitor->type == ListType)
     {
-        ParquetColumnTracker newPathNode(field->name, arrayVisitor->listArr, CPNTSet);
-        newPathNode.childCount = arrayVisitor->listArr->value_slice(currentRow)->length();
+        pathStack.emplace_back(field, arrayVisitor->listArr, CPNTSet);
+        pathStack.back().childCount = arrayVisitor->listArr->value_slice(currentRow)->length();
+    }
+    else if (arrayVisitor->type == LargeListType)
+    {
+        ParquetColumnTracker newPathNode(field, arrayVisitor->largeListArr, CPNTSet);
+        newPathNode.childCount = arrayVisitor->largeListArr->value_slice(currentRow)->length();
         pathStack.push_back(newPathNode);
     }
     else
@@ -1498,27 +1583,17 @@ void ParquetRowBuilder::processBeginDataset(const RtlFieldInfo *field)
  */
 void ParquetRowBuilder::processBeginRow(const RtlFieldInfo *field)
 {
-    StringBuffer xpath;
-    xpathOrName(xpath, field);
-
-    if (!xpath.isEmpty())
+    if (strncmp(field->name, "<row>", 5) != 0)
     {
-        if (strncmp(xpath, "<row>", 5) != 0)
+        nextField(field);
+        if (arrayVisitor->type == StructType)
         {
-            nextField(field);
-            if (arrayVisitor->type == StructType)
-            {
-                pathStack.push_back(ParquetColumnTracker(field->name, arrayVisitor->structArr, CPNTScalar));
-            }
-            else
-            {
-                failx("proccessBeginRow: Incorrect type for row.");
-            }
+            pathStack.emplace_back(field, arrayVisitor->structArr, CPNTScalar);
         }
-    }
-    else
-    {
-        failx("processBeginRow: Field name or xpath missing");
+        else
+        {
+            failx("proccessBeginRow: Incorrect type for row.");
+        }
     }
 }
 
@@ -1541,10 +1616,7 @@ bool ParquetRowBuilder::processNextRow(const RtlFieldInfo *field)
  */
 void ParquetRowBuilder::processEndSet(const RtlFieldInfo *field)
 {
-    StringBuffer xpath;
-    xpathOrName(xpath, field);
-
-    if (!xpath.isEmpty() && !pathStack.empty() && strcmp(xpath.str(), pathStack.back().nodeName) == 0)
+    if (!pathStack.empty() && field->equivalent(pathStack.back().field))
     {
         pathStack.pop_back();
     }
@@ -1567,26 +1639,16 @@ void ParquetRowBuilder::processEndDataset(const RtlFieldInfo *field)
  */
 void ParquetRowBuilder::processEndRow(const RtlFieldInfo *field)
 {
-    StringBuffer xpath;
-    xpathOrName(xpath, field);
-
-    if (!xpath.isEmpty())
+    if (!pathStack.empty())
     {
-        if (!pathStack.empty())
+        if (pathStack.back().nodeType == CPNTDataset)
         {
-            if (pathStack.back().nodeType == CPNTDataset)
-            {
-                pathStack.back().childrenProcessed++;
-            }
-            else if (strcmp(xpath.str(), pathStack.back().nodeName) == 0)
-            {
-                pathStack.pop_back();
-            }
+            pathStack.back().childrenProcessed++;
         }
-    }
-    else
-    {
-        failx("processEndRow: Field name or xpath missing");
+        else if (field->equivalent(pathStack.back().field))
+        {
+            pathStack.pop_back();
+        }
     }
 }
 
@@ -1601,13 +1663,27 @@ void ParquetRowBuilder::nextFromStruct(const RtlFieldInfo *field)
     reportIfFailure(structPtr->Accept(arrayVisitor.get()));
     if (pathStack.back().nodeType == CPNTScalar)
     {
-        auto child = arrayVisitor->structArr->GetFieldByName(field->name);
+        StringBuffer fieldName;
+        xpathOrName(fieldName, field);
+        auto child = arrayVisitor->structArr->GetFieldByName(fieldName.str());
         reportIfFailure(child->Accept(arrayVisitor.get()));
     }
     else if (pathStack.back().nodeType == CPNTSet)
     {
-        auto child = arrayVisitor->listArr->value_slice(currentRow);
-        reportIfFailure(child->Accept(arrayVisitor.get()));
+        if (arrayVisitor->type == ListType)
+        {
+            auto child = arrayVisitor->listArr->value_slice(currentRow);
+            reportIfFailure(child->Accept(arrayVisitor.get()));
+        }
+        else if (arrayVisitor->type == LargeListType)
+        {
+            auto child = arrayVisitor->largeListArr->value_slice(currentRow);
+            reportIfFailure(child->Accept(arrayVisitor.get()));
+        }
+        else
+        {
+            failx("Unexpected type in CPNTSet: neither ListType nor LargeListType");
+        }
     }
 }
 
@@ -1683,7 +1759,7 @@ void bindStringParam(unsigned len, const char *value, const RtlFieldInfo *field,
     rtlDataAttr utf8;
     rtlStrToUtf8X(utf8chars, utf8.refstr(), len, value);
 
-    parquetWriter->addFieldToBuilder(field->name, rtlUtf8Size(utf8chars, utf8.getdata()), utf8.getstr());
+    parquetWriter->addFieldToBuilder(field, rtlUtf8Size(utf8chars, utf8.getdata()), utf8.getstr());
 }
 
 /**
@@ -1718,7 +1794,7 @@ void ParquetRecordBinder::processString(unsigned len, const char *value, const R
  */
 void ParquetRecordBinder::processBool(bool value, const RtlFieldInfo *field)
 {
-    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field->name);
+    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field);
     if (fieldBuilder->type()->id() == arrow::Type::type::BOOL)
     {
         arrow::BooleanBuilder *boolBuilder = static_cast<arrow::BooleanBuilder *>(fieldBuilder);
@@ -1737,7 +1813,7 @@ void ParquetRecordBinder::processBool(bool value, const RtlFieldInfo *field)
  */
 void ParquetRecordBinder::processData(unsigned len, const void *value, const RtlFieldInfo *field)
 {
-    parquetWriter->addFieldToBuilder(field->name, len, (const char *)value);
+    parquetWriter->addFieldToBuilder(field, len, (const char *)value);
 }
 
 /**
@@ -1748,9 +1824,21 @@ void ParquetRecordBinder::processData(unsigned len, const void *value, const Rtl
  */
 void ParquetRecordBinder::processInt(__int64 value, const RtlFieldInfo *field)
 {
-    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field->name);
+    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field);
     switch(fieldBuilder->type()->id())
     {
+        case arrow::Type::type::INT8:
+        {
+            arrow::Int8Builder *int8Builder = static_cast<arrow::Int8Builder *>(fieldBuilder);
+            reportIfFailure(int8Builder->Append(value));
+            break;
+        }
+        case arrow::Type::type::INT16:
+        {
+            arrow::Int16Builder *int16Builder = static_cast<arrow::Int16Builder *>(fieldBuilder);
+            reportIfFailure(int16Builder->Append(value));
+            break;
+        }
         case arrow::Type::type::INT32:
         {
             arrow::Int32Builder *int32Builder = static_cast<arrow::Int32Builder *>(fieldBuilder);
@@ -1776,9 +1864,21 @@ void ParquetRecordBinder::processInt(__int64 value, const RtlFieldInfo *field)
  */
 void ParquetRecordBinder::processUInt(unsigned __int64 value, const RtlFieldInfo *field)
 {
-    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field->name);
+    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field);
     switch(fieldBuilder->type()->id())
     {
+        case arrow::Type::type::UINT8:
+        {
+            arrow::UInt8Builder *uInt8Builder = static_cast<arrow::UInt8Builder *>(fieldBuilder);
+            reportIfFailure(uInt8Builder->Append(value));
+            break;
+        }
+        case arrow::Type::type::UINT16:
+        {
+            arrow::UInt16Builder *uInt16Builder = static_cast<arrow::UInt16Builder *>(fieldBuilder);
+            reportIfFailure(uInt16Builder->Append(value));
+            break;
+        }
         case arrow::Type::type::UINT32:
         {
             arrow::UInt32Builder *uInt32Builder = static_cast<arrow::UInt32Builder *>(fieldBuilder);
@@ -1804,22 +1904,100 @@ void ParquetRecordBinder::processUInt(unsigned __int64 value, const RtlFieldInfo
  */
 void ParquetRecordBinder::processReal(double value, const RtlFieldInfo *field)
 {
-    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field->name);
+    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field);
     if (fieldBuilder->type()->id() == arrow::Type::type::DOUBLE)
     {
         arrow::DoubleBuilder *doubleBuilder = static_cast<arrow::DoubleBuilder *>(fieldBuilder);
         reportIfFailure(doubleBuilder->Append(value));
+    }
+    else if (fieldBuilder->type()->id() == arrow::Type::type::FLOAT)
+    {
+        arrow::FloatBuilder *floatBuilder = static_cast<arrow::FloatBuilder *>(fieldBuilder);
+        reportIfFailure(floatBuilder->Append(value));
     }
     else
         failx("Incorrect type for real field %s: %s", field->name, fieldBuilder->type()->ToString().c_str());
 }
 
 /**
- * @brief Processes the field for its respective type, and adds the key-value pair to the current row.
+ * @brief Adds DECIMAL and UDECIMAL fields to the builder based on the size of the decimal
+ *
+ * @param decText Data to be written to the Parquet file.
+ * @param bytes Number of bytes holding the digits.
+ * @param digits Number of digits in the decimal.
+ * @param precision Number of digits after the decimal point.
+ * @param field RtlFieldInfo holds metadata about the field.
+ */
+void ParquetRecordBinder::addDecimalFieldToBuilder(rtlDataAttr *decText, size32_t bytes, int32_t digits, int32_t precision, const RtlFieldInfo *field)
+{
+    arrow::ArrayBuilder *fieldBuilder = parquetWriter->getFieldBuilder(field);
+    switch (fieldBuilder->type()->id())
+    {
+    case arrow::Type::DECIMAL32:
+    {
+        arrow::Decimal32Builder *decimal32Builder = static_cast<arrow::Decimal32Builder *>(fieldBuilder);
+        arrow::Decimal32 decimal32;
+        reportIfFailure(arrow::Decimal32::FromString(std::string_view(decText->getstr(), bytes), &decimal32, &digits, &precision));
+        reportIfFailure(decimal32Builder->Append(decimal32));
+        break;
+    }
+    case arrow::Type::DECIMAL64:
+    {
+        arrow::Decimal64Builder *decimal64Builder = static_cast<arrow::Decimal64Builder *>(fieldBuilder);
+        arrow::Decimal64 decimal64;
+        reportIfFailure(arrow::Decimal64::FromString(std::string_view(decText->getstr(), bytes), &decimal64, &digits, &precision));
+        reportIfFailure(decimal64Builder->Append(decimal64));
+        break;
+    }
+    case arrow::Type::DECIMAL128:
+    {
+        arrow::Decimal128Builder *decimal128Builder = static_cast<arrow::Decimal128Builder *>(fieldBuilder);
+        arrow::Decimal128 decimal128;
+        reportIfFailure(arrow::Decimal128::FromString(std::string_view(decText->getstr(), bytes), &decimal128, &digits, &precision));
+        reportIfFailure(decimal128Builder->Append(decimal128));
+        break;
+    }
+    case arrow::Type::DECIMAL256:
+    {
+        arrow::Decimal256Builder *decimal256Builder = static_cast<arrow::Decimal256Builder *>(fieldBuilder);
+        arrow::Decimal256 decimal256;
+        reportIfFailure(arrow::Decimal256::FromString(std::string_view(decText->getstr(), bytes), &decimal256, &digits, &precision));
+        reportIfFailure(decimal256Builder->Append(decimal256));
+        break;
+    }
+    default:
+        failx("Incorrect type for Decimal field %s: %s", field->name, fieldBuilder->type()->ToString().c_str());
+    }
+}
+
+/**
+ * @brief Convert from Binary Coded Decimal to string and add to Decimal field builder.
  *
  * @param value Data to be written to the Parquet file.
- * @param digits Number of digits in decimal.
- * @param precision Number of digits of precision.
+ * @param digits Number of bytes holding the digits.
+ * @param precision Number of digits after the decimal point.
+ * @param field RtlFieldInfo holds metadata about the field.
+ */
+void ParquetRecordBinder::processUDecimal(const void *value, unsigned digits, unsigned precision, const RtlFieldInfo *field)
+{
+    Decimal val;
+    size32_t bytes;
+    rtlDataAttr decText;
+    val.setUDecimal(digits, precision, value);
+    val.getStringX(bytes, decText.refstr());
+
+    // convert digits from number of bytes to number of digits
+    val.getPrecision(digits, precision);
+    assert(digits <= 64 && precision <= 32);
+    addDecimalFieldToBuilder(&decText, bytes, digits, precision, field);
+}
+
+/**
+ * @brief Convert from Binary Coded Decimal to string and add to Decimal field builder.
+ *
+ * @param value Data to be written to the Parquet file.
+ * @param digits Number of bytes holding the digits.
+ * @param precision Number of digits after the decimal point.
  * @param field RtlFieldInfo holds metadata about the field.
  */
 void ParquetRecordBinder::processDecimal(const void *value, unsigned digits, unsigned precision, const RtlFieldInfo *field)
@@ -1830,7 +2008,10 @@ void ParquetRecordBinder::processDecimal(const void *value, unsigned digits, uns
     val.setDecimal(digits, precision, value);
     val.getStringX(bytes, decText.refstr());
 
-    parquetWriter->addFieldToBuilder(field->name, bytes, decText.getstr());
+    // convert digits from number of bytes to number of digits
+    val.getPrecision(digits, precision);
+    assert(digits <= 64 && precision <= 32);
+    addDecimalFieldToBuilder(&decText, bytes, digits, precision, field);
 }
 
 /**
@@ -1846,7 +2027,7 @@ void ParquetRecordBinder::processUnicode(unsigned chars, const UChar *value, con
     char *utf8;
     rtlUnicodeToUtf8X(utf8chars, utf8, chars, value);
 
-    parquetWriter->addFieldToBuilder(field->name, rtlUtf8Size(utf8chars, utf8), utf8);
+    parquetWriter->addFieldToBuilder(field, rtlUtf8Size(utf8chars, utf8), utf8);
 }
 
 /**
@@ -1874,7 +2055,7 @@ void ParquetRecordBinder::processQString(unsigned len, const char *value, const 
  */
 void ParquetRecordBinder::processUtf8(unsigned chars, const char *value, const RtlFieldInfo *field)
 {
-    parquetWriter->addFieldToBuilder(field->name, rtlUtf8Size(chars, value), value);
+    parquetWriter->addFieldToBuilder(field, rtlUtf8Size(chars, value), value);
 }
 
 /**
@@ -1961,7 +2142,6 @@ ParquetEmbedFunctionContext::ParquetEmbedFunctionContext(const IContextLogger &_
 bool ParquetEmbedFunctionContext::getBooleanResult()
 {
     UNIMPLEMENTED_X("Parquet Scalar Return Type BOOLEAN");
-    return false;
 }
 
 void ParquetEmbedFunctionContext::getDataResult(size32_t &len, void *&result)
@@ -1972,19 +2152,16 @@ void ParquetEmbedFunctionContext::getDataResult(size32_t &len, void *&result)
 double ParquetEmbedFunctionContext::getRealResult()
 {
     UNIMPLEMENTED_X("Parquet Scalar Return Type REAL");
-    return 0.0;
 }
 
 __int64 ParquetEmbedFunctionContext::getSignedResult()
 {
     UNIMPLEMENTED_X("Parquet Scalar Return Type SIGNED");
-    return 0;
 }
 
 unsigned __int64 ParquetEmbedFunctionContext::getUnsignedResult()
 {
     UNIMPLEMENTED_X("Parquet Scalar Return Type UNSIGNED");
-    return 0;
 }
 
 void ParquetEmbedFunctionContext::getStringResult(size32_t &chars, char *&result)
@@ -2036,7 +2213,6 @@ byte *ParquetEmbedFunctionContext::getRowResult(IEngineRowAllocator *_resultAllo
 size32_t ParquetEmbedFunctionContext::getTransformResult(ARowBuilder &rowBuilder)
 {
     UNIMPLEMENTED_X("Parquet Transform Result");
-    return 0;
 }
 
 /**
@@ -2229,10 +2405,7 @@ public:
     virtual IEmbedFunctionContext *createFunctionContextEx(ICodeContext *ctx, const IThorActivityContext *activityCtx, unsigned flags, const char *options) override
     {
         if (flags & EFimport)
-        {
             UNSUPPORTED("IMPORT");
-            return nullptr;
-        }
         else
             return new ParquetEmbedFunctionContext(ctx ? ctx->queryContextLogger() : queryDummyContextLogger(), activityCtx, options, flags);
     }
@@ -2240,7 +2413,6 @@ public:
     virtual IEmbedServiceContext *createServiceContext(const char *service, unsigned flags, const char *options) override
     {
         throwUnexpected();
-        return nullptr;
     }
 };
 

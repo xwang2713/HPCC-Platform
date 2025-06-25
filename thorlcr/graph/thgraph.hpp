@@ -409,6 +409,7 @@ public:
     {
         return ctx->getElapsedMs();
     }
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption);
 };
 
 
@@ -630,7 +631,7 @@ class graph_decl CGraphBase : public CGraphStub, implements IEclGraphResults
     CChildGraphTable childGraphsTable;
     CGraphStubArrayCopy orderedChildGraphs;
     Owned<IGraphTempHandler> tmpHandler;
-
+    AtomicShared<CFileSizeTracker> tempFileSizeTracker;
     void clean();
 
 protected:
@@ -805,7 +806,17 @@ public:
     virtual void end();
     virtual void abort(IException *e) override;
     virtual IThorGraphResults *createThorGraphResults(unsigned num);
-
+    CFileSizeTracker * queryTempFileSizeTracker();
+    offset_t queryPeakTempSize()
+    {
+        CFileSizeTracker *tracker = tempFileSizeTracker.query();
+        return tracker ? tracker->queryPeakSize() : 0;
+    }
+    offset_t queryActiveTempSize()
+    {
+        CFileSizeTracker *tracker = tempFileSizeTracker.query();
+        return tracker ? tracker->queryActiveSize() : 0;
+    }
 // IExceptionHandler
     virtual bool fireException(IException *e);
 
@@ -884,6 +895,7 @@ protected:
     memsize_t keyNodeCacheBytes = 0;
     memsize_t keyLeafCacheBytes = 0;
     memsize_t keyBlobCacheBytes = 0;
+    JobInfoCaptureBehaviour jobInfoCaptureBehaviour = JobInfoCaptureBehaviour::onFailure;
 
 
     class CThorPluginCtx : public SimplePluginCtx
@@ -1071,7 +1083,8 @@ public:
     const rank_t &queryMyRank() const { return myrank; }
     unsigned queryMyBasePort() const { return myBasePort; }
     mptag_t deserializeMPTag(MemoryBuffer &mb);
-    IEngineRowAllocator *getRowAllocator(IOutputMetaData * meta, activity_id activityId, roxiemem::RoxieHeapFlags flags=roxiemem::RHFnone) const;
+    IEngineRowAllocator *getRowAllocator(IOutputMetaData * meta, activity_id activityId, roxiemem::RoxieHeapFlags flags) const;
+    IEngineRowAllocator *getRowAllocator(IOutputMetaData * meta, activity_id activityId) const;
     roxiemem::IRowManager *queryRowManager() const;
     unsigned short allocPort(unsigned num);
     void freePort(unsigned short p, unsigned num);
@@ -1104,6 +1117,7 @@ class graph_decl CActivityBase : implements CInterfaceOf<IThorRowInterfaces>, im
     CSingletonLock CABserializerlock;
     CSingletonLock CABdeserializerlock;
     roxiemem::RoxieHeapFlags defaultRoxieMemHeapFlags = roxiemem::RHFnone;
+    AtomicShared<CFileSizeTracker> tempFileSizeTracker;
 
 protected:
     CGraphElementBase &container;
@@ -1171,6 +1185,22 @@ public:
     IThorRowInterfaces * createRowInterfaces(IOutputMetaData * meta, byte seq=0);
     IThorRowInterfaces * createRowInterfaces(IOutputMetaData * meta, roxiemem::RoxieHeapFlags heapFlags, byte seq=0);
 
+    CFileSizeTracker * queryTempFileSizeTracker();
+    offset_t queryActiveTempSize() const
+    {
+        CFileSizeTracker *tracker = tempFileSizeTracker.query();
+        return tracker ? tracker->queryActiveSize() : 0;
+    }
+    offset_t queryPeakTempSize() const
+    {
+        CFileSizeTracker *tracker = tempFileSizeTracker.query();
+        return tracker ? tracker->queryPeakSize() : 0;
+    }
+    CFileOwner * createOwnedTempFile(const char *fileName)
+    {
+        Owned<IFile> iFile = createIFile(fileName);
+        return new CFileOwner(iFile, queryTempFileSizeTracker());
+    }
 // IExceptionHandler
     bool fireException(IException *e);
     __declspec(noreturn) void processAndThrowOwnedException(IException * e) __attribute__((noreturn));
@@ -1228,7 +1258,7 @@ interface IExpander;
 interface IThorFileCache : extends IInterface
 {
     virtual bool remove(const char *filename, unsigned crc) = 0;
-    virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilenae, IPartDescriptor &partDesc, IExpander *expander=nullptr, const StatisticsMapping & _statMapping=diskLocalStatistics, size32_t blockedFileIOSize=0) = 0;
+    virtual IFileIO *lookupIFileIO(CActivityBase &activity, const char *logicalFilename, IPartDescriptor &partDesc, IExpander *expander=nullptr, const StatisticsMapping & _statMapping=diskLocalStatistics) = 0;
 };
 
 class graph_decl CThorResourceBase : implements IThorResource, public CInterface

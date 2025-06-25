@@ -1,11 +1,11 @@
 # MongoDB plugin for ECL
 
 The MongoDB plugin allows an ECL user to embed MongoDB function calls into their code and run it
-on the HPCC Platform. The plugin supports inserting a dataset into a database using `insert_many`, and can 
+on the HPCC Platform. The plugin supports inserting a dataset into a database using `insert_many`, and can
 build ECL datasets from MongoDB result documents returned by the `find`, `update`, `delete`, `aggregate`, and `runCommand` methods.
 
 The embedded script that gets passed to the plugin can be used to create complex documents to support almost every
-MongoDB command. 
+MongoDB command.
 
 It is important to use the same keys as the ones in MongoDB when declaring a return type or when creating a BSON document. Otherwise, the plugin will look for a field that might not exist to return when building the resulting dataset.
 
@@ -56,7 +56,7 @@ To create the uri for the MongoDB connection instance the ECL user needs to pass
 | limit| Limit the number of documents returned from the find command (To limit the documents returned from an aggregation use the [$limit stage](https://www.mongodb.com/docs/manual/reference/operator/aggregation/limit/)). The default is no limit. For more information on how limit works visit the [Manual](https://www.mongodb.com/docs/manual/reference/method/cursor.limit/#behavior).
 | connectionOptions | A string of connection options used to make the connection to the cluster. Currently only one set of connection options will be used per workunit. |
 
-#### Connection Options 
+#### Connection Options
 
 To specify connection options to the MongoDB cluster use the connectionOptions option in the embed statement. The format for the connection options is ampersand separated options like so: \<option0\>&\<option1\>
 
@@ -78,14 +78,14 @@ Multiple options are seperated by '&', and more information about additional ope
 
 ```
 getConnection() := EMBED(mongodb : user(user), password(pwd), server(server), database(dbname),  collection(collname), batchSize(100))
-ENDEMBED; 
+ENDEMBED;
 ```
 
 For connecting to a local MongoDB instance you just need to pass in the port number that the server is listening on.
 
 ```
 getConnection() := EMBED(mongodb : port(port), database(dbname),  collection(collname))
-ENDEMBED; 
+ENDEMBED;
 ```
 
 ### Parameters
@@ -95,7 +95,7 @@ To use function parameters within the MongoDB statement, prefix them with a '\$'
 ```
 dataset({STRING _id}) getCount(REAL salary) := EMBED(mongodb : user(user), password(pwd), server(server), database(dbname),  collection(collname), batchSize(100))
     find({ salary: { $gt: $salary}});
-ENDEMBED; 
+ENDEMBED;
 ```
 
 ### Limitations
@@ -125,10 +125,14 @@ Not every ECL or MongoDB datatype translates seemlessly to the other side.
 | MongoDB datatypes | ECL equivalent |
 | ----------------- | -------------- |
 | b_date | STRING, INTEGER |
-| b_regex |  Unsupported |
-| b_timestamp | Unsupported |
+| b_regex |  {String pattern, String options} |
+| b_timestamp | {Unsigned t, Unsigned i} |
 
-The MongoDB date datatype can be converted to an integer in MongoDB or it will automatically be converted to a STRING by the plugin. Typically Dates before 1970 get returned by MongoDB as INTEGERS. Also, Unsigned Integers are unsupported in MongoDB. This means that in order to insert UINTEGERs into the database the plugin converts them to b_int64 which is a 64 bit signed integer.
+The MongoDB date datatype can be converted to an integer in MongoDB or it will automatically be converted to a STRING by the plugin. Typically Dates before 1970 get returned by MongoDB as INTEGERS.
+
+Due to regex and timestamp types being returned by MongoDB as objects, ECL records that map to these types are defined in the mongodb.ecllib file for your use. For information about the regex and timestamp types: [Manual](https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#bson-data-types-and-associated-representations)
+
+Unsigned Integers are unsupported in MongoDB. This means that in order to insert UINTEGERs into the database the plugin converts them to b_int64 which is a 64 bit signed integer.
 
 ### Inserting Documents
 
@@ -141,7 +145,7 @@ ENDEMBED;
 insertMany(ds);
 
 insertOne(STRING first, STRING last, REAL salary) := EMBED(mongodb : user(user), password(pwd), server(server), database(db),  collection(coll))
-    insert({first: $first, last: $last, salary: $salary}); 
+    insert({first: $first, last: $last, salary: $salary});
 ENDEMBED;
 insertOne();
 ```
@@ -264,4 +268,3 @@ createIndex(1, true);
 ```
 
 In this example an index is created with the keys first and last and in ascending order.
-

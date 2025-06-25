@@ -545,6 +545,11 @@ public:
     {
         return queryNullSectionTimer();
     }
+
+    virtual ISectionTimer * registerStatsTimer(unsigned activityId, const char * name, unsigned int statsOption)
+    {
+        return queryNullSectionTimer();
+    }
 // IEngineContext
     virtual DALI_UID getGlobalUniqueIds(unsigned num, SocketEndpoint *_foreignNode)
     {
@@ -564,6 +569,7 @@ public:
         return ::getGlobalUniqueIds(num, &foreignNode);
     }
     virtual bool allowDaliAccess() const  { return true; }
+    virtual bool allowSashaAccess() const { return true; }
     virtual StringBuffer &getQueryId(StringBuffer &result, bool isShared) const
     {
         result.append("workunit"); // No distinction between global, workunit and query scopes for eclagent
@@ -793,6 +799,7 @@ public:
 
     void ready();
     void execute() { if (!alreadyUpdated) activity->execute(); }
+    void onStart(const byte * parentExtract, CHThorDebugContext * debugContext);
     void stop() { if (!alreadyUpdated) activity->stop(); }
 
     IHThorException * makeWrappedException(IException * e);
@@ -827,6 +834,7 @@ public:
     CICopyArrayOf<EclGraphElement> dependentOnActivity;
     IntArray dependentControlId;
     IProbeManager * probeManager;
+    const byte * savedParentExtract = nullptr;
 
     Owned<EclBoundLoopGraph> loopGraph;
 };
@@ -1042,6 +1050,9 @@ typedef MapBetween<graphid_t, graphid_t, EclSubGraphPtr, EclSubGraphPtr> SubGrap
 
 class EclGraph : public CInterface
 {
+    AtomicShared<IFileReadPropertiesUpdater> fileReadPropsUpdater;
+    CriticalSection fileReadPropsUpdaterCrit;
+
     RedirectedAgentContext graphAgentContext;
     class SubGraphCodeContext : public IndirectCodeContextEx
     {
@@ -1106,7 +1117,7 @@ public:
 
     inline bool queryLibrary() const { return isLibrary; }
     inline unsigned queryWfid() const { return wfid; }
-
+    IFileReadPropertiesUpdater * queryFileReadPropsUpdater();
 protected:
     IAgentContext * agent;
     CIArrayOf<EclSubGraph> graphs;

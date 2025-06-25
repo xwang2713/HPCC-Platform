@@ -10,7 +10,8 @@ A Loki Datasource is created automatically, which allowers users to monitor/quer
 ### Helm Deployment
 To deploy the light-weight Loki Stack for HPCC component log processing issue the following command:
 
->helm install myloki HPCC-Systems/helm/managed/logging/loki-stack/
+>helm install myloki4hpcclogs HPCC-Systems/helm/managed/logging/loki-stack/
+Note: the deployment name 'myloki4hpcclogs' is customizable; however, any changes need to be reflected in the LogAccess configuration (See section on configuring LogAccess below)
 
 ### Dependencies
 This chart is dependent on the Grafana Loki-stack Helm charts which in turn is dependent on Loki, Grafana, Promtail.
@@ -23,7 +24,9 @@ Helm provides a convenient command to automatically pull appropriate dependencie
 ##### HELM Install parameter
 Otherwise, provide the "--dependency-update" argument in the helm install command
 For example:
-> helm install myloki HPCC-Systems/helm/managed/logging/loki-stack/ --dependency-update
+> helm install myloki4hpcclogs HPCC-Systems/helm/managed/logging/loki-stack/ --dependency-update
+
+Note: the deployment name 'myloki4hpcclogs' is customizable; however, any changes need to be reflected in the LogAccess configuration (See section on configuring LogAccess below)
 
 ### Components
 Grafana Loki Stack is comprised of a set of components that which serve as a full-featured logging stack.
@@ -79,3 +82,147 @@ loki:
   persistence:
     enabled: true
 ```
+
+## Configure HPCC logAccess
+The logAccess feature allows HPCC to query and package relevant logs for various features such as ZAP report, WorkUnit helper logs, ECLWatch log viewer, etc.
+
+### Provide target Grafana/Loki access information 
+
+HPCC logAccess requires access to the Grafana username/password credentials. Those values must be provided via a secure secret object.
+
+The secret is expected to be in the 'esp' category, and be named 'grafana-logaccess'. The following key-value pairs are required (key names must be spelled exactly as shown here)
+
+    username - This should contain the Grafana username
+    password - This should contain the Grafana password
+
+#### Create secret using script
+The included 'create-grafana-logaccess-secret.sh' helper can be used to create the necessary secret.
+
+Example scripted secret creation command:
+
+```
+  create-grafana-logaccess-secret.sh -u admin -p somepass -n hpcc
+```
+
+#### Create secret manually from file
+Otherwise, users can create the secret manually.
+
+Example manual secret creation command (assuming ./secrets-templates contains files named exactly as the above keys):
+
+```
+  kubectl create secret generic grafana-logaccess --from-file=HPCC-Platform/helm/managed/logging/loki-stack/secrets-templates/ -n hpcc
+```
+
+#### Create secret manually from manifest
+Otherwise, users can create the secret through a manifest file.
+
+First, base64 encode the credentials:
+
+```
+echo -n 'admin' | base64
+echo -n 'whatevergrafanapassword' | base64
+```
+
+Add the encoded values to the provided manifest file 'grafana-logaccess-secret.yaml'
+
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-logaccess
+type: Opaque
+data:
+  #Base64 encoded username and password for Grafana
+  #can be encoded using the following command:
+  # echo -n 'admin' | base64
+  username: YWRtaW4=
+  # echo -n 'whatevergrafanapassword' | base64
+  password: d2hhdGV2ZXJncmFmYW5hcGFzc3dvcmQ=
+```
+
+Then apply the manifest values:
+
+```
+kubectl apply -f ./grafana-logaccess-secret.yaml --namespace hpcc --server-side
+```
+
+#### Verify secret
+
+At this point, confirm the secret has been created with the expected key values:
+
+```
+kubectl describe secret grafana-logaccess -n hpcc
+```
+
+The output should be something like this:
+
+```
+kubectl describe secret grafana-logaccess -n hpcc
+Name:         grafana-logaccess
+Namespace:    hpcc
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+password:  40 bytes
+username:  5 bytes
+```
+
+### Configure HPCC logAccess
+
+The target HPCC deployment should be directed to use the desired Grafana endpoint with the Loki datasource, and the newly created secret by providing appropriate logAccess values (such as ./grafana-hpcc-logaccess.yaml).
+
+Example use for targeting a loki stack deployed as 'myloki4hpcclogs' on the default namespace:
+
+```
+  helm install myhpcc hpcc/hpcc -f HPCC-Platform/helm/managed/logging/loki-stack/grafana-hpcc-logaccess.yaml
+```
+
+####
+
+The grafana hpcc logaccess values should provide Grafana connection information, such as the host, and port; the Loki datasource where the logs reside; the k8s namespace under which the logs were created (non-default namespace highly recommended); and the hpcc component log format (table|json|xml)
+
+Example values file describing logAccess targeting loki stack deployed as 'myloki4hpcclogs' on the default namespace. Note that the "host" entry must reflect the name of the deployed Loki stack, as shown in the excerpt below (eg **_myloki4hpcclogs_**-grafana.default.svc.cluster.local):
+
+```
+
+  global:
+    logAccess:
+      name: "Grafana/loki stack log access"
+      type: "GrafanaCurl"
+      connection:
+        protocol: "http"
+        host: "myloki4hpcclogs-grafana.default.svc.cluster.local"
+        port: 3000
+      datasource:
+        id: "1"
+        name: "Loki"
+      namespace:
+        name: "hpcc"
+      logFormat:
+        type: "json"
+```
+#### Baremetal configuration
+
+LogAccess can be configured on baremetal systems as well. It is not a common scenario because baremetal logs continue to be persisted on the local filesystem. Enabling LogAccess on a baremetal system would allow users to fetch remotely stored HPCC logs (not likely related to the host HPCC Systems deployment). To enable, inject a logAccess block with all configuration values properly filled in. The logAccess block can be injected within the Software element in the active environment.xml or within the global element on the esp.xml.
+
+For example:
+
+```
+<logAccess name="MyGrafanaLogaccess" type="GrafanaCurl">
+      <!--username/pass only if secret not available!!-->
+      <connection protocol="http" port="3000" host="localhost" username="admin" password="xyz"/>
+      <datasource name="Loki" id="1"/> <!-- Find this info from Grafana: http://localhost:3000/api/datasources/ -->
+      <namespace name="hpcc"/> <!-- the namespace of the HPCC components which have forwarded logs to grafana -->
+      <logFormat type="table"/> <!--optional, only needed if HPCC log format set to XML or JSON-->
+      <logMaps type="global" searchColumn="log" columnMode="DEFAULT" columnType="string"/>
+      <logMaps type="timestamp" searchColumn="tsNs" columnMode="MIN" storeName="values" columnType="epoch"/>
+      <!-- logmaps based on streams can be found via http://localhost:3000/api/datasources/proxy/1/loki/api/v1/labels -->
+      <logMaps type="components" searchColumn="component" columnMode="ALL" storeName="stream" columnType="string"/>
+      <logMaps type="node" searchColumn="node_name" columnMode="ALL" storeName="stream" columnType="string"/>
+      <logMaps type="pod" searchColumn="pod" columnMode="DEFAULT" storeName="stream" columnType="string"/>
+   </logAccess>
+  ```

@@ -51,7 +51,7 @@ template <class T>
 inline void traceWait(const char *name, T &sem,unsigned interval=60*1000)
 {
     while (!sem.wait(interval))
-        PROGLOG("Waiting for %s",name);
+        DBGLOG("Waiting for %s",name);
 }
 
 
@@ -69,9 +69,9 @@ class CWriteIntercept : public CSimpleInterface
     CActivityBase &activity;
     CriticalSection crit;
     IThorRowInterfaces *rowIf;
-    Owned<IFile> dataFile, idxFile;
+    Owned<CFileOwner> dataFile, idxFile;
     Owned<IFileIO> dataFileIO, idxFileIO;
-    Owned<ISerialStream> dataFileStream;
+    Owned<IBufferedSerialInputStream> dataFileStream;
     Linked<IFileIOStream> idxFileStream;
     CThorStreamDeserializerSource dataFileDeserializerSource;
     unsigned interval;
@@ -100,13 +100,13 @@ class CWriteIntercept : public CSimpleInterface
                 // right create idx
                 StringBuffer tempname;
                 GetTempFilePath(tempname.clear(),"srtidx");
-                idxFile.setown(createIFile(tempname.str()));
-                idxFileIO.setown(idxFile->open(IFOcreaterw));
+                idxFile.setown(activity.createOwnedTempFile(tempname.str()));
+                idxFileIO.setown(idxFile->queryIFile().open(IFOcreaterw));
                 if (!idxFileIO.get())
                 {
                     StringBuffer err;
-                    err.append("Cannot create ").append(idxFile->queryFilename());
-                    LOG(MCerror, "%s", err.str());
+                    err.append("Cannot create ").append(idxFile->queryIFile().queryFilename());
+                    IERRLOG("%s", err.str());
                     throw MakeActivityException(&activity, -1, "%s", err.str());
                 }
                 idxFileStream.setown(createBufferedIOStream(idxFileIO,0x100000));
@@ -141,7 +141,7 @@ class CWriteIntercept : public CSimpleInterface
         if (!idxFileIO.get())
         {
             assertex(idxFile);
-            idxFileIO.setown(idxFile->open(IFOread));
+            idxFileIO.setown(idxFile->queryIFile().open(IFOread));
         }
         size32_t rd = idxFileIO->read((offset_t)pos*(offset_t)sizeof(offset_t),sizeof(*ofs)*n,ofs);
         if (closeIO)
@@ -161,12 +161,12 @@ class CWriteIntercept : public CSimpleInterface
         {
             if (parent->compressedOverflowFile)
             {
-                Owned<ICompressedFileIO> iFileIO = createCompressedFileReader(parent->dataFile);
+                Owned<IFileIO> iFileIO = createCompressedFileReader(&(parent->dataFile->queryIFile()));
                 assertex(iFileIO);
                 stream.setown(createRowStreamEx(iFileIO, parent->rowIf, startOffset, (offset_t)-1, max));
             }
             else
-                stream.setown(createRowStreamEx(parent->dataFile, parent->rowIf, startOffset, (offset_t)-1, max));
+                stream.setown(createRowStreamEx(&(parent->dataFile->queryIFile()), parent->rowIf, startOffset, (offset_t)-1, max));
         }
         virtual const void *nextRow() { return stream->nextRow(); }
         virtual void stop() { stream->stop(); }
@@ -187,16 +187,12 @@ public:
     ~CWriteIntercept()
     {
         closeFiles();
-        if (dataFile)
-            dataFile->remove();
-        if (idxFile)
-            idxFile->remove();
     }
     offset_t write(IRowStream *input)
     {
         StringBuffer tempname;
         GetTempFilePath(tempname,"srtmrg");
-        dataFile.setown(createIFile(tempname.str()));
+        dataFile.setown(activity.createOwnedTempFile(tempname.str()));
 
         unsigned rwFlags = DEFAULT_RWFLAGS;
         size32_t compBlkSz = 0;
@@ -211,22 +207,31 @@ public:
                 rwFlags |= rw_compress;
                 rwFlags |= spillCompInfo;
                 compressedOverflowFile = true;
-                compBlkSz = activity.getOptUInt(THOROPT_SORT_COMPBLKSZ, DEFAULT_SORT_COMPBLKSZ);
-                ActPrintLog(&activity, "Creating compressed merged overflow file (block size = %u)", compBlkSz);
+
+                /*
+                * NB: HPCC-29385 Changed the way that compressed files are decompressed, so they are only decompressed one
+                * compression buffer at a time.  For LZ4 this means they can only ever expand to the compressed block size (typically 1MB)
+                * rather than 10s of times that space.
+                * LZW could still expand many times its block size, but the default for LZW is already 64K which is low enough.
+                * Therefore we default to 0 here, which causes createRowWriter to use the default block size for the compressor type.
+                */
+                compBlkSz = activity.getOptUInt(THOROPT_SORT_COMPBLKSZ, 0);
+                if (compBlkSz)
+                    ActPrintLog(&activity, "Creating compressed merged overflow file (block size = %u)", compBlkSz);
+                else
+                    ActPrintLog(&activity, "Creating compressed merged overflow file");
             }
         }
 
-        Owned<IExtRowWriter> output = createRowWriter(dataFile, rowIf, rwFlags, nullptr, compBlkSz);
+        Owned<ILogicalRowWriter> output = createRowWriter(&(dataFile->queryIFile()), rowIf, rwFlags, nullptr, compBlkSz);
 
         bool overflowed = false;
         ActPrintLog(&activity, "Local Overflow Merge start");
-        unsigned ret=0;
         for (;;)
         {
             const void *_row = input->nextRow();
             if (!_row)
                 break;
-            ret++;
 
             OwnedConstThorRow row = _row;
             offset_t start = output->getPosition();
@@ -252,17 +257,19 @@ public:
         }
         output->flush();
         offset_t end = output->getPosition();
+        dataFile->noteSize(output->getStatistic(StSizeDiskWrite));
         output.clear();
         writeidxofs(end);
         if (idxFileIO)
         {
             idxFileStream->flush();
             idxFileStream.clear();
+            idxFile->noteSize(idxFileIO->getStatistic(StSizeDiskWrite));
             idxFileIO.clear();
         }
         if (overflowed)
             IWARNLOG("Overflowed by %" I64F "d", overflowsize);
-        ActPrintLog(&activity, "Local Overflow Merge done: overflow file '%s', size = %" I64F "d", dataFile->queryFilename(), dataFile->size());
+        ActPrintLog(&activity, "Local Overflow Merge done: overflow file '%s', size = %" I64F "d", dataFile->queryIFile().queryFilename(), dataFile->queryIFile().size());
         return end;
     }
     IRowStream *getStream(offset_t startOffset, rowcount_t max)
@@ -290,7 +297,7 @@ public:
         size32_t idxSz = (size32_t)(ofs[1]-ofs[0]);
         if (!dataFileIO)
         {
-            dataFileIO.setown(dataFile->open(IFOread));
+            dataFileIO.setown(dataFile->queryIFile().open(IFOread));
             if (compressedOverflowFile)
             {
                 dataFileIO.setown(createCompressedFileReader(dataFileIO));
@@ -888,7 +895,7 @@ public:
     virtual void GetGatherInfo(rowcount_t &numlocal, offset_t &totalsize, unsigned &_overflowscale, bool haskeyserializer)
     {
         if (!gatherdone)
-            ERRLOG("GetGatherInfo:***Error called before gather complete");
+            IERRLOG("GetGatherInfo:***Error called before gather complete");
         if (haskeyserializer != (NULL != keyserializer))
             throwUnexpected();
         numlocal = rowArray.ordinality(); // JCSMORE - this is sample total, why not return actual spill total?
@@ -1148,8 +1155,10 @@ public:
         }
         catch (IException *e)
         {
-            startmergesem.interrupt(LINK(e));
-            throw e;
+            Owned<IThorException> e2 = MakeActivityException(activity, e, "CThorSorter::StartMiniSort");
+            e->Release();
+            startmergesem.interrupt(e2.getLink());
+            throw e2.getClear();
         }
         merger.setown(sortedStream.getClear());
         startmergesem.signal();
@@ -1167,8 +1176,9 @@ public:
             if (transferserver)
                 transferserver->subjoin(); // need to have finished merge threads 
         }
-        catch (IException *e) {
-            EXCLOG(e,"CThorSorter");
+        catch (IException *e)
+        {
+            IERRLOG(e,"CThorSorter");
             if (closeexc.get())
                 e->Release();
             else
@@ -1331,7 +1341,7 @@ public:
             throw;
         }
 
-        mergeStats(spillStats, sortedloader);
+        mergeRemappedStats(spillStats, sortedloader, diskToTempStatsMap);
 
         if (!abort)
         {

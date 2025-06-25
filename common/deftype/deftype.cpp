@@ -2135,6 +2135,11 @@ bool isPatternType(ITypeInfo * type)
     }
 }
 
+bool isUTF8Type(ITypeInfo * type)
+{
+    return (type->getTypeCode() == type_utf8);
+}
+
 bool isUnicodeType(ITypeInfo * type)
 {
     switch(type->getTypeCode())
@@ -3321,22 +3326,6 @@ ITypeInfo * replaceChildType(ITypeInfo * type, ITypeInfo * newChild)
         throwUnexpected();
     }
     return cloneModifiers(type, newType);
-}
-
-//---------------------------------------------------------------------------
-
-extern unsigned getClarionResultType(ITypeInfo *type)
-{
-    if (type)
-    {
-        type_t tc = type->getTypeCode();
-        size32_t size = ((tc == type_row) || (tc == type_record)) ? 0 : type->getSize();
-        return tc | (size << 16) |
-                (type->isInteger() && !type->isSigned() ? type_unsigned : 0) |
-                (type->queryCharset() && type->queryCharset()->queryName()==ebcdicAtom ? type_ebcdic : 0);
-    }
-    else
-        return 0;
 }
 
 //---------------------------------------------------------------------------

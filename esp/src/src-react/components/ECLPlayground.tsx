@@ -1,14 +1,17 @@
 import * as React from "react";
 import { ReflexContainer, ReflexElement, ReflexSplitter } from "../layouts/react-reflex";
-import { PrimaryButton, IconButton, IIconProps, Link, Dropdown, IDropdownOption, TextField, useTheme } from "@fluentui/react";
+import { IconButton, IIconProps, Link, Dropdown, IDropdownOption, Spinner, SpinnerSize, TextField, useTheme } from "@fluentui/react";
+import { Button } from "@fluentui/react-components";
+import { CheckmarkCircleRegular, DismissCircleRegular, QuestionCircleRegular } from "@fluentui/react-icons";
 import { scopedLogger } from "@hpcc-js/util";
 import { useOnEvent } from "@fluentui/react-hooks";
 import { mergeStyleSets } from "@fluentui/style-utilities";
 import { ECLEditor, IPosition } from "@hpcc-js/codemirror";
-import { Workunit, WUUpdate } from "@hpcc-js/comms";
+import { Workunit, WUUpdate, WorkunitsService, WUStateID } from "@hpcc-js/comms";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { DojoAdapter } from "../layouts/DojoAdapter";
 import { pushUrl } from "../util/history";
+import { debounce } from "../util/throttle";
 import { darkTheme } from "../themes";
 import { InfoGrid } from "./InfoGrid";
 import { TabbedResults } from "./Results";
@@ -20,6 +23,8 @@ const logger = scopedLogger("../components/ECLPlayground.tsx");
 
 interface ECLPlaygroundProps {
     wuid?: string;
+    ecl?: string;
+    filter?: { [id: string]: any };
 }
 
 const enum OutputMode {
@@ -74,6 +79,9 @@ const playgroundStyles = mergeStyleSets({
                     borderLeft: borderStyle,
                     borderRight: borderStyle
                 }
+            },
+            ".fui-Button": {
+                height: "min-content"
             },
             ".ms-Label": {
                 marginRight: "12px"
@@ -153,36 +161,48 @@ const warningIcon: IIconProps = { title: nlsHPCC.ErrorWarnings, ariaLabel: nlsHP
 const resultsIcon: IIconProps = { title: nlsHPCC.Outputs, ariaLabel: nlsHPCC.Outputs, iconName: "Table" };
 const graphIcon: IIconProps = { title: nlsHPCC.Visualizations, ariaLabel: nlsHPCC.Visualizations, iconName: "BarChartVerticalFill" };
 
-const displayErrors = (wu, editor) => {
+const displayErrors = async (wu = null, editor, errors = []) => {
     if (!editor) return;
-    wu.fetchECLExceptions().then(errors => {
-        errors.forEach(err => {
-            const lineError = err.LineNo;
-            const lineErrorNum = lineError > 0 ? lineError - 1 : 0;
-            const startPos: IPosition = {
-                ch: (err.Column > 0) ? err.Column - 1 : 0,
-                line: lineErrorNum
-            };
-            const endPos: IPosition = {
-                ch: editor.getLineLength(lineErrorNum),
-                line: lineErrorNum
-            };
+    if (wu) {
+        errors = await wu.fetchECLExceptions();
+    }
+    if (!errors.length) {
+        editor.removeAllHighlight();
+    }
+    errors.forEach(err => {
+        const lineError = err.LineNo;
+        const lineErrorNum = lineError > 0 ? lineError - 1 : 0;
+        const startPos: IPosition = {
+            ch: (err.Column > 0) ? err.Column - 1 : 0,
+            line: lineErrorNum
+        };
+        const endPos: IPosition = {
+            ch: editor.getLineLength(lineErrorNum),
+            line: lineErrorNum
+        };
 
-            switch (err.Severity) {
-                case "Info":
-                    editor.highlightInfo(startPos, endPos);
-                    break;
-                case "Warning":
-                    editor.highlightWarning(startPos, endPos);
-                    break;
-                case "Error":
-                default:
-                    editor.highlightError(startPos, endPos);
-                    break;
-            }
-        });
+        switch (err.Severity) {
+            case "Info":
+                editor.highlightInfo(startPos, endPos);
+                break;
+            case "Warning":
+                editor.highlightWarning(startPos, endPos);
+                break;
+            case "Error":
+            default:
+                editor.highlightError(startPos, endPos);
+                break;
+        }
     });
 };
+
+const service = new WorkunitsService({ baseUrl: "" });
+
+enum SyntaxCheckResult {
+    Unknown,
+    Failed,
+    Passed
+}
 
 interface ECLEditorToolbarProps {
     editor: ECLEditor;
@@ -190,6 +210,9 @@ interface ECLEditorToolbarProps {
     setOutputMode: (_: OutputMode) => void;
     workunit: Workunit;
     setWorkunit: (_: Workunit) => void;
+    setSyntaxErrors: (_: any) => void;
+    syntaxStatusIcon: number;
+    setSyntaxStatusIcon: (_: number) => void;
 }
 
 const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
@@ -197,7 +220,10 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
     outputMode,
     setOutputMode,
     workunit,
-    setWorkunit
+    setWorkunit,
+    setSyntaxErrors,
+    syntaxStatusIcon,
+    setSyntaxStatusIcon
 }) => {
 
     const [cluster, setCluster] = React.useState("");
@@ -212,7 +238,6 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
         if (document.location.hash.includes("play")) {
             if (wu.isFailed()) {
                 pushUrl(`/play/${wu.Wuid}`);
-                setWorkunit(wu);
                 displayErrors(wu, editor);
                 setOutputMode(OutputMode.ERRORS);
             } else if (wu.isComplete()) {
@@ -221,7 +246,6 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
                     wu.publish(queryName);
                     setWuState("Published");
                 }
-                setWorkunit(wu);
                 setOutputMode(OutputMode.RESULTS);
             }
         } else {
@@ -229,16 +253,17 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
                 logger.info(`${nlsHPCC.Playground} ${nlsHPCC.Finished} (${wu.Wuid})`);
             }
         }
-    }, [editor, queryName, setOutputMode, setWorkunit]);
+    }, [editor, queryName, setOutputMode]);
 
     const submitWU = React.useCallback(async () => {
         const wu = await Workunit.create({ baseUrl: "" });
+        setWorkunit(wu);
 
         await wu.update({ Jobname: queryName, QueryText: editor.ecl() });
         await wu.submit(cluster);
 
         wu.watchUntilComplete(changes => playgroundResults(wu));
-    }, [cluster, editor, playgroundResults, queryName]);
+    }, [cluster, editor, playgroundResults, queryName, setWorkunit]);
 
     const publishWU = React.useCallback(async () => {
         if (queryName === "") {
@@ -248,13 +273,32 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
             setQueryNameErrorMsg("");
 
             const wu = await Workunit.create({ baseUrl: "" });
+            setWorkunit(wu);
 
             await wu.update({ Jobname: queryName, QueryText: editor.ecl() });
             await wu.submit(cluster, WUUpdate.Action.Compile);
 
             wu.watchUntilComplete(changes => playgroundResults(wu, "publish"));
         }
-    }, [cluster, editor, playgroundResults, queryName, setQueryNameErrorMsg]);
+    }, [cluster, editor, playgroundResults, queryName, setQueryNameErrorMsg, setWorkunit]);
+
+    const checkSyntax = React.useCallback(() => {
+        service.WUSyntaxCheckECL({
+            ECL: editor.ecl(),
+            Cluster: cluster
+        }).then(response => {
+            if (response.Errors) {
+                setSyntaxStatusIcon(SyntaxCheckResult.Failed);
+                setSyntaxErrors(response.Errors.ECLException);
+                displayErrors(null, editor, response.Errors.ECLException);
+                setOutputMode(OutputMode.ERRORS);
+            } else {
+                setSyntaxStatusIcon(SyntaxCheckResult.Passed);
+                setSyntaxErrors([]);
+                displayErrors(null, editor, []);
+            }
+        });
+    }, [cluster, editor, setOutputMode, setSyntaxErrors, setSyntaxStatusIcon]);
 
     const handleKeyUp = React.useCallback((evt) => {
         switch (evt.key) {
@@ -280,10 +324,19 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
     return <div className={playgroundStyles.toolBar}>
         <div className={playgroundStyles.controlsWrapper}>
             {showSubmitBtn ? (
-                <PrimaryButton text={nlsHPCC.Submit} onClick={submitWU} />
+                <Button appearance="primary" onClick={submitWU}>{nlsHPCC.Submit}</Button>
             ) : (
-                <PrimaryButton text={nlsHPCC.Publish} onClick={publishWU} />
+                <Button appearance="primary" onClick={publishWU}>{nlsHPCC.Publish}</Button>
             )}
+            <Button style={{ marginLeft: 6 }} onClick={checkSyntax} iconPosition="after"
+                icon={
+                    syntaxStatusIcon === SyntaxCheckResult.Passed ? <CheckmarkCircleRegular style={{ color: "green" }} /> :
+                        syntaxStatusIcon === SyntaxCheckResult.Failed ? <DismissCircleRegular style={{ color: "red" }} /> :
+                            <QuestionCircleRegular style={{ color: "initial" }} />
+                }
+            >
+                {nlsHPCC.Syntax}
+            </Button>
             <TargetClusterTextField
                 key="target-cluster"
                 label={nlsHPCC.Target}
@@ -339,7 +392,7 @@ const ECLEditorToolbar: React.FunctionComponent<ECLEditorToolbarProps> = ({
 
 export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props) => {
 
-    const { wuid } = props;
+    const { wuid, ecl, filter = {} } = props;
     const theme = useTheme();
 
     const [outputMode, setOutputMode] = React.useState<OutputMode>(OutputMode.ERRORS);
@@ -348,6 +401,8 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
     const [query, setQuery] = React.useState("");
     const [selectedEclSample, setSelectedEclSample] = React.useState("");
     const [eclContent, setEclContent] = React.useState("");
+    const [syntaxErrors, setSyntaxErrors] = React.useState<any[]>([]);
+    const [syntaxStatusIcon, setSyntaxStatusIcon] = React.useState(SyntaxCheckResult.Unknown);
     const [eclSamples, setEclSamples] = React.useState<IDropdownOption[]>([]);
 
     React.useEffect(() => {
@@ -363,13 +418,17 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                     setOutputMode(OutputMode.RESULTS);
                 }
             });
+        } else if (ecl) {
+            setEclContent(ecl);
         }
 
         fetch("/esp/files/eclwatch/ecl/ECLPlaygroundSamples.json")
             .then(response => response.json())
             .then(json => setEclSamples(
                 json.items.map(item => {
-                    if (item.selected && !wuid) setSelectedEclSample(item.filename);
+                    if (item.selected && !wuid && !ecl) {
+                        setSelectedEclSample(item.filename);
+                    }
                     return { key: item.filename, text: item.name };
                 })
             ));
@@ -381,7 +440,7 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                 editor.option("theme", "default");
             }
         }
-    }, [wuid, editor, theme]);
+    }, [wuid, editor, theme, ecl]);
 
     React.useEffect(() => {
         fetch(`/esp/files/eclwatch/ecl/${selectedEclSample}`)
@@ -411,6 +470,20 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
     }, [editor]);
     useOnEvent(document, "eclwatch-theme-toggle", handleThemeToggle);
 
+    const submissionComplete = React.useMemo(() => {
+        if (!workunit?.Wuid) return true;
+        return workunit?.StateID === WUStateID.Completed ||
+            workunit?.StateID === WUStateID.Failed ||
+            (workunit?.ActionEx === "compile" && workunit?.StateID === WUStateID.Compiled);
+    }, [workunit?.StateID, workunit?.ActionEx, workunit?.Wuid]);
+
+    const handleEclChange = React.useMemo(() => debounce((evt) => {
+        if (editor.hasFocus()) {
+            setSyntaxStatusIcon(SyntaxCheckResult.Unknown);
+        }
+    }, 300), [editor]);
+    useOnEvent(window, "keyup", handleEclChange);
+
     return <div className={playgroundStyles.root}>
         <div className={playgroundStyles.titleBar}>
             <h1 className={playgroundStyles.title}>{nlsHPCC.title_ECLPlayground}</h1>
@@ -431,7 +504,8 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                             main={<ECLSourceEditor text={query} setEditor={setEditor} />}
                             footer={
                                 <ECLEditorToolbar
-                                    editor={editor}
+                                    editor={editor} setSyntaxErrors={setSyntaxErrors}
+                                    syntaxStatusIcon={syntaxStatusIcon} setSyntaxStatusIcon={setSyntaxStatusIcon}
                                     workunit={workunit} setWorkunit={setWorkunit}
                                     outputMode={outputMode} setOutputMode={setOutputMode}
                                 />
@@ -440,23 +514,33 @@ export const ECLPlayground: React.FunctionComponent<ECLPlaygroundProps> = (props
                     </ReflexElement>
                     <ReflexSplitter />
                     <ReflexElement minSize={100} flex={0.25} style={{ overflow: "hidden" }}>
-                        <DojoAdapter widgetClassID="Graph7Widget" params={{ Wuid: workunit?.Wuid }} />
+                        {submissionComplete ?
+                            <DojoAdapter widgetClassID="Graph7Widget" params={{ Wuid: workunit?.Wuid }} />
+                            : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                                <Spinner size={SpinnerSize.large} />
+                            </div>
+                        }
                     </ReflexElement>
                 </ReflexContainer>
             </ReflexElement>
             <ReflexSplitter />
-            <ReflexElement propagateDimensions={true} minSize={100}>
-                {outputMode === OutputMode.ERRORS ? (
-                    <InfoGrid wuid={workunit?.Wuid} />
+            <ReflexElement propagateDimensions={true} minSize={100} style={{ overflow: "hidden" }}>
+                {submissionComplete ?
+                    <div style={{ height: "calc(100% - 44px)" }}>
+                        {outputMode === OutputMode.ERRORS ? (
+                            <InfoGrid wuid={workunit?.Wuid} syntaxErrors={syntaxErrors} />
 
-                ) : outputMode === OutputMode.RESULTS ? (
-                    <TabbedResults wuid={workunit?.Wuid} />
+                        ) : outputMode === OutputMode.RESULTS ? (
+                            <TabbedResults wuid={workunit?.Wuid} filter={filter} />
 
-                ) : outputMode === OutputMode.VIS ? (
-                    <div style={{ height: "calc(100% - 25px)" }}>
-                        <DojoAdapter widgetClassID="VizWidget" params={{ Wuid: workunit?.Wuid, Sequence: 0 }} />
+                        ) : outputMode === OutputMode.VIS ? (
+                            <DojoAdapter widgetClassID="VizWidget" params={{ Wuid: workunit?.Wuid, Sequence: 0 }} />
+                        ) : null}
                     </div>
-                ) : null}
+                    : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                        <Spinner size={SpinnerSize.large} />
+                    </div>
+                }
             </ReflexElement>
         </ReflexContainer>
     </div>;

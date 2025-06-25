@@ -55,7 +55,6 @@
 #include "rtldynfield.hpp"
 #include "rtlnewkey.hpp"
 
-#include "thormeta.hpp"
 #include "thorread.hpp"
 
 #include "ws_dfsclient.hpp"
@@ -64,7 +63,7 @@
 
 #define EMPTY_LOOP_LIMIT 1000
 
-static unsigned const hthorReadBufferSize = 0x10000;
+static unsigned const hthorReadBufferSize = 0x100000;
 static offset_t const defaultHThorDiskWriteSizeLimit = I64C(10*1024*1024*1024); //10 GB, per Nigel
 
 using roxiemem::IRowManager;
@@ -352,14 +351,20 @@ private:
     }
 };
 
-ClusterWriteHandler *createClusterWriteHandler(IAgentContext &agent, IHThorIndexWriteArg *iwHelper, IHThorDiskWriteArg *dwHelper, const char * lfn, StringAttr &fn, bool extend, bool isIndex)
+ClusterWriteHandler *createClusterWriteHandler(IAgentContext &agent, IHThorIndexWriteArg *iwHelper, IHThorGenericDiskWriteArg *dwHelper, const char * lfn, StringAttr &fn, bool extend)
 {
     //In the containerized system, the default data plane for this component is in the configuration
     StringBuffer defaultCluster;
-    if (isIndex)
+    if (iwHelper)
         getDefaultIndexBuildStoragePlane(defaultCluster);
     else
-        getDefaultStoragePlane(defaultCluster);
+    {
+        dbgassertex(dwHelper); // NB: either iwHelper, or dwHelper must be non-null
+        if (TDWpersist & dwHelper->getFlags())
+            getDefaultPersistPlane(defaultCluster);
+        else
+            getDefaultStoragePlane(defaultCluster);
+    }
     Owned<CHThorClusterWriteHandler> clusterHandler;
     unsigned clusterIdx = 0;
 
@@ -405,9 +410,24 @@ ClusterWriteHandler *createClusterWriteHandler(IAgentContext &agent, IHThorIndex
 
 //=====================================================================================================
 
-CHThorDiskWriteActivity::CHThorDiskWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorDiskWriteArg &_arg, ThorActivityKind _kind, EclGraph & _graph) : CHThorActivityBase(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg)
+CHThorDiskWriteActivity::CHThorDiskWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorGenericDiskWriteArg &_arg, ThorActivityKind _kind, EclGraph & _graph) : CHThorActivityBase(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg)
 {
     incomplete = false;
+    formatOptions.setown(createPTree()); // options governing the format of the bytes sent to the output stream
+    providerOptions.setown(createPTree()); // options governing the output stream itself (overwrite, append, etc)
+    helperFlags = helper.getFlags();
+    useGenericReadWrites = ((helperFlags & TDXgeneric) != 0);
+    grouped = (helperFlags & TDXgrouped) != 0;
+    extend = ((helperFlags & TDWextend) != 0);
+    overwrite = ((helperFlags & TDWoverwrite) != 0);
+    if (useGenericReadWrites)
+    {
+        // Initial provider and format options from flags
+        providerOptions->setPropBool("@forceCompressed", (helperFlags & TDXcompress) != 0);
+        providerOptions->setPropBool("@extend", extend);
+        providerOptions->setPropBool("@overwrite", overwrite);
+        formatOptions->setPropBool("@grouped", grouped);
+    }
 }
 
 CHThorDiskWriteActivity::~CHThorDiskWriteActivity()
@@ -425,9 +445,6 @@ CHThorDiskWriteActivity::~CHThorDiskWriteActivity()
 void CHThorDiskWriteActivity::ready()       
 { 
     CHThorActivityBase::ready(); 
-    grouped = (helper.getFlags() & TDXgrouped) != 0;
-    extend = ((helper.getFlags() & TDWextend) != 0);
-    overwrite = ((helper.getFlags() & TDWoverwrite) != 0);
     resolve();
     uncompressedBytesWritten = 0;
     numRecords = 0;
@@ -447,27 +464,43 @@ void CHThorDiskWriteActivity::execute()
 
 void CHThorDiskWriteActivity::stop()
 {
-    outSeq->flush(NULL);
+    outSeq->flush();
     if(blockcompressed)
         uncompressedBytesWritten = outSeq->getPosition();
     close();
     updateWorkUnitResult(numRecords);
-    if((helper.getFlags() & (TDXtemporary | TDXjobtemp) ) == 0 && !agent.queryResolveFilesLocally())
+    if((helperFlags & (TDXtemporary | TDXjobtemp) ) == 0 && !agent.queryResolveFilesLocally())
         publish();
     incomplete = false;
     if(clusterHandler)
         clusterHandler->finish(file);
     CHThorActivityBase::stop();
-    if (helper.getFlags() & TDXvarfilename)
+    if (helperFlags & TDXvarfilename)
         filename.clear();
 }
 
 void CHThorDiskWriteActivity::resolve()
 {
     OwnedRoxieString rawname = helper.getFileName();
-    mangleHelperFileName(mangledHelperFileName, rawname, agent.queryWuid(), helper.getFlags());
+    mangleHelperFileName(mangledHelperFileName, rawname, agent.queryWuid(), helperFlags);
     assertex(mangledHelperFileName.str());
-    if((helper.getFlags() & (TDXtemporary | TDXjobtemp)) == 0)
+
+    if (useGenericReadWrites)
+    {
+        // Merge options from helper into providerOptions and formatOptions if required
+        if (helperFlags & TDXdynprovideroptions)
+        {
+            CPropertyTreeWriter providerOptsWriter(providerOptions);
+            helper.getProviderOptions(providerOptsWriter);
+        }
+        if (helperFlags & TDXdynformatoptions)
+        {
+            CPropertyTreeWriter formatOptsWriter(formatOptions);
+            helper.getFormatOptions(formatOptsWriter);
+        }
+    }
+
+    if((helperFlags & (TDXtemporary | TDXjobtemp)) == 0)
     {
         Owned<ILocalOrDistributedFile> f = agent.resolveLFN(mangledHelperFileName.str(),"Cannot write, invalid logical name",true,false,AccessMode::tbdWrite,&lfn,defaultPrivilegedUser);
         if (f)
@@ -541,7 +574,7 @@ void CHThorDiskWriteActivity::resolve()
                 throw MakeStringException(99, "Could not resolve DFS Logical file %s", lfn.str());
             }
 
-            clusterHandler.setown(createClusterWriteHandler(agent, NULL, &helper, dfsLogicalName.get(), filename, extend, false));
+            clusterHandler.setown(createClusterWriteHandler(agent, NULL, &helper, dfsLogicalName.get(), filename, extend));
             StringBuffer planeName;
             if (clusterHandler)
             {
@@ -577,9 +610,9 @@ void CHThorDiskWriteActivity::open()
     if (grouped)
         groupedMeta.setown(createDeltaRecordSize(groupedMeta, +1));
     blockcompressed=false;
-    if (0 == (helper.getFlags() & TDWnocompress))
+    if (0 == (helperFlags & TDWnocompress))
     {
-        blockcompressed = checkWriteIsCompressed(helper.getFlags(), serializedOutputMeta.getFixedSize(), grouped);//TDWnewcompress for new compression, else check for row compression
+        blockcompressed = checkWriteIsCompressed(helperFlags, serializedOutputMeta.getFixedSize(), grouped);//TDWnewcompress for new compression, else check for row compression
         if (!blockcompressed) // if ECL doesn't specify, default to plane definition
             blockcompressed = outputPlaneCompressed;
     }
@@ -597,7 +630,11 @@ void CHThorDiskWriteActivity::open()
         blockcompressed = true;
     }
     if(blockcompressed)
-        io.setown(createCompressedFileWriter(file, groupedMeta->getFixedSize(), extend, true, ecomp, COMPRESS_METHOD_LZ4));
+    {
+        size32_t compBlockSize = 0; // i.e. default
+        size32_t blockedIoSize = -1; // i.e. default
+        io.setown(createCompressedFileWriter(file, groupedMeta->getFixedSize(), extend, true, ecomp, COMPRESS_METHOD_LZ4, compBlockSize, blockedIoSize, IFEnone));
+    }
     else
         io.setown(file->open(extend ? IFOwrite : IFOcreate));
     if(!io)
@@ -611,11 +648,13 @@ void CHThorDiskWriteActivity::open()
     unsigned rwFlags = rw_autoflush;
     if (grouped)
         rwFlags |= rw_grouped;
-    if (true) // MORE: Should this be controlled by an activity hint/flag?
-        rwFlags |= rw_crc;
-    IExtRowWriter * writer = createRowWriter(diskout, rowIf, rwFlags);
-    outSeq.setown(writer);
 
+    ILogicalRowWriter * writer = nullptr;
+    if (useGenericReadWrites)
+        throwUnexpected(); // generic write not yet supported
+    else
+        writer = createRowWriter(diskout, rowIf, rwFlags);
+    outSeq.setown(writer);
 }
 
 
@@ -673,6 +712,7 @@ void CHThorDiskWriteActivity::close()
     {
         io->flush();
         numDiskWrites = io->getStatistic(StNumDiskWrites);
+        io->close();
         io.clear();
     }
     if(clusterHandler)
@@ -745,24 +785,24 @@ void CHThorDiskWriteActivity::publish()
         properties.setPropBool("@encrypted", true);
     if (blockcompressed)
         properties.setPropBool("@blockCompressed", true);
-    if (helper.getFlags() & TDWpersist)
+    if (helperFlags & TDWpersist)
         properties.setPropBool("@persistent", true);
     if (grouped)
         properties.setPropBool("@grouped", true);
     properties.setPropInt64("@recordCount", numRecords);
     properties.setProp("@owner", agent.queryWorkUnit()->queryUser());
-    if (helper.getFlags() & (TDWowned|TDXjobtemp|TDXtemporary))
+    if (helperFlags & (TDWowned|TDXjobtemp|TDXtemporary))
         properties.setPropBool("@owned", true);
-    if (helper.getFlags() & TDWresult)
+    if (helperFlags & TDWresult)
         properties.setPropBool("@result", true);
 
     properties.setProp("@workunit", agent.queryWorkUnit()->queryWuid());
     properties.setProp("@job", agent.queryWorkUnit()->queryJobName());
     setFormat(desc);
 
-    if (helper.getFlags() & TDWexpires)
+    if (helperFlags & TDWexpires)
         setExpiryTime(properties, helper.getExpiryDays());
-    if (helper.getFlags() & TDWupdate)
+    if (helperFlags & TDWupdate)
     {
         unsigned eclCRC;
         unsigned __int64 totalCRC;
@@ -771,7 +811,7 @@ void CHThorDiskWriteActivity::publish()
         properties.setPropInt64("@totalCRC", totalCRC);
     }
     properties.setPropInt("@formatCrc", helper.getFormatCrc());
-    if (helper.getFlags() & TDWrestricted)
+    if (helperFlags & TDWrestricted)
         properties.setPropBool("restricted", true);
 
     properties.setPropInt64(getDFUQResultFieldName(DFUQRFnumDiskWrites), numDiskWrites);
@@ -785,7 +825,7 @@ void CHThorDiskWriteActivity::publish()
     if (!logicalName.isExternal()) // no need to publish externals
     {
         Owned<IDistributedFile> file = queryDistributedFileDirectory().createNew(desc);
-        if ((helper.getFlags() & TDXtemporary) == 0)
+        if ((helperFlags & TDXtemporary) == 0)
         {
             StringBuffer clusterName;
             file->getClusterName(0, clusterName);
@@ -802,7 +842,7 @@ void CHThorDiskWriteActivity::updateProgress(IStatisticGatherer &progress) const
     CHThorActivityBase::updateProgress(progress);
     StatsActivityScope scope(progress, activityId);
     progress.addStatistic(StNumDiskWrites, numDiskWrites);
-    if ((helper.getFlags() & TDXtemporary) == 0)
+    if ((helperFlags & TDXtemporary) == 0)
         progress.addStatistic(StCostFileAccess, diskAccessCost);
 }
 
@@ -816,30 +856,29 @@ void CHThorDiskWriteActivity::updateWorkUnitResult(unsigned __int64 reccount)
             clusterHandler->getClusters(clusters);
         else
             clusters.append(wu->queryClusterName());
-        unsigned flags = helper.getFlags();
         if (!agent.queryResolveFilesLocally())
         {
             WUFileKind fileKind;
-            if (TDXtemporary & flags)
+            if (TDXtemporary & helperFlags)
                 fileKind = WUFileTemporary;
-            else if(TDXjobtemp & flags)
+            else if(TDXjobtemp & helperFlags)
                 fileKind = WUFileJobOwned;
-            else if(TDWowned & flags)
+            else if(TDWowned & helperFlags)
                 fileKind = WUFileOwned;
             else
                 fileKind = WUFileStandard;
             wu->addFile(lfn.str(), &clusters, helper.getTempUsageCount(), fileKind, NULL);
         }
-        else if ((TDXtemporary | TDXjobtemp) & flags)
+        else if ((TDXtemporary | TDXjobtemp) & helperFlags)
             agent.noteTemporaryFilespec(filename);//note for later deletion
-        if (!(flags & TDXtemporary) && helper.getSequence() >= 0)
+        if (!(helperFlags & TDXtemporary) && helper.getSequence() >= 0)
         {
             Owned<IWUResult> result = wu->updateResultBySequence(helper.getSequence());
             if (result)
             {
                 result->setResultTotalRowCount(reccount);
                 result->setResultStatus(ResultStatusCalculated);
-                if (helper.getFlags() & TDWresult)
+                if (helperFlags & TDWresult)
                     result->setResultFilename(lfn.str());
                 else
                     result->setResultLogicalName(lfn.str());
@@ -923,7 +962,7 @@ void CHThorSpillActivity::stop()
 //=====================================================================================================
 
 
-CHThorCsvWriteActivity::CHThorCsvWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorCsvWriteArg &_arg, ThorActivityKind _kind, EclGraph & _graph) : CHThorDiskWriteActivity(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg)
+CHThorCsvWriteActivity::CHThorCsvWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorCsvWriteArg &_arg, ThorActivityKind _kind, EclGraph & _graph) : CHThorDiskWriteActivity(_agent, _activityId, _subgraphId, (IHThorGenericDiskWriteArg &)_arg, _kind, _graph), helper(_arg)
 {
     csvOutput.init(helper.queryCsvParameters(),agent.queryWorkUnit()->getDebugValueBool("oldCSVoutputFormat", false));
 }
@@ -1000,7 +1039,7 @@ void CHThorCsvWriteActivity::setFormat(IFileDescriptor * desc)
 
 //=====================================================================================================
 
-CHThorXmlWriteActivity::CHThorXmlWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorXmlWriteArg &_arg, ThorActivityKind _kind, EclGraph & _graph) : CHThorDiskWriteActivity(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg), headerLength(0), footerLength(0)
+CHThorXmlWriteActivity::CHThorXmlWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorXmlWriteArg &_arg, ThorActivityKind _kind, EclGraph & _graph) : CHThorDiskWriteActivity(_agent, _activityId, _subgraphId, (IHThorGenericDiskWriteArg &)_arg, _kind, _graph), helper(_arg), headerLength(0), footerLength(0)
 {
     OwnedRoxieString xmlpath(helper.getXmlIteratorPath());
     if (!xmlpath)
@@ -1142,7 +1181,7 @@ CHThorIndexWriteActivity::CHThorIndexWriteActivity(IAgentContext &_agent, unsign
                 throw MakeStringException(99, "Cannot write %s, file already exists (missing OVERWRITE attribute?)", lfn.str());
         }
     }
-    clusterHandler.setown(createClusterWriteHandler(agent, &helper, NULL, lfn, filename, false, true));
+    clusterHandler.setown(createClusterWriteHandler(agent, &helper, NULL, lfn, filename, false));
     sizeLimit = agent.queryWorkUnit()->getDebugValueInt64("hthorDiskWriteSizeLimit", defaultHThorDiskWriteSizeLimit);
     defaultNoSeek = agent.queryWorkUnit()->getDebugValueBool("noSeekBuildIndex", isContainerized());
     agent.queryWorkUnit()->getDebugValue("defaultIndexCompression", StringBufferAdaptor(defaultIndexCompression));
@@ -1278,23 +1317,27 @@ void CHThorIndexWriteActivity::execute()
             }
             reccount++;
         }
-        builder->finish(metadata, &fileCrc, maxRecordSizeSeen);
-        duplicateKeyCount = builder->getDuplicateCount();
+        builder->finish(metadata, &fileCrc, maxRecordSizeSeen, nullptr);
+        duplicateKeyCount = builder->getStatistic(StNumDuplicateKeys);
         cummulativeDuplicateKeyCount += duplicateKeyCount;
-        numLeafNodes = builder->getNumLeafNodes();
-        numBranchNodes = builder->getNumBranchNodes();
-        numBlobNodes = builder->getNumBlobNodes();
+        numLeafNodes = builder->getStatistic(StNumLeafCacheAdds);
+        numBranchNodes = builder->getStatistic(StNumNodeCacheAdds);
+        numBlobNodes = builder->getStatistic(StNumBlobCacheAdds);
         originalBlobSize = bc.queryTotalSize();
-        branchMemorySize = builder->getBranchMemorySize();
-        leafMemorySize = builder->getLeafMemorySize();
+        branchMemorySize = builder->getStatistic(StSizeBranchMemory);
+        leafMemorySize = builder->getStatistic(StSizeLeafMemory);
 
         totalLeafNodes += numLeafNodes;
         totalBranchNodes += numBranchNodes;
         totalBlobNodes += numBlobNodes;
         numDiskWrites = io->getStatistic(StNumDiskWrites);
-        offsetBranches = builder->getOffsetBranches();
+        offsetBranches = builder->getStatistic(StSizeOffsetBranches);
         out->flush();
         out.clear();
+        io->close();
+
+        stat_type maxLeafSize = builder->getStatistic(StSizeLargestExpandedLeaf);
+        DBGLOG("Maximum size of expanded leaf = %llu compression ratio = %.2fx", maxLeafSize, ((double)maxLeafSize / nodeSize));
     }
 
     if(clusterHandler)
@@ -6719,13 +6762,13 @@ CHThorWhenActionActivity::CHThorWhenActionActivity(IAgentContext &_agent, unsign
 void CHThorWhenActionActivity::ready()
 {
     CHThorSimpleActivityBase::ready();
-    graphElement->executeDependentActions(agent, NULL, WhenBeforeId);
-    graphElement->executeDependentActions(agent, NULL, WhenParallelId);
+    graphElement->executeDependentActions(agent, graphElement->savedParentExtract, WhenBeforeId);
+    graphElement->executeDependentActions(agent, graphElement->savedParentExtract, WhenParallelId);
 }
 
 void CHThorWhenActionActivity::execute()
 {
-    graphElement->executeDependentActions(agent, NULL, 1);
+    graphElement->executeDependentActions(agent, graphElement->savedParentExtract, 1);
 }
 
 const void * CHThorWhenActionActivity::nextRow()
@@ -6735,7 +6778,7 @@ const void * CHThorWhenActionActivity::nextRow()
 
 void CHThorWhenActionActivity::stop()
 {
-    graphElement->executeDependentActions(agent, NULL, WhenSuccessId);
+    graphElement->executeDependentActions(agent, graphElement->savedParentExtract, WhenSuccessId);
     CHThorSimpleActivityBase::stop();
 }
 
@@ -7736,6 +7779,10 @@ void CHThorWSCBaseActivity::init()
         JBASE64_Encode(uidpair.str(), uidpair.length(), authToken, false);
     }
     soapTraceLevel = agent.queryWorkUnit()->getDebugValueInt("soapTraceLevel", 1);
+    StringBuffer soapSepStr;
+    StringBufferAdaptor soapSepAdaptor(soapSepStr);
+    agent.queryWorkUnit()->getDebugValue("soapLogSepString", soapSepAdaptor);
+    setSoapSepString(soapSepStr.str());
 }
 
 //---------------------------------------------------------------------------
@@ -8534,19 +8581,18 @@ void CHThorDiskReadBaseActivity::closepart()
             {
                 if (superfile)
                 {
-                    unsigned subfile, lnum;
-                    if (superfile->mapSubPart(previousPartNum, subfile, lnum))
+                    unsigned subfileNum, lnum;
+                    if (superfile->mapSubPart(previousPartNum, subfileNum, lnum))
                     {
-                        IDistributedSuperFile *super = dFile->querySuperFile();
-                        dFile = &(super->querySubFile(subfile, true));
+                        IDistributedSuperFile * super = dFile->querySuperFile();
+                        IDistributedFile & subfile = super->querySubFile(subfileNum, true);
+                        graph.queryFileReadPropsUpdater()->addCostAndNumReads(&subfile, curDiskReads, 0);
                     }
                 }
-                IPropertyTree & fileAttr = dFile->queryAttributes();
-                cost_type legacyReadCost = getLegacyReadCost(fileAttr, dFile);
-                cost_type curReadCost = calcFileAccessCost(dFile, 0, curDiskReads);
-
-                dFile->addAttrValue(getDFUQResultFieldName(DFUQRFreadCost), legacyReadCost + curReadCost);
-                dFile->addAttrValue(getDFUQResultFieldName(DFUQRFnumDiskReads), curDiskReads);
+                else
+                {
+                    graph.queryFileReadPropsUpdater()->addCostAndNumReads(dFile, curDiskReads, 0);
+                }
             }
             numDiskReads += curDiskReads;
         }
@@ -8668,7 +8714,8 @@ bool CHThorDiskReadBaseActivity::openNext()
                             StringBuffer tmp;
                             remoteFileIO->addVirtualFieldMapping("logicalFilename", logicalFileName.str());
                             remoteFileIO->addVirtualFieldMapping("baseFpos", tmp.clear().append(offsetOfPart).str());
-                            remoteFileIO->addVirtualFieldMapping("partNum", tmp.clear().append(curPart->getPartIndex()).str());
+                            if (curPart)
+                                remoteFileIO->addVirtualFieldMapping("partNum", tmp.clear().append(curPart->getPartIndex()).str());
 
                             try
                             {
@@ -8727,6 +8774,13 @@ bool CHThorDiskReadBaseActivity::openNext()
                     try
                     {
                         inputfile.setown(createIFile(rfilename));
+
+                        if (curPart)
+                        {
+                            offset_t expectedSize, actualSize;
+                            if (!doesPhysicalMatchMeta(*curPart, *inputfile, expectedSize, actualSize))
+                                throw makeStringExceptionV(0, "File size mismatch: file %s was supposed to be %" I64F "d bytes but appears to be %" I64F "d bytes", inputfile->queryFilename(), expectedSize, actualSize);
+                        }
 
                         if (compressed)
                         {
@@ -8857,7 +8911,7 @@ bool CHThorDiskReadBaseActivity::checkOpenedFile(char const * filename, char con
             agent.fail(1, s.str());
         }
 
-        unsigned readBufferSize = queryReadBufferSize();
+        unsigned readBufferSize = hthorReadBufferSize; // more should depend on the storage plane
         inputstream.setown(createFileSerialStream(inputfileio, 0, filesize, readBufferSize));
 
         StringBuffer report("Reading file ");
@@ -8946,11 +9000,6 @@ void CHThorBinaryDiskReadBase::closepart()
     prefetchBuffer.clearStream();
     deserializeSource.clearStream();
     CHThorDiskReadBaseActivity::closepart();
-}
-
-unsigned CHThorBinaryDiskReadBase::queryReadBufferSize()
-{
-    return hthorReadBufferSize;
 }
 
 void CHThorBinaryDiskReadBase::open()
@@ -9717,12 +9766,10 @@ bool CHThorXmlReadActivity::openNext()
     localOffset = 0;
     if (CHThorDiskReadBaseActivity::openNext())
     {
-        unsigned readBufferSize = queryReadBufferSize();
-        OwnedIFileIOStream inputfileiostream;
-        if(readBufferSize)
-            inputfileiostream.setown(createBufferedIOStream(inputfileio, readBufferSize));
-        else
-            inputfileiostream.setown(createIOStream(inputfileio));
+        //MORE: The following code should really use inputstream instead of creating the inputfilestream here
+        //but the xml reading currently uses an IFileIOStream rather than an IBufferedSerialInputStream
+        //(Xml reading could be optimized if it did use the buffered serial input stream)
+        OwnedIFileIOStream inputfileiostream = createBufferedIOStream(inputfileio, (size32_t)-1);
 
         OwnedRoxieString xmlIterator(helper.getXmlIteratorPath());
         if (kind==TAKjsonread)
@@ -10711,13 +10758,19 @@ void CHThorExternalActivity::stop()
 
 //=====================================================================================================
 
-CHThorNewDiskReadBaseActivity::CHThorNewDiskReadBaseActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorNewDiskReadBaseArg &_arg, IHThorCompoundBaseArg & _segHelper, ThorActivityKind _kind, IPropertyTree *_node, EclGraph & _graph)
+CHThorNewDiskReadBaseActivity::CHThorNewDiskReadBaseActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorGenericDiskReadBaseArg &_arg, IHThorCompoundBaseArg & _segHelper, ThorActivityKind _kind, IPropertyTree *_node, EclGraph & _graph)
 : CHThorActivityBase(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg), segHelper(_segHelper)
 {
+    helperFlags = helper.getFlags();
+    grouped = ((helperFlags & TDXgrouped) != 0);
+    useGenericReadWrites = ((helperFlags & TDXgeneric) != 0);
+
     helper.setCallback(this);
     expectedDiskMeta = helper.queryDiskRecordSize();
     projectedDiskMeta = helper.queryProjectedDiskRecordSize();
     formatOptions.setown(createPTree());
+    providerOptions.setown(createPTree());
+
     isCodeSigned = false;
     if (_node)
     {
@@ -10727,8 +10780,30 @@ CHThorNewDiskReadBaseActivity::CHThorNewDiskReadBaseActivity(IAgentContext &_age
         isCodeSigned = isActivityCodeSigned(*_node);
     }
 
-    CPropertyTreeWriter writer(formatOptions);
-    helper.getFormatOptions(writer);
+    providerOptions->setPropBool("@forceCompressed", (helperFlags & TDXcompress) != 0);
+    if (helperFlags & TDRoptional)
+        providerOptions->setPropBool("@optional", true);
+
+    formatOptions->setPropBool("@grouped", grouped);
+    if ((helperFlags & TDRcloneappendvirtual) != 0)
+        formatOptions->setPropBool("@cloneAppendVirtuals", true);
+
+    if (useGenericReadWrites)
+    {
+        outputGrouped = helper.queryOutputMeta()->isGrouped();  // It is possible for input to be incorrectly marked as grouped, and input not or vice-versa
+        bool isTemporary = (helperFlags & (TDXtemporary | TDXjobtemp)) != 0;
+        if (isTemporary)
+        {
+            StringBuffer spillPath;
+            agent.getTempfileBase(spillPath);
+
+            //Should probably be in eclagent
+            spillPlane.setown(createPTree("planes"));
+            spillPlane->setProp("@name", "localspill");
+            spillPlane->setProp("@prefix", spillPath);
+        }
+    }
+
 }
 
 CHThorNewDiskReadBaseActivity::~CHThorNewDiskReadBaseActivity()
@@ -10776,7 +10851,7 @@ void CHThorNewDiskReadBaseActivity::resolveFile()
 {
     //If in a child query, and the filenames haven't changed, the information about the resolved filenames will also not have changed
     //MORE: Is this ever untrue?
-    if (subfiles && !(helper.getFlags() & (TDXvarfilename|TDRdynformatoptions)))
+    if (subfiles && !(helperFlags & (TDXvarfilename|TDXdynformatoptions|TDXdynprovideroptions)))
         return;
 
     //Only clear these members if we are re-resolving the file - otherwise the previous entries are still valid
@@ -10785,30 +10860,49 @@ void CHThorNewDiskReadBaseActivity::resolveFile()
     dfsParts.clear();
     subfiles.kill();
 
-    Owned<IPropertyTree> curFormatOptions;
-    if (helper.getFlags() & TDRdynformatoptions)
+    Owned<const IPropertyTree> curFormatOptions;
+    if (useGenericReadWrites)
     {
-        curFormatOptions.setown(createPTreeFromIPT(formatOptions));
-        CPropertyTreeWriter writer(curFormatOptions);
-        helper.getFormatDynOptions(writer);
+        Owned clonedFormatOptions(createPTreeFromIPT(formatOptions));
+        CPropertyTreeWriter writer(clonedFormatOptions);
+        helper.getFormatOptions(writer);
+        curFormatOptions.setown(clonedFormatOptions.getClear());
     }
     else
         curFormatOptions.set(formatOptions);
 
+    //Provider options may be modified below
+    Owned<IPropertyTree> curProviderOptions(createPTreeFromIPT(providerOptions));
+    if (useGenericReadWrites)
+    {
+        CPropertyTreeWriter writer(curProviderOptions);
+        helper.getProviderOptions(writer);
+    }
+
+    rtlDataAttr k;
+    size32_t kl;
+    helper.getEncryptKey(kl,k.refdata());
+    if (kl)
+    {
+        curProviderOptions->setPropBin("encryptionKey", kl, k.getdata());
+        curProviderOptions->setPropBool("blockcompressed", true);
+        curProviderOptions->setPropBool("compressed", true);
+    }
+
     OwnedRoxieString fileName(helper.getFileName());
-    mangleHelperFileName(mangledHelperFileName, fileName, agent.queryWuid(), helper.getFlags());
-    if (helper.getFlags() & (TDXtemporary | TDXjobtemp))
+    mangleHelperFileName(mangledHelperFileName, fileName, agent.queryWuid(), helperFlags);
+    if (helperFlags & (TDXtemporary | TDXjobtemp))
     {
         StringBuffer mangledFilename;
         mangleLocalTempFilename(mangledFilename, mangledHelperFileName.str(), nullptr);
         tempFileName.set(agent.queryTemporaryFile(mangledFilename.str()));
         logicalFileName = tempFileName.str();
         gatherInfo(NULL);
-        subfiles.append(*extractFileInformation(nullptr, curFormatOptions));
+        subfiles.append(*extractFileInformation(nullptr, curFormatOptions, curProviderOptions));
     }
     else
     {
-        ldFile.setown(resolveLFNFlat(agent, mangledHelperFileName.str(), "Read", 0 != (helper.getFlags() & TDRoptional), isCodeSigned));
+        ldFile.setown(resolveLFNFlat(agent, mangledHelperFileName.str(), "Read", 0 != (helperFlags & TDRoptional), isCodeSigned));
         if ( mangledHelperFileName.charAt(0) == '~')
             logicalFileName = mangledHelperFileName.str()+1;
         else
@@ -10831,22 +10925,22 @@ void CHThorNewDiskReadBaseActivity::resolveFile()
                     for (; s<numsubs; s++)
                     {
                         IDistributedFile &subfile = super->querySubFile(s, true);
-                        subfiles.append(*extractFileInformation(&subfile, curFormatOptions));
+                        subfiles.append(*extractFileInformation(&subfile, curFormatOptions, curProviderOptions));
                     }
                     assertex(fdesc);
                     superfile.set(fdesc->querySuperFileDescriptor());
                 }
                 else
-                    subfiles.append(*extractFileInformation(dFile, curFormatOptions));
+                    subfiles.append(*extractFileInformation(dFile, curFormatOptions, curProviderOptions));
 
-                if((helper.getFlags() & (TDXtemporary | TDXjobtemp)) == 0)
+                if((helperFlags & (TDXtemporary | TDXjobtemp)) == 0)
                     agent.logFileAccess(dFile, "HThor", "READ", graph);
             }
             else
-                subfiles.append(*extractFileInformation(nullptr, curFormatOptions));
+                subfiles.append(*extractFileInformation(nullptr, curFormatOptions, curProviderOptions));
         }
         else
-            subfiles.append(*extractFileInformation(nullptr, curFormatOptions));
+            subfiles.append(*extractFileInformation(nullptr, curFormatOptions, curProviderOptions));
 
         if (!ldFile)
         {
@@ -10866,7 +10960,7 @@ void CHThorNewDiskReadBaseActivity::gatherInfo(IFileDescriptor * fileDesc)
         if (!agent.queryResolveFilesLocally())
         {
             grouped = fileDesc->isGrouped();
-            if (grouped != ((helper.getFlags() & TDXgrouped) != 0))
+            if (grouped != ((helperFlags & TDXgrouped) != 0))
             {
                 StringBuffer msg;
                 msg.append("DFS and code generated group info. differs: DFS(").append(grouped ? "grouped" : "ungrouped").append("), CodeGen(").append(grouped ? "ungrouped" : "grouped").append("), using DFS info");
@@ -10874,11 +10968,11 @@ void CHThorNewDiskReadBaseActivity::gatherInfo(IFileDescriptor * fileDesc)
             }
         }
         else
-            grouped = ((helper.getFlags() & TDXgrouped) != 0);
+            grouped = ((helperFlags & TDXgrouped) != 0);
     }
     else
     {
-        grouped = ((helper.getFlags() & TDXgrouped) != 0);
+        grouped = ((helperFlags & TDXgrouped) != 0);
     }
 }
 
@@ -10905,19 +10999,22 @@ static void queryInheritSeparatorProp(IPropertyTree & target, const char * targe
     }
 }
 
-CHThorNewDiskReadBaseActivity::InputFileInfo * CHThorNewDiskReadBaseActivity::extractFileInformation(IDistributedFile * distributedFile, const IPropertyTree * curFormatOptions)
+CHThorNewDiskReadBaseActivity::InputFileInfo * CHThorNewDiskReadBaseActivity::extractFileInformation(IDistributedFile * distributedFile, const IPropertyTree * curFormatOptions, const IPropertyTree * curProviderOptions)
 {
-    Owned<IPropertyTree> meta = createPTree();
+    Owned<IPropertyTree> fileProviderOptions = createPTreeFromIPT(providerOptions);
     unsigned actualCrc = helper.getDiskFormatCrc();
     Linked<IOutputMetaData> actualDiskMeta = expectedDiskMeta;
     Linked<IPropertyTree> fileFormatOptions = createPTreeFromIPT(curFormatOptions);
     bool compressed = false;
     bool blockcompressed = false;
-    const char * readFormat = helper.queryFormat();
+
+    const char * readFormat = queryReadFormat();
+    //MORE: Later this should use the type of the file if it is a distributed file and the format is not specified
 
     if (distributedFile)
     {
         const char *kind = queryFileKind(distributedFile);
+
         //Do not use the field translation if the file was originally csv/xml - unless explicitly set
         if ((strisame(kind, "flat") || (RecordTranslationMode::AlwaysDisk == getLayoutTranslationMode())) &&
 //            (strisame(readFormat, "flat") || strisame(kind, readFormat)))
@@ -10935,20 +11032,9 @@ CHThorNewDiskReadBaseActivity::InputFileInfo * CHThorNewDiskReadBaseActivity::ex
 
             size32_t dfsSize = props.getPropInt("@recordSize");
             if (dfsSize != 0)
-                meta->setPropInt("@recordSize", dfsSize);
+                fileFormatOptions->setPropInt("@recordSize", dfsSize);
         }
         compressed = distributedFile->isCompressed(&blockcompressed); //try new decompression, fall back to old unless marked as block
-
-        //Check for encryption key
-        void *k;
-        size32_t kl;
-        helper.getEncryptKey(kl,k);
-        if (kl)
-        {
-            meta->setPropBin("encryptionKey", kl, k);
-            blockcompressed = true;
-            compressed = true;
-        }
 
         //MORE: There should probably be a generic way of storing and extracting format options for a file
         IPropertyTree & options = distributedFile->queryAttributes();
@@ -10956,19 +11042,21 @@ CHThorNewDiskReadBaseActivity::InputFileInfo * CHThorNewDiskReadBaseActivity::ex
         queryInheritSeparatorProp(*fileFormatOptions, "separator", options, "@csvSeparate");
         queryInheritProp(*fileFormatOptions, "terminator", options, "@csvTerminate");
         queryInheritProp(*fileFormatOptions, "escape", options, "@csvEscape");
+
+        //MORE: Remove before this is merged!
         dbglogXML(fileFormatOptions);
-        dbglogXML(fileFormatOptions);
+        dbglogXML(fileProviderOptions);
     }
 
-    meta->setPropBool("@grouped", grouped);
-    meta->setPropBool("@compressed", compressed);
-    meta->setPropBool("@blockCompressed", blockcompressed);
-    meta->setPropBool("@forceCompressed", (helper.getFlags() & TDXcompress) != 0);
-    meta->setPropTree("formatOptions", fileFormatOptions.getClear());
+    fileProviderOptions->setPropBool("@grouped", grouped);
+    fileProviderOptions->setPropBool("@compressed", compressed);
+    fileProviderOptions->setPropBool("@blockCompressed", blockcompressed);
+    fileProviderOptions->setPropBool("@forceCompressed", (helperFlags & TDXcompress) != 0);
 
     InputFileInfo & target = * new InputFileInfo;
     target.file = distributedFile;
-    target.meta.setown(meta.getClear());
+    target.providerOptions.setown(fileProviderOptions.getClear());
+    target.formatOptions.setown(fileFormatOptions.getClear());
     target.actualCrc = actualCrc;
     target.actualMeta.swap(actualDiskMeta);
     return &target;
@@ -11092,7 +11180,7 @@ bool CHThorNewDiskReadBaseActivity::openNextPart(bool prevWasMissing)
 void CHThorNewDiskReadBaseActivity::initStream(IDiskRowReader * reader, const char * filename)
 {
     activeReader = reader;
-    inputRowStream = reader->queryAllocatedRowStream(rowAllocator);
+    inputRowStream = reader->queryAllocatedRowStream();
 
     StringBuffer report("Reading file ");
     report.append(filename);
@@ -11105,30 +11193,31 @@ void CHThorNewDiskReadBaseActivity::setEmptyStream()
     finishedParts = true;
 }
 
-IDiskRowReader * CHThorNewDiskReadBaseActivity::ensureRowReader(const char * format, bool streamRemote, unsigned expectedCrc, IOutputMetaData & expected, unsigned projectedCrc, IOutputMetaData & projected, unsigned actualCrc, IOutputMetaData & actual, const IPropertyTree * options)
+IDiskRowReader * CHThorNewDiskReadBaseActivity::ensureRowReader(const char * format, bool streamRemote, unsigned expectedCrc, IOutputMetaData & expected, unsigned projectedCrc, IOutputMetaData & projected, unsigned actualCrc, IOutputMetaData & actual, const IPropertyTree * providerOptions, const IPropertyTree * formatOptions)
 {
-    Owned<IDiskReadMapping> mapping = createDiskReadMapping(getLayoutTranslationMode(), format, actualCrc, actual, expectedCrc, expected, projectedCrc, projected, options);
+    Owned<IRowReadFormatMapping> mapping = createRowReadFormatMapping(getLayoutTranslationMode(), format, actualCrc, actual, expectedCrc, expected, projectedCrc, projected, formatOptions);
 
     ForEachItemIn(i, readers)
     {
         IDiskRowReader & cur = readers.item(i);
-        if (cur.matches(format, streamRemote, mapping))
+        if (cur.matches(format, streamRemote, mapping, providerOptions))
             return &cur;
     }
-    IDiskRowReader * reader = createDiskReader(format, streamRemote, mapping);
+    IDiskRowReader * reader = createDiskReader(format, streamRemote, mapping, providerOptions, rowAllocator);
     readers.append(*reader);
     return reader;
 }
 
 bool CHThorNewDiskReadBaseActivity::openFilePart(const char * filename)
 {
-    const char * format = helper.queryFormat();   // more - should extract from the current file (could even mix flat and csv...)
+    const char * readFormat = queryReadFormat();
+
     InputFileInfo * fileInfo = &subfiles.item(0);
 
     unsigned expectedCrc = helper.getDiskFormatCrc();
     unsigned projectedCrc = helper.getProjectedFormatCrc();
-    IDiskRowReader * reader = ensureRowReader(format, false, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, expectedCrc, *expectedDiskMeta, fileInfo->meta);
-    if (reader->setInputFile(filename, logicalFileName, 0, offsetOfPart, fileInfo->meta, fieldFilters))
+    IDiskRowReader * reader = ensureRowReader(readFormat, false, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, expectedCrc, *expectedDiskMeta, fileInfo->providerOptions, fileInfo->formatOptions);
+    if (reader->setInputFile(filename, logicalFileName, 0, offsetOfPart, fieldFilters))
     {
         initStream(reader, filename);
         return true;
@@ -11166,7 +11255,8 @@ bool CHThorNewDiskReadBaseActivity::openFilePart(ILocalOrDistributedFile * local
      * If a file part supports a remote stream, then use that
      * Otherwise failover to the legacy remote access.
      */
-    const char * format = helper.queryFormat();   // more - should extract from the current file (could even mix flat and csv...)
+    const char * format = queryReadFormat();   // more - should extract from the current file (could even mix flat and csv...)
+
     Owned<IException> saveOpenExc;
     StringBuffer filename, filenamelist;
     std::vector<unsigned> remoteCandidates;
@@ -11182,8 +11272,8 @@ bool CHThorNewDiskReadBaseActivity::openFilePart(ILocalOrDistributedFile * local
         {
             StringBuffer path;
             rfn.getPath(path);
-            IDiskRowReader * reader = ensureRowReader(format, false, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, actualCrc, *actualDiskMeta, fileInfo->meta);
-            if (reader->setInputFile(path.str(), logicalFileName, whichPart, offsetOfPart, fileInfo->meta, fieldFilters))
+            IDiskRowReader * reader = ensureRowReader(format, false, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, actualCrc, *actualDiskMeta, fileInfo->providerOptions, fileInfo->formatOptions);
+            if (reader->setInputFile(path.str(), logicalFileName, whichPart, offsetOfPart, fieldFilters))
             {
                 initStream(reader, path.str());
                 return true;
@@ -11205,8 +11295,8 @@ bool CHThorNewDiskReadBaseActivity::openFilePart(ILocalOrDistributedFile * local
             filenamelist.append('\n').append(filename);
             try
             {
-                IDiskRowReader * reader = ensureRowReader(format, tryRemoteStream, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, actualCrc, *actualDiskMeta, fileInfo->meta);
-                if (reader->setInputFile(rfilename, logicalFileName, whichPart, offsetOfPart, fileInfo->meta, fieldFilters))
+                IDiskRowReader * reader = ensureRowReader(format, tryRemoteStream, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, actualCrc, *actualDiskMeta, fileInfo->providerOptions, fileInfo->formatOptions);
+                if (reader->setInputFile(rfilename, logicalFileName, whichPart, offsetOfPart, fieldFilters))
                 {
                     initStream(reader, filename);
                     return true;
@@ -11223,7 +11313,7 @@ bool CHThorNewDiskReadBaseActivity::openFilePart(ILocalOrDistributedFile * local
         tryRemoteStream = false;
     }
 
-    if (!(helper.getFlags() & TDRoptional))
+    if (!(helperFlags & TDRoptional))
     {
         StringBuffer s;
         if (filenamelist)
@@ -11303,7 +11393,7 @@ void CHThorNewDiskReadActivity::ready()
     lastGroupProcessed = processed;
     needTransform = helper.needTransform() || fieldFilters.length();
     limit = helper.getRowLimit();
-    if (helper.getFlags() & TDRlimitskips)
+    if (helperFlags & TDRlimitskips)
         limit = (unsigned __int64) -1;
     stopAfter = helper.getChooseNLimit();
     if (!helper.transformMayFilter() && !helper.hasMatchFilter())
@@ -11347,7 +11437,7 @@ const void *CHThorNewDiskReadActivity::nextRow()
             {
                 //Returns a row in the serialized form of the projected format
                 size32_t nextSize;
-                const byte * next = (const byte *)inputRowStream->nextRow(nextSize);
+                const byte * next = (const byte *)inputRowStream->prefetchRow(nextSize);
                 if (!isSpecialRow(next))
                 {
                     if (likely(!hasMatchFilter || helper.canMatch(next)))
@@ -11445,567 +11535,9 @@ const void *CHThorNewDiskReadActivity::nextRow()
 
 //=====================================================================================================
 
-bool RemoteReadChecker::onlyReadLocally(const CLogicalFileSlice & slice, unsigned copy)
-{
-    //Allow all operations to be forced to be executed locally.
-    if (forceRemoteDisabled.getValue(false))
-        return true;
+extern HTHOR_API IHThorActivity * createDiskWriteActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorGenericDiskWriteArg &arg, ThorActivityKind kind, EclGraph & _graph) \
+{   return new CHThorDiskWriteActivity(_agent, _activityId, _subgraphId, arg, kind, _graph); }
 
-    //If not locally attached then there is no benefit in reading remotely
-    if (!slice.onAttachedStorage(copy))
-        return true;
-
-    //If the file is not local then execute it remotely
-    if (!slice.isLocal(copy))
-        return false;
-
-    StringBuffer localPath;
-    slice.getURL(localPath, copy);
-    if (forceRemoteRead.getValue(testForceRemote(localPath)))
-        return false;
-    return true;
-}
-
-
-CHThorGenericDiskReadBaseActivity::CHThorGenericDiskReadBaseActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorNewDiskReadBaseArg &_arg, IHThorCompoundBaseArg & _segHelper, ThorActivityKind _kind, EclGraph & _graph, IPropertyTree *_node)
-: CHThorActivityBase(_agent, _activityId, _subgraphId, _arg, _kind, _graph), helper(_arg), segHelper(_segHelper), remoteReadChecker(_agent.queryWorkUnit())
-{
-    helper.setCallback(this);
-    expectedDiskMeta = helper.queryDiskRecordSize();
-    projectedDiskMeta = helper.queryProjectedDiskRecordSize();
-    isCodeSigned = false;
-    if (_node)
-    {
-        const char *recordTranslationModeHintText = _node->queryProp("hint[@name='layouttranslation']/@value");
-        if (recordTranslationModeHintText)
-            recordTranslationModeHint = getTranslationMode(recordTranslationModeHintText, true);
-        isCodeSigned = isActivityCodeSigned(*_node);
-    }
-
-    grouped = ((helper.getFlags() & TDXgrouped) != 0);
-    inputOptions.setown(createPTree());
-    inputOptions->setPropBool("@grouped", grouped);
-    inputOptions->setPropBool("@forceCompressed", (helper.getFlags() & TDXcompress) != 0);
-    if (helper.getFlags() & TDRoptional)
-        inputOptions->setPropBool("@optional", true);
-    if ((helper.getFlags() & TDRcloneappendvirtual) != 0)
-        inputOptions->setPropBool("@cloneAppendVirtuals", true);
-
-    CPropertyTreeWriter writer(ensurePTree(inputOptions, "formatOptions"));
-    helper.getFormatOptions(writer);
-
-    outputGrouped = helper.queryOutputMeta()->isGrouped();  // It is possible for input to be incorrectly marked as grouped, and input not or vice-versa
-    bool isTemporary = (helper.getFlags() & (TDXtemporary | TDXjobtemp)) != 0;
-    files.init(this, agent.queryWuid(), isTemporary, agent.queryResolveFilesLocally(), isCodeSigned, agent.queryCodeContext()->queryUserDescriptor(), expectedDiskMeta);
-    if (isTemporary)
-    {
-        StringBuffer spillPath;
-        agent.getTempfileBase(spillPath);
-
-        //Should probably be in eclagent
-        spillPlane.setown(createPTree("planes"));
-        spillPlane->setProp("@name", "localspill");
-        spillPlane->setProp("@prefix", spillPath);
-    }
-}
-
-CHThorGenericDiskReadBaseActivity::~CHThorGenericDiskReadBaseActivity()
-{
-    close();
-}
-
-void CHThorGenericDiskReadBaseActivity::ready()
-{
-    CHThorActivityBase::ready();
-
-    opened = false;
-    curSlice = NotFound;
-
-    resolveFile();
-
-    fieldFilters.kill();
-    segHelper.createSegmentMonitors(this);
-}
-
-void CHThorGenericDiskReadBaseActivity::stop()
-{
-    close();
-    CHThorActivityBase::stop();
-}
-
-unsigned __int64 CHThorGenericDiskReadBaseActivity::getFilePosition(const void * row)
-{
-    //These functions do not need to be implemented - they will be implemented by the translation layer
-    throwUnexpected();
-}
-
-unsigned __int64 CHThorGenericDiskReadBaseActivity::getLocalFilePosition(const void * row)
-{
-    throwUnexpected();
-}
-
-void CHThorGenericDiskReadBaseActivity::noteException(unsigned severity, unsigned code, const char * text)
-{
-    //MORE: This should really supply the activity and the scope - a general issue for hthor errors...
-    agent.addWuExceptionEx(text, code, severity, MSGAUD_user, "hthor");
-}
-
-
-const char * CHThorGenericDiskReadBaseActivity::queryLogicalFilename(const void * row)
-{
-    throwUnexpected();
-}
-
-void CHThorGenericDiskReadBaseActivity::resolveFile()
-{
-    //If in a child query, and the filenames haven't changed, the information about the resolved filenames will also not have changed
-    //Assume that is also true for format properties - require dynamic if they are to be recalculated.
-    if (resolved && !(helper.getFlags() & (TDXvarfilename|TDRdynformatoptions)))
-        return;
-    resolved = true;
-
-    //Update the inputOptions and formatOptions if they depend on the current context
-    curInputOptions.set(inputOptions);
-    //Check for encryption key
-    void *k;
-    size32_t kl;
-    helper.getEncryptKey(kl,k);
-    if (kl || (helper.getFlags() & TDRdynformatoptions))
-    {
-        curInputOptions.setown(createPTreeFromIPT(inputOptions));
-        if (kl)
-        {
-            curInputOptions->setPropBin("encryptionKey", kl, k);
-            curInputOptions->setPropBool("blockcompressed", true);
-            curInputOptions->setPropBool("compressed", true);
-        }
-
-        if (helper.getFlags() & TDRdynformatoptions)
-        {
-            Owned<IPropertyTree> helperFormatOptions = createPTree("formatOptions");
-            CPropertyTreeWriter writer(helperFormatOptions);
-            helper.getFormatDynOptions(writer);
-
-            IPropertyTree * curFormatOptions = ensurePTree(curInputOptions, "formatOptions");
-            mergeConfiguration(*curFormatOptions, *helperFormatOptions, nullptr, true);
-        }
-    }
-
-    //Extract meta information from the helper.  Another (possibly more efficient) alternative to an IPropertyTree would be a class.
-    bool isTemporary = (helper.getFlags() & (TDXtemporary | TDXjobtemp)) != 0;
-    OwnedRoxieString fileName(helper.getFileName());
-    if (isTemporary)
-    {
-        StringBuffer mangledFilename;
-        mangleLocalTempFilename(mangledFilename, fileName, agent.queryWuid());    // should this occur inside setEclFilename?
-        curInputOptions->setPropBool("@singlePartNoSuffix", true);
-        files.setTempFilename(mangledFilename, curInputOptions, spillPlane);
-    }
-    else
-    {
-        StringBuffer lfn;
-        expandLogicalFilename(lfn, fileName, agent.queryWorkUnit(), false, false);
-        files.setEclFilename(lfn, curInputOptions);
-    }
-    slices.clear();
-    files.calcPartition(slices, 1, 0, false, true);
-    curSlice = 0;
-}
-
-void CHThorGenericDiskReadBaseActivity::close()
-{
-    closepart();
-    if (activeSlice)
-        activeSlice->setAccessed();
-}
-
-void CHThorGenericDiskReadBaseActivity::closepart()
-{
-    if (activeReader)
-    {
-        activeReader->clearInput();
-        activeReader = nullptr;
-        activeSlice = nullptr;
-    }
-}
-
-bool CHThorGenericDiskReadBaseActivity::openFirstPart()
-{
-    if (openFilePart(0U))
-        return true;
-    setEmptyStream();
-    return false;
-}
-
-bool CHThorGenericDiskReadBaseActivity::openNextPart()
-{
-    if (curSlice == NotFound)
-        return false;
-
-    if (activeSlice)
-        closepart();
-
-    if (openFilePart(curSlice+1))
-        return true;
-    setEmptyStream();
-    return false;
-}
-
-void CHThorGenericDiskReadBaseActivity::initStream(CLogicalFileSlice * slice, IDiskRowReader * reader)
-{
-    activeSlice = slice;
-    activeReader = reader;
-    inputRowStream = reader->queryAllocatedRowStream(rowAllocator);
-
-    StringBuffer report("Reading file ");
-    activeSlice->getTracingFilename(report);
-    agent.reportProgress(report.str());
-}
-
-void CHThorGenericDiskReadBaseActivity::setEmptyStream()
-{
-    inputRowStream = queryNullDiskRowStream();
-    finishedParts = true;
-}
-
-IDiskRowReader * CHThorGenericDiskReadBaseActivity::ensureRowReader(const char * format, bool streamRemote, unsigned expectedCrc, IOutputMetaData & expected, unsigned projectedCrc, IOutputMetaData & projected, unsigned actualCrc, IOutputMetaData & actual, CLogicalFileSlice * slice)
-{
-    bool translateFromActual = strsame(format, slice->queryFormat());
-    //Backwards compatibility - there should be an option to override this
-    if (strsame(format, "csv") || strsame(format, "xml"))
-        translateFromActual = false;
-
-    //If the actual and expected file formats do not translate from the actual file format - use the expected format instead
-    Owned<IDiskReadMapping> mapping;
-    if (translateFromActual)
-        mapping.setown(createDiskReadMapping(getLayoutTranslationMode(), format, actualCrc, actual, expectedCrc, expected, projectedCrc, projected, slice->queryFileMeta()));
-    else
-        mapping.setown(createDiskReadMapping(getLayoutTranslationMode(), format, expectedCrc, expected, expectedCrc, expected, projectedCrc, projected, slice->queryFileMeta()));
-
-    ForEachItemIn(i, readers)
-    {
-        IDiskRowReader & cur = readers.item(i);
-        if (cur.matches(format, streamRemote, mapping))
-            return &cur;
-    }
-    IDiskRowReader * reader = createDiskReader(format, streamRemote, mapping);
-    readers.append(*reader);
-    return reader;
-}
-
-bool CHThorGenericDiskReadBaseActivity::openFilePart(unsigned whichSlice)
-{
-    for (;;)
-    {
-        if (whichSlice >= slices.size())
-        {
-            curSlice = NotFound;
-            return false;
-        }
-
-        if (openFilePart(&slices[whichSlice]))
-        {
-            curSlice = whichSlice;
-            activeSlice = &slices[whichSlice];
-            return true;
-        }
-
-        whichSlice++;
-    }
-}
-
-bool CHThorGenericDiskReadBaseActivity::openFilePart(CLogicalFileSlice * nextSlice)
-{
-    unsigned expectedCrc = helper.getDiskFormatCrc();
-    unsigned projectedCrc = helper.getProjectedFormatCrc();
-    unsigned actualCrc = nextSlice->queryFile()->queryActualCrc();
-    IOutputMetaData * actualDiskMeta = nextSlice->queryFile()->queryActualMeta();
-
-    bool tryRemoteStream = actualDiskMeta->queryTypeInfo()->canInterpret() && actualDiskMeta->queryTypeInfo()->canSerialize() &&
-                           projectedDiskMeta->queryTypeInfo()->canInterpret() && projectedDiskMeta->queryTypeInfo()->canSerialize();
-
-
-    /*
-     * If a file part can be accessed local, then read it locally
-     * If a file part supports a remote stream, then use that
-     * Otherwise failover to the legacy remote access.
-     */
-    const char * format = helper.queryFormat();
-    // If format is not specified in the ECL then it is deduced from the file.  It must be the same for all copies of a file part
-    if (!format)
-        format = nextSlice->queryFormat();
-
-    Owned<IException> saveOpenExc;
-    StringBuffer filenamelist;
-    std::vector<unsigned> remoteCandidates;
-
-    // scan for local part 1st
-    //MORE: Order of copies should be optimized at this point....
-    unsigned numCopies = nextSlice->getNumCopies();
-    for (unsigned copy=0; copy<numCopies; copy++)
-    {
-        if (remoteReadChecker.onlyReadLocally(*nextSlice, copy))
-        {
-            IDiskRowReader * reader = ensureRowReader(format, false, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, actualCrc, *actualDiskMeta, nextSlice);
-            if (reader->setInputFile(*nextSlice, fieldFilters, copy))
-            {
-                initStream(nextSlice, reader);
-                return true;
-            }
-        }
-        else
-            remoteCandidates.push_back(copy);
-    }
-
-    //First try remote streaming, and if that does not succeed, fall back to remote reading.
-    bool allowFallbackToNonStreaming = true;
-    for (;;)
-    {
-        for (unsigned copy: remoteCandidates)
-        {
-            StringBuffer filename;
-            nextSlice->getURL(filename, copy);
-            filenamelist.append('\n').append(filename);
-            try
-            {
-                IDiskRowReader * reader = ensureRowReader(format, tryRemoteStream, expectedCrc, *expectedDiskMeta, projectedCrc, *projectedDiskMeta, actualCrc, *actualDiskMeta, nextSlice);
-                if (reader->setInputFile(*nextSlice, fieldFilters, copy))
-                {
-                    initStream(nextSlice, reader);
-                    return true;
-                }
-            }
-            catch (IException *E)
-            {
-                saveOrRelease(saveOpenExc, E);
-            }
-        }
-
-        if (!tryRemoteStream || !allowFallbackToNonStreaming)
-            break;
-        tryRemoteStream = false;
-    }
-
-    if (!(helper.getFlags() & TDRoptional))
-    {
-        //Should this be unconditional?  If the logical file exists, but the file can't be opened, it isn't really what OPT means.
-        StringBuffer s;
-        StringBuffer tracingName;
-        nextSlice->getTracingFilename(tracingName);
-
-        if (filenamelist)
-        {
-            if (saveOpenExc.get())
-            {
-                if (!nextSlice->isLogicalFile())
-                    saveOpenExc->errorMessage(s);
-                else
-                {
-                    s.append("Could not open logical file ").append(tracingName).append(" in any of these locations:").append(filenamelist).append(" (");
-                    saveOpenExc->errorMessage(s).append(")");
-                }
-            }
-            else
-                s.append("Could not open logical file ").append(tracingName).append(" in any of these locations:").append(filenamelist).append(" (").append((unsigned)GetLastError()).append(")");
-        }
-        else
-        {
-            const char * filename = nextSlice->queryFile()->queryLogicalFilename();
-            s.append("Could not open local physical file ").append(filename).append(" (").append((unsigned)GetLastError()).append(")");
-        }
-        agent.fail(1, s.str());
-    }
-    return false;
-}
-
-
-bool CHThorGenericDiskReadBaseActivity::openNext()
-{
-    return openNextPart();
-}
-
-void CHThorGenericDiskReadBaseActivity::open()
-{
-    assertex(!opened);
-    opened = true;
-    if (!segHelper.canMatchAny())
-    {
-        setEmptyStream();
-    }
-    else
-    {
-        if (!openFirstPart())
-            setEmptyStream();
-    }
-}
-
-void CHThorGenericDiskReadBaseActivity::append(FFoption option, const IFieldFilter * filter)
-{
-    if (filter->isWild())
-        filter->Release();
-    else
-        fieldFilters.append(*filter);
-}
-
-//=====================================================================================================
-
-CHThorGenericDiskReadActivity::CHThorGenericDiskReadActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorNewDiskReadArg &_arg, ThorActivityKind _kind, EclGraph & _graph, IPropertyTree *_node)
-: CHThorGenericDiskReadBaseActivity(_agent, _activityId, _subgraphId, _arg, _arg, _kind, _graph, _node), helper(_arg), outBuilder(NULL)
-{
-    hasMatchFilter = helper.hasMatchFilter();
-    useRawStream = hasMatchFilter || helper.needTransform();
-}
-
-void CHThorGenericDiskReadActivity::ready()
-{
-    PARENT::ready();
-    outBuilder.setAllocator(rowAllocator);
-    lastGroupProcessed = processed;
-    needTransform = helper.needTransform() || fieldFilters.length();
-    limit = helper.getRowLimit();
-    if (helper.getFlags() & TDRlimitskips)
-        limit = (unsigned __int64) -1;
-    stopAfter = helper.getChooseNLimit();
-    if (!helper.transformMayFilter() && !helper.hasMatchFilter())
-        remoteLimit = stopAfter;
-    finishedParts = false;
-}
-
-
-void CHThorGenericDiskReadActivity::stop()
-{
-    outBuilder.clear();
-    PARENT::stop();
-}
-
-
-void CHThorGenericDiskReadActivity::onLimitExceeded()
-{
-    if ( agent.queryCodeContext()->queryDebugContext())
-        agent.queryCodeContext()->queryDebugContext()->checkBreakpoint(DebugStateLimit, NULL, static_cast<IActivityBase *>(this));
-    helper.onLimitExceeded();
-}
-
-const void *CHThorGenericDiskReadActivity::nextRow()
-{
-    //Avoid this check on each row- e.g., initialising streams with a null stream, which returns eof, and falls through to eof processing
-    if (!opened) open();
-
-    // Only check once per row returned.  Potentially means that heavily filtered datasets may wait a long time to check for abort
-    queryUpdateProgress();
-
-    //Avoid this test...  Combine the limit checking with choosen, and have choosen/limit triggering set the
-    //stream to a special no more rows stream so that subsequent calls do not read records.
-    if ((processed - initialProcessed) >= stopAfter)
-        return nullptr;
-
-    try
-    {
-        if (useRawStream)
-        {
-            for (;;)
-            {
-                //Returns a row in the serialized form of the projected format
-                size32_t nextSize;
-                const byte * next = (const byte *)inputRowStream->nextRow(nextSize);
-                if (!isSpecialRow(next))
-                {
-                    if (likely(!hasMatchFilter || helper.canMatch(next)))
-                    {
-                        size32_t thisSize = helper.transform(outBuilder.ensureRow(), next);
-                        if (thisSize != 0)
-                        {
-                            if (unlikely((processed - initialProcessed) >= limit))
-                            {
-                                outBuilder.clear();
-                                onLimitExceeded();
-                                return nullptr;
-                            }
-                            processed++;
-                            return outBuilder.finalizeRowClear(thisSize);
-                        }
-                    }
-                }
-                else
-                {
-                    switch (getSpecialRowType(next))
-                    {
-                    case SpecialRow::eof:
-                        if (!openNext())
-                            return next; // i.e. eof
-                        //rawStream will have changed, but it cannot change into a rowStream
-                        break;
-                    case SpecialRow::eos:
-                        return next;
-                    case SpecialRow::eog:
-                        if (outputGrouped && (processed != lastGroupProcessed))
-                        {
-                            lastGroupProcessed = processed;
-                            //MORE: Change to return next - i.e. an eog marker
-                            return nullptr;
-                        }
-                        break;
-                    default:
-                        throwUnexpected();
-                    }
-                }
-            }
-        }
-        else
-        {
-            //This branch avoids a memcpy from actual to projected followed by a deserialize - since it can map directly
-            //May be more efficient to use this branch if serialized==deserialized and there is a filter, but no transform.
-            //It would be possibel to have two (or more) different implementations, which were created based on
-            //whether there was a limit, a transform etc., but unlikely to save more than a couple of boolean tests.
-            for (;;)
-            {
-                const byte * next = (const byte *)inputRowStream->nextRow();
-                if (!isSpecialRow(next))
-                {
-                    if (unlikely((processed - initialProcessed) >= limit))
-                    {
-                        ReleaseRoxieRow(next);
-                        onLimitExceeded();
-                        return nullptr;
-                    }
-                    processed++;
-                    return next;
-                }
-                else
-                {
-                    switch (getSpecialRowType(next))
-                    {
-                    case SpecialRow::eof:
-                        if (!openNext())
-                            return next;
-                        //rowStream will have changed
-                        break;
-                    case SpecialRow::eos:
-                        return next;
-                    case SpecialRow::eog:
-                        if (processed != lastGroupProcessed)
-                        {
-                            lastGroupProcessed = processed;
-                            return nullptr;
-                        }
-                        break;
-                    default:
-                        throwUnexpected();
-                    }
-                }
-            }
-        }
-    }
-    catch(IException * e)
-    {
-        throw makeWrappedException(e);
-    }
-    return NULL;
-}
-
-//=====================================================================================================
-
-MAKEFACTORY(DiskWrite);
 MAKEFACTORY(Iterate);
 MAKEFACTORY(Filter);
 MAKEFACTORY(Aggregate);
@@ -12063,11 +11595,6 @@ extern HTHOR_API IHThorActivity *createChildIfActivity(IAgentContext &_agent, un
 extern HTHOR_API IHThorActivity *createHashAggregateActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorHashAggregateArg &arg, ThorActivityKind kind, EclGraph & _graph, bool _isGroupedAggregate)
 {
     return new CHThorHashAggregateActivity(_agent, _activityId, _subgraphId, arg, kind, _graph, _isGroupedAggregate);
-}
-
-extern HTHOR_API IHThorActivity *createGenericDiskReadActivity(IAgentContext &_agent, unsigned _activityId, unsigned _subgraphId, IHThorNewDiskReadArg &arg, ThorActivityKind kind, EclGraph & _graph, IPropertyTree * node)
-{
-    return new CHThorGenericDiskReadActivity(_agent, _activityId, _subgraphId, arg, kind, _graph, node);
 }
 
 MAKEFACTORY(Null);

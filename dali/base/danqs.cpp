@@ -33,7 +33,12 @@
 #pragma warning (disable : 4355)
 #endif
 
-static auto pNqRequestsCount = hpccMetrics::registerCounterMetric("dali.nq.requests.received", "The total number of Dali NQ requests received", SMeasureCount);
+static std::shared_ptr<hpccMetrics::CounterMetric> pNqRequestsCount;
+MODULE_INIT(INIT_PRIORITY_STANDARD)
+{
+    pNqRequestsCount = hpccMetrics::registerCounterMetric("dali.nq.requests.received", "The total number of Dali NQ requests received", SMeasureCount);
+    return true;
+}
 
 enum MQueueRequestKind {
     MQR_ADD_QUEUE,
@@ -163,7 +168,7 @@ class CNamedQueueSubscriptionProxy: public Thread
 public:
 
     CNamedQueueSubscriptionProxy(CQueueChannel *_owner,INamedQueueSubscription *_subs,const char *_name, int _priority, bool _oneshot, SessionId _transaction)
-        : handler(_name, _priority, _oneshot, _transaction), subs(_subs)
+        : subs(_subs), handler(_name, _priority, _oneshot, _transaction)
     {
         owner = _owner;
         finished = false;
