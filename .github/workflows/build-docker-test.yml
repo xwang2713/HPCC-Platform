@@ -1,0 +1,119 @@
+name: Build Community Platform
+
+on:
+  workflow_call:
+    inputs:
+      community_ref:
+        description: 'Community Ref'
+        # required: true
+        type: string
+        default: community_10.0.14-1
+
+  workflow_dispatch:
+    inputs:
+      community_ref:
+        type: string
+        description: 'Community Ref'
+        # required: true
+        default: community_10.0.14-1
+
+jobs:
+  build:
+    name: Build HPCC Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free additional disk space (remove Android SDK + Tools)
+        continue-on-error: true
+        run: |
+          df -h
+          sudo rm -rf ${ANDROID_HOME}
+          sudo rm -rf ${JAVA_HOME_8_X64}
+          sudo rm -rf ${JAVA_HOME_11_X64}
+          sudo rm -rf ${JAVA_HOME_17_X64}
+          sudo rm -rf ${JAVA_HOME_21_X64}
+          sudo rm -rf ${CHROMEWEBDRIVER}
+          sudo rm -rf ${EDGEWEBDRIVER}
+          sudo rm -rf ${GECKOWEBDRIVER}
+          sudo rm -rf ${SELENIUM_JAR_PATH}
+
+      - name: Display disk space (post free)
+        run: |
+          df -h
+
+      - name: Checkout HPCC-Platform
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/HPCC-Platform
+          ref: ${{ inputs.community_ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+          path: ${{ github.workspace }}/HPCC-Platform
+
+      - name: Calculate Variables
+        id: vars
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "folder_platform=${{ github.workspace }}/HPCC-Platform" >> $GITHUB_OUTPUT
+          echo "folder_prettygitlogs"=${{ github.workspace }}/PrettyGitLogs >> $GITHUB_OUTPUT
+          echo 'mount_platform=source="${{ github.workspace }}/HPCC-Platform",target=/hpcc-dev/HPCC-Platform,type=bind,consistency=cached' >> $GITHUB_OUTPUT
+          echo "folder_build=${{ github.workspace }}/build" >> $GITHUB_OUTPUT
+          echo 'mount_build=source="${{ github.workspace }}/build",target=/hpcc-dev/build,type=bind,consistency=cached' >> $GITHUB_OUTPUT
+          community_ref=${{ github.ref }}
+          echo "community_ref=$community_ref" >> $GITHUB_OUTPUT
+          community_tag=$(echo $community_ref | cut -d'/' -f3)
+          echo "community_tag=$community_tag" >> $GITHUB_OUTPUT
+          echo "hpcc_version=$(echo $community_tag | sed 's/community_//' | sed 's/-[0-9]$//')" >> $GITHUB_OUTPUT
+          echo "hpcc_version_full=$(echo $community_tag | sed 's/community_//')" >> $GITHUB_OUTPUT
+          community_base_ref=${{ github.event.base_ref || github.ref }}
+          candidate_branch=$(echo $community_base_ref | cut -d'/' -f3)
+          echo "candidate_branch=$candidate_branch" >> $GITHUB_OUTPUT
+          candidate_base_branch=$(echo $candidate_branch | awk -F'.' -v OFS='.' '{ $3="x"; print }')
+          echo "candidate_base_branch=$candidate_base_branch" >> $GITHUB_OUTPUT
+          latest_tag=$(git tag -l | grep -E "^community_[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}-[0-9]{1,2}" | sort -V | tail -n 1)
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
+          echo "is_latest=$(echo $latest_tag | grep -q $community_tag && echo true || echo false)" >> $GITHUB_OUTPUT
+          #docker_build_label=hpccsystems/platform-test
+          docker_build_label=xwang2713/platform-test
+          echo "docker_build_label=$docker_build_label" >> $GITHUB_OUTPUT
+
+      - name: Print Vars
+        run: echo "${{ toJson(steps.vars.outputs)}}"
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Create Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          file: ${{ steps.vars.outputs.folder_platform }}/dockerfiles/examples/test/Dockerfile
+          context: ${{ steps.vars.outputs.folder_build }}
+          push: ${{ github.repository_owner == 'hpcc-systems' }}
+          build-args: |
+            BUILD_LABEL=${{ steps.vars.outputs.hpcc_version }}
+            REPO_BRANCH=${{ steps.vars.outputs.community_tag }}
+            GIT_BRANCH=HPCC-Platform
+            GIT_GIT_TEST=cloud-testing
+            GITHUB_TOKEN=${{ secrets.LNB_TOKEN }}
+          tags: |
+            #hpccsystems/platform-test:${{ steps.vars.outputs.hpcc_version }}
+            xwang2713/platform-test:${{ steps.vars.outputs.hpcc_version }}
+
+      - name: Cleanup Environment
+        if: always()
+        run: rm -f ${{ steps.vars.outputs.folder_build }}/private.key
+
+      - name: Upload error logs
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-platform-test-logs
+          path: ${{ steps.vars.outputs.folder_build }}/**/*.log
