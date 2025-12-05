@@ -55,7 +55,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           echo "folder_platform=${{ github.workspace }}/HPCC-Platform" >> $GITHUB_OUTPUT
-          echo "folder_prettygitlogs"=${{ github.workspace }}/PrettyGitLogs >> $GITHUB_OUTPUT
+          echo "folder_prettygitlogs=${{ github.workspace }}/PrettyGitLogs" >> $GITHUB_OUTPUT
           echo 'mount_platform=source="${{ github.workspace }}/HPCC-Platform",target=/hpcc-dev/HPCC-Platform,type=bind,consistency=cached' >> $GITHUB_OUTPUT
           echo "folder_build=${{ github.workspace }}/build" >> $GITHUB_OUTPUT
           echo 'mount_build=source="${{ github.workspace }}/build",target=/hpcc-dev/build,type=bind,consistency=cached' >> $GITHUB_OUTPUT
