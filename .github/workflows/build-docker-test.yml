@@ -8,6 +8,11 @@ on:
         # required: true
         type: string
         default: community_10.0.14-1
+      build-docker-image:
+        description: 'Build Docker Image'
+        required: false
+        default: false
+        type: boolean
 
   workflow_dispatch:
     inputs:
@@ -16,6 +21,11 @@ on:
         description: 'Community Ref'
         # required: true
         default: community_10.0.14-1
+      build-docker-image:
+        type: boolean
+        description: 'Build Docker Image'
+        required: false
+        default: false
 
 jobs:
   build:
