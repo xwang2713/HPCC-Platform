@@ -17,6 +17,10 @@ on:
         # required: true
         default: community_10.0.14-1
 
+  push:
+    paths:
+      - .github/workflows/build-docker-test.yml
+
 jobs:
   build:
     name: Build HPCC Test
