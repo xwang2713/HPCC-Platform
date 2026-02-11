@@ -3,6 +3,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
+    "start": "npm run dev-docs",
     "clean": "rimraf ./devdoc/.vitepress/cache ./devdoc/.vitepress/dist",
     "copy-png": "cp ./devdoc/*.png ./devdoc/.vitepress/dist/devdoc",
     "copy-ico": "cp ./devdoc/*.ico ./devdoc/.vitepress/dist/devdoc",
